@@ -178,6 +178,18 @@ picks the best candidate using rolling stats (eval quality + cost + latency,
 weighted and min-max normalized). Candidates with no stats yet get optimistic
 exploration traffic. A virtual key's `allowed_models` still constrains the set.
 
+The **quality signal** blends both eval sources, so routing reacts to evals even
+when the SLM judge is disabled:
+
+- **Judge quality** (`metric=quality`, 0..1) and **heuristic safety pass rate**
+  (PII/completeness) are combined: `0.7·quality + 0.3·safety` when both exist,
+  otherwise whichever is available, or an exploration value when neither is.
+
+A virtual key's **`min_quality_score`** is enforced here: candidate models whose
+blended quality is below the threshold are dropped. If no allowed model clears
+the bar, the request is rejected with `503 no_model_meets_quality`. `0` disables
+the gate.
+
 - Built-in alias `auto` routes across **all** registered models.
 - Named groups via `NEXUS_ROUTE_GROUPS=fast=gpt-4o-mini,gemini-2.5-flash;smart=gpt-4o,...`.
 

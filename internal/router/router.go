@@ -14,12 +14,16 @@ import (
 
 // ModelStats are rolling per-model metrics over a recent window.
 type ModelStats struct {
-	Model        string  `json:"model"`
-	Quality      float64 `json:"quality"`        // avg "quality" eval score, 0..1
-	PassRate     float64 `json:"pass_rate"`      // fraction of evals passed
-	AvgLatencyMs float64 `json:"avg_latency_ms"` // lower is better
-	AvgCostUSD   float64 `json:"avg_cost_usd"`   // per-request, lower is better
-	Samples      int64   `json:"samples"`        // trace count in window
+	Model          string  `json:"model"`
+	Quality        float64 `json:"quality"`          // avg judge "quality" score, 0..1
+	QualitySamples int64   `json:"quality_samples"`  // number of judge evals
+	PassRate       float64 `json:"pass_rate"`        // fraction of judge evals passed
+	SafetyPassRate float64 `json:"safety_pass_rate"` // avg heuristic pass (PII/completeness), 0..1
+	SafetySamples  int64   `json:"safety_samples"`   // number of heuristic evals
+	AvgLatencyMs   float64 `json:"avg_latency_ms"`   // lower is better
+	AvgCostUSD     float64 `json:"avg_cost_usd"`     // per-request, lower is better
+	Samples        int64   `json:"samples"`          // trace count in window
+	EffQuality     float64 `json:"eff_quality"`      // blended routing signal (computed)
 }
 
 // StatsProvider supplies rolling per-model stats keyed by model id.
@@ -41,6 +45,33 @@ func DefaultWeights() Weights { return Weights{Quality: 0.6, Cost: 0.2, Latency:
 // explorationQuality is the optimistic quality assigned to candidates with no
 // observed stats yet, so new/unmeasured models still get routed traffic.
 const explorationQuality = 0.75
+
+// Quality-blend weights: how much the LLM-as-judge score vs. heuristic safety
+// pass rate contribute to the routing quality signal when both are present.
+const (
+	judgeWeight  = 0.7
+	safetyWeight = 0.3
+)
+
+// effectiveQuality blends the judge quality score with the heuristic safety
+// pass rate into a single 0..1 routing signal. This lets routing react to
+// heuristic evals (PII/completeness) even when the SLM judge is disabled.
+// A model with traces but no eval data yet gets the optimistic exploration
+// value so it still receives traffic to build up a measurement.
+func effectiveQuality(s ModelStats) float64 {
+	hasJudge := s.QualitySamples > 0
+	hasSafety := s.SafetySamples > 0
+	switch {
+	case hasJudge && hasSafety:
+		return judgeWeight*s.Quality + safetyWeight*s.SafetyPassRate
+	case hasJudge:
+		return s.Quality
+	case hasSafety:
+		return s.SafetyPassRate
+	default:
+		return explorationQuality
+	}
+}
 
 // Router selects models using cached rolling stats.
 type Router struct {
@@ -108,6 +139,12 @@ func (r *Router) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Precompute the blended quality signal so the console and Select share one
+	// definition.
+	for m, st := range s {
+		st.EffQuality = effectiveQuality(st)
+		s[m] = st
+	}
 	r.mu.Lock()
 	r.stats = s
 	r.mu.Unlock()
@@ -125,16 +162,14 @@ func (r *Router) Snapshot() map[string]ModelStats {
 	return out
 }
 
-// Select returns the best candidate model and whether a choice was made. With
-// no candidates it returns ("", false). With one candidate it returns it
-// directly. Candidates without observed stats are treated optimistically so
-// they still receive exploratory traffic.
-func (r *Router) Select(candidates []string) (string, bool) {
-	switch len(candidates) {
-	case 0:
+// Select returns the best candidate model and whether a choice was made.
+// Candidates whose blended quality is below minQuality are dropped first; if
+// none remain it returns ("", false) so the caller can reject the request.
+// minQuality <= 0 disables the gate. Candidates without observed stats are
+// treated optimistically (exploration) so new models still receive traffic.
+func (r *Router) Select(candidates []string, minQuality float64) (string, bool) {
+	if len(candidates) == 0 {
 		return "", false
-	case 1:
-		return candidates[0], true
 	}
 
 	r.mu.RLock()
@@ -149,11 +184,28 @@ func (r *Router) Select(candidates []string) (string, bool) {
 	}
 	cs := make([]cand, 0, len(candidates))
 	for _, m := range candidates {
-		if s, ok := stats[m]; ok && s.Samples > 0 {
-			cs = append(cs, cand{m, s.Quality, s.AvgLatencyMs, s.AvgCostUSD, true})
-		} else {
-			cs = append(cs, cand{model: m, quality: explorationQuality, known: false})
+		s, ok := stats[m]
+		known := ok && s.Samples > 0
+		quality := explorationQuality
+		if ok {
+			quality = effectiveQuality(s)
 		}
+		// Minimum-quality gate (min_quality_score policy).
+		if minQuality > 0 && quality < minQuality {
+			continue
+		}
+		c := cand{model: m, quality: quality, known: known}
+		if known {
+			c.lat = s.AvgLatencyMs
+			c.cost = s.AvgCostUSD
+		}
+		cs = append(cs, c)
+	}
+	if len(cs) == 0 {
+		return "", false
+	}
+	if len(cs) == 1 {
+		return cs[0].model, true
 	}
 
 	// Latency/cost neutral fill for unknowns = mean of known values.
@@ -180,7 +232,7 @@ func (r *Router) Select(candidates []string) (string, bool) {
 	minLat, maxLat := minMax(cs, func(c cand) float64 { return c.lat })
 	minCost, maxCost := minMax(cs, func(c cand) float64 { return c.cost })
 
-	best, bestScore := candidates[0], -1.0
+	best, bestScore := cs[0].model, -1.0
 	for _, c := range cs {
 		latScore := invNorm(c.lat, minLat, maxLat)
 		costScore := invNorm(c.cost, minCost, maxCost)
