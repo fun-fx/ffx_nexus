@@ -250,6 +250,7 @@ func makeAuthenticator(st *core.Store) gateway.VKeyAuthenticator {
 			AllowedModels: vk.AllowedModels,
 			RPMLimit:      vk.RPMLimit,
 			MonthlyBudget: vk.MonthlyBudget,
+			MinQuality:    vk.MinQuality,
 		}, nil
 	}
 }

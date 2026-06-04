@@ -13,10 +13,10 @@ import (
 	"github.com/ffxnexus/nexus/internal/observability"
 )
 
-// ModelRouter selects the best concrete model from a set of candidates. A nil
-// router disables quality-aware routing.
+// ModelRouter selects the best concrete model from a set of candidates,
+// dropping any below minQuality. A nil router disables quality-aware routing.
 type ModelRouter interface {
-	Select(candidates []string) (string, bool)
+	Select(candidates []string, minQuality float64) (string, bool)
 }
 
 // Handler serves the OpenAI-compatible gateway API and records traces.
@@ -88,10 +88,15 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use any model in group "+req.Model)
 				return
 			}
-			if selected, ok := h.router.Select(allowed); ok {
-				h.log.Debug("routed request", "alias", req.Model, "selected", selected)
-				req.Model = selected
+			minQuality, _ := r.Context().Value(ctxKeyMinQuality).(float64)
+			selected, ok := h.router.Select(allowed, minQuality)
+			if !ok {
+				writeError(w, http.StatusServiceUnavailable, "no_model_meets_quality",
+					"no allowed model currently meets the minimum quality score for this key")
+				return
 			}
+			h.log.Debug("routed request", "alias", req.Model, "selected", selected, "min_quality", minQuality)
+			req.Model = selected
 		}
 	}
 

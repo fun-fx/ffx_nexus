@@ -48,11 +48,12 @@ func (p *CHStatsProvider) ModelStats(ctx context.Context, window time.Duration) 
 		return nil, err
 	}
 
-	// Quality scores: join eval_scores (metric='quality') to traces by trace_id.
+	// Judge quality scores: join eval_scores (metric='quality') to traces.
 	qrows, err := p.conn.Query(ctx, `
 		SELECT t.request_model AS model,
-		       avg(e.score)  AS quality,
-		       avg(e.passed) AS pass_rate
+		       avg(e.score)     AS quality,
+		       avg(e.passed)    AS pass_rate,
+		       toInt64(count()) AS quality_samples
 		FROM eval_scores AS e
 		INNER JOIN gateway_traces AS t ON e.trace_id = t.trace_id
 		WHERE e.metric = 'quality' AND e.timestamp >= now() - INTERVAL ? SECOND
@@ -60,18 +61,52 @@ func (p *CHStatsProvider) ModelStats(ctx context.Context, window time.Duration) 
 	if err != nil {
 		return nil, err
 	}
-	defer qrows.Close()
 	for qrows.Next() {
 		var model string
 		var quality, passRate float64
-		if err := qrows.Scan(&model, &quality, &passRate); err != nil {
+		var qualitySamples int64
+		if err := qrows.Scan(&model, &quality, &passRate, &qualitySamples); err != nil {
+			qrows.Close()
 			return nil, err
 		}
 		s := out[model]
 		s.Model = model
 		s.Quality = quality
 		s.PassRate = passRate
+		s.QualitySamples = qualitySamples
 		out[model] = s
 	}
-	return out, qrows.Err()
+	qrows.Close()
+	if err := qrows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Heuristic safety scores: average pass across heuristic evaluators
+	// (e.g. PII, completeness), so routing reacts to them even without a judge.
+	srows, err := p.conn.Query(ctx, `
+		SELECT t.request_model AS model,
+		       avg(e.passed)    AS safety_pass_rate,
+		       toInt64(count()) AS safety_samples
+		FROM eval_scores AS e
+		INNER JOIN gateway_traces AS t ON e.trace_id = t.trace_id
+		WHERE e.evaluator LIKE 'heuristic_%' AND e.timestamp >= now() - INTERVAL ? SECOND
+		GROUP BY t.request_model`, secs)
+	if err != nil {
+		return nil, err
+	}
+	defer srows.Close()
+	for srows.Next() {
+		var model string
+		var safetyPassRate float64
+		var safetySamples int64
+		if err := srows.Scan(&model, &safetyPassRate, &safetySamples); err != nil {
+			return nil, err
+		}
+		s := out[model]
+		s.Model = model
+		s.SafetyPassRate = safetyPassRate
+		s.SafetySamples = safetySamples
+		out[model] = s
+	}
+	return out, srows.Err()
 }
