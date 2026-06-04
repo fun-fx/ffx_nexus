@@ -15,9 +15,15 @@ NEXUS_PID=""
 
 PASS=0
 FAIL=0
+SKIP=0
 
 pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; }
+skip() { SKIP=$((SKIP + 1)); echo "  ⊘ SKIP: $1"; }
+
+upstream_quota_exhausted() {
+  grep -qE 'RESOURCE_EXHAUSTED|quota exceeded' "$1" 2>/dev/null
+}
 
 stop_nexus() {
   if [[ -n "$NEXUS_PID" ]] && kill -0 "$NEXUS_PID" 2>/dev/null; then
@@ -174,16 +180,34 @@ if [[ "$HAS_PROVIDER" == "1" ]]; then
     -d '{"name":"e2e-eval","allowed_models":["'"$MODEL"'"]}')
   EVAL_SECRET=$(echo "$EVAL_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
 
-  CHAT=$(curl -s -X POST "$GW_URL/v1/chat/completions" \
+  CHAT=$(curl -s -o /tmp/p234_chat.json -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
     -H "Authorization: Bearer $EVAL_SECRET" \
     -H 'Content-Type: application/json' \
-    -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Say hi in one word"}],"max_tokens":64}')
-  CONTENT=$(echo "$CHAT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('choices',[{}])[0].get('message',{}).get('content',''))" 2>/dev/null || true)
+    -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Say hi in one word"}],"max_tokens":16}')
+  CONTENT=$(python3 -c "import json; d=json.load(open('/tmp/p234_chat.json')); print(d.get('choices',[{}])[0].get('message',{}).get('content',''))" 2>/dev/null || true)
 
-  if [[ -n "$CONTENT" ]]; then
+  QUOTA_HIT=0
+  if [[ "$CHAT" == "200" && -n "$CONTENT" ]]; then
     pass "upstream completion ok (content present)"
+  elif [[ "$CHAT" != "200" ]] && upstream_quota_exhausted /tmp/p234_chat.json; then
+    skip "upstream completion (quota exhausted)"
+    QUOTA_HIT=1
   else
-    fail "upstream completion returned empty content: $CHAT"
+    fail "upstream completion returned empty content: HTTP $CHAT $(cat /tmp/p234_chat.json)"
+  fi
+
+  if [[ "$QUOTA_HIT" -eq 0 ]]; then
+    STREAM_CODE=$(curl -s -o /tmp/p234_stream.txt -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
+      -H "Authorization: Bearer $EVAL_SECRET" \
+      -H 'Content-Type: application/json' \
+      -d '{"model":"'"$MODEL"'","stream":true,"messages":[{"role":"user","content":"Say ok"}],"max_tokens":16}')
+    if [[ "$STREAM_CODE" == "200" ]] && grep -q '\[DONE\]' /tmp/p234_stream.txt 2>/dev/null; then
+      pass "streaming completion -> 200 with [DONE]"
+    elif upstream_quota_exhausted /tmp/p234_stream.txt; then
+      skip "streaming completion (quota exhausted)"
+    else
+      fail "streaming completion failed: HTTP $STREAM_CODE $(head -c 200 /tmp/p234_stream.txt)"
+    fi
   fi
 
   # Wait for async eval worker to flush to ClickHouse.
@@ -235,23 +259,26 @@ else
 fi
 
 if [[ "$HAS_PROVIDER" == "1" ]]; then
-  AUTO=$(curl -s -X POST "$GW_URL/v1/chat/completions" \
+  AUTO_CODE=$(curl -s -o /tmp/p234_auto.json -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
     -H "Authorization: Bearer $ROUTE_SECRET" \
     -H 'Content-Type: application/json' \
-    -d '{"model":"auto","messages":[{"role":"user","content":"Say ok"}],"max_tokens":64}')
-  AUTO_CODE=$(echo "$AUTO" | python3 -c "import sys,json; d=json.load(sys.stdin); print('err' if 'error' in d else 'ok')" 2>/dev/null || echo err)
-  if [[ "$AUTO_CODE" == "ok" ]]; then
+    -d '{"model":"auto","messages":[{"role":"user","content":"Say ok"}],"max_tokens":16}')
+  if [[ "$AUTO_CODE" == "200" ]]; then
     pass "model=auto routes to a provider successfully"
+  elif upstream_quota_exhausted /tmp/p234_auto.json; then
+    skip "model=auto routing (quota exhausted)"
   else
-    fail "model=auto failed: $AUTO"
+    fail "model=auto failed: HTTP $AUTO_CODE $(cat /tmp/p234_auto.json)"
   fi
 
-  FAST=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
+  FAST=$(curl -s -o /tmp/p234_fast.json -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
     -H "Authorization: Bearer $ROUTE_SECRET" \
     -H 'Content-Type: application/json' \
-    -d '{"model":"fast","messages":[{"role":"user","content":"Say ok"}],"max_tokens":64}')
+    -d '{"model":"fast","messages":[{"role":"user","content":"Say ok"}],"max_tokens":16}')
   if [[ "$FAST" == "200" ]]; then
     pass "model=fast group alias -> 200"
+  elif upstream_quota_exhausted /tmp/p234_fast.json; then
+    skip "model=fast routing (quota exhausted)"
   else
     fail "model=fast -> expected 200, got $FAST"
   fi
@@ -264,6 +291,7 @@ fi
 echo ""
 echo "== Summary =="
 echo "  passed: $PASS"
+[[ "${SKIP:-0}" -gt 0 ]] && echo "  skipped: $SKIP"
 echo "  failed: $FAIL"
 if [[ "$FAIL" -gt 0 ]]; then
   exit 1
