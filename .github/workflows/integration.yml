@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   e2e:
-    name: E2E (Phase 2b–4)
+    name: E2E (full suite)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -49,7 +49,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: ./scripts/test_phase234.sh
+        run: ./scripts/test_all.sh
 
       - name: Service logs on failure
         if: failure()
