@@ -1,0 +1,53 @@
+# Local development stack for Nexus.
+# ClickHouse is included for self-host/dev; production uses managed ClickHouse Cloud.
+# Postgres and Redis land in Phase 2 (auth/budgets, caching). Ollama serves the
+# local SLM judge used by async evals in Phase 3.
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "8123:8123"   # HTTP
+      - "9000:9000"   # native protocol
+    environment:
+      CLICKHOUSE_DB: nexus
+      CLICKHOUSE_USER: nexus
+      CLICKHOUSE_PASSWORD: nexus
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  postgres:
+    image: postgres:16
+    # Host port 5433 to avoid clashing with a local system Postgres on 5432.
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: nexus
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  # Local SLM judge for async evals (Phase 3). Pull a small model after start:
+  #   docker compose exec ollama ollama pull qwen2.5:7b
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  clickhouse_data:
+  postgres_data:
+  ollama_data:

@@ -1,0 +1,56 @@
+# E2E integration tests with Postgres, ClickHouse, and Redis.
+# Core enforcement tests (429/402) run without provider API keys.
+# Set repository secret GEMINI_API_KEY (or OPENAI_API_KEY) for full upstream/eval/routing coverage.
+name: Integration
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: E2E (Phase 2b–4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Start datastore services
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d postgres clickhouse redis
+          echo "Waiting for Postgres..."
+          for i in $(seq 1 60); do
+            docker compose -f deploy/docker-compose.yml exec -T postgres pg_isready -U nexus && break
+            sleep 1
+          done
+          echo "Waiting for ClickHouse..."
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8123/ping && break
+            sleep 1
+          done
+          echo "Waiting for Redis..."
+          for i in $(seq 1 30); do
+            docker compose -f deploy/docker-compose.yml exec -T redis redis-cli ping | grep -q PONG && break
+            sleep 1
+          done
+
+      - name: Run integration tests
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: ./scripts/test_phase234.sh
+
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose -f deploy/docker-compose.yml logs --no-color
