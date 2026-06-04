@@ -13,10 +13,11 @@ import (
 	"github.com/ffxnexus/nexus/internal/observability"
 )
 
-// ModelRouter selects the best concrete model from a set of candidates,
-// dropping any below minQuality. A nil router disables quality-aware routing.
+// ModelRouter ranks candidate models best-first, dropping any below minQuality.
+// A nil router disables quality-aware routing. The ordered result drives both
+// model selection and provider fallback.
 type ModelRouter interface {
-	Select(candidates []string, minQuality float64) (string, bool)
+	Rank(candidates []string, minQuality float64) []string
 }
 
 // Handler serves the OpenAI-compatible gateway API and records traces.
@@ -78,93 +79,159 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Quality-aware routing: if the requested model is a routing alias (e.g.
-	// "auto" or a configured group), pick the best concrete model among the
-	// candidates the key is allowed to use.
+	// Build the ordered candidate chain. For routing aliases this is the
+	// quality-ranked, min-quality-gated list; for a concrete model it is a
+	// single-element chain. The gateway tries each candidate in order on
+	// upstream failure (provider fallback).
+	chain, ok := h.resolveChain(w, r, req)
+	if !ok {
+		return // resolveChain already wrote the error response
+	}
+
+	start := time.Now()
+	if req.Stream {
+		h.handleStream(w, r, chain, req, start)
+		return
+	}
+	h.handleUnary(w, r, chain, req, start)
+}
+
+// resolveChain returns the ordered list of concrete model ids to attempt. It
+// writes the appropriate error response and returns ok=false when the request
+// cannot be served (model not allowed, no model meets quality, unknown model).
+func (h *Handler) resolveChain(w http.ResponseWriter, r *http.Request, req ChatCompletionRequest) ([]string, bool) {
 	if h.router != nil {
 		if candidates, isAlias := h.routeCandidates(req.Model); isAlias {
 			allowed := filterAllowed(r.Context(), candidates)
 			if len(allowed) == 0 {
 				writeError(w, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use any model in group "+req.Model)
-				return
+				return nil, false
 			}
 			minQuality, _ := r.Context().Value(ctxKeyMinQuality).(float64)
-			selected, ok := h.router.Select(allowed, minQuality)
-			if !ok {
+			ranked := h.router.Rank(allowed, minQuality)
+			if len(ranked) == 0 {
 				writeError(w, http.StatusServiceUnavailable, "no_model_meets_quality",
 					"no allowed model currently meets the minimum quality score for this key")
-				return
+				return nil, false
 			}
-			h.log.Debug("routed request", "alias", req.Model, "selected", selected, "min_quality", minQuality)
-			req.Model = selected
+			h.log.Debug("routed request", "alias", req.Model, "chain", ranked, "min_quality", minQuality)
+			return ranked, true
 		}
 	}
 
 	if !modelAllowed(r.Context(), req.Model) {
 		writeError(w, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use model "+req.Model)
-		return
+		return nil, false
 	}
-
-	provider, fwdModel, err := h.registry.Resolve(req.Model)
-	if err != nil {
+	if _, _, err := h.registry.Resolve(req.Model); err != nil {
 		writeError(w, http.StatusNotFound, "model_not_found", err.Error())
-		return
+		return nil, false
 	}
-
-	trace := h.newTrace(r, req, provider.Name())
-	req.Model = fwdModel // forward de-prefixed model id to the provider
-	start := time.Now()
-
-	if req.Stream {
-		h.handleStream(w, r, provider, req, trace, start)
-		return
-	}
-	h.handleUnary(w, r, provider, req, trace, start)
+	return []string{req.Model}, true
 }
 
-func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, p Provider, req ChatCompletionRequest, trace observability.Trace, start time.Time) {
-	resp, err := p.ChatCompletion(r.Context(), req)
-	if err != nil {
-		trace.LatencyMs = time.Since(start).Milliseconds()
-		trace.StatusCode = http.StatusBadGateway
-		trace.ErrorType = "upstream_error"
-		trace.ErrorMsg = err.Error()
+func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []string, req ChatCompletionRequest, start time.Time) {
+	var lastErr error
+	for i, model := range chain {
+		provider, fwdModel, err := h.registry.Resolve(model)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		attempt := req
+		attempt.Model = fwdModel
+
+		trace := h.newTrace(r, req, provider.Name())
+		trace.RequestModel = model
+		attemptStart := time.Now()
+
+		resp, err := provider.ChatCompletion(r.Context(), attempt)
+		if err != nil {
+			trace.LatencyMs = time.Since(attemptStart).Milliseconds()
+			trace.StatusCode = http.StatusBadGateway
+			trace.ErrorType = "upstream_error"
+			if i < len(chain)-1 {
+				trace.ErrorType = "upstream_error_failover" // another candidate remains
+			}
+			trace.ErrorMsg = err.Error()
+			h.recorder.Record(trace)
+			lastErr = err
+			continue // fall back to the next candidate
+		}
+
+		trace.LatencyMs = time.Since(attemptStart).Milliseconds()
+		trace.StatusCode = http.StatusOK
+		trace.ResponseModel = resp.Model
+		trace.InputTokens = resp.Usage.PromptTokens
+		trace.OutputTokens = resp.Usage.CompletionTokens
+		if len(resp.Choices) > 0 {
+			trace.FinishReason = resp.Choices[0].FinishReason
+			trace.OutputMessages = resp.Choices[0].Message.Content
+		}
+		trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
 		h.recorder.Record(trace)
-		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
+		h.recordSpend(r.Context(), trace.CostUSD)
+
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	trace.LatencyMs = time.Since(start).Milliseconds()
-	trace.StatusCode = http.StatusOK
-	trace.ResponseModel = resp.Model
-	trace.InputTokens = resp.Usage.PromptTokens
-	trace.OutputTokens = resp.Usage.CompletionTokens
-	if len(resp.Choices) > 0 {
-		trace.FinishReason = resp.Choices[0].FinishReason
-		trace.OutputMessages = resp.Choices[0].Message.Content
+	msg := "all candidate providers failed"
+	if lastErr != nil {
+		msg = lastErr.Error()
 	}
-	trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
-	h.recorder.Record(trace)
-	h.recordSpend(r.Context(), trace.CostUSD)
-
-	writeJSON(w, http.StatusOK, resp)
+	writeError(w, http.StatusBadGateway, "upstream_error", msg)
 }
 
-func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, p Provider, req ChatCompletionRequest, trace observability.Trace, start time.Time) {
+func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []string, req ChatCompletionRequest, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "internal_error", "streaming unsupported")
 		return
 	}
 
-	events, err := p.ChatCompletionStream(r.Context(), req)
-	if err != nil {
-		trace.LatencyMs = time.Since(start).Milliseconds()
-		trace.StatusCode = http.StatusBadGateway
-		trace.ErrorType = "upstream_error"
-		trace.ErrorMsg = err.Error()
-		h.recorder.Record(trace)
-		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
+	// Fallback is only possible before the first byte is written. We try to open
+	// a stream for each candidate; the first that connects wins and is streamed.
+	var (
+		events  <-chan StreamEvent
+		trace   observability.Trace
+		lastErr error
+	)
+	for i, model := range chain {
+		p, fwdModel, err := h.registry.Resolve(model)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		attempt := req
+		attempt.Model = fwdModel
+
+		t := h.newTrace(r, req, p.Name())
+		t.RequestModel = model
+		t.Streamed = true
+
+		ev, err := p.ChatCompletionStream(r.Context(), attempt)
+		if err != nil {
+			t.LatencyMs = time.Since(start).Milliseconds()
+			t.StatusCode = http.StatusBadGateway
+			t.ErrorType = "upstream_error"
+			if i < len(chain)-1 {
+				t.ErrorType = "upstream_error_failover"
+			}
+			t.ErrorMsg = err.Error()
+			h.recorder.Record(t)
+			lastErr = err
+			continue
+		}
+		events, trace = ev, t
+		break
+	}
+	if events == nil {
+		msg := "all candidate providers failed"
+		if lastErr != nil {
+			msg = lastErr.Error()
+		}
+		writeError(w, http.StatusBadGateway, "upstream_error", msg)
 		return
 	}
 

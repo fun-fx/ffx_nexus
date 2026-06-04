@@ -193,6 +193,14 @@ the gate.
 - Built-in alias `auto` routes across **all** registered models.
 - Named groups via `NEXUS_ROUTE_GROUPS=fast=gpt-4o-mini,gemini-2.5-flash;smart=gpt-4o,...`.
 
+### Provider fallback
+
+For routing aliases the candidates are tried **best-first**: if an upstream
+provider errors, the gateway automatically fails over to the next-ranked model
+(failover attempts are traced as `upstream_error_failover`). A request to a
+**concrete** model is not failed over — only the requested model is attempted.
+Streaming requests fail over only before the first byte is sent.
+
 ```bash
 curl -s localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer nxs_live_..." \

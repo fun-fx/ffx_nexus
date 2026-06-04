@@ -204,7 +204,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 ## Roadmap (Not Yet Implemented)
 
-- Fallback / load balancing across providers
+- Load balancing across providers (weighted/round-robin within a tier)
 - Semantic caching (Redis + embeddings)
 - Sub-ms inline guardrails (PII/regex/schema on hot path)
 - Regression evaluation datasets
@@ -216,6 +216,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 - Eval-driven routing loop: heuristic safety pass rate now feeds model selection alongside judge quality.
 - `min_quality_score` enforcement on routing aliases.
+- Provider fallback: routing aliases try candidates best-first and fail over on upstream errors.
 
 ---
 
