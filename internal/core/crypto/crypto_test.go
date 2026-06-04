@@ -48,7 +48,7 @@ func TestNewCipherEmptyDisables(t *testing.T) {
 	c, err := crypto.NewCipher("")
 	if err != nil {
 		t.Fatal(err)
-}
+	}
 	if c != nil {
 		t.Fatal("empty master key should return nil cipher")
 	}
