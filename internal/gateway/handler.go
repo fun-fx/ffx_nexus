@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/observability"
 )
 
@@ -27,6 +28,7 @@ type Handler struct {
 	limiter  Limiter // may be nil
 	router   ModelRouter
 	groups   map[string][]string // routing alias -> candidate models
+	guard    *guardrails.Guard   // nil = guardrails disabled
 	log      *slog.Logger
 }
 
@@ -40,6 +42,12 @@ func NewHandler(reg *Registry, rec observability.Recorder, lim Limiter, log *slo
 func (h *Handler) SetRouter(r ModelRouter, groups map[string][]string) {
 	h.router = r
 	h.groups = groups
+}
+
+// SetGuard enables inline guardrails on the request hot path. A nil guard
+// leaves guardrails disabled.
+func (h *Handler) SetGuard(g *guardrails.Guard) {
+	h.guard = g
 }
 
 // routeCandidates returns the candidate models for a routing alias, or false if
@@ -76,6 +84,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Model == "" || len(req.Messages) == 0 {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "model and messages are required")
+		return
+	}
+
+	// Inline input guardrails (hot path): reject disallowed prompts before any
+	// upstream call so no tokens are spent on blocked content.
+	if f := h.guard.CheckInput(promptText(req.Messages)); f.Blocked {
+		h.recordGuardrailBlock(r, req, f)
+		writeError(w, http.StatusForbidden, "guardrail_blocked", f.Reason)
 		return
 	}
 
@@ -165,6 +181,11 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		trace.InputTokens = resp.Usage.PromptTokens
 		trace.OutputTokens = resp.Usage.CompletionTokens
 		if len(resp.Choices) > 0 {
+			// Output guardrails: redact PII in the response before returning it.
+			if redacted, changed := h.guard.RedactOutput(resp.Choices[0].Message.Content); changed {
+				resp.Choices[0].Message.Content = redacted
+				trace.GuardrailAction = "output_redacted"
+			}
 			trace.FinishReason = resp.Choices[0].FinishReason
 			trace.OutputMessages = resp.Choices[0].Message.Content
 		}
@@ -333,6 +354,30 @@ func (h *Handler) newTrace(r *http.Request, req ChatCompletionRequest, providerN
 		t.InputMessages = string(b)
 	}
 	return t
+}
+
+// promptText concatenates message contents into a single string for guardrail
+// evaluation.
+func promptText(messages []Message) string {
+	var b strings.Builder
+	for i, m := range messages {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(m.Content)
+	}
+	return b.String()
+}
+
+// recordGuardrailBlock records a trace for a request rejected by an input
+// guardrail (no upstream call was made).
+func (h *Handler) recordGuardrailBlock(r *http.Request, req ChatCompletionRequest, f guardrails.Finding) {
+	trace := h.newTrace(r, req, "")
+	trace.StatusCode = http.StatusForbidden
+	trace.ErrorType = "guardrail_blocked"
+	trace.ErrorMsg = f.Reason
+	trace.GuardrailAction = "input_blocked:" + f.Rule
+	h.recorder.Record(trace)
 }
 
 // modelAllowed reports whether the authenticated key may use the model. An

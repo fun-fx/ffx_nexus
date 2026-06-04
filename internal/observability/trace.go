@@ -44,6 +44,11 @@ type Trace struct {
 	ErrorType  string `json:"error_type,omitempty"`
 	ErrorMsg   string `json:"error_message,omitempty"`
 
+	// GuardrailAction records an inline guardrail decision (e.g. "input_blocked",
+	// "output_redacted"). Surfaced on the live trace feed; not persisted to the
+	// ClickHouse trace table.
+	GuardrailAction string `json:"guardrail_action,omitempty"`
+
 	// Captured content (opt-in; may be empty when content capture is disabled).
 	InputMessages  string `json:"gen_ai.input.messages,omitempty"`
 	OutputMessages string `json:"gen_ai.output.messages,omitempty"`
