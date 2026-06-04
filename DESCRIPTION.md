@@ -90,9 +90,10 @@ Nexus sits in the same category as [Bifrost](https://www.getmaxim.ai/bifrost) an
 
 - **Routing aliases**: Send `model: "auto"` or named groups (`fast`, `smart`, etc.).
 - **Selection algorithm**: Weighted blend of rolling eval quality, average cost, and latency (min-max normalized).
+- **Quality signal**: Combines LLM-as-judge quality and heuristic safety pass rate (PII/completeness), so routing reacts to evals even when the judge is disabled.
 - **Exploration**: Models without stats receive optimistic quality scores to ensure traffic for cold-start measurement.
-- **Policy enforcement**: Virtual key `allowed_models` filters candidates before selection.
-- **Observability**: `GET /api/routing` exposes current per-model stats used for decisions.
+- **Policy enforcement**: Virtual key `allowed_models` filters candidates; `min_quality_score` drops models below the threshold (request rejected with `503 no_model_meets_quality` if none qualify).
+- **Observability**: `GET /api/routing` exposes current per-model stats (incl. blended `eff_quality`) used for decisions.
 
 ### CI/CD
 
@@ -203,13 +204,18 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 ## Roadmap (Not Yet Implemented)
 
-- Credential rotation API
 - Fallback / load balancing across providers
 - Semantic caching (Redis + embeddings)
 - Sub-ms inline guardrails (PII/regex/schema on hot path)
 - Regression evaluation datasets
 - Non-streaming self-correction / retry based on eval scores
+- Credential rotation API
 - Open-core packaging: Helm chart, OSS vs commercial feature split, single-command self-hosting (Phase 5)
+
+### Recently completed
+
+- Eval-driven routing loop: heuristic safety pass rate now feeds model selection alongside judge quality.
+- `min_quality_score` enforcement on routing aliases.
 
 ---
 
