@@ -10,6 +10,7 @@ SCRIPTS=(
   test_phase234.sh
   test_eval_routing.sh
   test_zero_dep.sh
+  test_guardrails.sh
 )
 
 FAILED=0

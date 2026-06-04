@@ -48,6 +48,14 @@ type Config struct {
 	RouteWindow   time.Duration
 	RouteRefresh  time.Duration
 
+	// Inline guardrails (hot path). Synchronous policy checks that can block a
+	// request before the upstream call or redact the response after it.
+	GuardrailsEnabled     bool
+	GuardrailBlockPIIIn   bool
+	GuardrailRedactPIIOut bool
+	GuardrailMaxInputChrs int
+	GuardrailDenyPatterns string // semicolon-separated regular expressions
+
 	// Observability
 	OTLPEnabled bool
 
@@ -83,6 +91,12 @@ func Load() Config {
 		RouteRefresh:    envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
 		OTLPEnabled:     envBool("NEXUS_OTLP_ENABLED", false),
 		UpstreamTimeout: envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
+
+		GuardrailsEnabled:     envBool("NEXUS_GUARDRAILS_ENABLED", false),
+		GuardrailBlockPIIIn:   envBool("NEXUS_GUARDRAILS_BLOCK_PII_INPUT", false),
+		GuardrailRedactPIIOut: envBool("NEXUS_GUARDRAILS_REDACT_PII_OUTPUT", false),
+		GuardrailMaxInputChrs: envInt("NEXUS_GUARDRAILS_MAX_INPUT_CHARS", 0),
+		GuardrailDenyPatterns: env("NEXUS_GUARDRAILS_DENY_PATTERNS", ""),
 	}
 }
 
@@ -140,6 +154,15 @@ func envFloat(key string, def float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
 		}
 	}
 	return def
