@@ -89,6 +89,17 @@ trap stop_nexus EXIT
 start_nexus
 pass "nexus started"
 
+# Without env provider keys, seed a DB credential and restart so routing tests
+# have registered models (min_quality gate needs candidates in the auto group).
+if [[ "$HAS_PROVIDER" == "0" ]]; then
+  curl -s -X POST "$CON_URL/api/credentials" \
+    -H 'Content-Type: application/json' \
+    -d '{"provider":"gemini","name":"e2e-seed","secret":"sk-e2e-fake-'"$(openssl rand -hex 8)"'"}' >/dev/null
+  stop_nexus
+  start_nexus env -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY
+  pass "provider seeded from DB credential (no env keys)"
+fi
+
 # --- min_quality_score enforcement (503) ---
 
 echo ""
