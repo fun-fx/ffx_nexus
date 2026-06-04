@@ -1,0 +1,16 @@
+# Go
+/bin/
+/nexus
+*.test
+*.out
+
+# Node / dashboard
+web/node_modules/
+web/dist/
+
+# Env / secrets
+.env
+.env.local
+
+# OS
+.DS_Store

@@ -1,0 +1,13 @@
+.git
+.github
+.cursor
+.env
+.env.*
+web/node_modules
+web/dist
+bin
+*.test
+deploy
+scripts
+README.md
+.DS_Store
