@@ -103,6 +103,31 @@ func TestEffectiveQualityBlend(t *testing.T) {
 	}
 }
 
+func TestRankOrdersBestFirst(t *testing.T) {
+	r := newTestRouter(map[string]ModelStats{
+		"top": {Model: "top", Quality: 0.95, QualitySamples: 50, AvgLatencyMs: 500, AvgCostUSD: 0.01, Samples: 100},
+		"mid": {Model: "mid", Quality: 0.70, QualitySamples: 50, AvgLatencyMs: 500, AvgCostUSD: 0.01, Samples: 100},
+		"low": {Model: "low", Quality: 0.40, QualitySamples: 50, AvgLatencyMs: 500, AvgCostUSD: 0.01, Samples: 100},
+	}, Weights{Quality: 1, Cost: 0, Latency: 0})
+
+	ranked := r.Rank([]string{"low", "mid", "top"}, 0)
+	want := []string{"top", "mid", "low"}
+	if len(ranked) != 3 {
+		t.Fatalf("want 3 ranked, got %v", ranked)
+	}
+	for i := range want {
+		if ranked[i] != want[i] {
+			t.Fatalf("rank order want %v, got %v", want, ranked)
+		}
+	}
+
+	// min-quality gate drops "low".
+	gated := r.Rank([]string{"low", "mid", "top"}, 0.5)
+	if len(gated) != 2 || gated[0] != "top" || gated[1] != "mid" {
+		t.Fatalf("gated rank want [top mid], got %v", gated)
+	}
+}
+
 func TestSelectSafetyFeedsRoutingWithoutJudge(t *testing.T) {
 	// No judge data; "clean" has perfect safety, "leaky" fails heuristics.
 	// Even though "leaky" is cheaper/faster, safety should win at high quality weight.
