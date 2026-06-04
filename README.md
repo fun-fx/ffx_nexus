@@ -136,10 +136,23 @@ provider keys read from env.
 ```bash
 docker compose -f deploy/docker-compose.yml up -d postgres clickhouse redis
 go build -o bin/nexus ./cmd/nexus
-./scripts/test_phase234.sh
+./scripts/test_all.sh
 ```
 
-The script covers rate limits (429), budgets (402), async eval scores, and quality-aware routing (12 cases).
+The full suite runs four scripts (~40+ cases):
+
+| Script | Coverage |
+| --- | --- |
+| `test_phase2.sh` | Virtual keys, 401/403, encrypted credentials, audit log, DB reload on restart, revoke/delete |
+| `test_phase234.sh` | Rate limits (429), budgets (402), async evals, streaming, quality-aware routing |
+| `test_eval_routing.sh` | `min_quality_score`, `eff_quality` stats, provider fallback |
+| `test_zero_dep.sh` | Gateway without Postgres/ClickHouse/Redis (env keys only) |
+
+Run a single phase: `./scripts/test_phase2.sh`, `./scripts/test_phase234.sh`, etc.
+
+Upstream completion tests need `GEMINI_API_KEY` or `OPENAI_API_KEY` in `.env`.
+If the provider quota is exhausted, those cases are **skipped** (not failed) so
+local runs stay green; re-run after quota resets for full coverage.
 
 ### Control plane API
 
@@ -216,7 +229,7 @@ GitHub Actions workflows live in [`.github/workflows/`](.github/workflows/).
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | **CI** | push / PR to `main` | `gofmt`, `go vet`, `go test -race`, Go build, `web/` TypeScript + Vite build |
-| **Integration** | push / PR to `main`, manual | Docker Compose (Postgres, ClickHouse, Redis) + `./scripts/test_phase234.sh` |
+| **Integration** | push / PR to `main`, manual | Docker Compose (Postgres, ClickHouse, Redis) + `./scripts/test_all.sh` |
 | **Release** | tag `v*` (e.g. `v0.1.0`) | Build & push image to `ghcr.io/fun-fx/ffx_nexus` |
 
 ### Local parity
@@ -230,7 +243,7 @@ go build ./cmd/nexus
 cd web && npm ci && npm run build
 
 # Same as Integration workflow
-./scripts/test_phase234.sh
+./scripts/test_all.sh
 ```
 
 ### Optional: full upstream tests in CI
