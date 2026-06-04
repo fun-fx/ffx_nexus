@@ -8,6 +8,7 @@ package router
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 )
@@ -163,13 +164,23 @@ func (r *Router) Snapshot() map[string]ModelStats {
 }
 
 // Select returns the best candidate model and whether a choice was made.
-// Candidates whose blended quality is below minQuality are dropped first; if
-// none remain it returns ("", false) so the caller can reject the request.
-// minQuality <= 0 disables the gate. Candidates without observed stats are
-// treated optimistically (exploration) so new models still receive traffic.
+// It is equivalent to the first element of Rank.
 func (r *Router) Select(candidates []string, minQuality float64) (string, bool) {
-	if len(candidates) == 0 {
+	ranked := r.Rank(candidates, minQuality)
+	if len(ranked) == 0 {
 		return "", false
+	}
+	return ranked[0], true
+}
+
+// Rank returns candidates ordered best-first by the composite score (quality,
+// cost, latency). Candidates whose blended quality is below minQuality are
+// dropped; minQuality <= 0 disables the gate. Candidates without observed stats
+// are treated optimistically (exploration) so new models still receive traffic.
+// The ordered result enables provider fallback: callers try models in order.
+func (r *Router) Rank(candidates []string, minQuality float64) []string {
+	if len(candidates) == 0 {
+		return nil
 	}
 
 	r.mu.RLock()
@@ -180,6 +191,7 @@ func (r *Router) Select(candidates []string, minQuality float64) (string, bool) 
 	type cand struct {
 		model              string
 		quality, lat, cost float64
+		score              float64
 		known              bool
 	}
 	cs := make([]cand, 0, len(candidates))
@@ -202,10 +214,10 @@ func (r *Router) Select(candidates []string, minQuality float64) (string, bool) 
 		cs = append(cs, c)
 	}
 	if len(cs) == 0 {
-		return "", false
+		return nil
 	}
 	if len(cs) == 1 {
-		return cs[0].model, true
+		return []string{cs[0].model}
 	}
 
 	// Latency/cost neutral fill for unknowns = mean of known values.
@@ -232,18 +244,20 @@ func (r *Router) Select(candidates []string, minQuality float64) (string, bool) 
 	minLat, maxLat := minMax(cs, func(c cand) float64 { return c.lat })
 	minCost, maxCost := minMax(cs, func(c cand) float64 { return c.cost })
 
-	best, bestScore := cs[0].model, -1.0
-	for _, c := range cs {
-		latScore := invNorm(c.lat, minLat, maxLat)
-		costScore := invNorm(c.cost, minCost, maxCost)
-		composite := r.weights.Quality*c.quality +
+	for i := range cs {
+		latScore := invNorm(cs[i].lat, minLat, maxLat)
+		costScore := invNorm(cs[i].cost, minCost, maxCost)
+		cs[i].score = r.weights.Quality*cs[i].quality +
 			r.weights.Latency*latScore +
 			r.weights.Cost*costScore
-		if composite > bestScore {
-			best, bestScore = c.model, composite
-		}
 	}
-	return best, true
+
+	sort.SliceStable(cs, func(i, j int) bool { return cs[i].score > cs[j].score })
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.model
+	}
+	return out
 }
 
 // invNorm maps v in [min,max] to [0,1] where the minimum maps to 1 (best) and
