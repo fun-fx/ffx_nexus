@@ -19,15 +19,17 @@ load_dotenv
 
 MODEL="${TEST_MODEL:-gemini-2.5-flash}"
 GEMINI_SECRET="${GEMINI_API_KEY:-}"
-if [[ -z "$GEMINI_SECRET" ]]; then
-  echo "  ERROR: GEMINI_API_KEY required in .env for Phase 2 credential reload test"
-  exit 1
+if [[ -n "$GEMINI_SECRET" ]]; then
+  HAS_PROVIDER=1
+  CRED_PLAINTEXT="$GEMINI_SECRET"
+else
+  echo "  WARN: no GEMINI_API_KEY — encryption/reload tests use a fake credential; completion skipped"
+  HAS_PROVIDER=0
+  CRED_PLAINTEXT="sk-e2e-fake-$(openssl rand -hex 8)"
 fi
 
 # Fixed master key so restart can decrypt the same credentials.
 export NEXUS_MASTER_KEY="${NEXUS_MASTER_KEY_FIXED:-$(openssl rand -hex 32)}"
-# Use real provider key so reload + completion exercise end-to-end path.
-CRED_PLAINTEXT="$GEMINI_SECRET"
 
 trap stop_nexus EXIT
 
@@ -158,7 +160,9 @@ CHAT=$(curl -s -o /tmp/p2_chat.json -w "%{http_code}" -X POST "$GW_URL/v1/chat/c
   -H "Authorization: Bearer $SECRET" \
   -H 'Content-Type: application/json' \
   -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Say hi"}],"max_tokens":16}')
-if [[ "$CHAT" == "200" ]]; then
+if [[ "$HAS_PROVIDER" == "0" ]]; then
+  skip "completion via DB credential (no real provider key)"
+elif [[ "$CHAT" == "200" ]]; then
   pass "completion via DB-stored credential -> 200"
 elif [[ "$CHAT" == "502" ]] && grep -qE 'RESOURCE_EXHAUSTED|quota exceeded|429' /tmp/p2_chat.json 2>/dev/null; then
   skip "completion via DB credential (upstream quota exhausted)"
