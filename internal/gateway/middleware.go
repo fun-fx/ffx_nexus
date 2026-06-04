@@ -19,6 +19,7 @@ const (
 	ctxKeyAllowedModels ctxKey = "allowed_models"
 	ctxKeyRPMLimit      ctxKey = "rpm_limit"
 	ctxKeyMonthlyBudget ctxKey = "monthly_budget"
+	ctxKeyMinQuality    ctxKey = "min_quality"
 )
 
 // AuthResult is what a key authenticator returns for a valid virtual key.
@@ -28,6 +29,7 @@ type AuthResult struct {
 	AllowedModels []string // empty = all models allowed
 	RPMLimit      int      // requests/min, 0 = unlimited
 	MonthlyBudget float64  // USD/month, 0 = unlimited
+	MinQuality    float64  // minimum routing quality, 0 = no gate
 }
 
 // VKeyAuthenticator validates a presented virtual key. Returning an error means
@@ -119,6 +121,7 @@ func Auth(auth VKeyAuthenticator) func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, ctxKeyAllowedModels, res.AllowedModels)
 			ctx = context.WithValue(ctx, ctxKeyRPMLimit, res.RPMLimit)
 			ctx = context.WithValue(ctx, ctxKeyMonthlyBudget, res.MonthlyBudget)
+			ctx = context.WithValue(ctx, ctxKeyMinQuality, res.MinQuality)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
