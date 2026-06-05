@@ -11,6 +11,8 @@ SCRIPTS=(
   test_eval_routing.sh
   test_zero_dep.sh
   test_guardrails.sh
+  test_eval_service.sh
+  test_eval_persistence.sh
 )
 
 FAILED=0

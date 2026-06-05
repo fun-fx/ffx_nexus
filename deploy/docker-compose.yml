@@ -47,6 +47,26 @@ services:
     volumes:
       - ollama_data:/root/.ollama
 
+  # Optional Python eval sidecar (DeepEval + RAGAS). Runs out-of-band: the Go
+  # gateway calls it only from the async eval worker on sampled traces, so its
+  # latency/availability never affects request handling. Enable on the gateway
+  # with NEXUS_EVAL_SERVICE_URL=http://eval-service:8200.
+  # Start with: docker compose --profile eval up -d eval-service
+  eval-service:
+    profiles: ["eval"]
+    build:
+      context: ../eval-service
+    ports:
+      - "8200:8200"
+    environment:
+      # Reuse the local Ollama judge by default.
+      JUDGE_BASE_URL: http://ollama:11434/v1
+      JUDGE_MODEL: qwen2.5:7b-instruct
+      DEFAULT_METRICS: answer_relevancy,toxicity,bias
+      # Optional: set EMBEDDINGS_BASE_URL to enable RAGAS metrics.
+    depends_on:
+      - ollama
+
 volumes:
   clickhouse_data:
   postgres_data:

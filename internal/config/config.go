@@ -37,6 +37,13 @@ type Config struct {
 	JudgeModel     string
 	JudgeAPIKey    string  // optional bearer token for the inference server
 	EvalSampleRate float64 // 0..1, fraction of traces sent to the SLM judge
+	EvalWorkers    int     // concurrent eval goroutines
+
+	// External Python eval service (DeepEval/RAGAS sidecar). Empty URL disables.
+	// Runs out-of-band like the SLM judge; failures degrade to Go heuristics.
+	EvalServiceURL     string
+	EvalServiceMetrics string // comma-separated metric ids
+	EvalServiceTimeout time.Duration
 
 	// Quality-aware routing (Phase 4). RouteGroups maps an alias to candidate
 	// models, e.g. "fast=gpt-4o-mini,gemini-2.5-flash;smart=gpt-4o,claude-...".
@@ -83,14 +90,19 @@ func Load() Config {
 		JudgeModel:      env("NEXUS_JUDGE_MODEL", "qwen2.5:7b"),
 		JudgeAPIKey:     env("NEXUS_JUDGE_API_KEY", ""),
 		EvalSampleRate:  envFloat("NEXUS_EVAL_SAMPLE_RATE", 1.0),
-		RouteGroups:     env("NEXUS_ROUTE_GROUPS", ""),
-		RouteWQuality:   envFloat("NEXUS_ROUTE_W_QUALITY", 0.6),
-		RouteWCost:      envFloat("NEXUS_ROUTE_W_COST", 0.2),
-		RouteWLatency:   envFloat("NEXUS_ROUTE_W_LATENCY", 0.2),
-		RouteWindow:     envDuration("NEXUS_ROUTE_WINDOW", time.Hour),
-		RouteRefresh:    envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
-		OTLPEnabled:     envBool("NEXUS_OTLP_ENABLED", false),
-		UpstreamTimeout: envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
+		EvalWorkers:     envInt("NEXUS_EVAL_WORKERS", 4),
+
+		EvalServiceURL:     env("NEXUS_EVAL_SERVICE_URL", ""),
+		EvalServiceMetrics: env("NEXUS_EVAL_SERVICE_METRICS", "answer_relevancy,toxicity,bias"),
+		EvalServiceTimeout: envDuration("NEXUS_EVAL_SERVICE_TIMEOUT", 30*time.Second),
+		RouteGroups:        env("NEXUS_ROUTE_GROUPS", ""),
+		RouteWQuality:      envFloat("NEXUS_ROUTE_W_QUALITY", 0.6),
+		RouteWCost:         envFloat("NEXUS_ROUTE_W_COST", 0.2),
+		RouteWLatency:      envFloat("NEXUS_ROUTE_W_LATENCY", 0.2),
+		RouteWindow:        envDuration("NEXUS_ROUTE_WINDOW", time.Hour),
+		RouteRefresh:       envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
+		OTLPEnabled:        envBool("NEXUS_OTLP_ENABLED", false),
+		UpstreamTimeout:    envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
 
 		GuardrailsEnabled:     envBool("NEXUS_GUARDRAILS_ENABLED", false),
 		GuardrailBlockPIIIn:   envBool("NEXUS_GUARDRAILS_BLOCK_PII_INPUT", false),
