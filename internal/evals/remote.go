@@ -83,12 +83,17 @@ func (r *RemoteEvaluator) Evaluate(ctx context.Context, t observability.Trace) (
 		return nil, nil
 	}
 
+	contexts := parseRetrievalContexts(t.RetrievalContexts)
+	metrics := mergeContextMetrics(r.metrics, contexts)
+
 	body, _ := json.Marshal(remoteRequest{
-		TraceID: t.TraceID,
-		Model:   t.RequestModel,
-		Input:   truncate(t.InputMessages, 8000),
-		Output:  truncate(t.OutputMessages, 8000),
-		Metrics: r.metrics,
+		TraceID:   t.TraceID,
+		Model:     t.RequestModel,
+		Input:     truncate(extractPrompt(t.InputMessages), 8000),
+		Output:    truncate(t.OutputMessages, 8000),
+		Contexts:  contexts,
+		Reference: t.EvalReference,
+		Metrics:   metrics,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.baseURL+"/evaluate", bytes.NewReader(body))

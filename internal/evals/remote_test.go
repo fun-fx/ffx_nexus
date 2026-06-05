@@ -2,6 +2,8 @@ package evals
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -97,5 +99,47 @@ func TestRemoteEvaluatorTimeout(t *testing.T) {
 	r := NewRemoteEvaluator(RemoteConfig{BaseURL: srv.URL, Timeout: 20 * time.Millisecond})
 	if _, err := r.Evaluate(context.Background(), sampleTrace()); err == nil {
 		t.Fatal("expected timeout error")
+	}
+}
+
+func TestRemoteEvaluatorSendsContexts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req remoteRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(req.Contexts) != 1 || req.Contexts[0] != "Paris is the capital of France." {
+			t.Fatalf("contexts not forwarded: %+v", req.Contexts)
+		}
+		if req.Reference != "Paris" {
+			t.Fatalf("reference not forwarded: %q", req.Reference)
+		}
+		if req.Input != "What is the capital of France?" {
+			t.Fatalf("expected extracted prompt, got %q", req.Input)
+		}
+		if !containsMetric(req.Metrics, "ragas_faithfulness") {
+			t.Fatalf("expected RAG metrics in request, got %v", req.Metrics)
+		}
+		w.Write([]byte(`{"scores":[{"evaluator":"ragas","metric":"ragas_faithfulness","score":0.95,"passed":true}]}`))
+	}))
+	defer srv.Close()
+
+	tr := observability.Trace{
+		TraceID:           "t-rag",
+		RequestModel:      "gemini-2.5-flash",
+		InputMessages:     `[{"role":"user","content":"What is the capital of France?"}]`,
+		OutputMessages:    "Paris",
+		RetrievalContexts: `["Paris is the capital of France."]`,
+		EvalReference:     "Paris",
+	}
+
+	r := NewRemoteEvaluator(RemoteConfig{BaseURL: srv.URL, Metrics: []string{"answer_relevancy"}})
+	scores, err := r.Evaluate(context.Background(), tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scores) != 1 || scores[0].Metric != "ragas_faithfulness" {
+		t.Fatalf("unexpected scores: %+v", scores)
 	}
 }

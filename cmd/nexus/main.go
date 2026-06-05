@@ -103,9 +103,14 @@ func main() {
 		if err != nil {
 			log.Error("clickhouse connect failed; continuing without persistence", "err", err)
 		} else {
-			schema, _ := nexus.Migrations.ReadFile("migrations/clickhouse/001_init.sql")
-			if err := rec.Migrate(ctx, string(schema)); err != nil {
-				log.Error("clickhouse migrate failed", "err", err)
+			for _, path := range []string{
+				"migrations/clickhouse/001_init.sql",
+				"migrations/clickhouse/002_eval_context.sql",
+			} {
+				schema, _ := nexus.Migrations.ReadFile(path)
+				if err := rec.Migrate(ctx, string(schema)); err != nil {
+					log.Error("clickhouse migrate failed", "file", path, "err", err)
+				}
 			}
 			chRec = rec
 			reader = rec.NewReader()

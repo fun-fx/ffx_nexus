@@ -13,6 +13,7 @@ SCRIPTS=(
   test_guardrails.sh
   test_eval_service.sh
   test_eval_persistence.sh
+  test_rag_eval.sh
 )
 
 FAILED=0

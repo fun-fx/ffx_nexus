@@ -29,17 +29,20 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         metrics = body.get("metrics") or ["answer_relevancy", "toxicity", "bias"]
-        scores = [
-            {
-                "evaluator": "deepeval",
+        contexts = body.get("contexts") or []
+        scores = []
+        for m in metrics:
+            score = 0.9 if m == "answer_relevancy" else 0.05
+            if m in ("ragas_faithfulness", "hallucination") and contexts:
+                score = 0.88
+            scores.append({
+                "evaluator": "deepeval" if m != "ragas_faithfulness" else "ragas",
                 "metric": m,
-                "score": 0.9 if m == "answer_relevancy" else 0.05,
+                "score": score,
                 "passed": True,
                 "rationale": f"stub score for {m}",
                 "judge_model": "fake-judge",
-            }
-            for m in metrics
-        ]
+            })
         self._json(200, {"scores": scores, "skipped": []})
 
     def _json(self, code, payload):

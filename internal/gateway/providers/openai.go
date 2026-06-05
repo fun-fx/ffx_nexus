@@ -45,6 +45,7 @@ func (o *OpenAI) Models() []string { return o.models }
 
 // ChatCompletion implements gateway.Provider.
 func (o *OpenAI) ChatCompletion(ctx context.Context, req gateway.ChatCompletionRequest) (*gateway.ChatCompletionResponse, error) {
+	req = req.ForProvider()
 	req.Stream = false
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -68,6 +69,7 @@ func (o *OpenAI) ChatCompletion(ctx context.Context, req gateway.ChatCompletionR
 
 // ChatCompletionStream implements gateway.Provider.
 func (o *OpenAI) ChatCompletionStream(ctx context.Context, req gateway.ChatCompletionRequest) (<-chan gateway.StreamEvent, error) {
+	req = req.ForProvider()
 	req.Stream = true
 	body, err := json.Marshal(req)
 	if err != nil {
