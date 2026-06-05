@@ -33,7 +33,7 @@ type Handler struct {
 	groups         map[string][]string  // routing alias -> candidate models
 	guard          *guardrails.Guard    // nil = guardrails disabled
 	selfCorrectMax int                  // max structured-output self-correction retries; 0 disables
-	lb             *balancer.RoundRobin // nil = no load balancing within routing tiers
+	lb             *balancer.WeightedRR // nil = no load balancing within routing tiers
 	scache         *semcache.Service    // nil = semantic cache disabled
 	log            *slog.Logger
 }
@@ -66,9 +66,10 @@ func (h *Handler) SetSelfCorrection(maxRetries int) {
 	h.selfCorrectMax = maxRetries
 }
 
-// SetLoadBalancing enables round-robin primary selection among quality-qualified
-// models in a routing alias. Failover order is preserved for the rest.
-func (h *Handler) SetLoadBalancing(rr *balancer.RoundRobin) {
+// SetLoadBalancing enables weighted (rank-proportional) primary selection among
+// quality-qualified models in a routing alias. Failover order is preserved for
+// the rest.
+func (h *Handler) SetLoadBalancing(rr *balancer.WeightedRR) {
 	h.lb = rr
 }
 
@@ -239,8 +240,15 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		// Semantic cache: only on the primary candidate, non-streaming, eligible requests.
 		var embedVec []float32
 		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
+			scope := cacheScope(r.Context())
 			prompt := promptText(req.Messages)
-			if hit, vec, err := h.scache.Lookup(r.Context(), model, prompt); err == nil && hit != nil {
+			hit, vec, err := h.scache.Lookup(r.Context(), scope, model, prompt)
+			switch {
+			case err != nil:
+				// Cache/embedding failures must never fail the request; degrade to
+				// a normal upstream call but surface the error for observability.
+				h.log.Warn("semantic cache lookup failed", "model", model, "err", err)
+			case hit != nil:
 				var cached ChatCompletionResponse
 				if json.Unmarshal(hit.ResponseJSON, &cached) == nil {
 					trace.LatencyMs = time.Since(attemptStart).Milliseconds()
@@ -255,8 +263,8 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					writeJSON(w, http.StatusOK, cached)
 					return
 				}
-			} else if vec != nil {
-				embedVec = vec
+			default:
+				embedVec = vec // cache miss; reuse embedding for Store
 			}
 		}
 
@@ -337,7 +345,9 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
 		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
 			if b, err := json.Marshal(resp); err == nil {
-				_ = h.scache.Store(r.Context(), model, promptText(req.Messages), embedVec, b)
+				if err := h.scache.Store(r.Context(), cacheScope(r.Context()), model, promptText(req.Messages), embedVec, b); err != nil {
+					h.log.Warn("semantic cache store failed", "model", model, "err", err)
+				}
 			}
 		}
 		h.recorder.Record(trace)
@@ -534,19 +544,35 @@ func promptText(messages []Message) string {
 	return b.String()
 }
 
-// cacheEligible reports whether a request may use the semantic cache.
-// Tool calls, custom temperature, and RAG eval context require a fresh upstream call.
+// cacheEligible reports whether a request may use the semantic cache. Tool
+// calls, sampling (any non-zero temperature), and RAG eval context require a
+// fresh upstream call. Only deterministic requests (temperature unset or 0) are
+// cacheable, so a single sampled answer is never replayed as if canonical.
 func cacheEligible(req ChatCompletionRequest) bool {
 	if len(req.Tools) > 0 {
 		return false
 	}
-	if req.Temperature != nil && *req.Temperature != 0 && *req.Temperature != 1.0 {
+	if req.Temperature != nil && *req.Temperature != 0 {
 		return false
 	}
 	if req.NexusEval != nil {
 		return false
 	}
 	return true
+}
+
+// cacheScope returns the per-tenant namespace for semantic cache entries so one
+// tenant never receives another tenant's cached response. It prefers the org id,
+// falls back to the virtual key id, then to a shared "default" bucket for
+// unauthenticated/zero-dependency mode.
+func cacheScope(ctx context.Context) string {
+	if org, _ := ctx.Value(ctxKeyOrgID).(string); org != "" {
+		return org
+	}
+	if vk, _ := ctx.Value(ctxKeyVKeyID).(string); vk != "" {
+		return vk
+	}
+	return "default"
 }
 
 // recordGuardrailBlock records a trace for a request rejected by an input

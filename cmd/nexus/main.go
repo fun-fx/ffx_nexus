@@ -211,8 +211,8 @@ func main() {
 		groups := parseRouteGroups(cfg.RouteGroups)
 		gwHandler.SetRouter(modelRouter, groups)
 		if cfg.RouteLoadBalance {
-			gwHandler.SetLoadBalancing(balancer.NewRoundRobin())
-			log.Info("route load balancing enabled (round-robin within quality-qualified tiers)")
+			gwHandler.SetLoadBalancing(balancer.NewWeightedRR())
+			log.Info("route load balancing enabled (rank-weighted round-robin within quality-qualified tiers)")
 		}
 		log.Info("quality-aware routing enabled", "groups", len(groups), "alias", "auto")
 	} else {

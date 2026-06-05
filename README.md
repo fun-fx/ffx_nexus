@@ -330,9 +330,13 @@ Inspect current routing stats: `GET /api/routing`.
 
 Quality-aware routing ranks candidates by eval quality, cost, and latency, but
 without load balancing the top-ranked model absorbs all primary traffic. When
-`NEXUS_ROUTE_LOAD_BALANCE=true`, the gateway **round-robin rotates the primary
-model** among all quality-qualified candidates in a routing alias (`auto` or a
-named group). Failover order for the remaining models is unchanged.
+`NEXUS_ROUTE_LOAD_BALANCE=true`, the gateway **rotates the primary model with
+rank-weighted round-robin** among all quality-qualified candidates in a routing
+alias (`auto` or a named group): the best-ranked model still gets proportionally
+more primary traffic, while lower-ranked qualified models get a fair share.
+Selection is deterministic and smooth (nginx-style SWRR), so traffic stays
+balanced without thundering-herd spikes. Failover order for the remaining models
+is unchanged.
 
 Requires ClickHouse (for the quality router). Composes with
 `NEXUS_ROUTE_GROUPS` and virtual-key `min_quality_score`.
@@ -346,7 +350,13 @@ for a stored completion above a cosine-similarity threshold, and returns it on
 hit. Misses are stored after a successful upstream call.
 
 - Requires `NEXUS_REDIS_URL` and `NEXUS_EMBEDDINGS_URL`.
-- Non-streaming only; skips tool calls, custom temperature, and `nexus_eval` requests.
+- Non-streaming only; skips tool calls, sampled requests (any non-zero
+  `temperature`), and `nexus_eval` requests. Only deterministic requests
+  (temperature unset or `0`) are cached, so a single sampled answer is never
+  replayed as if canonical.
+- **Tenant-isolated**: cache entries are namespaced per org / virtual key
+  (`nexus:sem:{scope}:{model}`), so one tenant never receives another tenant's
+  cached response.
 - Hits are traced as `cache_hit: true` (zero upstream cost on the trace).
 - Tunables: `NEXUS_SEMANTIC_CACHE_TTL` (default 24h),
   `NEXUS_SEMANTIC_CACHE_THRESHOLD` (default 0.92),

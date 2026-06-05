@@ -16,10 +16,12 @@ type Hit struct {
 	Similarity   float64 // cosine similarity of the matched entry
 }
 
-// Cache stores and retrieves completions by semantic similarity.
+// Cache stores and retrieves completions by semantic similarity. The scope
+// namespaces entries per tenant (org/virtual key) so cached responses are never
+// shared across tenants.
 type Cache interface {
-	Lookup(ctx context.Context, model, prompt string, vec []float32) (*Hit, error)
-	Store(ctx context.Context, model, prompt string, vec []float32, responseJSON []byte) error
+	Lookup(ctx context.Context, scope, model, prompt string, vec []float32) (*Hit, error)
+	Store(ctx context.Context, scope, model, prompt string, vec []float32, responseJSON []byte) error
 }
 
 type storedEntry struct {
@@ -28,7 +30,7 @@ type storedEntry struct {
 	ExpiresAt int64     `json:"x,omitempty"`
 }
 
-func redisKey(model string) string { return "nexus:sem:" + model }
+func redisKey(scope, model string) string { return "nexus:sem:" + scope + ":" + model }
 
 func effectiveConfig(cfg Config) Config {
 	if cfg.TTL <= 0 {
@@ -75,25 +77,26 @@ func NewMemory(cfg Config) *Memory {
 	return &Memory{cfg: effectiveConfig(cfg), data: make(map[string][]storedEntry)}
 }
 
-func (m *Memory) Lookup(_ context.Context, model, _ string, vec []float32) (*Hit, error) {
+func (m *Memory) Lookup(_ context.Context, scope, model, _ string, vec []float32) (*Hit, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	now := time.Now().Unix()
-	hit, _ := findBest(vec, m.data[model], m.cfg.Threshold, now)
+	hit, _ := findBest(vec, m.data[redisKey(scope, model)], m.cfg.Threshold, now)
 	return hit, nil
 }
 
-func (m *Memory) Store(_ context.Context, model, _ string, vec []float32, responseJSON []byte) error {
+func (m *Memory) Store(_ context.Context, scope, model, _ string, vec []float32, responseJSON []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	key := redisKey(scope, model)
 	e := storedEntry{
 		Embedding: vec,
 		Response:  append([]byte(nil), responseJSON...),
 		ExpiresAt: time.Now().Add(m.cfg.TTL).Unix(),
 	}
-	m.data[model] = append([]storedEntry{e}, m.data[model]...)
-	if len(m.data[model]) > m.cfg.MaxEntriesPerModel {
-		m.data[model] = m.data[model][:m.cfg.MaxEntriesPerModel]
+	m.data[key] = append([]storedEntry{e}, m.data[key]...)
+	if len(m.data[key]) > m.cfg.MaxEntriesPerModel {
+		m.data[key] = m.data[key][:m.cfg.MaxEntriesPerModel]
 	}
 	return nil
 }
@@ -125,8 +128,8 @@ func (c *Redis) Close() error { return c.rdb.Close() }
 // Embedder returns the configured embedder (may be nil).
 func (c *Redis) Embedder() Embedder { return c.embedder }
 
-func (c *Redis) Lookup(ctx context.Context, model, _ string, vec []float32) (*Hit, error) {
-	raws, err := c.rdb.LRange(ctx, redisKey(model), 0, int64(c.cfg.MaxEntriesPerModel-1)).Result()
+func (c *Redis) Lookup(ctx context.Context, scope, model, _ string, vec []float32) (*Hit, error) {
+	raws, err := c.rdb.LRange(ctx, redisKey(scope, model), 0, int64(c.cfg.MaxEntriesPerModel-1)).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +145,7 @@ func (c *Redis) Lookup(ctx context.Context, model, _ string, vec []float32) (*Hi
 	return hit, nil
 }
 
-func (c *Redis) Store(ctx context.Context, model, _ string, vec []float32, responseJSON []byte) error {
+func (c *Redis) Store(ctx context.Context, scope, model, _ string, vec []float32, responseJSON []byte) error {
 	e := storedEntry{
 		Embedding: vec,
 		Response:  responseJSON,
@@ -152,7 +155,7 @@ func (c *Redis) Store(ctx context.Context, model, _ string, vec []float32, respo
 	if err != nil {
 		return err
 	}
-	key := redisKey(model)
+	key := redisKey(scope, model)
 	pipe := c.rdb.TxPipeline()
 	pipe.LPush(ctx, key, raw)
 	pipe.LTrim(ctx, key, 0, int64(c.cfg.MaxEntriesPerModel-1))
@@ -181,17 +184,17 @@ func (s *Service) Enabled() bool { return s != nil }
 
 // Lookup embeds the prompt and searches the cache. The returned vector can be
 // passed to Store on a miss to avoid a second embedding call.
-func (s *Service) Lookup(ctx context.Context, model, prompt string) (*Hit, []float32, error) {
+func (s *Service) Lookup(ctx context.Context, scope, model, prompt string) (*Hit, []float32, error) {
 	vec, err := s.embedder.Embed(ctx, prompt)
 	if err != nil {
 		return nil, nil, err
 	}
-	hit, err := s.cache.Lookup(ctx, model, prompt, vec)
+	hit, err := s.cache.Lookup(ctx, scope, model, prompt, vec)
 	return hit, vec, err
 }
 
 // Store saves a response using a pre-computed embedding vector.
-func (s *Service) Store(ctx context.Context, model, prompt string, vec []float32, responseJSON []byte) error {
+func (s *Service) Store(ctx context.Context, scope, model, prompt string, vec []float32, responseJSON []byte) error {
 	if len(vec) == 0 {
 		var err error
 		vec, err = s.embedder.Embed(ctx, prompt)
@@ -199,7 +202,7 @@ func (s *Service) Store(ctx context.Context, model, prompt string, vec []float32
 			return err
 		}
 	}
-	return s.cache.Store(ctx, model, prompt, vec, responseJSON)
+	return s.cache.Store(ctx, scope, model, prompt, vec, responseJSON)
 }
 
 // Threshold returns the configured similarity threshold.
