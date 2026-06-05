@@ -85,3 +85,56 @@ func TestGuardrailAllowsCleanRequest(t *testing.T) {
 		t.Fatalf("clean request should pass, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestSchemaGuardrailBlocksInvalidJSON(t *testing.T) {
+	p := &piiProvider{name: "p", models: []string{"m"}, content: "Sure! Here is the answer."}
+	h := newTestHandler(p)
+	h.SetGuard(guardrails.New(guardrails.Config{Enabled: true, ValidateJSONOutput: true}))
+
+	rec := doChat(h, `{"model":"m","messages":[{"role":"user","content":"give me json"}],"response_format":{"type":"json_object"}}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422 for non-JSON output, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var env APIError
+	_ = json.Unmarshal(rec.Body.Bytes(), &env)
+	if env.Error.Type != "schema_validation_failed" {
+		t.Fatalf("want schema_validation_failed, got %q", env.Error.Type)
+	}
+}
+
+func TestSchemaGuardrailAllowsValidJSON(t *testing.T) {
+	p := &piiProvider{name: "p", models: []string{"m"}, content: `{"answer":42}`}
+	h := newTestHandler(p)
+	h.SetGuard(guardrails.New(guardrails.Config{Enabled: true, ValidateJSONOutput: true}))
+
+	rec := doChat(h, `{"model":"m","messages":[{"role":"user","content":"give me json"}],"response_format":{"type":"json_object"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid JSON should pass, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSchemaGuardrailEnforcesSchema(t *testing.T) {
+	p := &piiProvider{name: "p", models: []string{"m"}, content: `{"name":"Ada"}`}
+	h := newTestHandler(p)
+	h.SetGuard(guardrails.New(guardrails.Config{Enabled: true, ValidateJSONOutput: true}))
+
+	body := `{"model":"m","messages":[{"role":"user","content":"q"}],` +
+		`"response_format":{"type":"json_schema","json_schema":{"name":"person","schema":` +
+		`{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"]}}}}`
+	rec := doChat(h, body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422 for schema violation, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSchemaGuardrailIgnoredWithoutResponseFormat(t *testing.T) {
+	p := &piiProvider{name: "p", models: []string{"m"}, content: "plain text answer"}
+	h := newTestHandler(p)
+	h.SetGuard(guardrails.New(guardrails.Config{Enabled: true, ValidateJSONOutput: true}))
+
+	// No response_format -> validation must not apply.
+	rec := doChat(h, `{"model":"m","messages":[{"role":"user","content":"q"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("plain request should pass, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
