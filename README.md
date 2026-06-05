@@ -147,6 +147,7 @@ The full suite runs four scripts (~40+ cases):
 | `test_phase234.sh` | Rate limits (429), budgets (402), async evals, streaming, quality-aware routing |
 | `test_eval_routing.sh` | `min_quality_score`, `eff_quality` stats, provider fallback |
 | `test_zero_dep.sh` | Gateway without Postgres/ClickHouse/Redis (env keys only) |
+| `test_guardrails.sh` | Inline guardrails: PII/deny-pattern/length input blocking |
 
 Run a single phase: `./scripts/test_phase2.sh`, `./scripts/test_phase234.sh`, etc.
 
@@ -221,6 +222,34 @@ curl -s localhost:8080/v1/chat/completions \
 ```
 
 Inspect current routing stats: `GET /api/routing`.
+
+## Inline guardrails
+
+Unlike the async eval workers (which observe completed traces out-of-band),
+**guardrails run synchronously on the request hot path** and can block a request
+or redact a response. They are intentionally cheap — regex and length checks
+only, no network calls — so they add negligible latency.
+
+- **Input guardrails** run *before* any upstream call, so blocked content costs
+  zero tokens. A rejected request returns `403 guardrail_blocked`.
+  - `NEXUS_GUARDRAILS_BLOCK_PII_INPUT` — reject prompts containing PII (email,
+    SSN, phone, card patterns).
+  - `NEXUS_GUARDRAILS_MAX_INPUT_CHARS` — reject prompts over N characters.
+  - `NEXUS_GUARDRAILS_DENY_PATTERNS` — semicolon-separated regexes (e.g. prompt
+    injection phrases); any match rejects the request.
+- **Output guardrails** run on the response:
+  - `NEXUS_GUARDRAILS_REDACT_PII_OUTPUT` — replace PII in non-streaming
+    responses with `[REDACTED]`. (Streaming responses are not redacted.)
+
+Enable with `NEXUS_GUARDRAILS_ENABLED=true` plus at least one rule. Guardrail
+decisions are surfaced on the live trace feed via `guardrail_action`.
+
+```bash
+NEXUS_GUARDRAILS_ENABLED=true \
+NEXUS_GUARDRAILS_BLOCK_PII_INPUT=true \
+NEXUS_GUARDRAILS_DENY_PATTERNS='(?i)ignore previous instructions' \
+  ./bin/nexus
+```
 
 ## CI/CD
 
