@@ -186,6 +186,23 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 				resp.Choices[0].Message.Content = redacted
 				trace.GuardrailAction = "output_redacted"
 			}
+			// Schema/JSON output guardrail: when the client requested a JSON
+			// response_format, enforce that the output is valid JSON (and matches
+			// the supplied schema). Block on the hot path before returning.
+			if req.ResponseFormat.WantsJSON() {
+				if f := h.guard.CheckJSONOutput(resp.Choices[0].Message.Content, req.ResponseFormat.SchemaBytes()); f.Blocked {
+					trace.LatencyMs = time.Since(attemptStart).Milliseconds()
+					trace.StatusCode = http.StatusUnprocessableEntity
+					trace.ErrorType = "schema_validation_failed"
+					trace.ErrorMsg = f.Reason
+					trace.GuardrailAction = "output_schema_blocked:" + f.Rule
+					trace.FinishReason = resp.Choices[0].FinishReason
+					trace.OutputMessages = resp.Choices[0].Message.Content
+					h.recorder.Record(trace)
+					writeError(w, http.StatusUnprocessableEntity, "schema_validation_failed", f.Reason)
+					return
+				}
+			}
 			trace.FinishReason = resp.Choices[0].FinishReason
 			trace.OutputMessages = resp.Choices[0].Message.Content
 		}
@@ -302,6 +319,13 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 
 	trace.LatencyMs = time.Since(start).Milliseconds()
 	trace.OutputMessages = out.String()
+	// Schema/JSON output guardrail (streaming): bytes are already sent, so we
+	// cannot block. Record the violation on the trace for observability.
+	if req.ResponseFormat.WantsJSON() {
+		if f := h.guard.CheckJSONOutput(out.String(), req.ResponseFormat.SchemaBytes()); f.Blocked {
+			trace.GuardrailAction = "output_schema_violation:" + f.Rule
+		}
+	}
 	trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
 	h.recorder.Record(trace)
 	h.recordSpend(r.Context(), trace.CostUSD)

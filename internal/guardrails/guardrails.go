@@ -43,6 +43,12 @@ type Config struct {
 	// DenyPatterns are raw regular expressions; a request is rejected if any
 	// matches the prompt. Invalid patterns are ignored at construction time.
 	DenyPatterns []string
+
+	// ValidateJSONOutput enforces that, when a request asks for a JSON
+	// response_format, the model's output is valid JSON (and conforms to the
+	// supplied JSON Schema in json_schema mode). Non-streaming violations are
+	// blocked; streaming violations are recorded on the trace.
+	ValidateJSONOutput bool
 }
 
 // Finding is the result of a guardrail check.
@@ -87,7 +93,8 @@ func (g *Guard) Active() bool {
 		return false
 	}
 	return g.cfg.BlockPIIInput || g.cfg.RedactPIIOutput ||
-		g.cfg.MaxInputChars > 0 || len(g.denyCompiled) > 0
+		g.cfg.MaxInputChars > 0 || len(g.denyCompiled) > 0 ||
+		g.cfg.ValidateJSONOutput
 }
 
 // CheckInput evaluates the combined prompt text against input guardrails. The

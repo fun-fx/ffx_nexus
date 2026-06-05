@@ -17,6 +17,10 @@ type ChatCompletionRequest struct {
 	Stop        []string  `json:"stop,omitempty"`
 	Tools       []Tool    `json:"tools,omitempty"`
 	User        string    `json:"user,omitempty"`
+	// ResponseFormat follows the OpenAI schema. When set to json_object or
+	// json_schema it is forwarded upstream AND used by the schema guardrail to
+	// validate the model's output. Left intact for providers that support it.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 	// NexusEval carries optional RAG inputs for async evaluation only. Never
 	// forwarded to upstream providers — strip with ForProvider() before calling
 	// OpenAI-compatible adapters that marshal the full struct.
@@ -38,6 +42,32 @@ type NexusEvalContext struct {
 func (r ChatCompletionRequest) ForProvider() ChatCompletionRequest {
 	r.NexusEval = nil
 	return r
+}
+
+// ResponseFormat is the OpenAI-compatible output format directive.
+type ResponseFormat struct {
+	Type       string          `json:"type"` // "text" | "json_object" | "json_schema"
+	JSONSchema *JSONSchemaSpec `json:"json_schema,omitempty"`
+}
+
+// JSONSchemaSpec carries a named JSON Schema for structured outputs.
+type JSONSchemaSpec struct {
+	Name   string          `json:"name,omitempty"`
+	Schema json.RawMessage `json:"schema,omitempty"`
+	Strict bool            `json:"strict,omitempty"`
+}
+
+// WantsJSON reports whether the request asks for JSON output.
+func (r *ResponseFormat) WantsJSON() bool {
+	return r != nil && (r.Type == "json_object" || r.Type == "json_schema")
+}
+
+// SchemaBytes returns the raw JSON Schema if one was supplied (json_schema mode).
+func (r *ResponseFormat) SchemaBytes() []byte {
+	if r == nil || r.JSONSchema == nil {
+		return nil
+	}
+	return r.JSONSchema.Schema
 }
 
 // Message is a single chat message.

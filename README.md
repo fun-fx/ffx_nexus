@@ -151,6 +151,7 @@ The full suite runs four scripts (~40+ cases):
 | `test_eval_routing.sh` | `min_quality_score`, `eff_quality` stats, provider fallback |
 | `test_zero_dep.sh` | Gateway without Postgres/ClickHouse/Redis (env keys only) |
 | `test_guardrails.sh` | Inline guardrails: PII/deny-pattern/length input blocking |
+| `test_schema_guardrails.sh` | Schema/JSON output guardrail: wiring + live JSON roundtrip |
 | `test_eval_service.sh` | External Python eval service: contract, wiring, failure isolation |
 | `test_eval_persistence.sh` | Live completion → remote eval → ClickHouse (skips without provider key) |
 | `test_rag_eval.sh` | RAG `nexus_eval` context → eval sidecar contract |
@@ -299,6 +300,8 @@ only, no network calls — so they add negligible latency.
 - **Output guardrails** run on the response:
   - `NEXUS_GUARDRAILS_REDACT_PII_OUTPUT` — replace PII in non-streaming
     responses with `[REDACTED]`. (Streaming responses are not redacted.)
+  - `NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT` — when a request sets a JSON
+    `response_format`, enforce that the output is valid JSON (see below).
 
 Enable with `NEXUS_GUARDRAILS_ENABLED=true` plus at least one rule. Guardrail
 decisions are surfaced on the live trace feed via `guardrail_action`.
@@ -308,6 +311,43 @@ NEXUS_GUARDRAILS_ENABLED=true \
 NEXUS_GUARDRAILS_BLOCK_PII_INPUT=true \
 NEXUS_GUARDRAILS_DENY_PATTERNS='(?i)ignore previous instructions' \
   ./bin/nexus
+```
+
+### Schema / JSON output guardrail
+
+Providers don't always honor JSON mode reliably. When
+`NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT=true` and a request carries an OpenAI
+`response_format`, Nexus validates the model output:
+
+- `response_format: { "type": "json_object" }` — output must be parseable JSON.
+- `response_format: { "type": "json_schema", "json_schema": { "schema": {...} } }`
+  — output must also conform to the supplied JSON Schema (draft 2020-12).
+
+Non-streaming violations are blocked on the hot path with
+`422 schema_validation_failed`; the `response_format` is still forwarded upstream
+so native JSON modes keep working. Streaming responses can't be blocked after
+bytes are sent, so violations are recorded on the trace
+(`guardrail_action=output_schema_violation`) instead.
+
+```bash
+curl -s localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer nxs_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Extract name and age."}],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+        "name": "person",
+        "schema": {
+          "type": "object",
+          "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
+          "required": ["name", "age"]
+        }
+      }
+    }
+  }'
 ```
 
 ## CI/CD
