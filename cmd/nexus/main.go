@@ -171,18 +171,20 @@ func main() {
 	// Inline guardrails (hot path): block disallowed prompts before the upstream
 	// call and optionally redact PII from responses.
 	if guard := guardrails.New(guardrails.Config{
-		Enabled:         cfg.GuardrailsEnabled,
-		BlockPIIInput:   cfg.GuardrailBlockPIIIn,
-		RedactPIIOutput: cfg.GuardrailRedactPIIOut,
-		MaxInputChars:   cfg.GuardrailMaxInputChrs,
-		DenyPatterns:    splitDenyPatterns(cfg.GuardrailDenyPatterns),
+		Enabled:            cfg.GuardrailsEnabled,
+		BlockPIIInput:      cfg.GuardrailBlockPIIIn,
+		RedactPIIOutput:    cfg.GuardrailRedactPIIOut,
+		MaxInputChars:      cfg.GuardrailMaxInputChrs,
+		DenyPatterns:       splitDenyPatterns(cfg.GuardrailDenyPatterns),
+		ValidateJSONOutput: cfg.GuardrailValidateJSON,
 	}); guard.Active() {
 		gwHandler.SetGuard(guard)
 		log.Info("inline guardrails enabled",
 			"block_pii_input", cfg.GuardrailBlockPIIIn,
 			"redact_pii_output", cfg.GuardrailRedactPIIOut,
 			"max_input_chars", cfg.GuardrailMaxInputChrs,
-			"deny_patterns", len(splitDenyPatterns(cfg.GuardrailDenyPatterns)))
+			"deny_patterns", len(splitDenyPatterns(cfg.GuardrailDenyPatterns)),
+			"validate_json_output", cfg.GuardrailValidateJSON)
 	} else {
 		log.Info("inline guardrails disabled (set NEXUS_GUARDRAILS_ENABLED=true)")
 	}

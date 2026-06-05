@@ -62,6 +62,7 @@ type Config struct {
 	GuardrailRedactPIIOut bool
 	GuardrailMaxInputChrs int
 	GuardrailDenyPatterns string // semicolon-separated regular expressions
+	GuardrailValidateJSON bool   // enforce JSON/schema on responses with a JSON response_format
 
 	// Observability
 	OTLPEnabled bool
@@ -109,6 +110,7 @@ func Load() Config {
 		GuardrailRedactPIIOut: envBool("NEXUS_GUARDRAILS_REDACT_PII_OUTPUT", false),
 		GuardrailMaxInputChrs: envInt("NEXUS_GUARDRAILS_MAX_INPUT_CHARS", 0),
 		GuardrailDenyPatterns: env("NEXUS_GUARDRAILS_DENY_PATTERNS", ""),
+		GuardrailValidateJSON: envBool("NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT", false),
 	}
 }
 

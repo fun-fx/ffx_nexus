@@ -215,7 +215,6 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 - Load balancing across providers (weighted/round-robin within a tier)
 - Semantic caching (Redis + embeddings)
-- Schema/JSON guardrails on the hot path (input/output structural validation)
 - Regression evaluation datasets (offline batch eval via the Python service)
 - Non-streaming self-correction / retry based on eval scores
 - Credential rotation API
@@ -229,6 +228,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - Inline guardrails (hot path): PII/regex/length input blocking (pre-upstream) and PII output redaction, synchronous and datastore-free.
 - External Python eval service: DeepEval + RAGAS sidecar wired via an async, sample-gated, failure-isolated `RemoteEvaluator` — richer metrics without touching the Go hot path.
 - RAG eval context: clients pass `nexus_eval.contexts` / `reference` on chat completions; stored on traces and forwarded to the eval sidecar for online hallucination/faithfulness metrics.
+- Schema/JSON output guardrail (hot path): when a request sets a JSON `response_format`, the output is validated as JSON and against the supplied JSON Schema; non-streaming violations are blocked with `422 schema_validation_failed`.
 
 ---
 
