@@ -133,11 +133,24 @@ func main() {
 		} else {
 			log.Info("eval SLM judge disabled (set NEXUS_JUDGE_BASE_URL); heuristics still run")
 		}
+		// External Python eval service (DeepEval/RAGAS). Sample-gated like the
+		// SLM judge; failures degrade gracefully to the Go heuristics.
+		if remote := evals.NewRemoteEvaluator(evals.RemoteConfig{
+			BaseURL: cfg.EvalServiceURL,
+			Metrics: splitCSV(cfg.EvalServiceMetrics),
+			Timeout: cfg.EvalServiceTimeout,
+		}); remote != nil {
+			judges = append(judges, remote)
+			log.Info("external eval service enabled", "url", cfg.EvalServiceURL, "metrics", cfg.EvalServiceMetrics)
+		} else {
+			log.Info("external eval service disabled (set NEXUS_EVAL_SERVICE_URL)")
+		}
 		evalWorker = evals.NewWorker(evals.Options{
 			Heuristics:      heuristics,
 			Judges:          judges,
 			Sink:            evals.NewCHSink(chRec.Conn()),
 			JudgeSampleRate: cfg.EvalSampleRate,
+			Workers:         cfg.EvalWorkers,
 		}, log)
 		recorders = append(recorders, evalWorker)
 		log.Info("eval worker enabled (async quality evaluation)")
@@ -234,6 +247,18 @@ func main() {
 func splitDenyPatterns(spec string) []string {
 	var out []string
 	for _, p := range strings.Split(spec, ";") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// splitCSV parses a comma-separated list, trimming whitespace and dropping
+// empty entries.
+func splitCSV(spec string) []string {
+	var out []string
+	for _, p := range strings.Split(spec, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}
