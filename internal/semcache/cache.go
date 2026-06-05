@@ -42,6 +42,9 @@ func effectiveConfig(cfg Config) Config {
 	if cfg.MaxEntriesPerModel <= 0 {
 		cfg.MaxEntriesPerModel = 500
 	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 5 * time.Second
+	}
 	return cfg
 }
 
@@ -183,9 +186,14 @@ func NewService(cache Cache, embedder Embedder, cfg Config) *Service {
 func (s *Service) Enabled() bool { return s != nil }
 
 // Lookup embeds the prompt and searches the cache. The returned vector can be
-// passed to Store on a miss to avoid a second embedding call.
+// passed to Store on a miss to avoid a second embedding call. The embedding is
+// bounded by the configured timeout so a slow/unhealthy embeddings endpoint can
+// never stall the request hot path beyond that budget — the caller degrades to a
+// normal upstream call on error.
 func (s *Service) Lookup(ctx context.Context, scope, model, prompt string) (*Hit, []float32, error) {
-	vec, err := s.embedder.Embed(ctx, prompt)
+	ectx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+	defer cancel()
+	vec, err := s.embedder.Embed(ectx, prompt)
 	if err != nil {
 		return nil, nil, err
 	}

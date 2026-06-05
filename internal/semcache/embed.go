@@ -43,9 +43,11 @@ type OpenAIEmbedder struct {
 }
 
 // NewOpenAIEmbedder builds an embedder. baseURL is e.g. http://host:11434/v1.
+// The timeout is a hard ceiling on the hot-path embedding call; keep it tight so
+// a degraded embeddings endpoint degrades to no-cache rather than stalling.
 func NewOpenAIEmbedder(baseURL, model, apiKey string, timeout time.Duration) *OpenAIEmbedder {
 	if timeout == 0 {
-		timeout = 15 * time.Second
+		timeout = 5 * time.Second
 	}
 	return &OpenAIEmbedder{
 		baseURL: strings.TrimRight(baseURL, "/"),

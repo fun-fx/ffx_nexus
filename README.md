@@ -357,6 +357,14 @@ hit. Misses are stored after a successful upstream call.
 - **Tenant-isolated**: cache entries are namespaced per org / virtual key
   (`nexus:sem:{scope}:{model}`), so one tenant never receives another tenant's
   cached response.
+- **Alias-aware**: keyed by the client-requested model. When the request targets
+  a routing alias, the cache key is the alias (not the concrete model), so
+  load-balancer rotation across quality-interchangeable members does not
+  fragment the cache.
+- **Bounded hot path**: the lookup embedding is capped by
+  `NEXUS_EMBEDDINGS_TIMEOUT` (default 5s). A slow or unhealthy embeddings
+  endpoint degrades to a normal upstream call instead of stalling the request,
+  and lookup/store errors are logged.
 - Hits are traced as `cache_hit: true` (zero upstream cost on the trace).
 - Tunables: `NEXUS_SEMANTIC_CACHE_TTL` (default 24h),
   `NEXUS_SEMANTIC_CACHE_THRESHOLD` (default 0.92),

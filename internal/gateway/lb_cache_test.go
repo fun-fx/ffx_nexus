@@ -71,6 +71,39 @@ func TestSemanticCacheHit(t *testing.T) {
 	}
 }
 
+// TestSemanticCacheSurvivesLoadBalancing verifies the cache is keyed by the
+// client-requested alias, not the concrete model the balancer rotates to, so a
+// near-duplicate prompt hits the cache regardless of LB rotation.
+func TestSemanticCacheSurvivesLoadBalancing(t *testing.T) {
+	total := 0
+	a := &stubProvider{name: "a", models: []string{"m-a"}, calls: &total}
+	b := &stubProvider{name: "b", models: []string{"m-b"}, calls: &total}
+	h := newTestHandler(a, b)
+	h.SetRouter(stubRouter{chain: []string{"m-a", "m-b"}}, map[string][]string{"pool": {"m-a", "m-b"}})
+	h.SetLoadBalancing(balancer.NewWeightedRR())
+	mem := semcache.NewMemory(semcache.Config{Threshold: 0.99, MaxEntriesPerModel: 100})
+	svc := semcache.NewService(mem, fixedEmbedder{vec: []float32{1, 0, 0}}, semcache.Config{Enabled: true})
+	h.SetSemanticCache(svc)
+
+	body := `{"model":"pool","messages":[{"role":"user","content":"hello"}]}`
+	if rec := doChat(h, body); rec.Code != http.StatusOK {
+		t.Fatalf("first call want 200, got %d", rec.Code)
+	}
+	if total != 1 {
+		t.Fatalf("first call should hit upstream once, got %d", total)
+	}
+	// Several more calls: even as LB rotates the primary model, all should be
+	// served from the alias-keyed cache without new upstream calls.
+	for i := 0; i < 5; i++ {
+		if rec := doChat(h, body); rec.Code != http.StatusOK {
+			t.Fatalf("call %d want 200, got %d", i, rec.Code)
+		}
+	}
+	if total != 1 {
+		t.Fatalf("alias-keyed cache should absorb LB rotation, got %d upstream calls", total)
+	}
+}
+
 func TestSemanticCacheSkippedForTools(t *testing.T) {
 	calls := 0
 	p := &stubProvider{name: "p", models: []string{"m"}, calls: &calls}
