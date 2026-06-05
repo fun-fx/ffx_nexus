@@ -152,6 +152,7 @@ The full suite runs four scripts (~40+ cases):
 | `test_zero_dep.sh` | Gateway without Postgres/ClickHouse/Redis (env keys only) |
 | `test_guardrails.sh` | Inline guardrails: PII/deny-pattern/length input blocking |
 | `test_schema_guardrails.sh` | Schema/JSON output guardrail: wiring + live JSON roundtrip |
+| `test_self_correction.sh` | Structured-output self-correction: startup wiring |
 | `test_eval_service.sh` | External Python eval service: contract, wiring, failure isolation |
 | `test_eval_batch.sh` | Offline regression eval batch: aggregation + baseline regression gate |
 | `test_eval_persistence.sh` | Live completion → remote eval → ClickHouse (skips without provider key) |
@@ -389,6 +390,29 @@ curl -s localhost:8080/v1/chat/completions \
       }
     }
   }'
+```
+
+### Structured-output self-correction
+
+Rather than failing a malformed JSON response outright, the gateway can ask the
+model to fix it. When `NEXUS_SELF_CORRECTION_ENABLED=true` and the schema
+guardrail rejects a non-streaming JSON response, Nexus appends the rejected
+output plus a correction instruction and retries the **same** model up to
+`NEXUS_SELF_CORRECTION_MAX_RETRIES` times (default 1). If a retry passes
+validation, the corrected response is returned with `200`; if all retries are
+exhausted it falls back to `422 schema_validation_failed`.
+
+- Non-streaming only (a streamed response can't be retried after bytes are sent).
+- Requires `NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT=true` to supply the rejection
+  signal. Token usage from every attempt is summed into the trace cost.
+- Corrections are surfaced on the trace as `guardrail_action=self_corrected:N`.
+
+```bash
+NEXUS_GUARDRAILS_ENABLED=true \
+NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT=true \
+NEXUS_SELF_CORRECTION_ENABLED=true \
+NEXUS_SELF_CORRECTION_MAX_RETRIES=2 \
+  ./bin/nexus
 ```
 
 ## CI/CD
