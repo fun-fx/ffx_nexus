@@ -1,0 +1,9 @@
+# Lightweight deps for unit tests. The metric engines (deepeval/ragas) are
+# monkeypatched in tests, so they are intentionally NOT installed here — this
+# keeps CI fast and lets us test the API contract, concurrency, and graceful
+# skip/isolation behavior without a GPU or judge LLM.
+fastapi>=0.110,<1.0
+pydantic>=2.6,<3.0
+httpx>=0.27
+pytest>=8.0
+pytest-asyncio>=0.23

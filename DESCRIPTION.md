@@ -84,7 +84,14 @@ Nexus sits in the same category as [Bifrost](https://www.getmaxim.ai/bifrost) an
   - OpenAI-compatible local inference (Ollama / vLLM).
   - Scores response quality 0..1; configurable via `NEXUS_EVAL_SAMPLE_RATE`.
   - Keeps trace content on-prem for data privacy.
-- **Storage**: Results written to ClickHouse `eval_scores` table.
+- **External eval service** (sampled, optional):
+  - Python sidecar (`eval-service/`) running DeepEval + RAGAS via FastAPI/async.
+  - Go `RemoteEvaluator` calls it over HTTP from the worker — out-of-band, sample-gated.
+  - Metrics: answer relevancy, toxicity, bias (trace-only); hallucination, faithfulness (when contexts supplied).
+  - **Failure isolation**: a slow/down sidecar skips metrics and degrades to Go heuristics; the gateway hot path is unaffected.
+  - Reuses the same local judge (Ollama/vLLM) by default; embeddings endpoint optional for RAGAS.
+- **Worker concurrency**: configurable via `NEXUS_EVAL_WORKERS` (default 4).
+- **Storage**: Results written to ClickHouse `eval_scores` table (`evaluator` = `deepeval`/`ragas` for remote scores).
 
 ### Phase 4 — Quality-Aware Routing
 
@@ -113,13 +120,14 @@ internal/observability/    Trace model, ClickHouse recorder/reader, live hub
 internal/core/             Postgres store, virtual keys, credentials
 internal/core/crypto/      AES-GCM encryption, SHA-256 key hashing
 internal/limiter/          Redis + in-memory rate limiter and spend tracker
-internal/evals/            Async eval worker, heuristics, SLM judge, CH sink
+internal/evals/            Async eval worker, heuristics, SLM judge, remote eval client, CH sink
 internal/router/           Quality-aware model selection, ClickHouse stats
 internal/console/          Dashboard REST API + WebSocket + admin endpoints
 internal/config/           Environment-based configuration (.env loader for dev)
+eval-service/              Optional Python sidecar: DeepEval + RAGAS (FastAPI, async)
 web/                       React/TypeScript dashboard (Vite)
 migrations/                Postgres + ClickHouse SQL schemas (embedded via go:embed)
-deploy/                    docker-compose.yml (ClickHouse, Postgres, Redis, Ollama)
+deploy/                    docker-compose.yml (ClickHouse, Postgres, Redis, Ollama, eval-service)
 scripts/                   E2E test scripts
 .github/workflows/         CI, Integration, Release GitHub Actions
 Dockerfile                 Production container image
@@ -207,7 +215,8 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - Load balancing across providers (weighted/round-robin within a tier)
 - Semantic caching (Redis + embeddings)
 - Schema/JSON guardrails on the hot path (input/output structural validation)
-- Regression evaluation datasets
+- Client-supplied retrieval contexts -> online RAG metrics (hallucination, faithfulness)
+- Regression evaluation datasets (offline batch eval via the Python service)
 - Non-streaming self-correction / retry based on eval scores
 - Credential rotation API
 - Open-core packaging: Helm chart, OSS vs commercial feature split, single-command self-hosting (Phase 5)
@@ -218,6 +227,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - `min_quality_score` enforcement on routing aliases.
 - Provider fallback: routing aliases try candidates best-first and fail over on upstream errors.
 - Inline guardrails (hot path): PII/regex/length input blocking (pre-upstream) and PII output redaction, synchronous and datastore-free.
+- External Python eval service: DeepEval + RAGAS sidecar wired via an async, sample-gated, failure-isolated `RemoteEvaluator` — richer metrics without touching the Go hot path.
 
 ---
 

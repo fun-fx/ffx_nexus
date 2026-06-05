@@ -28,12 +28,13 @@ internal/gateway     OpenAI-compatible API, provider adapters, streaming, middle
 internal/observability  gen_ai.* traces -> ClickHouse + live hub
 internal/core        control plane: virtual keys + encrypted credentials (Postgres)
 internal/limiter     per-key RPM rate limits + monthly budgets (Redis / in-memory)
-internal/evals       async eval worker: PII/completeness heuristics + SLM judge
+internal/evals       async eval worker: heuristics + SLM judge + remote eval client
 internal/router      quality-aware model selection (eval quality + cost + latency)
 internal/console     dashboard API + WebSocket live feed
+eval-service/        optional Python sidecar: DeepEval + RAGAS (async, out-of-band)
 web/                 React/TS dashboard
 migrations/          SQL (ClickHouse + Postgres schema embedded & applied on startup)
-deploy/              docker-compose (ClickHouse/Postgres/Redis/Ollama)
+deploy/              docker-compose (ClickHouse/Postgres/Redis/Ollama/eval-service)
 ```
 
 ## Quick start
@@ -89,6 +90,8 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 | `GEMINI_API_KEY` | — | Google Gemini provider |
 | `NEXUS_JUDGE_BASE_URL` / `NEXUS_JUDGE_MODEL` | — / `qwen2.5:7b` | Local SLM judge (Phase 3) |
 | `NEXUS_JUDGE_API_KEY` / `NEXUS_EVAL_SAMPLE_RATE` | — / `1.0` | Judge auth + judge sampling fraction |
+| `NEXUS_EVAL_SERVICE_URL` / `_METRICS` | — / `answer_relevancy,toxicity,bias` | Python eval sidecar (DeepEval/RAGAS) |
+| `NEXUS_EVAL_WORKERS` / `NEXUS_EVAL_SERVICE_TIMEOUT` | `4` / `30s` | Eval worker concurrency + sidecar timeout |
 | `NEXUS_ROUTE_GROUPS` | _(empty)_ | Routing aliases, `alias=m1,m2;...` (Phase 4) |
 | `NEXUS_ROUTE_W_QUALITY` / `_W_COST` / `_W_LATENCY` | `0.6` / `0.2` / `0.2` | Routing weights |
 | `NEXUS_ROUTE_WINDOW` / `NEXUS_ROUTE_REFRESH` | `1h` / `30s` | Routing stats window & refresh |
@@ -148,6 +151,7 @@ The full suite runs four scripts (~40+ cases):
 | `test_eval_routing.sh` | `min_quality_score`, `eff_quality` stats, provider fallback |
 | `test_zero_dep.sh` | Gateway without Postgres/ClickHouse/Redis (env keys only) |
 | `test_guardrails.sh` | Inline guardrails: PII/deny-pattern/length input blocking |
+| `test_eval_service.sh` | External Python eval service: contract, wiring, failure isolation |
 
 Run a single phase: `./scripts/test_phase2.sh`, `./scripts/test_phase234.sh`, etc.
 
@@ -184,6 +188,39 @@ a background worker — never on the request hot path. Results land in the
 - **LLM-as-judge (sampled):** a local SLM (Ollama/vLLM, OpenAI-compatible API)
   scores response `quality` 0..1. Runs on `NEXUS_EVAL_SAMPLE_RATE` of traces and
   stays local for data privacy. Enable with `NEXUS_JUDGE_BASE_URL`.
+- **External eval service (sampled):** an optional Python sidecar running mature
+  eval libraries (**DeepEval** + **RAGAS**) for richer metrics
+  (answer relevancy, toxicity, bias, and — when retrieval contexts are supplied —
+  hallucination / faithfulness). Enable with `NEXUS_EVAL_SERVICE_URL`. See below.
+
+### External Python eval service
+
+The Go gateway stays the hot path; deep eval (which benefits from Python's
+ecosystem) runs in a separate async sidecar under `eval-service/`. The eval
+worker calls it over HTTP **only on sampled traces**, off the request path.
+
+- **Why a sidecar:** DeepEval/RAGAS are best-in-class but Python- and LLM-bound.
+  Isolating them keeps the Go gateway's per-request overhead unchanged while
+  giving you the full metric catalog.
+- **Failure isolation:** if the sidecar is slow or down, the requested metrics
+  are simply skipped and evaluation degrades to the Go heuristics. The gateway
+  response and routing availability are never affected.
+- **Judge reuse:** by default it points at the same local Ollama/vLLM judge.
+  Set `EMBEDDINGS_BASE_URL` on the service to unlock RAGAS metrics.
+
+```bash
+# Start the sidecar (reuses the compose Ollama judge):
+docker compose -f deploy/docker-compose.yml --profile eval up -d eval-service
+
+# Point the gateway at it:
+export NEXUS_EVAL_SERVICE_URL=http://localhost:8200
+export NEXUS_EVAL_SERVICE_METRICS=answer_relevancy,toxicity,bias
+```
+
+Scores returned by the service land in the same `eval_scores` table (with
+`evaluator` = `deepeval`/`ragas`) and feed quality-aware routing like any other
+evaluator. Context-dependent metrics (`hallucination`, `ragas_faithfulness`) are
+skipped until retrieval contexts are plumbed through from the client.
 
 ## Quality-aware routing (Phase 4)
 
