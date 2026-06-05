@@ -45,6 +45,14 @@ go build -o "$BIN" ./cmd/nexus
 pass "build ok"
 
 load_dotenv
+
+MODEL="${TEST_MODEL:-gemini-2.5-flash}"
+if [[ -z "${GEMINI_API_KEY:-}" && -z "${OPENAI_API_KEY:-}" ]]; then
+  skip "live persistence (no provider API key; Go ClickHouse integration test covers this path)"
+  summary_exit
+  exit 0
+fi
+
 wait_services
 export_e2e_env
 
@@ -60,7 +68,7 @@ pass "nexus started with eval-service (sample_rate=1.0)"
 
 KEY_JSON=$(curl -sf -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"eval-persist","allowed_models":["gemini-2.5-flash","auto"]}')
+  -d '{"name":"eval-persist","allowed_models":["'"$MODEL"'","auto"]}')
 SECRET=$(echo "$KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
 
 BEFORE=$(curl -sf "http://localhost:8123/?user=nexus&password=nexus" \
@@ -69,11 +77,15 @@ BEFORE=$(curl -sf "http://localhost:8123/?user=nexus&password=nexus" \
 CODE=$(curl -s -o /tmp/eval_persist.json -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
   -H "Authorization: Bearer $SECRET" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"Reply with exactly: ok"}],"max_tokens":8}')
+  -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Reply with exactly: ok"}],"max_tokens":8}')
 
 if [[ "$CODE" != "200" ]]; then
   if grep -qE 'RESOURCE_EXHAUSTED|quota exceeded|429|502' /tmp/eval_persist.json 2>/dev/null; then
     skip "upstream completion (quota exhausted) — worker+CH integration test covers this path"
+    exit 0
+  fi
+  if grep -qE 'model_not_found|no provider registered' /tmp/eval_persist.json 2>/dev/null; then
+    skip "upstream completion (no provider registered) — worker+CH integration test covers this path"
     exit 0
   fi
   fail "completion expected 200, got $CODE: $(head -c 300 /tmp/eval_persist.json)"
