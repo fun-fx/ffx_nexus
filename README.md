@@ -153,6 +153,7 @@ The full suite runs four scripts (~40+ cases):
 | `test_guardrails.sh` | Inline guardrails: PII/deny-pattern/length input blocking |
 | `test_schema_guardrails.sh` | Schema/JSON output guardrail: wiring + live JSON roundtrip |
 | `test_eval_service.sh` | External Python eval service: contract, wiring, failure isolation |
+| `test_eval_batch.sh` | Offline regression eval batch: aggregation + baseline regression gate |
 | `test_eval_persistence.sh` | Live completion → remote eval → ClickHouse (skips without provider key) |
 | `test_rag_eval.sh` | RAG `nexus_eval` context → eval sidecar contract |
 
@@ -244,6 +245,46 @@ curl -s localhost:8080/v1/chat/completions \
     }
   }'
 ```
+
+### Offline regression eval (`nexus-evalbatch`)
+
+A standalone CLI runs a fixed dataset through the eval service and aggregates the
+scores, so you can catch quality regressions when you change a prompt, model, or
+config. Unlike the online worker it does **no sampling** — every case is scored —
+and it can fail CI when scores drop versus a stored baseline.
+
+The dataset is JSON Lines, one case per line:
+
+```json
+{"id":"q1","model":"gpt-4o-mini","input":"Capital of France?","output":"Paris.","reference":"Paris"}
+{"id":"rag1","input":"When was the Eiffel Tower completed?","output":"1889.","contexts":["Completed in 1889."]}
+```
+
+- `output` present → the recorded answer is evaluated directly.
+- `output` omitted + `-gateway-url` → the answer is generated first (any
+  OpenAI-compatible endpoint), then evaluated.
+- `contexts` present → RAG metrics (`hallucination`, `ragas_faithfulness`) are
+  added automatically.
+
+```bash
+go build -o bin/nexus-evalbatch ./cmd/nexus-evalbatch
+
+# Score recorded outputs and save a baseline
+./bin/nexus-evalbatch \
+  -dataset datasets/regression_example.jsonl \
+  -service-url http://localhost:8200 \
+  -out baseline.json
+
+# Later: fail (exit 1) if any metric's mean dropped > tolerance vs the baseline
+./bin/nexus-evalbatch \
+  -dataset datasets/regression_example.jsonl \
+  -service-url http://localhost:8200 \
+  -baseline baseline.json -tolerance 0.05
+```
+
+Key flags: `-metrics` (comma-separated ids), `-gateway-url`/`-api-key`/`-gen-model`
+(generate missing outputs), `-concurrency`, `-timeout`, `-detail` (per-case scores
+in the JSON report). `-service-url` defaults to `NEXUS_EVAL_SERVICE_URL`.
 
 ## Quality-aware routing (Phase 4)
 
