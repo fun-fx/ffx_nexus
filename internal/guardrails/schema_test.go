@@ -92,3 +92,61 @@ func TestActiveIncludesJSONValidation(t *testing.T) {
 		t.Fatal("guard with only JSON validation should be Active")
 	}
 }
+
+func TestRepairJSONCodeFence(t *testing.T) {
+	in := "```json\n{\"ok\":true}\n```"
+	got, changed := RepairJSON(in)
+	if !changed || got != `{"ok":true}` {
+		t.Fatalf("want unfenced JSON, got %q changed=%v", got, changed)
+	}
+}
+
+func TestRepairJSONBareFence(t *testing.T) {
+	in := "```\n[1,2,3]\n```"
+	got, changed := RepairJSON(in)
+	if !changed || got != "[1,2,3]" {
+		t.Fatalf("want unfenced array, got %q changed=%v", got, changed)
+	}
+}
+
+func TestRepairJSONSurroundingProse(t *testing.T) {
+	in := `Sure! Here is your answer: {"name":"Ada","age":36} Hope that helps.`
+	got, changed := RepairJSON(in)
+	if !changed || got != `{"name":"Ada","age":36}` {
+		t.Fatalf("want extracted object, got %q changed=%v", got, changed)
+	}
+}
+
+func TestRepairJSONNestedAndStrings(t *testing.T) {
+	in := "prefix {\"a\":{\"b\":[1,2]},\"c\":\"has } brace\"} suffix"
+	got, changed := RepairJSON(in)
+	want := `{"a":{"b":[1,2]},"c":"has } brace"}`
+	if !changed || got != want {
+		t.Fatalf("want %q, got %q changed=%v", want, got, changed)
+	}
+}
+
+func TestRepairJSONAlreadyClean(t *testing.T) {
+	in := `{"ok":true}`
+	if got, changed := RepairJSON(in); changed || got != in {
+		t.Fatalf("clean JSON should not change, got %q changed=%v", got, changed)
+	}
+}
+
+func TestRepairJSONNotJSON(t *testing.T) {
+	in := "there is no json here at all"
+	if _, changed := RepairJSON(in); changed {
+		t.Fatal("non-JSON text should not report a change")
+	}
+}
+
+func TestRepairThenValidate(t *testing.T) {
+	g := newJSONGuard()
+	fixed, changed := RepairJSON("```json\n{\"ok\":true}\n```")
+	if !changed {
+		t.Fatal("expected repair")
+	}
+	if f := g.CheckJSONOutput(fixed, nil); f.Blocked {
+		t.Fatalf("repaired JSON should validate, got %+v", f)
+	}
+}

@@ -158,6 +158,37 @@ func (h *Handler) resolveChain(w http.ResponseWriter, r *http.Request, req ChatC
 	return []string{req.Model}, true
 }
 
+// validateOrRepairJSON validates content against the JSON/schema guardrail. If
+// it fails, it attempts a free local repair (stripping markdown fences or
+// surrounding prose) and re-validates. It returns the possibly-repaired content,
+// the final finding, and whether a repair was applied. The repair runs only on
+// the failure path, so the success path is untouched.
+func (h *Handler) validateOrRepairJSON(content string, schema []byte) (string, guardrails.Finding, bool) {
+	f := h.guard.CheckJSONOutput(content, schema)
+	if !f.Blocked {
+		return content, f, false
+	}
+	if fixed, ok := guardrails.RepairJSON(content); ok {
+		if rf := h.guard.CheckJSONOutput(fixed, schema); !rf.Blocked {
+			return fixed, rf, true
+		}
+	}
+	return content, f, false
+}
+
+// schemaAction renders the trace guardrail_action for a structured-output
+// outcome, or "" when nothing notable happened.
+func schemaAction(repaired bool, corrected int) string {
+	var parts []string
+	if repaired {
+		parts = append(parts, "json_repaired")
+	}
+	if corrected > 0 {
+		parts = append(parts, fmt.Sprintf("self_corrected:%d", corrected))
+	}
+	return strings.Join(parts, ",")
+}
+
 // withSchemaCorrection appends the rejected output and a correction instruction
 // to the request so the model can repair a structured-output response. It copies
 // the message slice to avoid mutating the caller's request.
@@ -218,7 +249,8 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 			// enabled, ask the model to repair a rejected response before failing.
 			if req.ResponseFormat.WantsJSON() {
 				schema := req.ResponseFormat.SchemaBytes()
-				f := h.guard.CheckJSONOutput(resp.Choices[0].Message.Content, schema)
+				content, f, repaired := h.validateOrRepairJSON(resp.Choices[0].Message.Content, schema)
+				resp.Choices[0].Message.Content = content
 				corrected := 0
 				for f.Blocked && corrected < h.selfCorrectMax {
 					corrected++
@@ -234,10 +266,13 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					trace.InputTokens += resp.Usage.PromptTokens
 					trace.OutputTokens += resp.Usage.CompletionTokens
 					trace.ResponseModel = resp.Model
-					f = h.guard.CheckJSONOutput(resp.Choices[0].Message.Content, schema)
+					var rep bool
+					content, f, rep = h.validateOrRepairJSON(resp.Choices[0].Message.Content, schema)
+					resp.Choices[0].Message.Content = content
+					repaired = repaired || rep
 				}
-				if corrected > 0 {
-					trace.GuardrailAction = fmt.Sprintf("self_corrected:%d", corrected)
+				if action := schemaAction(repaired, corrected); action != "" {
+					trace.GuardrailAction = action
 				}
 				if f.Blocked {
 					trace.LatencyMs = time.Since(attemptStart).Milliseconds()

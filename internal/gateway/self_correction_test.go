@@ -127,6 +127,58 @@ func TestSelfCorrectionNoOpOnValidFirstResponse(t *testing.T) {
 	}
 }
 
+func TestLocalRepairFixesFencedJSONWithoutRetry(t *testing.T) {
+	// Self-correction disabled: a free local repair must still salvage fenced JSON.
+	p := &scriptedProvider{name: "p", models: []string{"m"}, contents: []string{"```json\n{\"ok\":true}\n```"}}
+	h := newTestHandler(p)
+	h.SetGuard(guardrails.New(guardrails.Config{Enabled: true, ValidateJSONOutput: true}))
+
+	rec := doChat(h, jsonModeBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 after local repair, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(p.requests) != 1 {
+		t.Fatalf("local repair must not call upstream again, got %d calls", len(p.requests))
+	}
+	var resp ChatCompletionResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Choices[0].Message.Content != `{"ok":true}` {
+		t.Errorf("want repaired JSON, got %q", resp.Choices[0].Message.Content)
+	}
+}
+
+func TestLocalRepairExtractsJSONFromProse(t *testing.T) {
+	p := &scriptedProvider{name: "p", models: []string{"m"}, contents: []string{`Sure: {"ok":true} done`}}
+	h := newTestHandler(p)
+	h.SetGuard(guardrails.New(guardrails.Config{Enabled: true, ValidateJSONOutput: true}))
+	h.SetSelfCorrection(2) // available, but repair should make it unnecessary
+
+	rec := doChat(h, jsonModeBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(p.requests) != 1 {
+		t.Fatalf("repair should avoid paid retries, got %d calls", len(p.requests))
+	}
+}
+
+func TestLocalRepairThenCorrectionWhenRepairInsufficient(t *testing.T) {
+	// First output is unsalvageable locally (no JSON); repair fails, so a paid
+	// correction kicks in and succeeds.
+	p := &scriptedProvider{name: "p", models: []string{"m"}, contents: []string{"absolutely no json here", `{"ok":true}`}}
+	h := newTestHandler(p)
+	h.SetGuard(guardrails.New(guardrails.Config{Enabled: true, ValidateJSONOutput: true}))
+	h.SetSelfCorrection(1)
+
+	rec := doChat(h, jsonModeBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 after correction, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(p.requests) != 2 {
+		t.Fatalf("want 2 calls (repair failed -> 1 correction), got %d", len(p.requests))
+	}
+}
+
 func TestSelfCorrectionDoesNotMutateOriginalMessages(t *testing.T) {
 	p := &scriptedProvider{name: "p", models: []string{"m"}, contents: []string{"bad", `{"ok":true}`}}
 	h := newTestHandler(p)

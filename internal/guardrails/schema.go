@@ -3,6 +3,7 @@ package guardrails
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
@@ -52,6 +53,94 @@ func compileSchema(schema []byte) (*jsonschema.Schema, error) {
 		return nil, err
 	}
 	return c.Compile("schema.json")
+}
+
+// RepairJSON attempts a free, local recovery of JSON that a model wrapped in a
+// markdown code fence or surrounded with prose ("Sure, here you go: {...}"). It
+// strips a leading/trailing ``` fence and extracts the outermost JSON object or
+// array. It returns the candidate and whether it differs from the input; it does
+// not validate, so callers must re-run CheckJSONOutput on the result.
+//
+// This runs only on the failure path (after validation rejects a response), so
+// the cost is a few bounded string scans and never touches the success path.
+func RepairJSON(s string) (string, bool) {
+	trimmed := strings.TrimSpace(s)
+	candidate := stripCodeFence(trimmed)
+	if ext, ok := extractBracketed(candidate); ok {
+		candidate = ext
+	}
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" || candidate == trimmed {
+		return s, false
+	}
+	return candidate, true
+}
+
+// stripCodeFence removes a surrounding ```/```json markdown fence if present.
+func stripCodeFence(s string) string {
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	// Drop the opening fence line (``` or ```json) up to the first newline.
+	if nl := strings.IndexByte(s, '\n'); nl >= 0 {
+		s = s[nl+1:]
+	} else {
+		return s
+	}
+	// Drop a trailing closing fence.
+	if idx := strings.LastIndex(s, "```"); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
+}
+
+// extractBracketed returns the substring from the first '{' or '[' to its
+// matching close, accounting for nested brackets and string literals.
+func extractBracketed(s string) (string, bool) {
+	start := -1
+	var open, close byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '{' {
+			start, open, close = i, '{', '}'
+			break
+		}
+		if s[i] == '[' {
+			start, open, close = i, '[', ']'
+			break
+		}
+	}
+	if start == -1 {
+		return "", false
+	}
+	depth := 0
+	inStr := false
+	esc := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return s[start : i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 func summarizeSchemaErr(err error) string {
