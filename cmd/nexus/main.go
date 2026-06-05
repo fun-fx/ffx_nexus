@@ -15,6 +15,7 @@ import (
 	"time"
 
 	nexus "github.com/ffxnexus/nexus"
+	"github.com/ffxnexus/nexus/internal/balancer"
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/console"
 	"github.com/ffxnexus/nexus/internal/core"
@@ -26,6 +27,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
+	"github.com/ffxnexus/nexus/internal/semcache"
 )
 
 func main() {
@@ -208,10 +210,45 @@ func main() {
 		)
 		groups := parseRouteGroups(cfg.RouteGroups)
 		gwHandler.SetRouter(modelRouter, groups)
+		if cfg.RouteLoadBalance {
+			gwHandler.SetLoadBalancing(balancer.NewWeightedRR())
+			log.Info("route load balancing enabled (rank-weighted round-robin within quality-qualified tiers)")
+		}
 		log.Info("quality-aware routing enabled", "groups", len(groups), "alias", "auto")
 	} else {
 		log.Info("clickhouse not configured; quality-aware routing disabled")
 	}
+
+	// Semantic cache: Redis-backed, embedding-similarity response cache.
+	var semCacheRedis *semcache.Redis
+	if cfg.SemanticCacheEnabled {
+		if cfg.RedisURL == "" {
+			log.Warn("semantic cache requires NEXUS_REDIS_URL")
+		} else if cfg.EmbeddingsURL == "" {
+			log.Warn("semantic cache requires NEXUS_EMBEDDINGS_URL")
+		} else {
+			scfg := semcache.Config{
+				Enabled:            true,
+				TTL:                cfg.SemanticCacheTTL,
+				Threshold:          cfg.SemanticCacheThreshold,
+				MaxEntriesPerModel: cfg.SemanticCacheMaxEntries,
+			}
+			embedder := semcache.NewOpenAIEmbedder(
+				cfg.EmbeddingsURL, cfg.EmbeddingsModel, cfg.EmbeddingsAPIKey, cfg.EmbeddingsTimeout,
+			)
+			scr, err := semcache.NewRedis(ctx, cfg.RedisURL, embedder, scfg)
+			if err != nil {
+				log.Error("semantic cache init failed", "err", err)
+			} else {
+				semCacheRedis = scr
+				if svc := semcache.NewService(scr, embedder, scfg); svc != nil {
+					gwHandler.SetSemanticCache(svc)
+					log.Info("semantic cache enabled", "config", svc.ConfigString(), "embeddings", cfg.EmbeddingsModel)
+				}
+			}
+		}
+	}
+
 	gwSrv := &http.Server{
 		Addr:    cfg.GatewayAddr,
 		Handler: gateway.NewMux(gwHandler, auth, lim, log),
@@ -253,6 +290,9 @@ func main() {
 	}
 	if redisLim != nil {
 		_ = redisLim.Close()
+	}
+	if semCacheRedis != nil {
+		_ = semCacheRedis.Close()
 	}
 	wg.Wait()
 }

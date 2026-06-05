@@ -57,6 +57,9 @@ type Trace struct {
 	// strings; persisted for async eval and trace replay.
 	RetrievalContexts string `json:"nexus.eval.contexts,omitempty"`
 	EvalReference     string `json:"nexus.eval.reference,omitempty"`
+
+	// CacheHit marks a response served from the semantic cache (no upstream call).
+	CacheHit bool `json:"cache_hit,omitempty"`
 }
 
 // Recorder persists traces. Implementations must be non-blocking from the

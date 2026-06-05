@@ -213,8 +213,6 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 ## Roadmap (Not Yet Implemented)
 
-- Load balancing across providers (weighted/round-robin within a tier)
-- Semantic caching (Redis + embeddings)
 - Credential rotation API
 - Open-core packaging: Helm chart, OSS vs commercial feature split, single-command self-hosting (Phase 5)
 
@@ -229,6 +227,8 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - Schema/JSON output guardrail (hot path): when a request sets a JSON `response_format`, the output is validated as JSON and against the supplied JSON Schema; non-streaming violations are blocked with `422 schema_validation_failed`.
 - Offline regression eval batch (`cmd/nexus-evalbatch`): runs a JSONL dataset through the Python eval service (no sampling), aggregates per-metric scores, and fails CI when scores regress beyond a tolerance versus a stored baseline. Optionally generates missing outputs via any OpenAI-compatible endpoint.
 - Structured-output self-correction (hot path, non-streaming): when the schema guardrail rejects a JSON response, the gateway first attempts a free local repair (strip code fences / surrounding prose), then optionally retries the model with a correction prompt up to N times before falling back to `422`. Outcomes are traced as `json_repaired` and/or `self_corrected:N`.
+- Route load balancing: rank-weighted (smooth WRR) primary selection among quality-qualified models in a routing alias (`NEXUS_ROUTE_LOAD_BALANCE=true`); better models get proportionally more primary traffic, failover order is preserved.
+- Semantic cache: Redis-backed embedding-similarity cache returns stored completions for near-duplicate prompts without an upstream call (`NEXUS_SEMANTIC_CACHE_ENABLED`); tenant-isolated per org/virtual key, alias-aware keying (survives load-balancer rotation), deterministic requests only (temperature unset or 0), hot-path embedding bounded by a timeout with graceful degrade; hits are traced as `cache_hit`.
 
 ---
 

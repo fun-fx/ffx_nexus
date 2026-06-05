@@ -11,8 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ffxnexus/nexus/internal/balancer"
 	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/observability"
+	"github.com/ffxnexus/nexus/internal/semcache"
 )
 
 // ModelRouter ranks candidate models best-first, dropping any below minQuality.
@@ -28,9 +30,11 @@ type Handler struct {
 	recorder       observability.Recorder
 	limiter        Limiter // may be nil
 	router         ModelRouter
-	groups         map[string][]string // routing alias -> candidate models
-	guard          *guardrails.Guard   // nil = guardrails disabled
-	selfCorrectMax int                 // max structured-output self-correction retries; 0 disables
+	groups         map[string][]string  // routing alias -> candidate models
+	guard          *guardrails.Guard    // nil = guardrails disabled
+	selfCorrectMax int                  // max structured-output self-correction retries; 0 disables
+	lb             *balancer.WeightedRR // nil = no load balancing within routing tiers
+	scache         *semcache.Service    // nil = semantic cache disabled
 	log            *slog.Logger
 }
 
@@ -60,6 +64,18 @@ func (h *Handler) SetSelfCorrection(maxRetries int) {
 		maxRetries = 0
 	}
 	h.selfCorrectMax = maxRetries
+}
+
+// SetLoadBalancing enables weighted (rank-proportional) primary selection among
+// quality-qualified models in a routing alias. Failover order is preserved for
+// the rest.
+func (h *Handler) SetLoadBalancing(rr *balancer.WeightedRR) {
+	h.lb = rr
+}
+
+// SetSemanticCache enables embedding-based response caching on the hot path.
+func (h *Handler) SetSemanticCache(s *semcache.Service) {
+	h.scache = s
 }
 
 // routeCandidates returns the candidate models for a routing alias, or false if
@@ -142,6 +158,9 @@ func (h *Handler) resolveChain(w http.ResponseWriter, r *http.Request, req ChatC
 					"no allowed model currently meets the minimum quality score for this key")
 				return nil, false
 			}
+			if h.lb != nil {
+				ranked = balancer.RotateChain(req.Model, ranked, h.lb)
+			}
 			h.log.Debug("routed request", "alias", req.Model, "chain", ranked, "min_quality", minQuality)
 			return ranked, true
 		}
@@ -218,6 +237,41 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		trace.RequestModel = model
 		attemptStart := time.Now()
 
+		// Semantic cache: only on the primary candidate, non-streaming, eligible
+		// requests. Keyed by the client-requested model (req.Model), not the
+		// resolved concrete model, so load-balancer rotation across the
+		// quality-interchangeable members of a routing alias does not fragment the
+		// cache — any qualified member's response can serve a near-duplicate prompt.
+		var embedVec []float32
+		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
+			scope := cacheScope(r.Context())
+			prompt := promptText(req.Messages)
+			hit, vec, err := h.scache.Lookup(r.Context(), scope, req.Model, prompt)
+			switch {
+			case err != nil:
+				// Cache/embedding failures must never fail the request; degrade to
+				// a normal upstream call but surface the error for observability.
+				h.log.Warn("semantic cache lookup failed", "model", req.Model, "err", err)
+			case hit != nil:
+				var cached ChatCompletionResponse
+				if json.Unmarshal(hit.ResponseJSON, &cached) == nil {
+					trace.LatencyMs = time.Since(attemptStart).Milliseconds()
+					trace.StatusCode = http.StatusOK
+					trace.CacheHit = true
+					trace.ResponseModel = cached.Model
+					if len(cached.Choices) > 0 {
+						trace.OutputMessages = cached.Choices[0].Message.Content
+						trace.FinishReason = cached.Choices[0].FinishReason
+					}
+					h.recorder.Record(trace)
+					writeJSON(w, http.StatusOK, cached)
+					return
+				}
+			default:
+				embedVec = vec // cache miss; reuse embedding for Store
+			}
+		}
+
 		resp, err := provider.ChatCompletion(r.Context(), attempt)
 		if err != nil {
 			trace.LatencyMs = time.Since(attemptStart).Milliseconds()
@@ -293,6 +347,13 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 			trace.OutputMessages = resp.Choices[0].Message.Content
 		}
 		trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
+		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
+			if b, err := json.Marshal(resp); err == nil {
+				if err := h.scache.Store(r.Context(), cacheScope(r.Context()), req.Model, promptText(req.Messages), embedVec, b); err != nil {
+					h.log.Warn("semantic cache store failed", "model", req.Model, "err", err)
+				}
+			}
+		}
 		h.recorder.Record(trace)
 		h.recordSpend(r.Context(), trace.CostUSD)
 
@@ -485,6 +546,37 @@ func promptText(messages []Message) string {
 		b.WriteString(m.Content)
 	}
 	return b.String()
+}
+
+// cacheEligible reports whether a request may use the semantic cache. Tool
+// calls, sampling (any non-zero temperature), and RAG eval context require a
+// fresh upstream call. Only deterministic requests (temperature unset or 0) are
+// cacheable, so a single sampled answer is never replayed as if canonical.
+func cacheEligible(req ChatCompletionRequest) bool {
+	if len(req.Tools) > 0 {
+		return false
+	}
+	if req.Temperature != nil && *req.Temperature != 0 {
+		return false
+	}
+	if req.NexusEval != nil {
+		return false
+	}
+	return true
+}
+
+// cacheScope returns the per-tenant namespace for semantic cache entries so one
+// tenant never receives another tenant's cached response. It prefers the org id,
+// falls back to the virtual key id, then to a shared "default" bucket for
+// unauthenticated/zero-dependency mode.
+func cacheScope(ctx context.Context) string {
+	if org, _ := ctx.Value(ctxKeyOrgID).(string); org != "" {
+		return org
+	}
+	if vk, _ := ctx.Value(ctxKeyVKeyID).(string); vk != "" {
+		return vk
+	}
+	return "default"
 }
 
 // recordGuardrailBlock records a trace for a request rejected by an input
