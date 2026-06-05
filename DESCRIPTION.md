@@ -215,7 +215,6 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 - Load balancing across providers (weighted/round-robin within a tier)
 - Semantic caching (Redis + embeddings)
-- Regression evaluation datasets (offline batch eval via the Python service)
 - Non-streaming self-correction / retry based on eval scores
 - Credential rotation API
 - Open-core packaging: Helm chart, OSS vs commercial feature split, single-command self-hosting (Phase 5)
@@ -229,6 +228,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - External Python eval service: DeepEval + RAGAS sidecar wired via an async, sample-gated, failure-isolated `RemoteEvaluator` — richer metrics without touching the Go hot path.
 - RAG eval context: clients pass `nexus_eval.contexts` / `reference` on chat completions; stored on traces and forwarded to the eval sidecar for online hallucination/faithfulness metrics.
 - Schema/JSON output guardrail (hot path): when a request sets a JSON `response_format`, the output is validated as JSON and against the supplied JSON Schema; non-streaming violations are blocked with `422 schema_validation_failed`.
+- Offline regression eval batch (`cmd/nexus-evalbatch`): runs a JSONL dataset through the Python eval service (no sampling), aggregates per-metric scores, and fails CI when scores regress beyond a tolerance versus a stored baseline. Optionally generates missing outputs via any OpenAI-compatible endpoint.
 
 ---
 
