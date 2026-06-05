@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -23,13 +24,14 @@ type ModelRouter interface {
 
 // Handler serves the OpenAI-compatible gateway API and records traces.
 type Handler struct {
-	registry *Registry
-	recorder observability.Recorder
-	limiter  Limiter // may be nil
-	router   ModelRouter
-	groups   map[string][]string // routing alias -> candidate models
-	guard    *guardrails.Guard   // nil = guardrails disabled
-	log      *slog.Logger
+	registry       *Registry
+	recorder       observability.Recorder
+	limiter        Limiter // may be nil
+	router         ModelRouter
+	groups         map[string][]string // routing alias -> candidate models
+	guard          *guardrails.Guard   // nil = guardrails disabled
+	selfCorrectMax int                 // max structured-output self-correction retries; 0 disables
+	log            *slog.Logger
 }
 
 // NewHandler builds a gateway handler. lim may be nil.
@@ -48,6 +50,16 @@ func (h *Handler) SetRouter(r ModelRouter, groups map[string][]string) {
 // leaves guardrails disabled.
 func (h *Handler) SetGuard(g *guardrails.Guard) {
 	h.guard = g
+}
+
+// SetSelfCorrection enables structured-output self-correction on non-streaming
+// requests: when the schema guardrail rejects a JSON response, the gateway asks
+// the model to fix it (up to maxRetries times) before failing. 0 disables it.
+func (h *Handler) SetSelfCorrection(maxRetries int) {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	h.selfCorrectMax = maxRetries
 }
 
 // routeCandidates returns the candidate models for a routing alias, or false if
@@ -146,6 +158,20 @@ func (h *Handler) resolveChain(w http.ResponseWriter, r *http.Request, req ChatC
 	return []string{req.Model}, true
 }
 
+// withSchemaCorrection appends the rejected output and a correction instruction
+// to the request so the model can repair a structured-output response. It copies
+// the message slice to avoid mutating the caller's request.
+func withSchemaCorrection(req ChatCompletionRequest, badOutput, reason string) ChatCompletionRequest {
+	msgs := make([]Message, 0, len(req.Messages)+2)
+	msgs = append(msgs, req.Messages...)
+	msgs = append(msgs, Message{Role: "assistant", Content: badOutput})
+	msgs = append(msgs, Message{Role: "user", Content: "Your previous response was rejected: " + reason +
+		" Reply with ONLY a corrected response that satisfies the requested response_format. " +
+		"Do not include explanations, comments, or markdown code fences."})
+	req.Messages = msgs
+	return req
+}
+
 func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []string, req ChatCompletionRequest, start time.Time) {
 	var lastErr error
 	for i, model := range chain {
@@ -186,11 +212,34 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 				resp.Choices[0].Message.Content = redacted
 				trace.GuardrailAction = "output_redacted"
 			}
-			// Schema/JSON output guardrail: when the client requested a JSON
-			// response_format, enforce that the output is valid JSON (and matches
-			// the supplied schema). Block on the hot path before returning.
+			// Schema/JSON output guardrail (+ optional self-correction): when the
+			// client requested a JSON response_format, enforce that the output is
+			// valid JSON (and matches the supplied schema). When self-correction is
+			// enabled, ask the model to repair a rejected response before failing.
 			if req.ResponseFormat.WantsJSON() {
-				if f := h.guard.CheckJSONOutput(resp.Choices[0].Message.Content, req.ResponseFormat.SchemaBytes()); f.Blocked {
+				schema := req.ResponseFormat.SchemaBytes()
+				f := h.guard.CheckJSONOutput(resp.Choices[0].Message.Content, schema)
+				corrected := 0
+				for f.Blocked && corrected < h.selfCorrectMax {
+					corrected++
+					attempt = withSchemaCorrection(attempt, resp.Choices[0].Message.Content, f.Reason)
+					cresp, cerr := provider.ChatCompletion(r.Context(), attempt)
+					if cerr != nil || len(cresp.Choices) == 0 {
+						break // correction call failed; fail with the last finding
+					}
+					resp = cresp
+					if redacted, changed := h.guard.RedactOutput(resp.Choices[0].Message.Content); changed {
+						resp.Choices[0].Message.Content = redacted
+					}
+					trace.InputTokens += resp.Usage.PromptTokens
+					trace.OutputTokens += resp.Usage.CompletionTokens
+					trace.ResponseModel = resp.Model
+					f = h.guard.CheckJSONOutput(resp.Choices[0].Message.Content, schema)
+				}
+				if corrected > 0 {
+					trace.GuardrailAction = fmt.Sprintf("self_corrected:%d", corrected)
+				}
+				if f.Blocked {
 					trace.LatencyMs = time.Since(attemptStart).Milliseconds()
 					trace.StatusCode = http.StatusUnprocessableEntity
 					trace.ErrorType = "schema_validation_failed"
@@ -198,7 +247,9 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					trace.GuardrailAction = "output_schema_blocked:" + f.Rule
 					trace.FinishReason = resp.Choices[0].FinishReason
 					trace.OutputMessages = resp.Choices[0].Message.Content
+					trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
 					h.recorder.Record(trace)
+					h.recordSpend(r.Context(), trace.CostUSD)
 					writeError(w, http.StatusUnprocessableEntity, "schema_validation_failed", f.Reason)
 					return
 				}

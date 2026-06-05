@@ -64,6 +64,12 @@ type Config struct {
 	GuardrailDenyPatterns string // semicolon-separated regular expressions
 	GuardrailValidateJSON bool   // enforce JSON/schema on responses with a JSON response_format
 
+	// Structured-output self-correction (hot path, non-streaming). When the
+	// schema guardrail rejects a JSON response, the gateway asks the model to
+	// repair it up to MaxRetries times before failing.
+	SelfCorrectionEnabled    bool
+	SelfCorrectionMaxRetries int
+
 	// Observability
 	OTLPEnabled bool
 
@@ -111,6 +117,9 @@ func Load() Config {
 		GuardrailMaxInputChrs: envInt("NEXUS_GUARDRAILS_MAX_INPUT_CHARS", 0),
 		GuardrailDenyPatterns: env("NEXUS_GUARDRAILS_DENY_PATTERNS", ""),
 		GuardrailValidateJSON: envBool("NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT", false),
+
+		SelfCorrectionEnabled:    envBool("NEXUS_SELF_CORRECTION_ENABLED", false),
+		SelfCorrectionMaxRetries: envInt("NEXUS_SELF_CORRECTION_MAX_RETRIES", 1),
 	}
 }
 
