@@ -52,6 +52,11 @@ type Trace struct {
 	// Captured content (opt-in; may be empty when content capture is disabled).
 	InputMessages  string `json:"gen_ai.input.messages,omitempty"`
 	OutputMessages string `json:"gen_ai.output.messages,omitempty"`
+
+	// RAG eval inputs (from client nexus_eval block). JSON array of context
+	// strings; persisted for async eval and trace replay.
+	RetrievalContexts string `json:"nexus.eval.contexts,omitempty"`
+	EvalReference     string `json:"nexus.eval.reference,omitempty"`
 }
 
 // Recorder persists traces. Implementations must be non-blocking from the

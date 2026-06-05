@@ -152,6 +152,8 @@ The full suite runs four scripts (~40+ cases):
 | `test_zero_dep.sh` | Gateway without Postgres/ClickHouse/Redis (env keys only) |
 | `test_guardrails.sh` | Inline guardrails: PII/deny-pattern/length input blocking |
 | `test_eval_service.sh` | External Python eval service: contract, wiring, failure isolation |
+| `test_eval_persistence.sh` | Live completion → remote eval → ClickHouse (skips without provider key) |
+| `test_rag_eval.sh` | RAG `nexus_eval` context → eval sidecar contract |
 
 Run a single phase: `./scripts/test_phase2.sh`, `./scripts/test_phase234.sh`, etc.
 
@@ -219,8 +221,28 @@ export NEXUS_EVAL_SERVICE_METRICS=answer_relevancy,toxicity,bias
 
 Scores returned by the service land in the same `eval_scores` table (with
 `evaluator` = `deepeval`/`ragas`) and feed quality-aware routing like any other
-evaluator. Context-dependent metrics (`hallucination`, `ragas_faithfulness`) are
-skipped until retrieval contexts are plumbed through from the client.
+evaluator.
+
+### RAG eval context (`nexus_eval`)
+
+Pass optional retrieval data on `POST /v1/chat/completions`. The block is **never
+forwarded upstream** — it is stored on the trace and passed to the async eval
+worker only. When `contexts` are present, the worker automatically adds
+`hallucination` and `ragas_faithfulness` to the remote eval request.
+
+```bash
+curl -s localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer nxs_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "messages": [{"role": "user", "content": "What is the capital of France?"}],
+    "nexus_eval": {
+      "contexts": ["Paris is the capital of France."],
+      "reference": "Paris"
+    }
+  }'
+```
 
 ## Quality-aware routing (Phase 4)
 

@@ -353,6 +353,14 @@ func (h *Handler) newTrace(r *http.Request, req ChatCompletionRequest, providerN
 	if b, err := json.Marshal(req.Messages); err == nil {
 		t.InputMessages = string(b)
 	}
+	if req.NexusEval != nil {
+		if len(req.NexusEval.Contexts) > 0 {
+			if b, err := json.Marshal(req.NexusEval.Contexts); err == nil {
+				t.RetrievalContexts = string(b)
+			}
+		}
+		t.EvalReference = req.NexusEval.Reference
+	}
 	return t
 }
 
