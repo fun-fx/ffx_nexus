@@ -15,10 +15,10 @@ func TestLoadBalancingRotatesPrimary(t *testing.T) {
 	good := &stubProvider{name: "good", models: []string{"m-b"}, fail: false}
 	h := newTestHandler(bad, good)
 	h.SetRouter(stubRouter{chain: []string{"m-a", "m-b"}}, map[string][]string{"pool": {"m-a", "m-b"}})
-	h.SetLoadBalancing(balancer.NewRoundRobin())
+	h.SetLoadBalancing(balancer.NewWeightedRR())
 
 	var primaries []string
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 8; i++ {
 		rec := doChat(h, `{"model":"pool","messages":[{"role":"user","content":"hi"}]}`)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("call %d: want 200, got %d", i, rec.Code)
@@ -27,9 +27,14 @@ func TestLoadBalancingRotatesPrimary(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 		primaries = append(primaries, resp.Choices[0].Message.Content)
 	}
-	// stubProvider returns "ok from {name}" — primary rotation changes which provider answers first.
-	if primaries[0] == primaries[1] && primaries[1] == primaries[2] {
-		t.Fatalf("load balancing should rotate primary, got %v", primaries)
+	// stubProvider returns "ok from {name}" — weighted rotation still spreads the
+	// primary across providers, so not every answer should come from the same one.
+	uniq := map[string]bool{}
+	for _, p := range primaries {
+		uniq[p] = true
+	}
+	if len(uniq) < 2 {
+		t.Fatalf("load balancing should rotate primary across providers, got %v", primaries)
 	}
 }
 

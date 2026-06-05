@@ -31,10 +31,10 @@ func TestMemoryCacheHit(t *testing.T) {
 	vec := []float32{1, 0, 0}
 	resp := []byte(`{"choices":[{"message":{"content":"Paris"}}]}`)
 
-	if err := c.Store(ctx, "m", "q1", vec, resp); err != nil {
+	if err := c.Store(ctx, "org1", "m", "q1", vec, resp); err != nil {
 		t.Fatal(err)
 	}
-	hit, err := c.Lookup(ctx, "m", "q2", []float32{1, 0, 0})
+	hit, err := c.Lookup(ctx, "org1", "m", "q2", []float32{1, 0, 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,13 +43,36 @@ func TestMemoryCacheHit(t *testing.T) {
 	}
 }
 
+func TestMemoryCacheTenantIsolation(t *testing.T) {
+	c := NewMemory(Config{Threshold: 0.99, MaxEntriesPerModel: 10})
+	ctx := context.Background()
+	vec := []float32{1, 0, 0}
+	resp := []byte(`{"choices":[{"message":{"content":"secret"}}]}`)
+
+	if err := c.Store(ctx, "orgA", "m", "q", vec, resp); err != nil {
+		t.Fatal(err)
+	}
+	// Same prompt embedding, different tenant scope must not see orgA's entry.
+	hit, err := c.Lookup(ctx, "orgB", "m", "q", vec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit != nil {
+		t.Fatalf("tenant B must not read tenant A cache, got %+v", hit)
+	}
+	// Same tenant still hits.
+	if hit, _ := c.Lookup(ctx, "orgA", "m", "q", vec); hit == nil {
+		t.Fatal("same tenant should hit its own cache")
+	}
+}
+
 func TestMemoryCacheMiss(t *testing.T) {
 	c := NewMemory(Config{Threshold: 0.99})
 	ctx := context.Background()
 	vec := []float32{1, 0, 0}
-	_ = c.Store(ctx, "m", "q", vec, []byte(`{"ok":true}`))
+	_ = c.Store(ctx, "org1", "m", "q", vec, []byte(`{"ok":true}`))
 
-	hit, err := c.Lookup(ctx, "m", "other", []float32{0, 1, 0})
+	hit, err := c.Lookup(ctx, "org1", "m", "other", []float32{0, 1, 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +86,7 @@ func TestServiceLookupStore(t *testing.T) {
 	svc := NewService(mem, stubEmbedder{vec: []float32{0.6, 0.8, 0}}, Config{Enabled: true})
 	ctx := context.Background()
 
-	hit, vec, err := svc.Lookup(ctx, "gpt-4o-mini", "capital of France?")
+	hit, vec, err := svc.Lookup(ctx, "default", "gpt-4o-mini", "capital of France?")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +95,11 @@ func TestServiceLookupStore(t *testing.T) {
 	}
 
 	resp := []byte(`{"model":"gpt-4o-mini","choices":[{"message":{"content":"Paris"}}]}`)
-	if err := svc.Store(ctx, "gpt-4o-mini", "capital of France?", vec, resp); err != nil {
+	if err := svc.Store(ctx, "default", "gpt-4o-mini", "capital of France?", vec, resp); err != nil {
 		t.Fatal(err)
 	}
 
-	hit, _, err = svc.Lookup(ctx, "gpt-4o-mini", "what is the capital of France")
+	hit, _, err = svc.Lookup(ctx, "default", "gpt-4o-mini", "what is the capital of France")
 	if err != nil {
 		t.Fatal(err)
 	}
