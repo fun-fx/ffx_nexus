@@ -1,0 +1,7 @@
+# Example regression-eval dataset for `nexus-evalbatch` (JSON Lines).
+# Each line is one case. Provide "output" to evaluate a recorded answer, or omit
+# it and pass -gateway-url to generate the answer before scoring. Add "contexts"
+# (and optionally "reference") to enable RAG metrics (faithfulness/hallucination).
+{"id": "capital-france", "model": "gpt-4o-mini", "input": "What is the capital of France?", "output": "The capital of France is Paris.", "reference": "Paris"}
+{"id": "rag-grounded", "model": "gpt-4o-mini", "input": "When was the Eiffel Tower completed?", "output": "The Eiffel Tower was completed in 1889.", "reference": "1889", "contexts": ["The Eiffel Tower was completed in 1889 for the World's Fair in Paris."]}
+{"id": "summarize", "model": "gpt-4o-mini", "input": "Summarize: The cat sat on the mat and then went to sleep.", "output": "A cat sat on a mat and fell asleep."}

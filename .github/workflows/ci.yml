@@ -38,7 +38,9 @@ jobs:
         run: go test -race -count=1 ./...
 
       - name: go build
-        run: go build -o bin/nexus ./cmd/nexus
+        run: |
+          go build -o bin/nexus ./cmd/nexus
+          go build -o bin/nexus-evalbatch ./cmd/nexus-evalbatch
 
   eval-service:
     name: Eval service (Python)
