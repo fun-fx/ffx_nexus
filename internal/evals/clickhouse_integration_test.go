@@ -107,3 +107,55 @@ func TestRemoteEvalPersistsToClickHouse(t *testing.T) {
 	// Cleanup test rows (best-effort).
 	_ = conn.Exec(ctx, `ALTER TABLE eval_scores DELETE WHERE trace_id = ?`, traceID)
 }
+
+func TestRemoteEvalPersistsRAGScoresToClickHouse(t *testing.T) {
+	conn := openClickHouse(t)
+
+	traceID := fmt.Sprintf("it-rag-%d", time.Now().UnixNano())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"scores":[
+			{"evaluator":"ragas","metric":"ragas_faithfulness","score":0.87,"passed":true,"judge_model":"fake"}
+		]}`))
+	}))
+	defer srv.Close()
+
+	remote := NewRemoteEvaluator(RemoteConfig{BaseURL: srv.URL, Metrics: []string{"answer_relevancy"}})
+	w := NewWorker(Options{
+		Judges:          []Evaluator{remote},
+		Sink:            NewCHSink(conn),
+		JudgeSampleRate: 1.0,
+		Workers:         2,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	w.Record(observability.Trace{
+		TraceID:           traceID,
+		StatusCode:        200,
+		RequestModel:      "gemini-2.5-flash",
+		InputMessages:     `[{"role":"user","content":"Capital of France?"}]`,
+		OutputMessages:    "Paris",
+		RetrievalContexts: `["Paris is the capital of France."]`,
+		EvalReference:     "Paris",
+	})
+
+	_ = w.Close(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var metric string
+	for {
+		row := conn.QueryRow(ctx, `
+			SELECT metric FROM eval_scores
+			WHERE trace_id = ? AND metric = 'ragas_faithfulness'`, traceID)
+		if err := row.Scan(&metric); err == nil && metric == "ragas_faithfulness" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for ragas_faithfulness row")
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
+	_ = conn.Exec(ctx, `ALTER TABLE eval_scores DELETE WHERE trace_id = ?`, traceID)
+}

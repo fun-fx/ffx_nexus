@@ -17,8 +17,27 @@ type ChatCompletionRequest struct {
 	Stop        []string  `json:"stop,omitempty"`
 	Tools       []Tool    `json:"tools,omitempty"`
 	User        string    `json:"user,omitempty"`
+	// NexusEval carries optional RAG inputs for async evaluation only. Never
+	// forwarded to upstream providers — strip with ForProvider() before calling
+	// OpenAI-compatible adapters that marshal the full struct.
+	NexusEval *NexusEvalContext `json:"nexus_eval,omitempty"`
 	// Extra preserves unknown fields so we can forward provider-specific params.
 	Extra map[string]json.RawMessage `json:"-"`
+}
+
+// NexusEvalContext holds retrieval data for RAG metrics (hallucination,
+// faithfulness). The gateway stores this on the trace and passes it to the
+// async eval worker; it is not injected into the LLM prompt unless the client
+// already included the chunks in messages.
+type NexusEvalContext struct {
+	Contexts  []string `json:"contexts,omitempty"`  // retrieved document chunks
+	Reference string   `json:"reference,omitempty"` // ground-truth / expected answer
+}
+
+// ForProvider returns a copy safe to send upstream (Nexus-only fields removed).
+func (r ChatCompletionRequest) ForProvider() ChatCompletionRequest {
+	r.NexusEval = nil
+	return r
 }
 
 // Message is a single chat message.

@@ -87,7 +87,8 @@ Nexus sits in the same category as [Bifrost](https://www.getmaxim.ai/bifrost) an
 - **External eval service** (sampled, optional):
   - Python sidecar (`eval-service/`) running DeepEval + RAGAS via FastAPI/async.
   - Go `RemoteEvaluator` calls it over HTTP from the worker — out-of-band, sample-gated.
-  - Metrics: answer relevancy, toxicity, bias (trace-only); hallucination, faithfulness (when contexts supplied).
+  - Metrics: answer relevancy, toxicity, bias (trace-only); hallucination, faithfulness (when contexts supplied via `nexus_eval` on the request).
+  - **RAG context**: clients send `nexus_eval: { contexts, reference }` on chat completions; stored on traces (ClickHouse) and forwarded to the sidecar. Not sent upstream.
   - **Failure isolation**: a slow/down sidecar skips metrics and degrades to Go heuristics; the gateway hot path is unaffected.
   - Reuses the same local judge (Ollama/vLLM) by default; embeddings endpoint optional for RAGAS.
 - **Worker concurrency**: configurable via `NEXUS_EVAL_WORKERS` (default 4).
@@ -215,7 +216,6 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - Load balancing across providers (weighted/round-robin within a tier)
 - Semantic caching (Redis + embeddings)
 - Schema/JSON guardrails on the hot path (input/output structural validation)
-- Client-supplied retrieval contexts -> online RAG metrics (hallucination, faithfulness)
 - Regression evaluation datasets (offline batch eval via the Python service)
 - Non-streaming self-correction / retry based on eval scores
 - Credential rotation API
@@ -228,6 +228,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - Provider fallback: routing aliases try candidates best-first and fail over on upstream errors.
 - Inline guardrails (hot path): PII/regex/length input blocking (pre-upstream) and PII output redaction, synchronous and datastore-free.
 - External Python eval service: DeepEval + RAGAS sidecar wired via an async, sample-gated, failure-isolated `RemoteEvaluator` — richer metrics without touching the Go hot path.
+- RAG eval context: clients pass `nexus_eval.contexts` / `reference` on chat completions; stored on traces and forwarded to the eval sidecar for online hallucination/faithfulness metrics.
 
 ---
 
