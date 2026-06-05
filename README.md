@@ -153,6 +153,7 @@ The full suite runs four scripts (~40+ cases):
 | `test_guardrails.sh` | Inline guardrails: PII/deny-pattern/length input blocking |
 | `test_schema_guardrails.sh` | Schema/JSON output guardrail: wiring + live JSON roundtrip |
 | `test_self_correction.sh` | Structured-output self-correction: startup wiring |
+| `test_lb_cache.sh` | Route load balancing + semantic cache wiring and cache hit |
 | `test_eval_service.sh` | External Python eval service: contract, wiring, failure isolation |
 | `test_eval_batch.sh` | Offline regression eval batch: aggregation + baseline regression gate |
 | `test_eval_persistence.sh` | Live completion → remote eval → ClickHouse (skips without provider key) |
@@ -324,6 +325,58 @@ curl -s localhost:8080/v1/chat/completions \
 ```
 
 Inspect current routing stats: `GET /api/routing`.
+
+### Load balancing within routing tiers
+
+Quality-aware routing ranks candidates by eval quality, cost, and latency, but
+without load balancing the top-ranked model absorbs all primary traffic. When
+`NEXUS_ROUTE_LOAD_BALANCE=true`, the gateway **rotates the primary model with
+rank-weighted round-robin** among all quality-qualified candidates in a routing
+alias (`auto` or a named group): the best-ranked model still gets proportionally
+more primary traffic, while lower-ranked qualified models get a fair share.
+Selection is deterministic and smooth (nginx-style SWRR), so traffic stays
+balanced without thundering-herd spikes. Failover order for the remaining models
+is unchanged.
+
+Requires ClickHouse (for the quality router). Composes with
+`NEXUS_ROUTE_GROUPS` and virtual-key `min_quality_score`.
+
+### Semantic cache
+
+Near-duplicate prompts can skip the upstream LLM entirely. When
+`NEXUS_SEMANTIC_CACHE_ENABLED=true`, the gateway embeds the prompt (via an
+OpenAI-compatible `/v1/embeddings` endpoint), searches a **Redis-backed cache**
+for a stored completion above a cosine-similarity threshold, and returns it on
+hit. Misses are stored after a successful upstream call.
+
+- Requires `NEXUS_REDIS_URL` and `NEXUS_EMBEDDINGS_URL`.
+- Non-streaming only; skips tool calls, sampled requests (any non-zero
+  `temperature`), and `nexus_eval` requests. Only deterministic requests
+  (temperature unset or `0`) are cached, so a single sampled answer is never
+  replayed as if canonical.
+- **Tenant-isolated**: cache entries are namespaced per org / virtual key
+  (`nexus:sem:{scope}:{model}`), so one tenant never receives another tenant's
+  cached response.
+- **Alias-aware**: keyed by the client-requested model. When the request targets
+  a routing alias, the cache key is the alias (not the concrete model), so
+  load-balancer rotation across quality-interchangeable members does not
+  fragment the cache.
+- **Bounded hot path**: the lookup embedding is capped by
+  `NEXUS_EMBEDDINGS_TIMEOUT` (default 5s). A slow or unhealthy embeddings
+  endpoint degrades to a normal upstream call instead of stalling the request,
+  and lookup/store errors are logged.
+- Hits are traced as `cache_hit: true` (zero upstream cost on the trace).
+- Tunables: `NEXUS_SEMANTIC_CACHE_TTL` (default 24h),
+  `NEXUS_SEMANTIC_CACHE_THRESHOLD` (default 0.92),
+  `NEXUS_SEMANTIC_CACHE_MAX_ENTRIES` per model (default 500).
+
+```bash
+NEXUS_SEMANTIC_CACHE_ENABLED=true \
+NEXUS_REDIS_URL=redis://localhost:6379/0 \
+NEXUS_EMBEDDINGS_URL=http://localhost:11434/v1 \
+NEXUS_EMBEDDINGS_MODEL=nomic-embed-text \
+  ./bin/nexus
+```
 
 ## Inline guardrails
 
