@@ -22,6 +22,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/gateway/providers"
+	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
@@ -149,6 +150,25 @@ func main() {
 	// Gateway server.
 	gwHandler := gateway.NewHandler(reg, recorder, lim, log)
 
+	// Inline guardrails (hot path): block disallowed prompts before the upstream
+	// call and optionally redact PII from responses.
+	if guard := guardrails.New(guardrails.Config{
+		Enabled:         cfg.GuardrailsEnabled,
+		BlockPIIInput:   cfg.GuardrailBlockPIIIn,
+		RedactPIIOutput: cfg.GuardrailRedactPIIOut,
+		MaxInputChars:   cfg.GuardrailMaxInputChrs,
+		DenyPatterns:    splitDenyPatterns(cfg.GuardrailDenyPatterns),
+	}); guard.Active() {
+		gwHandler.SetGuard(guard)
+		log.Info("inline guardrails enabled",
+			"block_pii_input", cfg.GuardrailBlockPIIIn,
+			"redact_pii_output", cfg.GuardrailRedactPIIOut,
+			"max_input_chars", cfg.GuardrailMaxInputChrs,
+			"deny_patterns", len(splitDenyPatterns(cfg.GuardrailDenyPatterns)))
+	} else {
+		log.Info("inline guardrails disabled (set NEXUS_GUARDRAILS_ENABLED=true)")
+	}
+
 	// Quality-aware routing (Phase 4): blend rolling eval quality with cost and
 	// latency to pick the best model for routing aliases ("auto" or groups).
 	var modelRouter *router.Router
@@ -207,6 +227,18 @@ func main() {
 		_ = redisLim.Close()
 	}
 	wg.Wait()
+}
+
+// splitDenyPatterns parses a semicolon-separated list of regex patterns,
+// trimming whitespace and dropping empty entries.
+func splitDenyPatterns(spec string) []string {
+	var out []string
+	for _, p := range strings.Split(spec, ";") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // parseRouteGroups parses a spec like

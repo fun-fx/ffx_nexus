@@ -206,7 +206,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 - Load balancing across providers (weighted/round-robin within a tier)
 - Semantic caching (Redis + embeddings)
-- Sub-ms inline guardrails (PII/regex/schema on hot path)
+- Schema/JSON guardrails on the hot path (input/output structural validation)
 - Regression evaluation datasets
 - Non-streaming self-correction / retry based on eval scores
 - Credential rotation API
@@ -217,6 +217,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - Eval-driven routing loop: heuristic safety pass rate now feeds model selection alongside judge quality.
 - `min_quality_score` enforcement on routing aliases.
 - Provider fallback: routing aliases try candidates best-first and fail over on upstream errors.
+- Inline guardrails (hot path): PII/regex/length input blocking (pre-upstream) and PII output redaction, synchronous and datastore-free.
 
 ---
 
