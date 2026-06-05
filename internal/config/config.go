@@ -70,6 +70,19 @@ type Config struct {
 	SelfCorrectionEnabled    bool
 	SelfCorrectionMaxRetries int
 
+	// Load balancing within routing tiers (round-robin primary among qualified models).
+	RouteLoadBalance bool
+
+	// Semantic cache (Redis + embeddings). Requires Redis and an embeddings endpoint.
+	SemanticCacheEnabled    bool
+	SemanticCacheTTL        time.Duration
+	SemanticCacheThreshold  float64
+	SemanticCacheMaxEntries int
+	EmbeddingsURL           string
+	EmbeddingsModel         string
+	EmbeddingsAPIKey        string
+	EmbeddingsTimeout       time.Duration
+
 	// Observability
 	OTLPEnabled bool
 
@@ -120,6 +133,17 @@ func Load() Config {
 
 		SelfCorrectionEnabled:    envBool("NEXUS_SELF_CORRECTION_ENABLED", false),
 		SelfCorrectionMaxRetries: envInt("NEXUS_SELF_CORRECTION_MAX_RETRIES", 1),
+
+		RouteLoadBalance: envBool("NEXUS_ROUTE_LOAD_BALANCE", false),
+
+		SemanticCacheEnabled:    envBool("NEXUS_SEMANTIC_CACHE_ENABLED", false),
+		SemanticCacheTTL:        envDuration("NEXUS_SEMANTIC_CACHE_TTL", 24*time.Hour),
+		SemanticCacheThreshold:  envFloat("NEXUS_SEMANTIC_CACHE_THRESHOLD", 0.92),
+		SemanticCacheMaxEntries: envInt("NEXUS_SEMANTIC_CACHE_MAX_ENTRIES", 500),
+		EmbeddingsURL:           env("NEXUS_EMBEDDINGS_URL", ""),
+		EmbeddingsModel:         env("NEXUS_EMBEDDINGS_MODEL", "text-embedding-3-small"),
+		EmbeddingsAPIKey:        env("NEXUS_EMBEDDINGS_API_KEY", ""),
+		EmbeddingsTimeout:       envDuration("NEXUS_EMBEDDINGS_TIMEOUT", 15*time.Second),
 	}
 }
 
