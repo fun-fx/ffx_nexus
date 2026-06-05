@@ -237,17 +237,21 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		trace.RequestModel = model
 		attemptStart := time.Now()
 
-		// Semantic cache: only on the primary candidate, non-streaming, eligible requests.
+		// Semantic cache: only on the primary candidate, non-streaming, eligible
+		// requests. Keyed by the client-requested model (req.Model), not the
+		// resolved concrete model, so load-balancer rotation across the
+		// quality-interchangeable members of a routing alias does not fragment the
+		// cache — any qualified member's response can serve a near-duplicate prompt.
 		var embedVec []float32
 		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
 			scope := cacheScope(r.Context())
 			prompt := promptText(req.Messages)
-			hit, vec, err := h.scache.Lookup(r.Context(), scope, model, prompt)
+			hit, vec, err := h.scache.Lookup(r.Context(), scope, req.Model, prompt)
 			switch {
 			case err != nil:
 				// Cache/embedding failures must never fail the request; degrade to
 				// a normal upstream call but surface the error for observability.
-				h.log.Warn("semantic cache lookup failed", "model", model, "err", err)
+				h.log.Warn("semantic cache lookup failed", "model", req.Model, "err", err)
 			case hit != nil:
 				var cached ChatCompletionResponse
 				if json.Unmarshal(hit.ResponseJSON, &cached) == nil {
@@ -345,8 +349,8 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
 		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
 			if b, err := json.Marshal(resp); err == nil {
-				if err := h.scache.Store(r.Context(), cacheScope(r.Context()), model, promptText(req.Messages), embedVec, b); err != nil {
-					h.log.Warn("semantic cache store failed", "model", model, "err", err)
+				if err := h.scache.Store(r.Context(), cacheScope(r.Context()), req.Model, promptText(req.Messages), embedVec, b); err != nil {
+					h.log.Warn("semantic cache store failed", "model", req.Model, "err", err)
 				}
 			}
 		}
