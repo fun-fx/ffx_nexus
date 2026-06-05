@@ -152,6 +152,7 @@ The full suite runs four scripts (~40+ cases):
 | `test_zero_dep.sh` | Gateway without Postgres/ClickHouse/Redis (env keys only) |
 | `test_guardrails.sh` | Inline guardrails: PII/deny-pattern/length input blocking |
 | `test_schema_guardrails.sh` | Schema/JSON output guardrail: wiring + live JSON roundtrip |
+| `test_self_correction.sh` | Structured-output self-correction: startup wiring |
 | `test_eval_service.sh` | External Python eval service: contract, wiring, failure isolation |
 | `test_eval_batch.sh` | Offline regression eval batch: aggregation + baseline regression gate |
 | `test_eval_persistence.sh` | Live completion → remote eval → ClickHouse (skips without provider key) |
@@ -389,6 +390,37 @@ curl -s localhost:8080/v1/chat/completions \
       }
     }
   }'
+```
+
+### Structured-output self-correction
+
+Rather than failing a malformed JSON response outright, the gateway repairs it.
+When the schema guardrail rejects a non-streaming JSON response, Nexus runs a
+two-stage recovery:
+
+1. **Free local repair (always on):** strip a markdown ```` ```json ```` fence or
+   surrounding prose ("Sure, here you go: {...}") and re-validate — no extra
+   upstream call. This handles the most common failure modes at zero cost.
+2. **Paid self-correction (opt-in):** if local repair isn't enough and
+   `NEXUS_SELF_CORRECTION_ENABLED=true`, append the rejected output plus a
+   correction instruction and retry the **same** model up to
+   `NEXUS_SELF_CORRECTION_MAX_RETRIES` times (default 1).
+
+If a stage passes validation the response is returned with `200`; otherwise it
+falls back to `422 schema_validation_failed`.
+
+- Non-streaming only (a streamed response can't be retried after bytes are sent).
+- Requires `NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT=true` to supply the rejection
+  signal. Token usage from every paid attempt is summed into the trace cost.
+- Outcomes are surfaced on the trace as `guardrail_action`: `json_repaired`,
+  `self_corrected:N`, or both (`json_repaired,self_corrected:N`).
+
+```bash
+NEXUS_GUARDRAILS_ENABLED=true \
+NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT=true \
+NEXUS_SELF_CORRECTION_ENABLED=true \
+NEXUS_SELF_CORRECTION_MAX_RETRIES=2 \
+  ./bin/nexus
 ```
 
 ## CI/CD

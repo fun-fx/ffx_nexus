@@ -189,6 +189,14 @@ func main() {
 		log.Info("inline guardrails disabled (set NEXUS_GUARDRAILS_ENABLED=true)")
 	}
 
+	// Structured-output self-correction: retry rejected JSON responses with a
+	// correction prompt before failing. Requires the schema guardrail to supply
+	// the rejection signal (NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT=true).
+	if cfg.SelfCorrectionEnabled && cfg.SelfCorrectionMaxRetries > 0 {
+		gwHandler.SetSelfCorrection(cfg.SelfCorrectionMaxRetries)
+		log.Info("structured-output self-correction enabled", "max_retries", cfg.SelfCorrectionMaxRetries)
+	}
+
 	// Quality-aware routing (Phase 4): blend rolling eval quality with cost and
 	// latency to pick the best model for routing aliases ("auto" or groups).
 	var modelRouter *router.Router
