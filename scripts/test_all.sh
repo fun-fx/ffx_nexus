@@ -13,6 +13,7 @@ SCRIPTS=(
   test_guardrails.sh
   test_schema_guardrails.sh
   test_self_correction.sh
+  test_lb_cache.sh
   test_eval_service.sh
   test_eval_persistence.sh
   test_rag_eval.sh
