@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-06-08T05:02:20.297266Z",
+  "dataset": "datasets/regression_example.jsonl",
+  "num_cases": 3,
+  "num_errors": 0,
+  "metrics": {
+    "completeness": {
+      "metric": "completeness",
+      "count": 3,
+      "mean_score": 1,
+      "min_score": 1,
+      "max_score": 1,
+      "pass_rate": 1
+    },
+    "pii_leak": {
+      "metric": "pii_leak",
+      "count": 3,
+      "mean_score": 1,
+      "min_score": 1,
+      "max_score": 1,
+      "pass_rate": 1
+    }
+  }
+}
