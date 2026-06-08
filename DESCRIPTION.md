@@ -214,10 +214,11 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 ## Roadmap (Not Yet Implemented)
 
-- Open-core packaging: Helm chart, OSS vs commercial feature split, single-command self-hosting (Phase 5)
+- Open-core packaging: OSS vs commercial feature split, single-command self-hosting refinements (Phase 5, in progress)
 
 ### Recently completed
 
+- Helm chart (`deploy/helm/nexus`): single-command Kubernetes deploy of the gateway + console from one container, with `/healthz` liveness/readiness probes, a non-root hardened pod (read-only rootfs, dropped caps), config split into a ConfigMap (non-secret `NEXUS_*`) and a Secret (provider keys, master key, datastore DSNs) or a referenced `existingSecret`, toggleable external Postgres/ClickHouse/Redis wiring, and optional Ingress / HPA / PodDisruptionBudget. Defaults to zero-dependency mode so `helm install` works out of the box.
 - Credential rotation API: `POST /api/credentials/{id}/rotate` re-encrypts a new secret in place (same credential id/provider/name), records `rotated_at` and a `credential.rotate` audit event, and hot-reloads the affected provider so the new key takes effect without a gateway restart.
 
 - Eval-driven routing loop: heuristic safety pass rate now feeds model selection alongside judge quality.

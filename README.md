@@ -59,6 +59,43 @@ cd web && npm install && npm run dev   # http://localhost:5173
 The gateway boots even with no API keys or ClickHouse configured (traces are
 then live-only). Set keys/URL to enable providers and persistence.
 
+## Deploy to Kubernetes (Helm)
+
+A first-party Helm chart lives in `deploy/helm/nexus`. It deploys the gateway
+(`:8080`) and console (`:8081`) from a single container, with liveness/readiness
+probes on `/healthz`, a non-root hardened pod, and optional Ingress / HPA /
+PodDisruptionBudget. The chart does **not** run databases itself — it connects
+to external/managed Postgres, ClickHouse, and Redis (toggle each on).
+
+```bash
+# Zero-dependency: just the gateway + console (point a provider key at it).
+helm install nexus deploy/helm/nexus \
+  --namespace nexus --create-namespace \
+  --set secrets.openaiApiKey=sk-...
+
+# Port-forward and try it
+kubectl -n nexus port-forward svc/nexus 8080:8080 8081:8081
+curl -s localhost:8080/healthz
+```
+
+Enable the control plane, persistence, and cache by wiring external datastores:
+
+```bash
+helm install nexus deploy/helm/nexus -n nexus --create-namespace \
+  --set existingSecret=nexus-secrets \
+  --set dependencies.postgres.enabled=true \
+  --set dependencies.clickhouse.enabled=true \
+  --set dependencies.redis.enabled=true
+```
+
+For production, create a Secret out-of-band and reference it with
+`existingSecret` (keys: `OPENAI_API_KEY`, `NEXUS_MASTER_KEY`,
+`NEXUS_POSTGRES_URL`, `NEXUS_CLICKHOUSE_URL`, `NEXUS_REDIS_URL`, …) instead of
+putting secrets in `values.yaml`. All non-secret settings map to `config.*` in
+`values.yaml` (routing, guardrails, semantic cache, self-correction).
+
+Container images are published to `ghcr.io/fun-fx/ffx_nexus` on every `v*` tag.
+
 ## Usage
 
 OpenAI-compatible — point any OpenAI SDK at `http://localhost:8080/v1`:
