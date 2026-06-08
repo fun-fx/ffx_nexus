@@ -129,7 +129,18 @@ curl -s localhost:8080/v1/chat/completions \
 # register an upstream provider key (encrypted at rest)
 curl -s -X POST localhost:8081/api/credentials \
   -d '{"provider":"openai","name":"prod","secret":"sk-..."}'
+
+# rotate a provider key in place (re-encrypted; same credential id)
+curl -s -X POST localhost:8081/api/credentials/<id>/rotate \
+  -d '{"secret":"sk-new-..."}'
 ```
+
+**Credential rotation** swaps the stored secret without recreating the
+credential: the new secret is re-encrypted under `NEXUS_MASTER_KEY`, the
+credential keeps its id/provider/name (so references stay valid), `rotated_at`
+is recorded, and the audit log captures a `credential.rotate` event. The gateway
+**hot-reloads** the affected provider so the new key takes effect without a
+restart. Returns the updated metadata only (never the plaintext).
 
 Without Postgres, the gateway runs in zero-dependency mode: no key enforcement,
 provider keys read from env.
@@ -146,7 +157,7 @@ The full suite runs four scripts (~40+ cases):
 
 | Script | Coverage |
 | --- | --- |
-| `test_phase2.sh` | Virtual keys, 401/403, encrypted credentials, audit log, DB reload on restart, revoke/delete |
+| `test_phase2.sh` | Virtual keys, 401/403, encrypted credentials, audit log, DB reload on restart, rotation (hot-reload), revoke/delete |
 | `test_phase234.sh` | Rate limits (429), budgets (402), async evals, streaming, quality-aware routing |
 | `test_eval_routing.sh` | `min_quality_score`, `eff_quality` stats, provider fallback |
 | `test_zero_dep.sh` | Gateway without Postgres/ClickHouse/Redis (env keys only) |
@@ -168,7 +179,7 @@ local runs stay green; re-run after quota resets for full coverage.
 ### Control plane API
 
 - `GET/POST /api/keys`, `DELETE /api/keys/{id}` — virtual keys
-- `GET/POST /api/credentials`, `DELETE /api/credentials/{id}` — provider secrets
+- `GET/POST /api/credentials`, `POST /api/credentials/{id}/rotate`, `DELETE /api/credentials/{id}` — provider secrets
 
 ## Rate limits & budgets (Phase 2)
 

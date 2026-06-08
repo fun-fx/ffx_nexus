@@ -29,14 +29,15 @@ type VirtualKey struct {
 // ProviderCredential is an upstream provider API key, stored encrypted. The
 // plaintext secret is returned only once, at creation.
 type ProviderCredential struct {
-	ID          string    `json:"id"`
-	OrgID       string    `json:"org_id"`
-	Provider    string    `json:"provider"`
-	Name        string    `json:"name"`
-	BaseURL     string    `json:"base_url,omitempty"`
-	SecretLast4 string    `json:"secret_last4"`
-	Enabled     bool      `json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	OrgID       string     `json:"org_id"`
+	Provider    string     `json:"provider"`
+	Name        string     `json:"name"`
+	BaseURL     string     `json:"base_url,omitempty"`
+	SecretLast4 string     `json:"secret_last4"`
+	Enabled     bool       `json:"enabled"`
+	CreatedAt   time.Time  `json:"created_at"`
+	RotatedAt   *time.Time `json:"rotated_at,omitempty"`
 }
 
 // keyAlphabet for the random body of a virtual key (Crockford-ish base32).

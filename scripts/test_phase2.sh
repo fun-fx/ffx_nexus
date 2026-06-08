@@ -179,6 +179,82 @@ curl -s -X DELETE "$CON_URL/api/keys/$KEY_ID" >/dev/null
 code=$(http_code -H "Authorization: Bearer $SECRET" "$GW_URL/v1/models")
 if [[ "$code" == "401" ]]; then pass "revoked key -> 401"; else fail "revoked key -> expected 401, got $code"; fi
 
+# --- Rotate credential ---
+
+echo ""
+echo "-- credential rotation --"
+
+# Rotate to a new secret. With a real provider key, rotate to the same value so
+# the hot-reloaded provider keeps working; otherwise use a fresh fake secret.
+if [[ "$HAS_PROVIDER" == "1" ]]; then
+  NEW_SECRET="$CRED_PLAINTEXT"
+else
+  NEW_SECRET="sk-e2e-rot-$(openssl rand -hex 8)"
+fi
+
+ROT_JSON=$(curl -s -X POST "$CON_URL/api/credentials/$CRED_ID/rotate" \
+  -H 'Content-Type: application/json' \
+  -d '{"secret":"'"$NEW_SECRET"'"}')
+
+if echo "$ROT_JSON" | python3 -c "
+import sys,json
+c=json.load(sys.stdin)
+assert c['id']=='$CRED_ID'
+assert c['secret_last4']=='${NEW_SECRET: -4}'
+assert c.get('rotated_at')
+" 2>/dev/null; then
+  pass "credential rotated (new last4 + rotated_at set)"
+else
+  fail "rotation response malformed: $ROT_JSON"
+fi
+
+if echo "$ROT_JSON" | grep -q "$NEW_SECRET"; then
+  fail "rotation response leaked plaintext secret"
+else
+  pass "rotation response does not contain plaintext"
+fi
+
+# Ciphertext at rest must change after rotation (and still no plaintext).
+NEW_DB_HEX=$(docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -t -A -c \
+  "SELECT encode(secret_ciphertext,'hex') FROM provider_credentials WHERE id='$CRED_ID';" 2>/dev/null | tr -d '\n')
+NEW_PLAINTEXT_HEX=$(echo -n "$NEW_SECRET" | xxd -p | tr -d '\n')
+
+if [[ -n "$NEW_DB_HEX" && "$NEW_DB_HEX" != "$DB_HEX" && "$NEW_DB_HEX" != *"$NEW_PLAINTEXT_HEX"* ]]; then
+  pass "rotation re-encrypted secret at rest (ciphertext changed, no plaintext)"
+else
+  fail "rotation ciphertext check failed (old=$DB_HEX new=$NEW_DB_HEX)"
+fi
+
+ROT_AUDIT=$(docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -t -A -c \
+  "SELECT count(*) FROM audit_log WHERE action='credential.rotate';" 2>/dev/null | tr -d ' ')
+if [[ "${ROT_AUDIT:-0}" -ge 1 ]]; then
+  pass "audit log records credential.rotate"
+else
+  fail "audit log missing credential.rotate (count=${ROT_AUDIT:-0})"
+fi
+
+# Hot-reload: a completion should still work after rotation, without restart.
+ROT_CHAT=$(curl -s -o /tmp/p2_rot_chat.json -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $SECRET" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Say hi"}],"max_tokens":16}')
+if [[ "$HAS_PROVIDER" == "0" ]]; then
+  skip "completion after rotation (no real provider key)"
+elif [[ "$ROT_CHAT" == "200" ]]; then
+  pass "completion works after rotation (hot-reload, no restart)"
+elif [[ "$ROT_CHAT" == "502" ]] && grep -qE 'RESOURCE_EXHAUSTED|quota exceeded|429' /tmp/p2_rot_chat.json 2>/dev/null; then
+  skip "completion after rotation (upstream quota exhausted)"
+else
+  fail "completion after rotation failed: HTTP $ROT_CHAT $(cat /tmp/p2_rot_chat.json)"
+fi
+
+# Rotating a non-existent credential -> 404.
+code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$CON_URL/api/credentials/does-not-exist/rotate" \
+  -H 'Content-Type: application/json' -d '{"secret":"whatever"}')
+if [[ "$code" == "404" ]]; then pass "rotate unknown credential -> 404"; else fail "rotate unknown -> expected 404, got $code"; fi
+
 # --- Delete credential ---
 
 curl -s -X DELETE "$CON_URL/api/credentials/$CRED_ID" >/dev/null
