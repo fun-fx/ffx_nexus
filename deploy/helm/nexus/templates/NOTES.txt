@@ -1,0 +1,40 @@
+Nexus has been deployed.
+
+Release:   {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Image:     {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+
+Endpoints (Service {{ include "nexus.fullname" . }}):
+  - Gateway (OpenAI-compatible API): port {{ .Values.ports.gateway }}
+  - Console (dashboard/admin API):   port {{ .Values.ports.console }}
+
+Try it locally with port-forward:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "nexus.fullname" . }} 8080:{{ .Values.ports.gateway }} 8081:{{ .Values.ports.console }}
+
+  # health
+  curl -s localhost:8080/healthz
+
+  # chat completion (needs a provider key configured)
+  curl -s localhost:8080/v1/chat/completions \
+    -H 'content-type: application/json' \
+    -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
+
+Mode:
+{{- if and (not .Values.dependencies.postgres.enabled) (not .Values.dependencies.clickhouse.enabled) (not .Values.dependencies.redis.enabled) }}
+  Running in ZERO-DEPENDENCY mode (no Postgres/ClickHouse/Redis).
+  Enable dependencies in values.yaml to turn on the control plane, trace
+  persistence, rate limiting, and the semantic cache.
+{{- else }}
+  Dependencies enabled:
+  {{- if .Values.dependencies.postgres.enabled }} postgres{{ end }}
+  {{- if .Values.dependencies.clickhouse.enabled }} clickhouse{{ end }}
+  {{- if .Values.dependencies.redis.enabled }} redis{{ end }}
+{{- end }}
+
+{{- if and (not .Values.existingSecret) (not .Values.secrets.openaiApiKey) (not .Values.secrets.anthropicApiKey) (not .Values.secrets.geminiApiKey) }}
+
+WARNING: No provider API keys and no existingSecret were set. The gateway will
+start, but chat completions will fail until you supply a key (via secrets.* or
+existingSecret) or register one through the credential store.
+{{- end }}

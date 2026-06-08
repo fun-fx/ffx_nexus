@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nexus.fullname" . }}
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+data:
+  {{- with .Values.config.gatewayAddr }}
+  NEXUS_GATEWAY_ADDR: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.consoleAddr }}
+  NEXUS_CONSOLE_ADDR: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.upstreamTimeout }}
+  NEXUS_UPSTREAM_TIMEOUT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.openaiBaseUrl }}
+  OPENAI_BASE_URL: {{ . | quote }}
+  {{- end }}
+
+  {{- /* Quality-aware routing */}}
+  {{- with .Values.config.routeGroups }}
+  NEXUS_ROUTE_GROUPS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.routeWQuality }}
+  NEXUS_ROUTE_W_QUALITY: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.routeWCost }}
+  NEXUS_ROUTE_W_COST: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.routeWLatency }}
+  NEXUS_ROUTE_W_LATENCY: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.routeWindow }}
+  NEXUS_ROUTE_WINDOW: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.routeRefresh }}
+  NEXUS_ROUTE_REFRESH: {{ . | quote }}
+  {{- end }}
+  NEXUS_ROUTE_LOAD_BALANCE: {{ .Values.config.routeLoadBalance | quote }}
+
+  {{- /* Inline guardrails */}}
+  NEXUS_GUARDRAILS_ENABLED: {{ .Values.config.guardrails.enabled | quote }}
+  NEXUS_GUARDRAILS_BLOCK_PII_INPUT: {{ .Values.config.guardrails.blockPiiInput | quote }}
+  NEXUS_GUARDRAILS_REDACT_PII_OUTPUT: {{ .Values.config.guardrails.redactPiiOutput | quote }}
+  NEXUS_GUARDRAILS_MAX_INPUT_CHARS: {{ .Values.config.guardrails.maxInputChars | quote }}
+  {{- with .Values.config.guardrails.denyPatterns }}
+  NEXUS_GUARDRAILS_DENY_PATTERNS: {{ . | quote }}
+  {{- end }}
+  NEXUS_GUARDRAILS_VALIDATE_JSON_OUTPUT: {{ .Values.config.guardrails.validateJsonOutput | quote }}
+
+  {{- /* Self-correction */}}
+  NEXUS_SELF_CORRECTION_ENABLED: {{ .Values.config.selfCorrection.enabled | quote }}
+  NEXUS_SELF_CORRECTION_MAX_RETRIES: {{ .Values.config.selfCorrection.maxRetries | quote }}
+
+  {{- /* Local SLM judge */}}
+  {{- with .Values.config.judge.baseUrl }}
+  NEXUS_JUDGE_BASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.judge.model }}
+  NEXUS_JUDGE_MODEL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.judge.sampleRate }}
+  NEXUS_EVAL_SAMPLE_RATE: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.judge.workers }}
+  NEXUS_EVAL_WORKERS: {{ . | quote }}
+  {{- end }}
+
+  {{- /* External Python eval sidecar */}}
+  {{- with .Values.config.evalService.url }}
+  NEXUS_EVAL_SERVICE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.evalService.metrics }}
+  NEXUS_EVAL_SERVICE_METRICS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.evalService.timeout }}
+  NEXUS_EVAL_SERVICE_TIMEOUT: {{ . | quote }}
+  {{- end }}
+
+  {{- /* Semantic cache */}}
+  NEXUS_SEMANTIC_CACHE_ENABLED: {{ .Values.config.semanticCache.enabled | quote }}
+  {{- with .Values.config.semanticCache.ttl }}
+  NEXUS_SEMANTIC_CACHE_TTL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.semanticCache.threshold }}
+  NEXUS_SEMANTIC_CACHE_THRESHOLD: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.semanticCache.maxEntries }}
+  NEXUS_SEMANTIC_CACHE_MAX_ENTRIES: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.embeddings.url }}
+  NEXUS_EMBEDDINGS_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.embeddings.model }}
+  NEXUS_EMBEDDINGS_MODEL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.embeddings.timeout }}
+  NEXUS_EMBEDDINGS_TIMEOUT: {{ . | quote }}
+  {{- end }}
+
+  NEXUS_OTLP_ENABLED: {{ .Values.config.otlpEnabled | quote }}
