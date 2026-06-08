@@ -183,7 +183,7 @@ func (s *Store) ListCredentials(ctx context.Context, orgID string) ([]ProviderCr
 		orgID = "default"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, provider, name, base_url, secret_last4, enabled, created_at
+		SELECT id, org_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at
 		FROM provider_credentials WHERE org_id = $1 ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		return nil, err
@@ -193,12 +193,46 @@ func (s *Store) ListCredentials(ctx context.Context, orgID string) ([]ProviderCr
 	var out []ProviderCredential
 	for rows.Next() {
 		var c ProviderCredential
-		if err := rows.Scan(&c.ID, &c.OrgID, &c.Provider, &c.Name, &c.BaseURL, &c.SecretLast4, &c.Enabled, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.OrgID, &c.Provider, &c.Name, &c.BaseURL, &c.SecretLast4, &c.Enabled, &c.CreatedAt, &c.RotatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// RotateCredential replaces the secret of an existing credential in place,
+// re-encrypting it under the master key and recording the rotation time. The
+// credential keeps its ID, provider, name, and base URL so existing references
+// (and registered providers) stay valid — only the secret material changes.
+// Returns the updated metadata (never the plaintext).
+func (s *Store) RotateCredential(ctx context.Context, orgID, id, newSecret string) (ProviderCredential, error) {
+	if s.cipher == nil {
+		return ProviderCredential{}, crypto.ErrNoMasterKey
+	}
+	if orgID == "" {
+		orgID = "default"
+	}
+	ct, err := s.cipher.Encrypt([]byte(newSecret))
+	if err != nil {
+		return ProviderCredential{}, err
+	}
+	var c ProviderCredential
+	err = s.pool.QueryRow(ctx, `
+		UPDATE provider_credentials
+		SET secret_ciphertext = $1, secret_last4 = $2, rotated_at = now()
+		WHERE id = $3 AND org_id = $4
+		RETURNING id, org_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at`,
+		ct, Last4(newSecret), id, orgID).Scan(
+		&c.ID, &c.OrgID, &c.Provider, &c.Name, &c.BaseURL, &c.SecretLast4, &c.Enabled, &c.CreatedAt, &c.RotatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ProviderCredential{}, ErrNotFound
+	}
+	if err != nil {
+		return ProviderCredential{}, err
+	}
+	s.audit(ctx, orgID, "credential.rotate", c.ID, fmt.Sprintf("%s/%s", c.Provider, c.Name))
+	return c, nil
 }
 
 // DecryptedCredential is a credential with its plaintext secret, used internally

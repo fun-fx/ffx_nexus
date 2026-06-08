@@ -160,6 +160,7 @@ Authentication: `Authorization: Bearer <virtual_key>` (when Postgres is configur
 | `GET/POST` | `/api/keys` | Virtual key management |
 | `DELETE` | `/api/keys/{id}` | Revoke virtual key |
 | `GET/POST` | `/api/credentials` | Provider credential management |
+| `POST` | `/api/credentials/{id}/rotate` | Rotate a provider secret (re-encrypt, hot-reload) |
 | `DELETE` | `/api/credentials/{id}` | Delete credential |
 
 ---
@@ -213,10 +214,11 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 ## Roadmap (Not Yet Implemented)
 
-- Credential rotation API
 - Open-core packaging: Helm chart, OSS vs commercial feature split, single-command self-hosting (Phase 5)
 
 ### Recently completed
+
+- Credential rotation API: `POST /api/credentials/{id}/rotate` re-encrypts a new secret in place (same credential id/provider/name), records `rotated_at` and a `credential.rotate` audit event, and hot-reloads the affected provider so the new key takes effect without a gateway restart.
 
 - Eval-driven routing loop: heuristic safety pass rate now feeds model selection alongside judge quality.
 - `min_quality_score` enforcement on routing aliases.
