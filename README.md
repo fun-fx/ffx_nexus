@@ -295,6 +295,24 @@ go build -o bin/nexus-evalbatch ./cmd/nexus-evalbatch
   -baseline baseline.json -tolerance 0.05
 ```
 
+**Evaluators**: `-evaluator remote` (default) scores via the Python eval service
+(DeepEval/RAGAS, needs a judge LLM). `-evaluator heuristic` scores locally with
+the built-in LLM-free heuristics (`pii_leak`, `completeness`) — fully
+deterministic and dependency-free, so it runs **hermetically in CI**:
+
+```bash
+./bin/nexus-evalbatch \
+  -dataset datasets/regression_example.jsonl \
+  -evaluator heuristic \
+  -baseline datasets/regression_baseline.json -tolerance 0.05
+```
+
+The CI **eval regression gate** (`.github/workflows/ci.yml`) runs exactly this
+on every PR against the committed `datasets/regression_baseline.json`, failing
+the build on any quality regression — no provider keys or eval service required.
+Regenerate the baseline with `-out datasets/regression_baseline.json` when an
+intended change shifts scores.
+
 Key flags: `-metrics` (comma-separated ids), `-gateway-url`/`-api-key`/`-gen-model`
 (generate missing outputs), `-concurrency`, `-timeout`, `-detail` (per-case scores
 in the JSON report). `-service-url` defaults to `NEXUS_EVAL_SERVICE_URL`.

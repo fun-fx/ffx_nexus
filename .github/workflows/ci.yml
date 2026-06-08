@@ -42,6 +42,32 @@ jobs:
           go build -o bin/nexus ./cmd/nexus
           go build -o bin/nexus-evalbatch ./cmd/nexus-evalbatch
 
+  eval-regression:
+    name: Eval regression gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: build nexus-evalbatch
+        run: go build -o bin/nexus-evalbatch ./cmd/nexus-evalbatch
+
+      - name: regression gate (hermetic, heuristic evaluator)
+        # Runs the committed dataset through the LLM-free heuristic evaluator and
+        # fails the build if any metric's mean score regresses beyond tolerance
+        # versus the committed baseline. Fully deterministic — no provider keys
+        # or eval service required.
+        run: |
+          ./bin/nexus-evalbatch \
+            -dataset datasets/regression_example.jsonl \
+            -evaluator heuristic \
+            -baseline datasets/regression_baseline.json \
+            -tolerance 0.05
+
   eval-service:
     name: Eval service (Python)
     runs-on: ubuntu-latest
