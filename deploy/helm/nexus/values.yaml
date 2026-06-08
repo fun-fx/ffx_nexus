@@ -1,0 +1,209 @@
+# Default values for the Nexus Helm chart.
+# Out of the box this deploys the gateway + console in zero-dependency mode
+# (no Postgres/ClickHouse/Redis). Enable the dependency sections below to wire
+# the control plane, trace persistence, rate limiting, and semantic cache.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/fun-fx/ffx_nexus
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Ports the nexus binary listens on. These must match config.gatewayAddr /
+# config.consoleAddr below (the chart keeps them in sync via the ConfigMap).
+ports:
+  gateway: 8080
+  console: 8081
+
+service:
+  type: ClusterIP
+  annotations: {}
+  # Optional fixed cluster IP / loadBalancer settings can be added per-env.
+
+# --- Non-secret configuration (rendered into a ConfigMap as NEXUS_* env) ---
+# Only set what you need; empty values are omitted so the binary's own defaults
+# apply. Secrets (provider keys, master key, DB DSNs) go under `secrets:` below.
+config:
+  gatewayAddr: ":8080"
+  consoleAddr: ":8081"
+  upstreamTimeout: "120s"
+  openaiBaseUrl: ""
+
+  # Quality-aware routing (Phase 4). Requires ClickHouse for live quality stats.
+  routeGroups: ""
+  routeWQuality: ""
+  routeWCost: ""
+  routeWLatency: ""
+  routeWindow: ""
+  routeRefresh: ""
+  routeLoadBalance: false
+
+  # Inline guardrails (hot-path policy checks; no datastore needed).
+  guardrails:
+    enabled: false
+    blockPiiInput: false
+    redactPiiOutput: false
+    maxInputChars: 0
+    denyPatterns: ""
+    validateJsonOutput: false
+
+  # Structured-output self-correction (requires guardrails.validateJsonOutput).
+  selfCorrection:
+    enabled: false
+    maxRetries: 1
+
+  # Local SLM judge for async evals (OpenAI-compatible inference server).
+  judge:
+    baseUrl: ""
+    model: ""
+    sampleRate: ""
+    workers: ""
+
+  # External Python eval sidecar (DeepEval/RAGAS).
+  evalService:
+    url: ""
+    metrics: ""
+    timeout: ""
+
+  # Semantic cache (requires Redis + an embeddings endpoint).
+  semanticCache:
+    enabled: false
+    ttl: "24h"
+    threshold: "0.92"
+    maxEntries: 500
+  embeddings:
+    url: ""
+    model: ""
+    timeout: "5s"
+
+  otlpEnabled: false
+
+# --- Dependency wiring -------------------------------------------------------
+# This chart does NOT deploy databases; it connects to external/managed ones
+# (managed ClickHouse Cloud, an in-cluster Postgres/Redis operator, etc.).
+# Set `enabled: true` and provide a connection URL. URLs contain credentials,
+# so they are stored in the chart Secret (or your existingSecret).
+dependencies:
+  postgres:
+    enabled: false
+    url: "" # postgres://user:pass@host:5432/nexus?sslmode=require
+  clickhouse:
+    enabled: false
+    url: "" # clickhouse://user:pass@host:9000/nexus
+  redis:
+    enabled: false
+    url: "" # redis://:pass@host:6379/0
+
+# --- Secrets -----------------------------------------------------------------
+# Provide secret values here to have the chart create a Secret, OR set
+# `existingSecret` to the name of a Secret you manage out-of-band (recommended
+# for production). The existing Secret must use the same NEXUS_*/PROVIDER keys.
+existingSecret: ""
+
+secrets:
+  openaiApiKey: ""
+  anthropicApiKey: ""
+  geminiApiKey: ""
+  # 32-byte hex/base64 KEK for the encrypted credential store. Generate with
+  # `openssl rand -hex 32` and PERSIST IT (needed to decrypt provider secrets).
+  masterKey: ""
+  judgeApiKey: ""
+  embeddingsApiKey: ""
+
+# Escape hatch for arbitrary extra env (non-secret).
+extraEnv: []
+# - name: SOME_FLAG
+#   value: "true"
+
+# Mount extra env from existing ConfigMaps/Secrets.
+envFrom: []
+# - secretRef:
+#     name: my-extra-secret
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# The image already runs as non-root uid 65532; these harden the pod further.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: gateway
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: gateway
+  initialDelaySeconds: 3
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Route gateway (:8080) and console (:8081) hosts. Defaults below are examples.
+  hosts:
+    - host: nexus.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          port: gateway
+  tls: []
+  # - secretName: nexus-tls
+  #   hosts:
+  #     - nexus.example.com
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: null
+
+# PodDisruptionBudget for safer node drains (Talos rolling upgrades).
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
