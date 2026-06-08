@@ -35,7 +35,8 @@ func main() {
 func run() error {
 	var (
 		dataset     = flag.String("dataset", "", "path to JSONL dataset (required)")
-		serviceURL  = flag.String("service-url", envOr("NEXUS_EVAL_SERVICE_URL", ""), "Python eval service base URL (required)")
+		evaluator   = flag.String("evaluator", "remote", "evaluator: \"remote\" (Python service) or \"heuristic\" (local, LLM-free, hermetic)")
+		serviceURL  = flag.String("service-url", envOr("NEXUS_EVAL_SERVICE_URL", ""), "Python eval service base URL (required for -evaluator remote)")
 		metricsCSV  = flag.String("metrics", envOr("NEXUS_EVAL_SERVICE_METRICS", "answer_relevancy,toxicity,bias"), "comma-separated metric ids")
 		timeout     = flag.Duration("timeout", 60*time.Second, "per-case eval timeout")
 		concurrency = flag.Int("concurrency", 4, "concurrent eval workers")
@@ -52,8 +53,15 @@ func run() error {
 	if *dataset == "" {
 		return fmt.Errorf("-dataset is required")
 	}
-	if *serviceURL == "" {
-		return fmt.Errorf("-service-url (or NEXUS_EVAL_SERVICE_URL) is required")
+	switch *evaluator {
+	case "remote":
+		if *serviceURL == "" {
+			return fmt.Errorf("-service-url (or NEXUS_EVAL_SERVICE_URL) is required for -evaluator remote")
+		}
+	case "heuristic":
+		// no external dependency
+	default:
+		return fmt.Errorf("-evaluator must be \"remote\" or \"heuristic\"")
 	}
 
 	cases, err := evalbatch.LoadDataset(*dataset)
@@ -81,16 +89,22 @@ func run() error {
 		fmt.Fprintf(os.Stderr, "generated %d output(s) via %s\n", generated, *gatewayURL)
 	}
 
-	evaluator := evals.NewRemoteEvaluator(evals.RemoteConfig{
-		BaseURL: *serviceURL,
-		Metrics: splitCSV(*metricsCSV),
-		Timeout: *timeout,
-	})
-	if evaluator == nil {
-		return fmt.Errorf("invalid -service-url")
+	var eval evals.Evaluator
+	if *evaluator == "heuristic" {
+		eval = evalbatch.NewHeuristicEvaluator()
+	} else {
+		re := evals.NewRemoteEvaluator(evals.RemoteConfig{
+			BaseURL: *serviceURL,
+			Metrics: splitCSV(*metricsCSV),
+			Timeout: *timeout,
+		})
+		if re == nil {
+			return fmt.Errorf("invalid -service-url")
+		}
+		eval = re
 	}
 
-	runner := &evalbatch.Runner{Eval: evaluator, Concurrency: *concurrency, Timeout: *timeout}
+	runner := &evalbatch.Runner{Eval: eval, Concurrency: *concurrency, Timeout: *timeout}
 	results := runner.Run(ctx, cases)
 	report := evalbatch.BuildReport(*dataset, results, *detail)
 
