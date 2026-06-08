@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -155,7 +156,54 @@ func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreErr(w, err, "delete failed")
 		return
 	}
+	s.reloadCredentials(r.Context())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+type rotateCredentialRequest struct {
+	Secret string `json:"secret"`
+}
+
+// rotateCredential swaps the stored secret for a credential in place. The new
+// secret is re-encrypted; the credential keeps its ID and references. After a
+// successful rotation the gateway's in-memory providers are reloaded so the new
+// secret takes effect without a restart.
+func (s *Server) rotateCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStore(w) {
+		return
+	}
+	var req rotateCredentialRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if req.Secret == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "secret is required"})
+		return
+	}
+	id := chi.URLParam(r, "id")
+	cred, err := s.store.RotateCredential(r.Context(), orgID(r), id, req.Secret)
+	if errors.Is(err, crypto.ErrNoMasterKey) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "credential encryption disabled: set NEXUS_MASTER_KEY (32-byte base64/hex) to rotate provider keys",
+		})
+		return
+	}
+	if err != nil {
+		s.writeStoreErr(w, err, "rotate failed")
+		return
+	}
+	s.reloadCredentials(r.Context())
+	// Response never includes the plaintext secret (only last4 + rotated_at).
+	writeJSON(w, http.StatusOK, cred)
+}
+
+// reloadCredentials invokes the registered hot-reload hook (if any) so provider
+// adapters pick up credential changes without a restart. Best-effort.
+func (s *Server) reloadCredentials(ctx context.Context) {
+	if s.reload != nil {
+		s.reload(ctx)
+	}
 }
 
 func (s *Server) writeStoreErr(w http.ResponseWriter, err error, msg string) {

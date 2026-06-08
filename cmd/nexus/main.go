@@ -259,6 +259,13 @@ func main() {
 	if modelRouter != nil {
 		consoleSrvHandler.SetRouteStats(modelRouter)
 	}
+	// Hot-reload providers after credential changes (e.g. rotation) so a new
+	// secret takes effect without restarting the gateway.
+	if store != nil && store.HasCipher() {
+		consoleSrvHandler.SetCredentialReloader(func(rctx context.Context) {
+			registerStoredCredentials(rctx, reg, store, cfg, log)
+		})
+	}
 	consoleSrv := &http.Server{
 		Addr:    cfg.ConsoleAddr,
 		Handler: consoleSrvHandler.Mux(),
