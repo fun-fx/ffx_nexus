@@ -77,7 +77,7 @@ BEFORE=$(curl -sf "http://localhost:8123/?user=nexus&password=nexus" \
 CODE=$(curl -s -o /tmp/eval_persist.json -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
   -H "Authorization: Bearer $SECRET" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Reply with exactly: ok"}],"max_tokens":8}')
+  -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Reply with exactly: ok"}],"max_tokens":64}')
 
 if [[ "$CODE" != "200" ]]; then
   if grep -qE 'RESOURCE_EXHAUSTED|quota exceeded|429|502' /tmp/eval_persist.json 2>/dev/null; then
@@ -92,6 +92,16 @@ if [[ "$CODE" != "200" ]]; then
   summary_exit
 fi
 pass "upstream completion -> 200"
+
+# Gemini 2.5+ may return empty content when max_tokens is too small (thinking
+# tokens consume the budget). RemoteEvaluator skips traces with empty output, so
+# confirm we got text before waiting for deepeval scores.
+OUT_LEN=$(python3 -c "import json; d=json.load(open('/tmp/eval_persist.json')); print(len(d.get('choices',[{}])[0].get('message',{}).get('content','')))" 2>/dev/null || echo 0)
+if [[ "${OUT_LEN:-0}" -lt 1 ]]; then
+  fail "completion returned empty output (max_tokens too low for $MODEL?); remote eval will skip"
+  summary_exit
+fi
+pass "completion returned non-empty output (len=$OUT_LEN)"
 
 FOUND=0
 echo "  waiting for deepeval scores in ClickHouse..."
