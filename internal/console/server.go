@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -30,12 +31,18 @@ type Server struct {
 	reader *observability.Reader // may be nil when ClickHouse is not configured
 	store  *core.Store           // may be nil when Postgres is not configured
 	routes RouteStatsSource      // may be nil when routing is disabled
+	reload func(context.Context) // may be nil when no hot-reload hook is wired
 	log    *slog.Logger
 	up     websocket.Upgrader
 }
 
 // SetRouteStats attaches a routing stats source for the /api/routing endpoint.
 func (s *Server) SetRouteStats(src RouteStatsSource) { s.routes = src }
+
+// SetCredentialReloader registers a callback invoked after credential changes
+// (rotate/delete) so the gateway can refresh its in-memory providers without a
+// restart. Optional; when unset, credential changes apply on next restart.
+func (s *Server) SetCredentialReloader(fn func(context.Context)) { s.reload = fn }
 
 // NewServer builds the console server. reader and store may be nil.
 func NewServer(hub *Hub, reader *observability.Reader, store *core.Store, log *slog.Logger) *Server {
@@ -76,6 +83,7 @@ func (s *Server) Mux() http.Handler {
 		r.Delete("/keys/{id}", s.revokeKey)
 		r.Get("/credentials", s.listCredentials)
 		r.Post("/credentials", s.createCredential)
+		r.Post("/credentials/{id}/rotate", s.rotateCredential)
 		r.Delete("/credentials/{id}", s.deleteCredential)
 	})
 
