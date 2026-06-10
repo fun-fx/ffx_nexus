@@ -100,6 +100,7 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/users", s.requireAdmin(s.listUsers))
 		r.Post("/users", s.requireAdmin(s.createUser))
 		r.Delete("/users/{id}", s.requireAdmin(s.deleteUser))
+		r.Get("/users/quality", s.requireAdmin(s.userQuality))
 
 		// Org-level key/credential management (requires Postgres).
 		r.Get("/keys", s.listKeys)

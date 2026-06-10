@@ -210,6 +210,25 @@ export async function deleteUser(id: string): Promise<void> {
   await jsonOrThrow(await fetch(`/api/users/${id}`, { method: "DELETE" }));
 }
 
+export interface UserQuality {
+  user_id: string;
+  email: string;
+  avg_quality: number;
+  pass_rate: number;
+  samples: number;
+  cost_usd: number;
+  requests: number;
+}
+
+// fetchUserQuality returns per-user rolling quality + spend (admin only). This
+// is the eval differentiator: quality per user, not just spend per key.
+export async function fetchUserQuality(window = "24h"): Promise<UserQuality[]> {
+  const res = await fetch(`/api/users/quality?window=${window}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
 // connectLive opens the live trace WebSocket. The backend pushes a full Trace
 // object per gateway request; we map it to the summary shape used by the table.
 export function connectLive(onTrace: (t: TraceSummary) => void): WebSocket {

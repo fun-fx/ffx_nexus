@@ -158,6 +158,14 @@ else
   fail "expected 403 for member on /api/users, got $MCODE"
 fi
 
+# --- 8b. Per-user quality endpoint (eval differentiator) ---
+api GET /api/users/quality >/dev/null
+if [[ "$HTTP_CODE" == "200" ]]; then
+  pass "admin can read per-user quality (/api/users/quality)"
+else
+  fail "expected 200 for /api/users/quality, got $HTTP_CODE"
+fi
+
 # --- 9. Logout invalidates the session ---
 api POST /api/auth/logout >/dev/null
 api GET /api/me >/dev/null

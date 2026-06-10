@@ -116,6 +116,7 @@ func main() {
 				"migrations/clickhouse/002_eval_context.sql",
 				"migrations/clickhouse/003_dashboard.sql",
 				"migrations/clickhouse/004_byok.sql",
+				"migrations/clickhouse/005_eval_user.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := rec.Migrate(ctx, string(schema)); err != nil {

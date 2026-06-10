@@ -7,12 +7,14 @@ import {
   deleteUser,
   fetchMyCredentials,
   fetchMyKeys,
+  fetchUserQuality,
   fetchUsers,
   login,
   logout,
   updateMe,
   type Credential,
   type User,
+  type UserQuality,
   type VirtualKey,
 } from "./api";
 
@@ -45,8 +47,58 @@ export function Account({ user, onUser }: { user: User | null; onUser: (u: User 
         <MyKeys />
       </div>
 
+      {user.role === "admin" && <UserQualityPanel />}
       {user.role === "admin" && <Users />}
     </div>
+  );
+}
+
+// UserQualityPanel is Nexus's eval differentiator surfaced in the console: each
+// user's rolling quality score and pass rate alongside their spend — not just
+// per-key spend like spend-only gateways.
+function UserQualityPanel() {
+  const [rows, setRows] = useState<UserQuality[]>([]);
+  useEffect(() => {
+    fetchUserQuality("24h").then(setRows).catch(() => {});
+  }, []);
+  return (
+    <section className="panel">
+      <h2>
+        Per-user quality <span className="sub">(24h)</span>
+      </h2>
+      <table>
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Avg quality</th>
+            <th>Pass rate</th>
+            <th>Eval samples</th>
+            <th>Requests</th>
+            <th>Spend</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={6} className="empty">
+                No per-user eval scores yet. Quality is scored out-of-band as BYOK
+                traffic flows.
+              </td>
+            </tr>
+          )}
+          {rows.map((q) => (
+            <tr key={q.user_id}>
+              <td>{q.email || q.user_id}</td>
+              <td>{q.avg_quality > 0 ? q.avg_quality.toFixed(2) : "-"}</td>
+              <td>{(q.pass_rate * 100).toFixed(0)}%</td>
+              <td>{q.samples}</td>
+              <td>{q.requests}</td>
+              <td>${q.cost_usd.toFixed(4)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }
 

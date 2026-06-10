@@ -274,6 +274,15 @@ when a request used a user's own key.
 - `GET/POST /api/me/credentials`, `POST /api/me/credentials/{id}/rotate`,
   `DELETE /api/me/credentials/{id}` — self-service BYOK provider keys
 - `GET/POST /api/users`, `DELETE /api/users/{id}` — admin user management
+- `GET /api/users/quality?window=24h` — **per-user rolling quality + spend** (admin)
+
+### Eval differentiator: per-user quality
+
+Unlike spend-only gateways (Bifrost/LiteLLM track *who spent what*), Nexus also
+tracks **what each user's rolling quality score is**. Async eval scores carry the
+caller's `user_id` (denormalized onto `eval_scores`), so the console's **Per-user
+quality** panel shows average judge quality, pass rate, eval sample count, request
+volume, and spend per user — quality and cost on one screen, per credential owner.
 
 ```bash
 # enable BYOK with a bootstrap admin
@@ -677,3 +686,4 @@ docker run --rm -p 8080:8080 -p 8081:8081 \
 - `POST /api/auth/login`, `POST /api/auth/logout`, `GET/PATCH /api/me` — session auth + self settings
 - `GET/POST /api/me/keys`, `GET/POST /api/me/credentials` — BYOK self-service
 - `GET/POST /api/users`, `DELETE /api/users/{id}` — admin user management
+- `GET /api/users/quality` — per-user rolling quality + spend (admin)

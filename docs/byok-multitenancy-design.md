@@ -279,10 +279,13 @@ analytics, dashboard, CI regression gate). BYOK is table-stakes catch-up; to kee
 our edge, BYOK must be designed *through* the eval/observability lens, not bolted
 on:
 
-1. **Per-user quality, not just per-user spend.** Bifrost tracks "who spent
-   what"; we additionally track **"what is this user's rolling quality score"**.
-   The eval pipeline already keys on the virtual key — extend aggregation to
-   `user_id` so the dashboard shows per-user eval metrics alongside spend.
+1. **Per-user quality, not just per-user spend.** ✅ *Implemented.* Bifrost
+   tracks "who spent what"; we additionally track **"what is this user's rolling
+   quality score"**. `eval_scores.user_id` is denormalized from the trace
+   (migration `005_eval_user.sql`, stamped by the eval worker), and
+   `Reader.UserQualitySummary` aggregates quality + pass-rate joined with
+   per-user spend. Surfaced at admin `GET /api/users/quality` and the console
+   "Per-user quality" panel.
 2. **BYOK × quality-SLA routing.** `virtual_keys.min_quality_score` already
    exists. With per-user keys, a user brings their own key *and* their own quality
    gate — the router (`ModelRouter.Rank`) honors it per caller. This is a combo
