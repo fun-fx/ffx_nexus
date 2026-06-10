@@ -1,0 +1,19 @@
+# Cozystack tenant for Nexus. Provisions the `tenant-nexus` namespace into which
+# the managed services (ClickHouse/Postgres/Redis) and the Nexus Helm release are
+# deployed. Apply into the parent tenant namespace (e.g. tenant-root).
+#
+#   kubectl -n tenant-root apply -f 00-tenant.yaml
+apiVersion: apps.cozystack.io/v1alpha1
+kind: Tenant
+metadata:
+  name: nexus
+  namespace: tenant-root
+spec:
+  # nip.io host works without external DNS; the Talos node IP is <node-ip>.
+  host: nexus.<node-ip>.nip.io
+  etcd: false
+  ingress: false
+  isolated: false
+  monitoring: false
+  seaweedfs: false
+  resourceQuotas: {}
