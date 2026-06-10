@@ -35,7 +35,16 @@ type Handler struct {
 	selfCorrectMax int                  // max structured-output self-correction retries; 0 disables
 	lb             *balancer.WeightedRR // nil = no load balancing within routing tiers
 	scache         *semcache.Service    // nil = semantic cache disabled
+	credResolver   *CredentialResolver  // nil = no per-request BYOK resolution
+	keyMode        KeyMode              // how to resolve upstream keys per request
 	log            *slog.Logger
+}
+
+// SetCredentialResolution enables per-request (BYOK) upstream key resolution.
+// A nil resolver or KeyModeShared keeps the legacy shared-key behavior.
+func (h *Handler) SetCredentialResolution(cr *CredentialResolver, mode KeyMode) {
+	h.credResolver = cr
+	h.keyMode = mode
 }
 
 // NewHandler builds a gateway handler. lim may be nil.
@@ -222,6 +231,46 @@ func withSchemaCorrection(req ChatCompletionRequest, badOutput, reason string) C
 	return req
 }
 
+// errMissingBYOKKey signals that strict BYOK mode requires a per-user key the
+// caller has not registered for this provider.
+type errMissingBYOKKey struct{ provider string }
+
+func (e errMissingBYOKKey) Error() string {
+	return "no API key registered for provider " + e.provider
+}
+
+// injectCredential resolves the upstream credential for this caller+provider and
+// returns a context carrying any per-request override, plus a source tag for the
+// trace ("env", "org", or "user"). In KeyModeShared it is a no-op ("env"). In
+// strict BYOK it returns errMissingBYOKKey when the user has no key.
+func (h *Handler) injectCredential(ctx context.Context, providerName string) (context.Context, string, error) {
+	if h.keyMode == KeyModeShared || h.credResolver == nil {
+		return ctx, "env", nil
+	}
+	orgID := OrgIDFrom(ctx)
+	userID := UserIDFrom(ctx)
+	cred, found, err := h.credResolver.Resolve(ctx, orgID, userID, providerName)
+	if err != nil {
+		h.log.Warn("credential resolve failed; using shared key", "provider", providerName, "err", err)
+		if h.keyMode == KeyModeStrictBYOK {
+			return ctx, "", errMissingBYOKKey{provider: providerName}
+		}
+		return ctx, "env", nil
+	}
+	if !found {
+		if h.keyMode == KeyModeStrictBYOK {
+			return ctx, "", errMissingBYOKKey{provider: providerName}
+		}
+		return ctx, "env", nil // BYOK soft-fallback to shared key
+	}
+	ctx = WithCallerCredential(ctx, CallerCredential{
+		Secret:  cred.Secret,
+		BaseURL: cred.BaseURL,
+		Source:  cred.Source,
+	})
+	return ctx, cred.Source, nil
+}
+
 func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []string, req ChatCompletionRequest, start time.Time) {
 	var lastErr error
 	for i, model := range chain {
@@ -236,6 +285,21 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		trace := h.newTrace(r, req, provider.Name())
 		trace.RequestModel = model
 		attemptStart := time.Now()
+
+		// BYOK: resolve the caller's upstream key for this provider and inject it
+		// into the context the adapter reads. Shared mode is a no-op.
+		callCtx, credSource, credErr := h.injectCredential(r.Context(), provider.Name())
+		if credErr != nil {
+			trace.LatencyMs = time.Since(attemptStart).Milliseconds()
+			trace.StatusCode = http.StatusForbidden
+			trace.ErrorType = "missing_byok_key"
+			trace.ErrorMsg = credErr.Error()
+			trace.CredentialSource = "none"
+			h.recorder.Record(trace)
+			lastErr = credErr
+			continue
+		}
+		trace.CredentialSource = credSource
 
 		// Semantic cache: only on the primary candidate, non-streaming, eligible
 		// requests. Keyed by the client-requested model (req.Model), not the
@@ -272,7 +336,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 			}
 		}
 
-		resp, err := provider.ChatCompletion(r.Context(), attempt)
+		resp, err := provider.ChatCompletion(callCtx, attempt)
 		if err != nil {
 			trace.LatencyMs = time.Since(attemptStart).Milliseconds()
 			trace.StatusCode = http.StatusBadGateway
@@ -309,7 +373,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 				for f.Blocked && corrected < h.selfCorrectMax {
 					corrected++
 					attempt = withSchemaCorrection(attempt, resp.Choices[0].Message.Content, f.Reason)
-					cresp, cerr := provider.ChatCompletion(r.Context(), attempt)
+					cresp, cerr := provider.ChatCompletion(callCtx, attempt)
 					if cerr != nil || len(cresp.Choices) == 0 {
 						break // correction call failed; fail with the last finding
 					}
@@ -395,7 +459,20 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 		t.RequestModel = model
 		t.Streamed = true
 
-		ev, err := p.ChatCompletionStream(r.Context(), attempt)
+		callCtx, credSource, credErr := h.injectCredential(r.Context(), p.Name())
+		if credErr != nil {
+			t.LatencyMs = time.Since(start).Milliseconds()
+			t.StatusCode = http.StatusForbidden
+			t.ErrorType = "missing_byok_key"
+			t.ErrorMsg = credErr.Error()
+			t.CredentialSource = "none"
+			h.recorder.Record(t)
+			lastErr = credErr
+			continue
+		}
+		t.CredentialSource = credSource
+
+		ev, err := p.ChatCompletionStream(callCtx, attempt)
 		if err != nil {
 			t.LatencyMs = time.Since(start).Milliseconds()
 			t.StatusCode = http.StatusBadGateway
@@ -507,6 +584,9 @@ func (h *Handler) newTrace(r *http.Request, req ChatCompletionRequest, providerN
 	}
 	if org, ok := r.Context().Value(ctxKeyOrgID).(string); ok {
 		t.OrgID = org
+	}
+	if uid, ok := r.Context().Value(ctxKeyUserID).(string); ok {
+		t.UserID = uid
 	}
 	if vk, ok := r.Context().Value(ctxKeyVKeyID).(string); ok {
 		t.VirtualKeyID = vk

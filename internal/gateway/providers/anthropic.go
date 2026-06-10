@@ -182,12 +182,19 @@ func (a *Anthropic) do(ctx context.Context, ar anthropicRequest) (*http.Response
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/messages", bytes.NewReader(body))
+	apiKey, baseURL := a.apiKey, a.baseURL
+	if c, ok := gateway.CallerCredentialFrom(ctx); ok {
+		apiKey = c.Secret
+		if c.BaseURL != "" {
+			baseURL = strings.TrimRight(c.BaseURL, "/")
+		}
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", a.apiKey)
+	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
 	return a.client.Do(httpReq)
 }

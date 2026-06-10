@@ -52,6 +52,7 @@ func (s *Server) listKeys(w http.ResponseWriter, r *http.Request) {
 
 type createKeyRequest struct {
 	Name          string   `json:"name"`
+	UserID        string   `json:"user_id"` // optional: bind the key to a user (BYOK)
 	AllowedModels []string `json:"allowed_models"`
 	RPMLimit      int      `json:"rpm_limit"`
 	MonthlyBudget float64  `json:"monthly_budget_usd"`
@@ -71,7 +72,7 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
-	vk, plaintext, err := s.store.CreateVirtualKey(r.Context(), orgID(r), req.Name, req.AllowedModels, req.RPMLimit, req.MonthlyBudget, req.MinQuality)
+	vk, plaintext, err := s.store.CreateVirtualKey(r.Context(), orgID(r), req.UserID, req.Name, req.AllowedModels, req.RPMLimit, req.MonthlyBudget, req.MinQuality)
 	if err != nil {
 		s.log.Error("create key failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create failed"})
@@ -131,7 +132,7 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider and secret are required"})
 		return
 	}
-	cred, err := s.store.CreateCredential(r.Context(), orgID(r), req.Provider, req.Name, req.BaseURL, req.Secret)
+	cred, err := s.store.CreateCredential(r.Context(), orgID(r), "", req.Provider, req.Name, req.BaseURL, req.Secret)
 	if errors.Is(err, crypto.ErrNoMasterKey) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "credential encryption disabled: set NEXUS_MASTER_KEY (32-byte base64/hex) to store provider keys",

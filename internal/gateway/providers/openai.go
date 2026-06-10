@@ -94,12 +94,19 @@ func (o *OpenAI) ChatCompletionStream(ctx context.Context, req gateway.ChatCompl
 }
 
 func (o *OpenAI) do(ctx context.Context, body []byte) (*http.Response, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/chat/completions", bytes.NewReader(body))
+	apiKey, baseURL := o.apiKey, o.baseURL
+	if c, ok := gateway.CallerCredentialFrom(ctx); ok {
+		apiKey = c.Secret
+		if c.BaseURL != "" {
+			baseURL = strings.TrimRight(c.BaseURL, "/")
+		}
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	return o.client.Do(httpReq)
 }
 

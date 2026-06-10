@@ -3,10 +3,12 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -16,6 +18,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
+	nexusweb "github.com/ffxnexus/nexus/web"
 )
 
 // RouteStatsSource exposes the router's current rolling per-model stats.
@@ -61,10 +64,12 @@ func NewServer(hub *Hub, reader *observability.Reader, store *core.Store, log *s
 func (s *Server) Mux() http.Handler {
 	r := chi.NewRouter()
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins: []string{"*"},
-		AllowedMethods: []string{"GET", "POST", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"*"},
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"*"},
+		AllowCredentials: true,
 	}))
+	r.Use(s.withUser)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -75,9 +80,28 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/traces", s.recentTraces)
 		r.Get("/stats", s.stats)
 		r.Get("/routing", s.routing)
+		r.Get("/evals", s.evals)
 		r.Get("/live", s.live)
 
-		// Key/credential management (requires Postgres).
+		// Session auth + self-service (requires Postgres).
+		r.Post("/auth/login", s.login)
+		r.Post("/auth/logout", s.logout)
+		r.Get("/me", s.requireUser(s.me))
+		r.Patch("/me", s.requireUser(s.updateMe))
+		r.Get("/me/keys", s.requireUser(s.listMyKeys))
+		r.Post("/me/keys", s.requireUser(s.createMyKey))
+		r.Delete("/me/keys/{id}", s.requireUser(s.revokeMyKey))
+		r.Get("/me/credentials", s.requireUser(s.listMyCredentials))
+		r.Post("/me/credentials", s.requireUser(s.createMyCredential))
+		r.Post("/me/credentials/{id}/rotate", s.requireUser(s.rotateMyCredential))
+		r.Delete("/me/credentials/{id}", s.requireUser(s.deleteMyCredential))
+
+		// User management (admin only).
+		r.Get("/users", s.requireAdmin(s.listUsers))
+		r.Post("/users", s.requireAdmin(s.createUser))
+		r.Delete("/users/{id}", s.requireAdmin(s.deleteUser))
+
+		// Org-level key/credential management (requires Postgres).
 		r.Get("/keys", s.listKeys)
 		r.Post("/keys", s.createKey)
 		r.Delete("/keys/{id}", s.revokeKey)
@@ -87,7 +111,37 @@ func (s *Server) Mux() http.Handler {
 		r.Delete("/credentials/{id}", s.deleteCredential)
 	})
 
+	// Serve the embedded dashboard SPA for everything else, with a fallback to
+	// index.html so client-side routes resolve.
+	r.Handle("/*", spaHandler(s.log))
+
 	return r
+}
+
+// spaHandler serves the embedded dashboard build. Requests for missing paths
+// fall back to index.html (single-page-app routing).
+func spaHandler(log *slog.Logger) http.Handler {
+	sub, err := nexusweb.Dist()
+	if err != nil {
+		log.Error("dashboard assets unavailable", "err", err)
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "dashboard not built", http.StatusNotImplemented)
+		})
+	}
+	fileServer := http.FileServer(http.FS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(r.URL.Path, "/")
+		if p == "" {
+			p = "index.html"
+		}
+		if _, statErr := fs.Stat(sub, p); statErr != nil {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/"
+			fileServer.ServeHTTP(w, r2)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +192,28 @@ func (s *Server) routing(w http.ResponseWriter, _ *http.Request) {
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Quality > out[j].Quality })
+	writeJSON(w, http.StatusOK, out)
+}
+
+// evals returns per-(evaluator, metric) aggregates of async eval scores over the
+// requested window so the console can show quality/safety trends.
+func (s *Server) evals(w http.ResponseWriter, r *http.Request) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, []observability.EvalMetric{})
+		return
+	}
+	window := time.Hour
+	if q := r.URL.Query().Get("window"); q != "" {
+		if d, err := time.ParseDuration(q); err == nil {
+			window = d
+		}
+	}
+	out, err := s.reader.EvalSummary(r.Context(), window)
+	if err != nil {
+		s.log.Error("eval summary query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

@@ -122,6 +122,8 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 | `NEXUS_POSTGRES_URL` | _(empty)_ | Control plane DSN; empty disables key auth & credential store |
 | `NEXUS_REDIS_URL` | _(empty)_ | Shared rate limits + budgets across replicas; empty = in-memory |
 | `NEXUS_MASTER_KEY` | _(empty)_ | 32-byte (base64/hex) KEK for provider-secret encryption |
+| `NEXUS_KEY_MODE` | `shared` | Upstream key resolution: `shared` / `byok` / `strict_byok` |
+| `NEXUS_ADMIN_EMAIL` / `NEXUS_ADMIN_PASSWORD` | — | Bootstrap the first console admin (only when no users exist) |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — | OpenAI provider |
 | `ANTHROPIC_API_KEY` | — | Anthropic provider |
 | `GEMINI_API_KEY` | — | Google Gemini provider |
@@ -206,6 +208,7 @@ The full suite runs four scripts (~40+ cases):
 | `test_eval_batch.sh` | Offline regression eval batch: aggregation + baseline regression gate |
 | `test_eval_persistence.sh` | Live completion → remote eval → ClickHouse (skips without provider key) |
 | `test_rag_eval.sh` | RAG `nexus_eval` context → eval sidecar contract |
+| `test_byok.sh` | BYOK + multi-tenancy: login/session, self-service keys/credentials, budget toggle, admin user management, RBAC |
 
 Run a single phase: `./scripts/test_phase2.sh`, `./scripts/test_phase234.sh`, etc.
 
@@ -217,6 +220,78 @@ local runs stay green; re-run after quota resets for full coverage.
 
 - `GET/POST /api/keys`, `DELETE /api/keys/{id}` — virtual keys
 - `GET/POST /api/credentials`, `POST /api/credentials/{id}/rotate`, `DELETE /api/credentials/{id}` — provider secrets
+
+## BYOK & multi-tenancy
+
+Nexus supports a **Bring-Your-Own-Key** model: each user signs in to the console,
+registers their *own* OpenAI/Anthropic/Gemini key, and gateway calls go out on
+that key — so every user pays their own provider bill, while Nexus still owns the
+parts that are its moat: **per-user observability, quality evals, routing, and
+guardrails**. This is the key difference from Bifrost/LiteLLM, which track per-key
+*spend* but push LLM quality eval to an external SaaS.
+
+### How key resolution works (`NEXUS_KEY_MODE`)
+
+Upstream provider keys are resolved per request, in precedence order:
+
+1. the **caller's** own stored credential (BYOK), then
+2. the **org-level** credential, then
+3. the process **env** key.
+
+| `NEXUS_KEY_MODE` | Behavior |
+| --- | --- |
+| `shared` *(default)* | Legacy: everyone uses the org/env key. No per-user keys. |
+| `byok` | Prefer the caller's own key; fall back to org → env. |
+| `strict_byok` | Require a per-user key; reject callers without one. |
+
+BYOK modes need Postgres + `NEXUS_MASTER_KEY`; otherwise Nexus falls back to
+`shared`. The resolved key never touches logs; the trace records only its
+**source** (`user` / `org` / `env`) so operators can see BYOK adoption and isolate
+quality/cost per credential source.
+
+### Console identity & sessions
+
+- **Email + password login** (passwords are bcrypt-hashed). A login issues an
+  HTTP-only session cookie; `/api/me/*` resolves the user from the session.
+- Bootstrap the first admin with `NEXUS_ADMIN_EMAIL` / `NEXUS_ADMIN_PASSWORD`
+  (created on startup only when the org has no users yet).
+- Roles: `admin` (manages users) and `member` (self-service only). RBAC is
+  enforced server-side (`requireUser` / `requireAdmin`).
+
+### Per-user budget toggle
+
+Each user can turn their **own** Nexus-side monthly budget / RPM enforcement on or
+off. Off = only the provider's own limits apply (the user's bill is their own);
+On = Nexus enforces the configured cap as a safety guardrail. The dashboard
+**Account** tab exposes this toggle; the trace flags column shows a `byok` badge
+when a request used a user's own key.
+
+### BYOK API
+
+- `POST /api/auth/login`, `POST /api/auth/logout`
+- `GET /api/me`, `PATCH /api/me` *(toggle `enforce_limits`)*
+- `GET/POST /api/me/keys`, `DELETE /api/me/keys/{id}` — self-service virtual keys
+- `GET/POST /api/me/credentials`, `POST /api/me/credentials/{id}/rotate`,
+  `DELETE /api/me/credentials/{id}` — self-service BYOK provider keys
+- `GET/POST /api/users`, `DELETE /api/users/{id}` — admin user management
+
+```bash
+# enable BYOK with a bootstrap admin
+export NEXUS_POSTGRES_URL="postgres://nexus:nexus@localhost:5433/nexus?sslmode=disable"
+export NEXUS_MASTER_KEY="$(openssl rand -hex 32)"
+export NEXUS_KEY_MODE=byok
+export NEXUS_ADMIN_EMAIL=admin@example.com
+export NEXUS_ADMIN_PASSWORD='change-me'
+go run ./cmd/nexus
+
+# log in (stores the session cookie), register your own provider key, mint a vkey
+curl -sc /tmp/cj -X POST localhost:8081/api/auth/login \
+  -d '{"email":"admin@example.com","password":"change-me"}'
+curl -sb /tmp/cj -X POST localhost:8081/api/me/credentials \
+  -d '{"provider":"openai","name":"mine","secret":"sk-..."}'
+curl -sb /tmp/cj -X POST localhost:8081/api/me/keys -d '{"name":"my-app"}'
+# → calls made with that nxs_live_... key now go out on YOUR OpenAI key
+```
 
 ## Rate limits & budgets (Phase 2)
 
@@ -599,3 +674,6 @@ docker run --rm -p 8080:8080 -p 8081:8081 \
 - `GET /api/traces?limit=100` — recent traces
 - `GET /api/routing` — per-model rolling quality/cost/latency used for routing
 - `GET /api/live` — WebSocket live trace feed
+- `POST /api/auth/login`, `POST /api/auth/logout`, `GET/PATCH /api/me` — session auth + self settings
+- `GET/POST /api/me/keys`, `GET/POST /api/me/credentials` — BYOK self-service
+- `GET/POST /api/users`, `DELETE /api/users/{id}` — admin user management
