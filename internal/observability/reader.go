@@ -146,3 +146,65 @@ func (r *Reader) EvalSummary(ctx context.Context, window time.Duration) ([]EvalM
 	}
 	return out, rows.Err()
 }
+
+// UserQuality is a per-user rolling quality/safety aggregate over a window. This
+// is Nexus's eval differentiator over spend-only gateways: alongside per-user
+// cost we surface "what is this user's rolling quality score" (see
+// docs/byok-multitenancy-design.md §9).
+type UserQuality struct {
+	UserID     string  `json:"user_id"`
+	AvgQuality float64 `json:"avg_quality"` // mean of judge "quality" scores, 0..1
+	PassRate   float64 `json:"pass_rate"`   // mean pass across all evaluators/metrics
+	Samples    int64   `json:"samples"`     // total eval scores in the window
+	CostUSD    float64 `json:"cost_usd"`    // total spend in the window (from traces)
+	Requests   int64   `json:"requests"`    // total requests in the window (from traces)
+}
+
+// UserQualitySummary returns per-user quality/safety aggregates joined with
+// per-user spend over the trailing window, ordered by sample count. Users with
+// no recorded user_id (legacy/org-level traffic) are excluded.
+func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration) ([]UserQuality, error) {
+	secs := int64(window.Seconds())
+	rows, err := r.conn.Query(ctx, `
+		WITH
+		  q AS (
+		    SELECT user_id,
+		           avgIf(score, metric = 'quality') AS avg_quality,
+		           avg(passed) AS pass_rate,
+		           toInt64(count()) AS samples
+		    FROM eval_scores
+		    WHERE timestamp >= now() - INTERVAL ? SECOND AND user_id != ''
+		    GROUP BY user_id
+		  ),
+		  t AS (
+		    SELECT user_id,
+		           sum(cost_usd) AS cost_usd,
+		           toInt64(count()) AS requests
+		    FROM gateway_traces
+		    WHERE timestamp >= now() - INTERVAL ? SECOND AND user_id != ''
+		    GROUP BY user_id
+		  )
+		SELECT q.user_id,
+		       q.avg_quality,
+		       q.pass_rate,
+		       q.samples,
+		       t.cost_usd,
+		       t.requests
+		FROM q LEFT JOIN t ON q.user_id = t.user_id
+		ORDER BY q.samples DESC`,
+		secs, secs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]UserQuality, 0)
+	for rows.Next() {
+		var u UserQuality
+		if err := rows.Scan(&u.UserID, &u.AvgQuality, &u.PassRate, &u.Samples, &u.CostUSD, &u.Requests); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}

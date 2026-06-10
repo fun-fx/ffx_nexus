@@ -209,6 +209,59 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request, _ core.User)
 	writeJSON(w, http.StatusCreated, u)
 }
 
+// userQualityRow is a per-user quality/spend aggregate with the user's email
+// resolved for display.
+type userQualityRow struct {
+	UserID     string  `json:"user_id"`
+	Email      string  `json:"email"`
+	AvgQuality float64 `json:"avg_quality"`
+	PassRate   float64 `json:"pass_rate"`
+	Samples    int64   `json:"samples"`
+	CostUSD    float64 `json:"cost_usd"`
+	Requests   int64   `json:"requests"`
+}
+
+// userQuality returns per-user rolling quality + spend (admin only). This is the
+// eval differentiator: quality per user, not just spend per key (design §9).
+func (s *Server) userQuality(w http.ResponseWriter, r *http.Request, _ core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, []userQualityRow{})
+		return
+	}
+	window := time.Hour
+	if q := r.URL.Query().Get("window"); q != "" {
+		if d, err := time.ParseDuration(q); err == nil {
+			window = d
+		}
+	}
+	rows, err := s.reader.UserQualitySummary(r.Context(), window)
+	if err != nil {
+		s.log.Error("user quality query failed", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
+		return
+	}
+	// Resolve emails for display (best-effort; falls back to the id).
+	emails := map[string]string{}
+	if users, uErr := s.store.ListUsers(r.Context(), orgID(r)); uErr == nil {
+		for _, u := range users {
+			emails[u.ID] = u.Email
+		}
+	}
+	out := make([]userQualityRow, 0, len(rows))
+	for _, q := range rows {
+		out = append(out, userQualityRow{
+			UserID:     q.UserID,
+			Email:      emails[q.UserID],
+			AvgQuality: q.AvgQuality,
+			PassRate:   q.PassRate,
+			Samples:    q.Samples,
+			CostUSD:    q.CostUSD,
+			Requests:   q.Requests,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request, _ core.User) {
 	id := chi.URLParam(r, "id")
 	if err := s.store.DeleteUser(r.Context(), orgID(r), id); err != nil {

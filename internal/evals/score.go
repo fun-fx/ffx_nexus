@@ -16,6 +16,7 @@ import (
 // ClickHouse table.
 type Score struct {
 	TraceID    string
+	UserID     string // owning user (BYOK); empty for org-level/legacy traces
 	Timestamp  time.Time
 	Evaluator  string  // e.g. "heuristic_pii", "slm_judge"
 	Metric     string  // e.g. "pii_leak", "completeness", "quality"

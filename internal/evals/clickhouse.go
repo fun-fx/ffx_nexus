@@ -29,6 +29,7 @@ func (s *CHSink) WriteScores(ctx context.Context, scores []Score) error {
 		if err := batch.Append(
 			sc.TraceID, sc.Timestamp, sc.Evaluator, sc.Metric,
 			sc.Score, boolToUint8(sc.Passed), sc.Rationale, sc.JudgeModel,
+			sc.UserID,
 		); err != nil {
 			return err
 		}
