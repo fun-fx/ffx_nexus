@@ -1,0 +1,39 @@
+# Managed Postgres for the Nexus control plane (virtual keys + encrypted
+# provider credentials).
+#
+#   kubectl -n tenant-nexus apply -f 02-postgres.yaml
+#
+# Connection: credentials are published in `postgres-nexus-credentials`
+# (key: `nexus`). The service is `postgres-nexus`. Build the DSN as:
+#   postgres://nexus:<password>@postgres-nexus:5432/nexus?sslmode=require
+apiVersion: apps.cozystack.io/v1alpha1
+kind: Postgres
+metadata:
+  name: nexus
+  namespace: tenant-nexus
+spec:
+  version: v18
+  replicas: 1
+  size: 5Gi
+  storageClass: linstor
+  resourcesPreset: small
+  external: false
+  postgresql:
+    parameters:
+      max_connections: 100
+  quorum:
+    minSyncReplicas: 0
+    maxSyncReplicas: 0
+  users:
+    nexus:
+      # Replace with a strong password. Mirrored into `postgres-nexus-credentials`.
+      password: CHANGEME-postgres-password
+  databases:
+    nexus:
+      roles:
+        admin:
+          - nexus
+  backup:
+    enabled: false
+  bootstrap:
+    enabled: false

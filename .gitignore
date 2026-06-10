@@ -6,7 +6,8 @@
 
 # Node / dashboard
 web/node_modules/
-web/dist/
+# web/dist is committed: it is embedded into the Go binary (web/embed.go) so the
+# console can serve the dashboard. Rebuild with `npm --prefix web run build`.
 
 # Python / eval-service
 __pycache__/

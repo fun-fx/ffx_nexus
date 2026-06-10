@@ -15,6 +15,7 @@ import (
 type VirtualKey struct {
 	ID            string    `json:"id"`
 	OrgID         string    `json:"org_id"`
+	UserID        string    `json:"user_id,omitempty"` // owning user (BYOK); empty = org-level
 	Name          string    `json:"name"`
 	KeyPrefix     string    `json:"key_prefix"`
 	KeyLast4      string    `json:"key_last4"`
@@ -31,6 +32,7 @@ type VirtualKey struct {
 type ProviderCredential struct {
 	ID          string     `json:"id"`
 	OrgID       string     `json:"org_id"`
+	UserID      string     `json:"user_id,omitempty"` // owning user (BYOK); empty = org-level
 	Provider    string     `json:"provider"`
 	Name        string     `json:"name"`
 	BaseURL     string     `json:"base_url,omitempty"`
@@ -39,6 +41,24 @@ type ProviderCredential struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	RotatedAt   *time.Time `json:"rotated_at,omitempty"`
 }
+
+// User is a human identity within an org. Virtual keys and BYOK provider
+// credentials may be owned by a user. Passwords are bcrypt-hashed; the hash is
+// never serialized to API responses.
+type User struct {
+	ID            string    `json:"id"`
+	OrgID         string    `json:"org_id"`
+	Email         string    `json:"email"`
+	Role          string    `json:"role"` // "admin" | "member"
+	EnforceLimits bool      `json:"enforce_limits"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// Roles for users.
+const (
+	RoleAdmin  = "admin"
+	RoleMember = "member"
+)
 
 // keyAlphabet for the random body of a virtual key (Crockford-ish base32).
 var keyEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
@@ -54,6 +74,14 @@ func GenerateVirtualKey() (plaintext, prefix, last4 string) {
 	prefix = "nxs_live_" + body[:4]
 	last4 = plaintext[len(plaintext)-4:]
 	return plaintext, prefix, last4
+}
+
+// GenerateSessionToken returns a new high-entropy opaque session token. Only
+// its hash is stored; the plaintext is sent to the client as a cookie.
+func GenerateSessionToken() string {
+	buf := make([]byte, 32)
+	_, _ = rand.Read(buf)
+	return "nxs_sess_" + keyEncoding.EncodeToString(buf)
 }
 
 // Last4 returns the last 4 characters of a secret for display.

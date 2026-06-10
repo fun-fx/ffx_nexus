@@ -131,7 +131,8 @@ func (g *Gemini) ChatCompletion(ctx context.Context, req gateway.ChatCompletionR
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("%s/models/%s:generateContent?key=%s", g.baseURL, url.PathEscape(req.Model), url.QueryEscape(g.apiKey))
+	apiKey, baseURL := g.creds(ctx)
+	endpoint := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, url.PathEscape(req.Model), url.QueryEscape(apiKey))
 	resp, err := g.post(ctx, endpoint, body)
 	if err != nil {
 		return nil, err
@@ -173,7 +174,8 @@ func (g *Gemini) ChatCompletionStream(ctx context.Context, req gateway.ChatCompl
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s", g.baseURL, url.PathEscape(req.Model), url.QueryEscape(g.apiKey))
+	apiKey, baseURL := g.creds(ctx)
+	endpoint := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s", baseURL, url.PathEscape(req.Model), url.QueryEscape(apiKey))
 	resp, err := g.post(ctx, endpoint, body)
 	if err != nil {
 		return nil, err
@@ -226,6 +228,19 @@ func (g *Gemini) ChatCompletionStream(ctx context.Context, req gateway.ChatCompl
 		out <- gateway.StreamEvent{Done: true}
 	}()
 	return out, nil
+}
+
+// creds resolves the API key + base URL for this request, honoring a per-request
+// BYOK override from the context when present.
+func (g *Gemini) creds(ctx context.Context) (apiKey, baseURL string) {
+	apiKey, baseURL = g.apiKey, g.baseURL
+	if c, ok := gateway.CallerCredentialFrom(ctx); ok {
+		apiKey = c.Secret
+		if c.BaseURL != "" {
+			baseURL = strings.TrimRight(c.BaseURL, "/")
+		}
+	}
+	return apiKey, baseURL
 }
 
 func (g *Gemini) post(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {

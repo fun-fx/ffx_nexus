@@ -15,6 +15,7 @@ type ctxKey string
 const (
 	ctxKeyRequestID     ctxKey = "request_id"
 	ctxKeyOrgID         ctxKey = "org_id"
+	ctxKeyUserID        ctxKey = "user_id"
 	ctxKeyVKeyID        ctxKey = "virtual_key_id"
 	ctxKeyAllowedModels ctxKey = "allowed_models"
 	ctxKeyRPMLimit      ctxKey = "rpm_limit"
@@ -25,11 +26,23 @@ const (
 // AuthResult is what a key authenticator returns for a valid virtual key.
 type AuthResult struct {
 	OrgID         string
+	UserID        string // owning user (BYOK); empty = org-level key
 	VKeyID        string
 	AllowedModels []string // empty = all models allowed
 	RPMLimit      int      // requests/min, 0 = unlimited
 	MonthlyBudget float64  // USD/month, 0 = unlimited
 	MinQuality    float64  // minimum routing quality, 0 = no gate
+}
+
+// OrgID / UserID accessors for the request context.
+func OrgIDFrom(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyOrgID).(string)
+	return v
+}
+
+func UserIDFrom(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyUserID).(string)
+	return v
 }
 
 // VKeyAuthenticator validates a presented virtual key. Returning an error means
@@ -117,6 +130,7 @@ func Auth(auth VKeyAuthenticator) func(http.Handler) http.Handler {
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyOrgID, res.OrgID)
+			ctx = context.WithValue(ctx, ctxKeyUserID, res.UserID)
 			ctx = context.WithValue(ctx, ctxKeyVKeyID, res.VKeyID)
 			ctx = context.WithValue(ctx, ctxKeyAllowedModels, res.AllowedModels)
 			ctx = context.WithValue(ctx, ctxKeyRPMLimit, res.RPMLimit)

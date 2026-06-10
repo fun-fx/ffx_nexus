@@ -40,6 +40,12 @@ config:
   upstreamTimeout: "120s"
   openaiBaseUrl: ""
 
+  # BYOK / multi-tenancy: how upstream provider keys are resolved per request.
+  # "shared" (default) uses org/env keys for everyone; "byok" prefers each
+  # caller's own stored key (falling back to org -> env); "strict_byok" requires
+  # a per-user key. byok modes need Postgres + secrets.masterKey.
+  keyMode: "shared"
+
   # Quality-aware routing (Phase 4). Requires ClickHouse for live quality stats.
   routeGroups: ""
   routeWQuality: ""
@@ -120,6 +126,10 @@ secrets:
   masterKey: ""
   judgeApiKey: ""
   embeddingsApiKey: ""
+  # Bootstrap the first console admin (BYOK). Only used on first boot when the
+  # org has no users yet; safe to leave set afterward. Provide both to enable.
+  adminEmail: ""
+  adminPassword: ""
 
 # Escape hatch for arbitrary extra env (non-secret).
 extraEnv: []
