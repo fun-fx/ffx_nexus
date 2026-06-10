@@ -18,6 +18,7 @@ SCRIPTS=(
   test_eval_persistence.sh
   test_rag_eval.sh
   test_eval_batch.sh
+  test_byok.sh
 )
 
 FAILED=0

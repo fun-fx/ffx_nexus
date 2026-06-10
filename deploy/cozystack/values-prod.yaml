@@ -1,0 +1,59 @@
+# Helm values override for deploying Nexus on Talos + Cozystack.
+#
+#   helm upgrade --install nexus deploy/helm/nexus \
+#     -n tenant-nexus \
+#     -f deploy/cozystack/values-prod.yaml
+#
+# Fill in the <...> placeholders with the credentials published by the Cozystack
+# operators (see README.md). Do NOT commit real secrets; prefer --set-string for
+# the secret values or an external secret (secrets.existingSecret).
+
+image:
+  # In-cluster Talos nodes resolve Harbor via the nip.io host, not MagicDNS.
+  repository: harbor.192.168.0.101.nip.io/ffx/nexus
+  tag: 0.3.0
+imagePullSecrets:
+  - name: harbor
+
+# BYOK / multi-tenancy: resolve each caller's own provider key per request,
+# falling back to org -> env. Requires Postgres + secrets.masterKey (set above).
+config:
+  keyMode: byok
+
+# Managed backing services provisioned by the Cozystack CRs in this directory.
+dependencies:
+  clickhouse:
+    enabled: true
+    url: clickhouse://nexus:<CLICKHOUSE_PW>@chendpoint-clickhouse-nexus:9000/nexus
+  postgres:
+    enabled: true
+    url: postgres://nexus:<POSTGRES_PW>@postgres-nexus-rw:5432/nexus?sslmode=require
+  redis:
+    enabled: true
+    url: redis://:<REDIS_PW>@rfrm-redis-nexus:6379/0
+
+secrets:
+  # 32-byte key (base64/hex) that encrypts provider credentials at rest.
+  masterKey: <NEXUS_MASTER_KEY>
+  # At least one provider key so the gateway has something to route to.
+  geminiApiKey: <GEMINI_API_KEY>
+  # Bootstrap the first console admin (used only on first boot when no users
+  # exist). Prefer passing these via --set-string at deploy time, not in git.
+  adminEmail: <ADMIN_EMAIL>
+  adminPassword: <ADMIN_PASSWORD>
+
+# Expose the gateway externally via Tailscale ingress (console stays internal).
+ingress:
+  enabled: true
+  className: tailscale
+  annotations:
+    tailscale.com/proxy-class: kernel-mode
+  hosts:
+    - host: nexus
+      paths:
+        - path: /
+          pathType: Prefix
+          port: gateway
+  tls:
+    - hosts:
+        - nexus

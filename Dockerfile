@@ -1,6 +1,14 @@
 # syntax=docker/dockerfile:1
 
-# --- Build stage ---
+# --- Web build stage: compile the dashboard SPA so it can be embedded ---
+FROM node:20-alpine AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# --- Go build stage ---
 FROM golang:1.26-alpine AS build
 RUN apk add --no-cache ca-certificates git
 WORKDIR /src
@@ -9,6 +17,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+# Overlay the freshly built dashboard assets for the go:embed in web/embed.go.
+COPY --from=web /web/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w" \

@@ -133,6 +133,14 @@ func (w *Worker) evaluate(t observability.Trace) {
 	if len(scores) == 0 {
 		return
 	}
+	// Stamp the caller's user_id so eval scores can be aggregated per user
+	// (per-user quality), not just per virtual key — evaluators don't need to
+	// know about tenancy.
+	for i := range scores {
+		if scores[i].UserID == "" {
+			scores[i].UserID = t.UserID
+		}
+	}
 	if err := w.sink.WriteScores(ctx, scores); err != nil {
 		w.log.Error("write eval scores failed", "trace_id", t.TraceID, "err", err)
 	}

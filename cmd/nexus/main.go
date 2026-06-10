@@ -52,14 +52,20 @@ func main() {
 		if err != nil {
 			log.Error("postgres connect failed; continuing without control plane", "err", err)
 		} else {
-			schema, _ := nexus.Migrations.ReadFile("migrations/postgres/001_init.sql")
-			if err := st.Migrate(ctx, string(schema)); err != nil {
-				log.Error("postgres migrate failed", "err", err)
+			for _, path := range []string{
+				"migrations/postgres/001_init.sql",
+				"migrations/postgres/002_byok.sql",
+			} {
+				schema, _ := nexus.Migrations.ReadFile(path)
+				if err := st.Migrate(ctx, string(schema)); err != nil {
+					log.Error("postgres migrate failed", "file", path, "err", err)
+				}
 			}
 			store = st
 			auth = makeAuthenticator(st)
 			log.Info("control plane enabled (virtual key auth + credential store)",
 				"credential_encryption", st.HasCipher())
+			bootstrapAdmin(ctx, st, cfg, log)
 		}
 	} else {
 		log.Info("postgres not configured; key auth disabled, provider keys from env only")
@@ -108,6 +114,9 @@ func main() {
 			for _, path := range []string{
 				"migrations/clickhouse/001_init.sql",
 				"migrations/clickhouse/002_eval_context.sql",
+				"migrations/clickhouse/003_dashboard.sql",
+				"migrations/clickhouse/004_byok.sql",
+				"migrations/clickhouse/005_eval_user.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := rec.Migrate(ctx, string(schema)); err != nil {
@@ -249,6 +258,22 @@ func main() {
 		}
 	}
 
+	// BYOK: per-request upstream key resolution. In "byok"/"strict_byok" mode
+	// each caller's request uses their own stored provider key (falling back to
+	// shared keys in soft BYOK). A short-TTL cache avoids re-decrypting per call.
+	keyMode := gateway.ParseKeyMode(cfg.KeyMode)
+	var credResolver *gateway.CredentialResolver
+	if keyMode != gateway.KeyModeShared {
+		if store == nil || !store.HasCipher() {
+			log.Warn("NEXUS_KEY_MODE requires Postgres + NEXUS_MASTER_KEY; falling back to shared keys", "mode", cfg.KeyMode)
+			keyMode = gateway.KeyModeShared
+		} else {
+			credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 60*time.Second)
+			gwHandler.SetCredentialResolution(credResolver, keyMode)
+			log.Info("per-request credential resolution enabled (BYOK)", "mode", cfg.KeyMode)
+		}
+	}
+
 	gwSrv := &http.Server{
 		Addr:    cfg.GatewayAddr,
 		Handler: gateway.NewMux(gwHandler, auth, lim, log),
@@ -264,6 +289,7 @@ func main() {
 	if store != nil && store.HasCipher() {
 		consoleSrvHandler.SetCredentialReloader(func(rctx context.Context) {
 			registerStoredCredentials(rctx, reg, store, cfg, log)
+			credResolver.Invalidate() // safe on nil; clears per-user key cache
 		})
 	}
 	consoleSrv := &http.Server{
@@ -363,15 +389,66 @@ func makeAuthenticator(st *core.Store) gateway.VKeyAuthenticator {
 		if err != nil {
 			return gateway.AuthResult{}, err
 		}
-		return gateway.AuthResult{
+		res := gateway.AuthResult{
 			OrgID:         vk.OrgID,
+			UserID:        vk.UserID,
 			VKeyID:        vk.ID,
 			AllowedModels: vk.AllowedModels,
 			RPMLimit:      vk.RPMLimit,
 			MonthlyBudget: vk.MonthlyBudget,
 			MinQuality:    vk.MinQuality,
-		}, nil
+		}
+		// When the owning user has turned off Nexus-side enforcement (BYOK),
+		// drop the RPM/budget caps so only the provider's own limits apply.
+		if !vk.EnforceLimits {
+			res.RPMLimit = 0
+			res.MonthlyBudget = 0
+		}
+		return res, nil
 	}
+}
+
+// bootstrapAdmin creates an initial admin user from NEXUS_ADMIN_EMAIL /
+// NEXUS_ADMIN_PASSWORD when the org has no users yet, so the console has a first
+// login. No-op when the env vars are unset or users already exist.
+func bootstrapAdmin(ctx context.Context, st *core.Store, cfg config.Config, log *slog.Logger) {
+	if cfg.AdminEmail == "" || cfg.AdminPassword == "" {
+		return
+	}
+	n, err := st.CountUsers(ctx, "default")
+	if err != nil {
+		log.Error("bootstrap admin: count users failed", "err", err)
+		return
+	}
+	if n > 0 {
+		return
+	}
+	if _, err := st.CreateUser(ctx, "default", cfg.AdminEmail, cfg.AdminPassword, core.RoleAdmin); err != nil {
+		log.Error("bootstrap admin failed", "err", err)
+		return
+	}
+	log.Info("bootstrap admin user created", "email", cfg.AdminEmail)
+}
+
+// storeCredentialSource adapts the control-plane store to the gateway's
+// CredentialSource interface, translating core types to gateway types so the
+// gateway package stays decoupled from core.
+type storeCredentialSource struct{ st *core.Store }
+
+func (s *storeCredentialSource) ResolveCredential(ctx context.Context, orgID, userID, provider string) (gateway.ResolvedCredential, bool, error) {
+	cred, source, err := s.st.ResolveCredential(ctx, orgID, userID, provider)
+	if errors.Is(err, core.ErrNotFound) {
+		return gateway.ResolvedCredential{}, false, nil
+	}
+	if err != nil {
+		return gateway.ResolvedCredential{}, false, err
+	}
+	return gateway.ResolvedCredential{
+		Secret:  cred.Secret,
+		BaseURL: cred.BaseURL,
+		Source:  source,
+		ID:      cred.ID,
+	}, true, nil
 }
 
 // registerStoredCredentials registers providers from encrypted DB credentials.
