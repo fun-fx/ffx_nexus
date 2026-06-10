@@ -50,8 +50,8 @@ func (s *Store) HasCipher() bool { return s.cipher != nil }
 // --- Virtual keys ---
 
 // CreateVirtualKey generates a key, stores its hash, and returns the row plus
-// the one-time plaintext.
-func (s *Store) CreateVirtualKey(ctx context.Context, orgID, name string, allowedModels []string, rpm int, monthlyBudget, minQuality float64) (VirtualKey, string, error) {
+// the one-time plaintext. userID may be empty for an org-level key.
+func (s *Store) CreateVirtualKey(ctx context.Context, orgID, userID, name string, allowedModels []string, rpm int, monthlyBudget, minQuality float64) (VirtualKey, string, error) {
 	if orgID == "" {
 		orgID = "default"
 	}
@@ -59,6 +59,7 @@ func (s *Store) CreateVirtualKey(ctx context.Context, orgID, name string, allowe
 	vk := VirtualKey{
 		ID:            uuid.NewString(),
 		OrgID:         orgID,
+		UserID:        userID,
 		Name:          name,
 		KeyPrefix:     prefix,
 		KeyLast4:      last4,
@@ -72,10 +73,10 @@ func (s *Store) CreateVirtualKey(ctx context.Context, orgID, name string, allowe
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO virtual_keys
-			(id, org_id, name, key_hash, key_prefix, key_last4,
+			(id, org_id, user_id, name, key_hash, key_prefix, key_last4,
 			 allowed_models, rpm_limit, monthly_budget_usd, min_quality_score)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		vk.ID, vk.OrgID, vk.Name, crypto.HashKey(plaintext), vk.KeyPrefix, vk.KeyLast4,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		vk.ID, vk.OrgID, nullStr(userID), vk.Name, crypto.HashKey(plaintext), vk.KeyPrefix, vk.KeyLast4,
 		vk.AllowedModels, vk.RPMLimit, vk.MonthlyBudget, vk.MinQuality)
 	if err != nil {
 		return VirtualKey{}, "", err
@@ -84,32 +85,66 @@ func (s *Store) CreateVirtualKey(ctx context.Context, orgID, name string, allowe
 	return vk, plaintext, nil
 }
 
-// LookupVirtualKey finds an active (non-revoked) key by its plaintext value.
-func (s *Store) LookupVirtualKey(ctx context.Context, plaintext string) (VirtualKey, error) {
-	var vk VirtualKey
+// AuthorizedKey is a virtual key plus the owning user's enforcement toggle,
+// resolved in a single lookup for the auth hot path. EnforceLimits defaults to
+// true for org-level keys (no owning user).
+type AuthorizedKey struct {
+	VirtualKey
+	EnforceLimits bool
+}
+
+// LookupVirtualKey finds an active (non-revoked) key by its plaintext value,
+// joining the owning user (if any) to surface the per-user enforce_limits flag.
+func (s *Store) LookupVirtualKey(ctx context.Context, plaintext string) (AuthorizedKey, error) {
+	var ak AuthorizedKey
+	var userID *string
+	var enforce *bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, name, key_prefix, key_last4, allowed_models,
-		       rpm_limit, monthly_budget_usd, min_quality_score, revoked, created_at
-		FROM virtual_keys
-		WHERE key_hash = $1 AND revoked = FALSE`,
+		SELECT vk.id, vk.org_id, vk.user_id, vk.name, vk.key_prefix, vk.key_last4,
+		       vk.allowed_models, vk.rpm_limit, vk.monthly_budget_usd, vk.min_quality_score,
+		       vk.revoked, vk.created_at, u.enforce_limits
+		FROM virtual_keys vk
+		LEFT JOIN users u ON u.id = vk.user_id
+		WHERE vk.key_hash = $1 AND vk.revoked = FALSE`,
 		crypto.HashKey(plaintext)).Scan(
-		&vk.ID, &vk.OrgID, &vk.Name, &vk.KeyPrefix, &vk.KeyLast4, &vk.AllowedModels,
-		&vk.RPMLimit, &vk.MonthlyBudget, &vk.MinQuality, &vk.Revoked, &vk.CreatedAt)
+		&ak.ID, &ak.OrgID, &userID, &ak.Name, &ak.KeyPrefix, &ak.KeyLast4, &ak.AllowedModels,
+		&ak.RPMLimit, &ak.MonthlyBudget, &ak.MinQuality, &ak.Revoked, &ak.CreatedAt, &enforce)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return VirtualKey{}, ErrNotFound
+		return AuthorizedKey{}, ErrNotFound
 	}
-	return vk, err
+	if userID != nil {
+		ak.UserID = *userID
+	}
+	// Org-level keys (no user) always enforce; user keys honor their toggle.
+	ak.EnforceLimits = enforce == nil || *enforce
+	return ak, err
 }
 
 // ListVirtualKeys returns all keys for an org (no secrets).
 func (s *Store) ListVirtualKeys(ctx context.Context, orgID string) ([]VirtualKey, error) {
+	return s.listVirtualKeys(ctx, orgID, "")
+}
+
+// ListVirtualKeysForUser returns only the keys owned by a specific user.
+func (s *Store) ListVirtualKeysForUser(ctx context.Context, orgID, userID string) ([]VirtualKey, error) {
+	return s.listVirtualKeys(ctx, orgID, userID)
+}
+
+func (s *Store) listVirtualKeys(ctx context.Context, orgID, userID string) ([]VirtualKey, error) {
 	if orgID == "" {
 		orgID = "default"
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, name, key_prefix, key_last4, allowed_models,
+	query := `
+		SELECT id, org_id, user_id, name, key_prefix, key_last4, allowed_models,
 		       rpm_limit, monthly_budget_usd, min_quality_score, revoked, created_at
-		FROM virtual_keys WHERE org_id = $1 ORDER BY created_at DESC`, orgID)
+		FROM virtual_keys WHERE org_id = $1`
+	args := []any{orgID}
+	if userID != "" {
+		query += ` AND user_id = $2`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -118,11 +153,15 @@ func (s *Store) ListVirtualKeys(ctx context.Context, orgID string) ([]VirtualKey
 	var out []VirtualKey
 	for rows.Next() {
 		var vk VirtualKey
+		var uid *string
 		if err := rows.Scan(
-			&vk.ID, &vk.OrgID, &vk.Name, &vk.KeyPrefix, &vk.KeyLast4, &vk.AllowedModels,
+			&vk.ID, &vk.OrgID, &uid, &vk.Name, &vk.KeyPrefix, &vk.KeyLast4, &vk.AllowedModels,
 			&vk.RPMLimit, &vk.MonthlyBudget, &vk.MinQuality, &vk.Revoked, &vk.CreatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if uid != nil {
+			vk.UserID = *uid
 		}
 		out = append(out, vk)
 	}
@@ -144,8 +183,10 @@ func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, id string) error {
 
 // --- Provider credentials ---
 
-// CreateCredential encrypts and stores an upstream provider secret.
-func (s *Store) CreateCredential(ctx context.Context, orgID, provider, name, baseURL, secret string) (ProviderCredential, error) {
+// CreateCredential encrypts and stores an upstream provider secret. userID may
+// be empty for an org-level (shared/central) credential, or set for a BYOK
+// credential private to that user.
+func (s *Store) CreateCredential(ctx context.Context, orgID, userID, provider, name, baseURL, secret string) (ProviderCredential, error) {
 	if s.cipher == nil {
 		return ProviderCredential{}, crypto.ErrNoMasterKey
 	}
@@ -159,6 +200,7 @@ func (s *Store) CreateCredential(ctx context.Context, orgID, provider, name, bas
 	cred := ProviderCredential{
 		ID:          uuid.NewString(),
 		OrgID:       orgID,
+		UserID:      userID,
 		Provider:    provider,
 		Name:        name,
 		BaseURL:     baseURL,
@@ -167,9 +209,9 @@ func (s *Store) CreateCredential(ctx context.Context, orgID, provider, name, bas
 	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO provider_credentials
-			(id, org_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)`,
-		cred.ID, cred.OrgID, cred.Provider, cred.Name, cred.BaseURL, ct, cred.SecretLast4)
+			(id, org_id, user_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,TRUE)`,
+		cred.ID, cred.OrgID, nullStr(userID), cred.Provider, cred.Name, cred.BaseURL, ct, cred.SecretLast4)
 	if err != nil {
 		return ProviderCredential{}, err
 	}
@@ -177,24 +219,46 @@ func (s *Store) CreateCredential(ctx context.Context, orgID, provider, name, bas
 	return cred, nil
 }
 
-// ListCredentials returns credential metadata (no secrets) for an org.
+// ListCredentials returns org-level credential metadata (no secrets) — i.e.
+// credentials with no owning user (user_id IS NULL).
 func (s *Store) ListCredentials(ctx context.Context, orgID string) ([]ProviderCredential, error) {
 	if orgID == "" {
 		orgID = "default"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at
-		FROM provider_credentials WHERE org_id = $1 ORDER BY created_at DESC`, orgID)
+		SELECT id, org_id, user_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at
+		FROM provider_credentials WHERE org_id = $1 AND user_id IS NULL ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return scanCredentials(rows)
+}
 
+// ListCredentialsForUser returns the BYOK credential metadata owned by a user.
+func (s *Store) ListCredentialsForUser(ctx context.Context, orgID, userID string) ([]ProviderCredential, error) {
+	if orgID == "" {
+		orgID = "default"
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, org_id, user_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at
+		FROM provider_credentials WHERE org_id = $1 AND user_id = $2 ORDER BY created_at DESC`, orgID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return scanCredentials(rows)
+}
+
+func scanCredentials(rows pgx.Rows) ([]ProviderCredential, error) {
+	defer rows.Close()
 	var out []ProviderCredential
 	for rows.Next() {
 		var c ProviderCredential
-		if err := rows.Scan(&c.ID, &c.OrgID, &c.Provider, &c.Name, &c.BaseURL, &c.SecretLast4, &c.Enabled, &c.CreatedAt, &c.RotatedAt); err != nil {
+		var uid *string
+		if err := rows.Scan(&c.ID, &c.OrgID, &uid, &c.Provider, &c.Name, &c.BaseURL, &c.SecretLast4, &c.Enabled, &c.CreatedAt, &c.RotatedAt); err != nil {
 			return nil, err
+		}
+		if uid != nil {
+			c.UserID = *uid
 		}
 		out = append(out, c)
 	}
@@ -242,7 +306,10 @@ type DecryptedCredential struct {
 	Secret string
 }
 
-// LoadEnabledCredentials returns all enabled credentials with decrypted secrets.
+// LoadEnabledCredentials returns enabled org-level credentials (user_id IS NULL)
+// with decrypted secrets. These are the shared/central credentials registered
+// at boot. Per-user (BYOK) credentials are resolved per request via
+// ResolveCredential, not registered globally.
 func (s *Store) LoadEnabledCredentials(ctx context.Context, orgID string) ([]DecryptedCredential, error) {
 	if s.cipher == nil {
 		return nil, crypto.ErrNoMasterKey
@@ -252,7 +319,7 @@ func (s *Store) LoadEnabledCredentials(ctx context.Context, orgID string) ([]Dec
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, org_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled, created_at
-		FROM provider_credentials WHERE org_id = $1 AND enabled = TRUE ORDER BY created_at`, orgID)
+		FROM provider_credentials WHERE org_id = $1 AND user_id IS NULL AND enabled = TRUE ORDER BY created_at`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +340,64 @@ func (s *Store) LoadEnabledCredentials(ctx context.Context, orgID string) ([]Dec
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// ResolveCredential looks up a single enabled credential for a provider on
+// behalf of a caller, honoring BYOK precedence: a user-owned credential wins
+// over an org-level one. It returns the decrypted secret + base URL and a source
+// tag ("user" or "org"). When userID is empty only org-level credentials are
+// considered. Returns ErrNotFound when nothing matches.
+//
+// This runs on the hot path; callers should cache the result (see the gateway's
+// credential cache) keyed by credential ID so the AES-GCM decrypt and DB hit do
+// not repeat per request.
+func (s *Store) ResolveCredential(ctx context.Context, orgID, userID, provider string) (DecryptedCredential, string, error) {
+	if s.cipher == nil {
+		return DecryptedCredential{}, "", crypto.ErrNoMasterKey
+	}
+	if orgID == "" {
+		orgID = "default"
+	}
+	// Order: user-owned first (BYOK), then org-level. created_at as tiebreaker.
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, org_id, user_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled, created_at
+		FROM provider_credentials
+		WHERE org_id = $1 AND provider = $2 AND enabled = TRUE
+		  AND (user_id = $3 OR user_id IS NULL)
+		ORDER BY (user_id IS NULL), created_at`, orgID, provider, nullStr(userID))
+	if err != nil {
+		return DecryptedCredential{}, "", err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return DecryptedCredential{}, "", ErrNotFound
+	}
+	var c DecryptedCredential
+	var uid *string
+	var ct []byte
+	if err := rows.Scan(&c.ID, &c.OrgID, &uid, &c.Provider, &c.Name, &c.BaseURL, &ct, &c.SecretLast4, &c.Enabled, &c.CreatedAt); err != nil {
+		return DecryptedCredential{}, "", err
+	}
+	secret, err := s.cipher.Decrypt(ct)
+	if err != nil {
+		return DecryptedCredential{}, "", fmt.Errorf("decrypt credential %s: %w", c.ID, err)
+	}
+	c.Secret = string(secret)
+	source := "org"
+	if uid != nil {
+		c.UserID = *uid
+		source = "user"
+	}
+	return c, source, nil
+}
+
+// nullStr maps an empty string to a SQL NULL so optional FK columns stay NULL.
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // DeleteCredential removes a credential.

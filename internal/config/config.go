@@ -88,6 +88,19 @@ type Config struct {
 
 	// Behavior
 	UpstreamTimeout time.Duration
+
+	// KeyMode controls how upstream provider keys are resolved per request:
+	//   "shared" (default) — use the process-wide env/org keys for everyone.
+	//   "byok"             — each caller's request uses their own stored key,
+	//                        falling back to org/env keys when they have none.
+	//   "strict_byok"      — require a per-user key; reject calls from users who
+	//                        have not registered a key for the target provider.
+	KeyMode string
+
+	// Bootstrap admin: when set and no users exist yet, an admin account is
+	// created on startup so the console has an initial login.
+	AdminEmail    string
+	AdminPassword string
 }
 
 // Load reads configuration from the environment, applying sane defaults. It
@@ -123,6 +136,9 @@ func Load() Config {
 		RouteRefresh:       envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
 		OTLPEnabled:        envBool("NEXUS_OTLP_ENABLED", false),
 		UpstreamTimeout:    envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
+		KeyMode:            env("NEXUS_KEY_MODE", "shared"),
+		AdminEmail:         env("NEXUS_ADMIN_EMAIL", ""),
+		AdminPassword:      env("NEXUS_ADMIN_PASSWORD", ""),
 
 		GuardrailsEnabled:     envBool("NEXUS_GUARDRAILS_ENABLED", false),
 		GuardrailBlockPIIIn:   envBool("NEXUS_GUARDRAILS_BLOCK_PII_INPUT", false),

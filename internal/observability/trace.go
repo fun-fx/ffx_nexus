@@ -19,7 +19,12 @@ type Trace struct {
 
 	// Tenancy / auth context.
 	OrgID        string `json:"org_id,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
 	VirtualKeyID string `json:"virtual_key_id,omitempty"`
+
+	// CredentialSource records which upstream key served the request:
+	// "env"/"org"/"user" (BYOK) or "none" when a strict-BYOK key was missing.
+	CredentialSource string `json:"credential_source,omitempty"`
 
 	// gen_ai.* attributes.
 	OperationName string  `json:"gen_ai.operation.name"` // e.g. "chat"
