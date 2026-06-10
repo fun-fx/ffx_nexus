@@ -11,9 +11,14 @@
 image:
   # In-cluster Talos nodes resolve Harbor via the nip.io host, not MagicDNS.
   repository: harbor.<node-ip>.nip.io/ffx/nexus
-  tag: 0.1.0
+  tag: 0.3.0
 imagePullSecrets:
   - name: harbor
+
+# BYOK / multi-tenancy: resolve each caller's own provider key per request,
+# falling back to org -> env. Requires Postgres + secrets.masterKey (set above).
+config:
+  keyMode: byok
 
 # Managed backing services provisioned by the Cozystack CRs in this directory.
 dependencies:
@@ -32,6 +37,10 @@ secrets:
   masterKey: <NEXUS_MASTER_KEY>
   # At least one provider key so the gateway has something to route to.
   geminiApiKey: <GEMINI_API_KEY>
+  # Bootstrap the first console admin (used only on first boot when no users
+  # exist). Prefer passing these via --set-string at deploy time, not in git.
+  adminEmail: <ADMIN_EMAIL>
+  adminPassword: <ADMIN_PASSWORD>
 
 # Expose the gateway externally via Tailscale ingress (console stays internal).
 ingress:
