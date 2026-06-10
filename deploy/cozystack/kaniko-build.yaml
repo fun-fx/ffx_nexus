@@ -1,0 +1,44 @@
+# In-cluster image build with kaniko: builds the multi-stage Dockerfile straight
+# from the public GitHub repo and pushes to the in-cluster Harbor. Run with:
+#
+#   kubectl -n tenant-nexus apply -f deploy/cozystack/kaniko-build.yaml
+#   kubectl -n tenant-nexus logs -f job/nexus-build
+#
+# The Harbor registry uses a self-signed cert, hence --skip-tls-verify. The
+# `harbor` docker-registry secret (already in the namespace) provides push auth.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nexus-build
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:latest
+          args:
+            - --context=git://github.com/fun-fx/ffx_nexus.git#refs/heads/main
+            - --dockerfile=Dockerfile
+            - --destination=harbor.<node-ip>.nip.io/ffx/nexus:0.3.0
+            - --skip-tls-verify
+            - --skip-tls-verify-pull
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: docker-config
+              mountPath: /kaniko/.docker
+      volumes:
+        - name: docker-config
+          secret:
+            secretName: harbor
+            items:
+              - key: .dockerconfigjson
+                path: config.json
