@@ -1,0 +1,25 @@
+{{- if and .Values.ingress.enabled .Values.ingress.console.enabled -}}
+{{- $fullName := include "nexus.fullname" . -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-console
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  defaultBackend:
+    service:
+      name: {{ $fullName }}
+      port:
+        name: console
+  tls:
+    - hosts:
+        - {{ .Values.ingress.console.host | quote }}
+{{- end -}}

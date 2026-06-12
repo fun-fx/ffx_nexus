@@ -194,7 +194,12 @@ ingress:
   enabled: false
   className: ""
   annotations: {}
-  # Route gateway (:8080) and console (:8081) hosts. Defaults below are examples.
+  # Separate Tailscale Ingress for the console (:8081). Tailscale registers one
+  # MagicDNS name per Ingress resource, so gateway and console need two Ingresses.
+  console:
+    enabled: false
+    host: console
+  # Route gateway (:8080). Defaults below are examples.
   hosts:
     - host: nexus.example.com
       paths:
