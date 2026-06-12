@@ -75,13 +75,28 @@ redis://:<pw>@rfrm-redis-nexus:6379/0
 
 ## 4. Deploy Nexus
 
-Fill in `values-prod.yaml` (or pass secrets via `--set-string`), then:
+**First install** — build the Secret from the operator credentials, then install
+with `existingSecret` so later `helm upgrade -f values-prod.yaml` never overwrites
+live DSNs with placeholders:
 
 ```bash
+# 1. Create the out-of-band Secret (once; adjust passwords from step 3)
+kubectl -n tenant-nexus create secret generic nexus \
+  --from-literal=NEXUS_POSTGRES_URL="postgres://nexus:<pw>@postgres-nexus-rw:5432/nexus?sslmode=require" \
+  --from-literal=NEXUS_CLICKHOUSE_URL="clickhouse://nexus:<pw>@chendpoint-clickhouse-nexus:9000/nexus" \
+  --from-literal=NEXUS_REDIS_URL="redis://:<pw>@rfrm-redis-nexus:6379/0" \
+  --from-literal=NEXUS_MASTER_KEY="$(openssl rand -hex 32)" \
+  --from-literal=GEMINI_API_KEY="<your-key>" \
+  --from-literal=NEXUS_ADMIN_EMAIL="admin@example.com" \
+  --from-literal=NEXUS_ADMIN_PASSWORD="<bootstrap-password>"
+
+# 2. Install/upgrade (values-prod.yaml sets existingSecret: nexus)
 helm upgrade --install nexus ../helm/nexus \
   -n tenant-nexus \
   -f values-prod.yaml
 ```
+
+Subsequent upgrades only need `-f values-prod.yaml`; the Secret is left untouched.
 
 Generate a master key for credential encryption if you don't have one:
 
@@ -95,9 +110,16 @@ openssl rand -hex 32
 # health (external, via Tailscale ingress)
 curl -s https://nexus.<tailnet>.ts.net/healthz
 
-# create a virtual key (console is internal-only; port-forward to reach it)
-kubectl -n tenant-nexus port-forward svc/nexus 8081:8081 &
-curl -s localhost:8081/api/keys \
+# console dashboard (Tailscale — separate Ingress per host)
+curl -s https://console.<tailnet>.ts.net/healthz
+
+# create a virtual key (log in to console first, or use /api/me/keys with session)
+curl -s https://console.<tailnet>.ts.net/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"<admin>","password":"<pass>"}' -c /tmp/cj
+
+curl -s https://console.<tailnet>.ts.net/api/me/keys -b /tmp/cj \
+  -H 'Content-Type: application/json' \
   -d '{"name":"demo","allowed_models":["gemini-2.5-flash"]}'
 
 # authed chat through the gateway
@@ -111,8 +133,11 @@ curl -s https://nexus.<tailnet>.ts.net/v1/chat/completions \
 - **ClickHouse Keeper is disabled** because Nexus uses only non-replicated
   `MergeTree` tables. On a single node a 3-replica Keeper cannot reach quorum and
   crash-loops. Enable it only on multi-node clusters needing `ReplicatedMergeTree`.
-- The **console (`:8081`) is intentionally not exposed** through the ingress;
-  reach it via `kubectl port-forward`. Only the gateway (`:8080`) is public.
+- **Gateway and console** are exposed on separate Tailscale Ingresses
+  (`nexus.<tailnet>.ts.net` and `console.<tailnet>.ts.net`). Tailscale registers
+  one MagicDNS name per Ingress resource.
+- **`existingSecret: nexus`** in `values-prod.yaml` keeps Helm from overwriting
+  live DSNs/API keys on upgrade. Create the Secret out-of-band before first install.
 - After a backing-pod restart the gateway may need a rollout restart
   (`kubectl -n tenant-nexus rollout restart deploy/nexus`) to re-establish
   ClickHouse connections if Cilium reassigns the pod identity.
