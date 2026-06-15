@@ -17,7 +17,7 @@ spec:
         - name: kaniko
           image: gcr.io/kaniko-project/executor:latest
           args:
-            - --context=git://github.com/fun-fx/ffx_nexus.git#refs/heads/feat/prod-rollout
+            - --context=git://github.com/fun-fx/ffx_nexus.git#refs/heads/main
             - --context-sub-path=eval-service
             - --dockerfile=Dockerfile
             - --destination=harbor.<node-ip>.nip.io/ffx/nexus-eval:0.3.2
