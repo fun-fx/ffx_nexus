@@ -170,15 +170,6 @@ else
   fail "completion via DB credential failed: HTTP $CHAT $(cat /tmp/p2_chat.json)"
 fi
 
-# --- Revoke virtual key ---
-
-echo ""
-echo "-- revoke --"
-
-curl -s -X DELETE "$CON_URL/api/keys/$KEY_ID" >/dev/null
-code=$(http_code -H "Authorization: Bearer $SECRET" "$GW_URL/v1/models")
-if [[ "$code" == "401" ]]; then pass "revoked key -> 401"; else fail "revoked key -> expected 401, got $code"; fi
-
 # --- Rotate credential ---
 
 echo ""
@@ -254,6 +245,15 @@ fi
 code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$CON_URL/api/credentials/does-not-exist/rotate" \
   -H 'Content-Type: application/json' -d '{"secret":"whatever"}')
 if [[ "$code" == "404" ]]; then pass "rotate unknown credential -> 404"; else fail "rotate unknown -> expected 404, got $code"; fi
+
+# --- Revoke virtual key (after rotation so hot-reload still has a valid vkey) ---
+
+echo ""
+echo "-- revoke --"
+
+curl -s -X DELETE "$CON_URL/api/keys/$KEY_ID" >/dev/null
+code=$(http_code -H "Authorization: Bearer $SECRET" "$GW_URL/v1/models")
+if [[ "$code" == "401" ]]; then pass "revoked key -> 401"; else fail "revoked key -> expected 401, got $code"; fi
 
 # --- Delete credential ---
 
