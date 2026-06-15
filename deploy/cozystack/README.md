@@ -18,7 +18,11 @@ Helm values override for the Nexus chart in [`../helm/nexus`](../helm/nexus).
 | `05-eval-service.yaml` | Python eval sidecar (DeepEval/RAGAS) |
 | `kaniko-build.yaml` | In-cluster Kaniko build for the Nexus image |
 | `kaniko-build-eval.yaml` | In-cluster Kaniko build for the eval sidecar image |
-| `values-prod.yaml` | Helm override: image, features, dependency wiring, ingress |
+| `06-bootstrap-secret.yaml` | One-shot Job: build `nexus` Secret from operator credentials |
+| `bootstrap-input.example.yaml` | Optional provider/admin inputs for the bootstrap Job |
+| `values-full.yaml` | Full-stack Helm override (features + ingress; uses `existingSecret`) |
+| `values-prod.yaml` | Alias of prod cluster settings (Harbor + Tailscale); prefer `values-full.yaml` for new installs |
+| `install-full.sh` | One-shot install: CRs → bootstrap → eval stack → Helm |
 
 ## Prerequisites
 
@@ -80,8 +84,29 @@ redis://:<pw>@rfrm-redis-nexus:6379/0
 
 ## 4. Deploy Nexus
 
+### Option A — bootstrap Job (recommended)
+
+After the Cozystack operators publish credential secrets, run the idempotent
+bootstrap Job. It skips automatically when Secret `nexus` already exists.
+
+```bash
+# Optional: provider key + admin password (otherwise auto-generated; see Job logs)
+# cp bootstrap-input.example.yaml bootstrap-input.yaml && edit && kubectl apply -f bootstrap-input.yaml
+
+kubectl -n tenant-nexus delete job nexus-bootstrap --ignore-not-found
+kubectl -n tenant-nexus apply -f 06-bootstrap-secret.yaml
+kubectl -n tenant-nexus wait --for=condition=complete job/nexus-bootstrap --timeout=300s
+kubectl -n tenant-nexus logs job/nexus-bootstrap
+
+helm upgrade --install nexus ../helm/nexus \
+  -n tenant-nexus \
+  -f values-full.yaml
+```
+
+### Option B — manual Secret
+
 **First install** — build the Secret from the operator credentials, then install
-with `existingSecret` so later `helm upgrade -f values-prod.yaml` never overwrites
+with `existingSecret` so later `helm upgrade -f values-full.yaml` never overwrites
 live DSNs with placeholders:
 
 ```bash
@@ -95,13 +120,23 @@ kubectl -n tenant-nexus create secret generic nexus \
   --from-literal=NEXUS_ADMIN_EMAIL="admin@example.com" \
   --from-literal=NEXUS_ADMIN_PASSWORD="<bootstrap-password>"
 
-# 2. Install/upgrade (values-prod.yaml sets existingSecret: nexus)
+# 2. Install/upgrade (values-full.yaml sets existingSecret: nexus)
 helm upgrade --install nexus ../helm/nexus \
   -n tenant-nexus \
-  -f values-prod.yaml
+  -f values-full.yaml
 ```
 
-Subsequent upgrades only need `-f values-prod.yaml`; the Secret is left untouched.
+Subsequent upgrades only need `-f values-full.yaml`; the Secret is left untouched.
+
+### One-shot install script
+
+```bash
+chmod +x install-full.sh
+./install-full.sh
+```
+
+This applies backing-service CRs, runs the bootstrap Job, deploys Ollama +
+eval-service, and `helm upgrade --install`s Nexus with `values-full.yaml`.
 
 Generate a master key for credential encryption if you don't have one:
 
