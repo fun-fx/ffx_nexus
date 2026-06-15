@@ -1,0 +1,70 @@
+# Full-stack Nexus profile: control plane + observability + routing + guardrails
+# + eval stack + semantic cache. Requires external Postgres, ClickHouse, Redis,
+# and (for judge/embeddings/eval sidecar) in-cluster Ollama + eval-service.
+#
+# Cozystack users: run deploy/cozystack/06-bootstrap-secret.yaml first, then:
+#   helm upgrade --install nexus deploy/helm/nexus \
+#     -n tenant-nexus -f deploy/cozystack/values-full.yaml
+#
+# Generic Kubernetes: set existingSecret or populate secrets.* + dependency URLs.
+
+existingSecret: nexus
+
+config:
+  keyMode: byok
+
+  routeGroups: "fast=gemini-2.5-flash,gemini-2.0-flash,openai/gpt-4o-mini;smart=gemini-2.5-pro,openai/gpt-4o"
+  routeWQuality: "0.6"
+  routeWCost: "0.2"
+  routeWLatency: "0.2"
+  routeWindow: "1h"
+  routeRefresh: "30s"
+  routeLoadBalance: true
+
+  guardrails:
+    enabled: true
+    blockPiiInput: true
+    redactPiiOutput: true
+    maxInputChars: 20000
+    validateJsonOutput: true
+
+  selfCorrection:
+    enabled: true
+    maxRetries: 1
+
+  judge:
+    baseUrl: http://ollama:11434/v1
+    model: qwen2.5:7b-instruct
+    sampleRate: "0.1"
+    workers: "4"
+
+  evalService:
+    url: http://eval-service:8200
+    metrics: answer_relevancy,toxicity,bias
+    timeout: 30s
+
+  semanticCache:
+    enabled: true
+    ttl: 24h
+    threshold: "0.92"
+    maxEntries: 500
+  embeddings:
+    url: http://ollama:11434/v1
+    model: nomic-embed-text
+    timeout: 5s
+
+dependencies:
+  postgres:
+    enabled: true
+  clickhouse:
+    enabled: true
+  redis:
+    enabled: true
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi
