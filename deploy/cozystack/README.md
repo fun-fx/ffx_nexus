@@ -13,7 +13,12 @@ Helm values override for the Nexus chart in [`../helm/nexus`](../helm/nexus).
 | `01-clickhouse.yaml` | Managed ClickHouse (trace + eval persistence). Keeper disabled (single-node) |
 | `02-postgres.yaml` | Managed Postgres (virtual keys + encrypted credentials) |
 | `03-redis.yaml` | Managed Redis (rate limits/budgets + semantic cache) |
-| `values-prod.yaml` | Helm override: image, dependency DSNs, secrets, Tailscale ingress |
+| `04-ollama.yaml` | Local Ollama for judge, embeddings, eval sidecar |
+| `04-ollama-models-job.yaml` | One-shot Job to pull judge + embedding models |
+| `05-eval-service.yaml` | Python eval sidecar (DeepEval/RAGAS) |
+| `kaniko-build.yaml` | In-cluster Kaniko build for the Nexus image |
+| `kaniko-build-eval.yaml` | In-cluster Kaniko build for the eval sidecar image |
+| `values-prod.yaml` | Helm override: image, features, dependency wiring, ingress |
 
 ## Prerequisites
 
@@ -141,3 +146,37 @@ curl -s https://nexus.<tailnet>.ts.net/v1/chat/completions \
 - After a backing-pod restart the gateway may need a rollout restart
   (`kubectl -n tenant-nexus rollout restart deploy/nexus`) to re-establish
   ClickHouse connections if Cilium reassigns the pod identity.
+
+## 6. Optional eval stack (Ollama + eval sidecar)
+
+For async SLM judge, Python eval metrics, and semantic-cache embeddings:
+
+```bash
+# Build eval sidecar image (after pushing the branch Kaniko reads)
+kubectl -n tenant-nexus delete job nexus-eval-build --ignore-not-found
+kubectl -n tenant-nexus apply -f kaniko-build-eval.yaml
+kubectl -n tenant-nexus logs -f job/nexus-eval-build
+
+# Ollama + model pull
+kubectl -n tenant-nexus apply -f 04-ollama.yaml
+kubectl -n tenant-nexus delete job ollama-pull-models --ignore-not-found
+kubectl -n tenant-nexus apply -f 04-ollama-models-job.yaml
+
+# Eval sidecar (points at in-cluster Ollama)
+kubectl -n tenant-nexus apply -f 05-eval-service.yaml
+```
+
+`values-prod.yaml` already wires `judge`, `evalService`, `embeddings`, and
+`semanticCache` to these in-cluster services. Upgrade Nexus after the stack is up:
+
+```bash
+helm upgrade --install nexus ../helm/nexus -n tenant-nexus -f values-prod.yaml
+```
+
+## 7. ClickHouse memory
+
+If `/api/stats` fails under load, raise the ClickHouse `resourcesPreset` to
+`medium` in `01-clickhouse.yaml` and re-apply the CR. Nexus 0.3.1+ also uses
+memory-bounded aggregate queries (`quantileTDigest`, join time filters).
+
+See [docs/packaging.md](../../docs/packaging.md) for OSS vs commercial boundaries.
