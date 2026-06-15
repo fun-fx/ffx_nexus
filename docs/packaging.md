@@ -55,19 +55,23 @@ differentiator and remain in this repository.
 - **Database migrations** — applied on Nexus startup from `migrations/`
 - **Breaking changes** — noted in release tags and `DESCRIPTION.md`
 
-## Single-command self-hosting (Phase 5 goal)
+## Single-command self-hosting (Phase 5)
 
-Current state:
+**Cozystack / Talos:**
 
 ```bash
-helm upgrade --install nexus deploy/helm/nexus -f deploy/cozystack/values-prod.yaml
+./deploy/cozystack/install-full.sh
 ```
 
-Optional add-ons (same namespace):
+Or step-by-step: Cozystack CRs → `06-bootstrap-secret.yaml` → Ollama/eval manifests →
+`helm upgrade --install nexus deploy/helm/nexus -f deploy/cozystack/values-full.yaml`.
 
-1. Cozystack CRs for Postgres, ClickHouse, Redis
-2. `04-ollama.yaml` + model pull job
-3. `05-eval-service.yaml` after `kaniko-build-eval.yaml`
+**Generic Kubernetes:** wire your own Postgres/ClickHouse/Redis, then:
 
-Future refinements: subchart dependencies, one-shot bootstrap Job for secrets,
-and a `values-full.yaml` profile that enables routing + guardrails + eval stack.
+```bash
+helm upgrade --install nexus deploy/helm/nexus -f deploy/helm/nexus/values-full.yaml
+```
+
+Set `existingSecret` or populate `secrets.*` + dependency URLs before install.
+
+Future refinements: Helm subchart dependencies for optional in-cluster databases.

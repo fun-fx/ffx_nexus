@@ -214,7 +214,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 ## Roadmap (Not Yet Implemented)
 
-- Single-command self-host profile (`values-full.yaml`, bootstrap Job) — see [docs/packaging.md](docs/packaging.md)
+- Helm subchart dependencies for optional in-cluster Postgres/ClickHouse/Redis
 
 ### Recently completed
 
@@ -237,6 +237,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - Semantic cache: Redis-backed embedding-similarity cache returns stored completions for near-duplicate prompts without an upstream call (`NEXUS_SEMANTIC_CACHE_ENABLED`); tenant-isolated per org/virtual key, alias-aware keying (survives load-balancer rotation), deterministic requests only (temperature unset or 0), hot-path embedding bounded by a timeout with graceful degrade; hits are traced as `cache_hit`.
 - Open-core packaging doc: [docs/packaging.md](docs/packaging.md) defines OSS vs commercial boundaries and prod artifact layout.
 - Prod rollout: ClickHouse `medium` preset, memory-bounded stats queries, Cozystack manifests for Ollama + eval sidecar, and `values-prod.yaml` enables routing, guardrails, judge, eval service, and semantic cache.
+- Phase 5 self-host profile: `values-full.yaml`, Cozystack bootstrap Job (`06-bootstrap-secret.yaml`), and `install-full.sh` one-shot installer — see [docs/packaging.md](docs/packaging.md).
 
 ---
 
