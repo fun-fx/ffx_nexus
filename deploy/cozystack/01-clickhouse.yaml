@@ -21,7 +21,7 @@ spec:
   shards: 1
   size: 10Gi
   storageClass: linstor
-  resourcesPreset: small
+  resourcesPreset: medium
   logStorageSize: 2Gi
   logTTL: 15
   clickhouseKeeper:

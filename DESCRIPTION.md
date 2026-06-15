@@ -214,7 +214,7 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 
 ## Roadmap (Not Yet Implemented)
 
-- Open-core packaging: OSS vs commercial feature split, single-command self-hosting refinements (Phase 5, in progress)
+- Single-command self-host profile (`values-full.yaml`, bootstrap Job) — see [docs/packaging.md](docs/packaging.md)
 
 ### Recently completed
 
@@ -235,6 +235,8 @@ Provider API keys are optional for enforcement tests; set `GEMINI_API_KEY` for f
 - Structured-output self-correction (hot path, non-streaming): when the schema guardrail rejects a JSON response, the gateway first attempts a free local repair (strip code fences / surrounding prose), then optionally retries the model with a correction prompt up to N times before falling back to `422`. Outcomes are traced as `json_repaired` and/or `self_corrected:N`.
 - Route load balancing: rank-weighted (smooth WRR) primary selection among quality-qualified models in a routing alias (`NEXUS_ROUTE_LOAD_BALANCE=true`); better models get proportionally more primary traffic, failover order is preserved.
 - Semantic cache: Redis-backed embedding-similarity cache returns stored completions for near-duplicate prompts without an upstream call (`NEXUS_SEMANTIC_CACHE_ENABLED`); tenant-isolated per org/virtual key, alias-aware keying (survives load-balancer rotation), deterministic requests only (temperature unset or 0), hot-path embedding bounded by a timeout with graceful degrade; hits are traced as `cache_hit`.
+- Open-core packaging doc: [docs/packaging.md](docs/packaging.md) defines OSS vs commercial boundaries and prod artifact layout.
+- Prod rollout: ClickHouse `medium` preset, memory-bounded stats queries, Cozystack manifests for Ollama + eval sidecar, and `values-prod.yaml` enables routing, guardrails, judge, eval service, and semantic cache.
 
 ---
 
