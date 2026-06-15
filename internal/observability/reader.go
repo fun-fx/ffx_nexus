@@ -88,13 +88,13 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration) (Stats, 
 	row := r.conn.QueryRow(ctx, `
 		SELECT
 			toInt64(count()) AS total,
-			if(total = 0, 0, countIf(status_code >= 400) / total) AS error_rate,
-			avg(latency_ms) AS avg_latency,
-			toFloat64(quantileTDigest(0.95)(latency_ms)) AS p95_latency,
+			if(count() = 0, 0, countIf(status_code >= 400) / count()) AS error_rate,
+			if(count() = 0, 0, avg(latency_ms)) AS avg_latency,
+			if(count() = 0, 0, toFloat64(quantileTDigest(0.95)(latency_ms))) AS p95_latency,
 			toInt64(sum(input_tokens + output_tokens)) AS total_tokens,
-			sum(cost_usd) AS total_cost,
+			ifNull(sum(cost_usd), 0) AS total_cost,
 			toInt64(countIf(cache_hit = 1)) AS cache_hits,
-			if(total = 0, 0, countIf(cache_hit = 1) / total) AS cache_hit_rate,
+			if(count() = 0, 0, countIf(cache_hit = 1) / count()) AS cache_hit_rate,
 			toInt64(countIf(guardrail_action != '')) AS guardrail_events
 		FROM gateway_traces
 		WHERE timestamp >= now() - INTERVAL ? SECOND
