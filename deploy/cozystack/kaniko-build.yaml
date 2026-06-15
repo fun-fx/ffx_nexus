@@ -22,7 +22,7 @@ spec:
           args:
             - --context=git://github.com/fun-fx/ffx_nexus.git#refs/heads/feat/prod-rollout
             - --dockerfile=Dockerfile
-            - --destination=harbor.192.168.0.101.nip.io/ffx/nexus:0.3.1
+            - --destination=harbor.192.168.0.101.nip.io/ffx/nexus:0.3.2
             - --skip-tls-verify
             - --skip-tls-verify-pull
           resources:
