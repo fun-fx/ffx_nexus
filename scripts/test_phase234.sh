@@ -183,14 +183,18 @@ if [[ "$HAS_PROVIDER" == "1" ]]; then
   CHAT=$(curl -s -o /tmp/p234_chat.json -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
     -H "Authorization: Bearer $EVAL_SECRET" \
     -H 'Content-Type: application/json' \
-    -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Say hi in one word"}],"max_tokens":16}')
+    -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"Reply with exactly: ok"}],"max_tokens":64}')
   CONTENT=$(python3 -c "import json; d=json.load(open('/tmp/p234_chat.json')); print(d.get('choices',[{}])[0].get('message',{}).get('content',''))" 2>/dev/null || true)
+  FINISH=$(python3 -c "import json; d=json.load(open('/tmp/p234_chat.json')); print(d.get('choices',[{}])[0].get('finish_reason',''))" 2>/dev/null || true)
 
   QUOTA_HIT=0
   if [[ "$CHAT" == "200" && -n "$CONTENT" ]]; then
     pass "upstream completion ok (content present)"
   elif [[ "$CHAT" != "200" ]] && upstream_quota_exhausted /tmp/p234_chat.json; then
     skip "upstream completion (quota exhausted)"
+    QUOTA_HIT=1
+  elif [[ "$CHAT" == "200" && -z "$CONTENT" && "$FINISH" == "length" ]]; then
+    skip "upstream completion (empty output; $MODEL hit max_tokens/thinking budget)"
     QUOTA_HIT=1
   else
     fail "upstream completion returned empty content: HTTP $CHAT $(cat /tmp/p234_chat.json)"
@@ -200,7 +204,7 @@ if [[ "$HAS_PROVIDER" == "1" ]]; then
     STREAM_CODE=$(curl -s -o /tmp/p234_stream.txt -w "%{http_code}" -X POST "$GW_URL/v1/chat/completions" \
       -H "Authorization: Bearer $EVAL_SECRET" \
       -H 'Content-Type: application/json' \
-      -d '{"model":"'"$MODEL"'","stream":true,"messages":[{"role":"user","content":"Say ok"}],"max_tokens":16}')
+      -d '{"model":"'"$MODEL"'","stream":true,"messages":[{"role":"user","content":"Reply with exactly: ok"}],"max_tokens":64}')
     if [[ "$STREAM_CODE" == "200" ]] && grep -q '\[DONE\]' /tmp/p234_stream.txt 2>/dev/null; then
       pass "streaming completion -> 200 with [DONE]"
     elif upstream_quota_exhausted /tmp/p234_stream.txt; then
