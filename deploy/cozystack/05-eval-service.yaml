@@ -27,7 +27,7 @@ spec:
         - name: harbor
       containers:
         - name: eval-service
-          image: harbor.<node-ip>.nip.io/ffx/nexus-eval:0.3.1
+          image: harbor.<node-ip>.nip.io/ffx/nexus-eval:0.3.2
           ports:
             - containerPort: 8200
               name: http
