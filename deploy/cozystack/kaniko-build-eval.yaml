@@ -1,17 +1,14 @@
-# In-cluster image build with kaniko: builds the multi-stage Dockerfile straight
-# from the public GitHub repo and pushes to the in-cluster Harbor. Run with:
+# In-cluster build for the Python eval sidecar.
 #
-#   kubectl -n tenant-nexus apply -f deploy/cozystack/kaniko-build.yaml
-#   kubectl -n tenant-nexus logs -f job/nexus-build
-#
-# The Harbor registry uses a self-signed cert, hence --skip-tls-verify. The
-# `harbor` docker-registry secret (already in the namespace) provides push auth.
+#   kubectl -n tenant-nexus apply -f kaniko-build-eval.yaml
+#   kubectl -n tenant-nexus logs -f job/nexus-eval-build
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: nexus-build
+  name: nexus-eval-build
+  namespace: tenant-nexus
 spec:
-  backoffLimit: 1
+  backoffLimit: 3
   ttlSecondsAfterFinished: 600
   template:
     spec:
@@ -21,8 +18,9 @@ spec:
           image: gcr.io/kaniko-project/executor:latest
           args:
             - --context=git://github.com/fun-fx/ffx_nexus.git#refs/heads/feat/prod-rollout
+            - --context-sub-path=eval-service
             - --dockerfile=Dockerfile
-            - --destination=harbor.192.168.0.101.nip.io/ffx/nexus:0.3.2
+            - --destination=harbor.192.168.0.101.nip.io/ffx/nexus-eval:0.3.2
             - --skip-tls-verify
             - --skip-tls-verify-pull
           resources:

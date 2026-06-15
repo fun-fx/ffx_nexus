@@ -55,9 +55,11 @@ func (p *CHStatsProvider) ModelStats(ctx context.Context, window time.Duration) 
 		       avg(e.passed)    AS pass_rate,
 		       toInt64(count()) AS quality_samples
 		FROM eval_scores AS e
-		INNER JOIN gateway_traces AS t ON e.trace_id = t.trace_id
+		INNER JOIN gateway_traces AS t
+		  ON e.trace_id = t.trace_id AND t.timestamp >= now() - INTERVAL ? SECOND
 		WHERE e.metric = 'quality' AND e.timestamp >= now() - INTERVAL ? SECOND
-		GROUP BY t.request_model`, secs)
+		GROUP BY t.request_model
+		SETTINGS max_memory_usage = 400000000`, secs, secs)
 	if err != nil {
 		return nil, err
 	}
@@ -88,9 +90,11 @@ func (p *CHStatsProvider) ModelStats(ctx context.Context, window time.Duration) 
 		       avg(e.passed)    AS safety_pass_rate,
 		       toInt64(count()) AS safety_samples
 		FROM eval_scores AS e
-		INNER JOIN gateway_traces AS t ON e.trace_id = t.trace_id
+		INNER JOIN gateway_traces AS t
+		  ON e.trace_id = t.trace_id AND t.timestamp >= now() - INTERVAL ? SECOND
 		WHERE e.evaluator LIKE 'heuristic_%' AND e.timestamp >= now() - INTERVAL ? SECOND
-		GROUP BY t.request_model`, secs)
+		GROUP BY t.request_model
+		SETTINGS max_memory_usage = 400000000`, secs, secs)
 	if err != nil {
 		return nil, err
 	}
