@@ -1,0 +1,72 @@
+# Python eval sidecar (DeepEval + RAGAS). Out-of-band only — never on the hot path.
+#
+# Build the image first:
+#   kubectl -n tenant-nexus apply -f kaniko-build-eval.yaml
+#   kubectl -n tenant-nexus logs -f job/nexus-eval-build
+#
+# Then deploy:
+#   kubectl -n tenant-nexus apply -f 05-eval-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eval-service
+  namespace: tenant-nexus
+  labels:
+    app: eval-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eval-service
+  template:
+    metadata:
+      labels:
+        app: eval-service
+    spec:
+      imagePullSecrets:
+        - name: harbor
+      containers:
+        - name: eval-service
+          image: harbor.192.168.0.101.nip.io/ffx/nexus-eval:0.3.1
+          ports:
+            - containerPort: 8200
+              name: http
+          env:
+            - name: JUDGE_BASE_URL
+              value: http://ollama:11434/v1
+            - name: JUDGE_MODEL
+              value: qwen2.5:7b-instruct
+            - name: EMBEDDINGS_BASE_URL
+              value: http://ollama:11434/v1
+            - name: EMBEDDINGS_MODEL
+              value: nomic-embed-text
+            - name: DEFAULT_METRICS
+              value: answer_relevancy,toxicity,bias
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eval-service
+  namespace: tenant-nexus
+  labels:
+    app: eval-service
+spec:
+  selector:
+    app: eval-service
+  ports:
+    - name: http
+      port: 8200
+      targetPort: http

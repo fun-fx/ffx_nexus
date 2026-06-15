@@ -13,7 +13,7 @@ existingSecret: nexus
 image:
   # In-cluster Talos nodes resolve Harbor via the nip.io host, not MagicDNS.
   repository: harbor.192.168.0.101.nip.io/ffx/nexus
-  tag: 0.3.0
+  tag: 0.3.1
 imagePullSecrets:
   - name: harbor
 
@@ -21,6 +21,51 @@ imagePullSecrets:
 # falling back to org -> env. Requires Postgres + secrets.masterKey (set above).
 config:
   keyMode: byok
+
+  # Quality-aware routing (Phase 4). Models must exist for the caller/org.
+  routeGroups: "fast=gemini-2.5-flash,gemini-2.0-flash;smart=gemini-2.5-pro"
+  routeWQuality: "0.6"
+  routeWCost: "0.2"
+  routeWLatency: "0.2"
+  routeWindow: "1h"
+  routeRefresh: "30s"
+  routeLoadBalance: true
+
+  # Inline guardrails (hot path).
+  guardrails:
+    enabled: true
+    blockPiiInput: true
+    redactPiiOutput: true
+    maxInputChars: 20000
+    validateJsonOutput: true
+
+  selfCorrection:
+    enabled: true
+    maxRetries: 1
+
+  # Local SLM judge via in-cluster Ollama (deploy/cozystack/04-ollama.yaml).
+  judge:
+    baseUrl: http://ollama:11434/v1
+    model: qwen2.5:7b-instruct
+    sampleRate: "0.1"
+    workers: "4"
+
+  # Python eval sidecar (deploy/cozystack/05-eval-service.yaml).
+  evalService:
+    url: http://eval-service:8200
+    metrics: answer_relevancy,toxicity,bias
+    timeout: 30s
+
+  # Semantic cache (Redis + Ollama embeddings).
+  semanticCache:
+    enabled: true
+    ttl: 24h
+    threshold: "0.92"
+    maxEntries: 500
+  embeddings:
+    url: http://ollama:11434/v1
+    model: nomic-embed-text
+    timeout: 5s
 
 # Managed backing services provisioned by the Cozystack CRs in this directory.
 # DSNs are stored in existingSecret (NEXUS_*_URL keys), not in this file.
@@ -31,6 +76,14 @@ dependencies:
     enabled: true
   redis:
     enabled: true
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi
 
 # Expose gateway and console via Tailscale ingress.
 # Both are protected by Tailscale auth; only authenticated users can reach them.
