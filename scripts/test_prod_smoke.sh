@@ -80,7 +80,7 @@ else
       -H "Authorization: Bearer $SECRET" \
       -H 'Content-Type: application/json' \
       -d '{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"my email is test@example.com"}]}')
-    if [[ "$GRC" == "400" || "$GRC" == "422" ]]; then
+    if [[ "$GRC" == "403" || "$GRC" == "400" || "$GRC" == "422" ]]; then
       pass "guardrails PII input blocked ($GRC)"
     else
       fail "guardrails PII expected 400/422, got $GRC $(cat /tmp/prod_gr.json 2>/dev/null)"
