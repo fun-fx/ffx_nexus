@@ -17,10 +17,10 @@ image:
 imagePullSecrets:
   - name: harbor
 
-# BYOK / multi-tenancy: resolve each caller's own provider key per request,
-# falling back to org -> env. Requires Postgres + secrets.masterKey (set above).
+# Strict BYOK: every caller must register their own upstream provider key.
+# No org/env fallback — operator GEMINI_API_KEY must not be in the Secret.
 config:
-  keyMode: byok
+  keyMode: strict_byok
 
   # Quality-aware routing (Phase 4). Models must exist for the caller/org.
   routeGroups: "fast=gemini-2.5-flash,gemini-2.0-flash;smart=gemini-2.5-pro"
