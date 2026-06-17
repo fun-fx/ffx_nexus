@@ -46,6 +46,9 @@ config:
   # a per-user key. byok modes need Postgres + secrets.masterKey.
   keyMode: "shared"
 
+  # Public self-service signup at POST /api/auth/register (member role only).
+  allowSignup: false
+
   # Quality-aware routing (Phase 4). Requires ClickHouse for live quality stats.
   routeGroups: ""
   routeWQuality: ""

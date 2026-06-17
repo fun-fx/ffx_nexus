@@ -124,6 +124,7 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 | `NEXUS_MASTER_KEY` | _(empty)_ | 32-byte (base64/hex) KEK for provider-secret encryption |
 | `NEXUS_KEY_MODE` | `shared` | Upstream key resolution: `shared` / `byok` / `strict_byok` |
 | `NEXUS_ADMIN_EMAIL` / `NEXUS_ADMIN_PASSWORD` | — | Bootstrap the first console admin (only when no users exist) |
+| `NEXUS_ALLOW_SIGNUP` | `false` | Enable public `POST /api/auth/register` (member role only) |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — | OpenAI provider |
 | `ANTHROPIC_API_KEY` | — | Anthropic provider |
 | `GEMINI_API_KEY` | — | Google Gemini provider |

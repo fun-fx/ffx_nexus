@@ -21,6 +21,7 @@ imagePullSecrets:
 # No org/env fallback — operator GEMINI_API_KEY must not be in the Secret.
 config:
   keyMode: strict_byok
+  allowSignup: true
 
   # Quality-aware routing (Phase 4). Models must exist for the caller/org.
   routeGroups: "fast=gemini-2.5-flash,gemini-2.0-flash;smart=gemini-2.5-pro"

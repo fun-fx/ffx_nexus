@@ -12,6 +12,7 @@ existingSecret: nexus
 
 config:
   keyMode: strict_byok
+  allowSignup: true
 
   routeGroups: "fast=gemini-2.5-flash,gemini-2.0-flash,openai/gpt-4o-mini;smart=gemini-2.5-pro,openai/gpt-4o"
   routeWQuality: "0.6"

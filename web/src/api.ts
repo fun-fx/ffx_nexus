@@ -125,6 +125,38 @@ export async function login(email: string, password: string): Promise<User> {
   return data.user as User;
 }
 
+export interface AuthConfig {
+  signup_enabled: boolean;
+}
+
+export async function fetchAuthConfig(): Promise<AuthConfig> {
+  const res = await fetch(`/api/auth/config`);
+  if (!res.ok) return { signup_enabled: false };
+  return res.json();
+}
+
+export interface RegisterResult {
+  user: User;
+  virtual_key?: string;
+  warnings?: string[];
+}
+
+export async function register(input: {
+  email: string;
+  password: string;
+  provider?: string;
+  provider_name?: string;
+  provider_secret?: string;
+  key_name?: string;
+}): Promise<RegisterResult> {
+  const res = await fetch(`/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow(res) as Promise<RegisterResult>;
+}
+
 export async function logout(): Promise<void> {
   await fetch(`/api/auth/logout`, { method: "POST" });
 }

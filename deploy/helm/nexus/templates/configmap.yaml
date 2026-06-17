@@ -20,6 +20,7 @@ data:
   {{- with .Values.config.keyMode }}
   NEXUS_KEY_MODE: {{ . | quote }}
   {{- end }}
+  NEXUS_ALLOW_SIGNUP: {{ .Values.config.allowSignup | quote }}
 
   {{- /* Quality-aware routing */}}
   {{- with .Values.config.routeGroups }}

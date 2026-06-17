@@ -50,6 +50,7 @@ wait_services
 # Boot with a bootstrap admin and BYOK key mode.
 start_nexus_logged \
   NEXUS_KEY_MODE=byok \
+  NEXUS_ALLOW_SIGNUP=true \
   NEXUS_ADMIN_EMAIL="$ADMIN_EMAIL" \
   NEXUS_ADMIN_PASSWORD="$ADMIN_PASS"
 
@@ -84,6 +85,51 @@ if [[ "$HTTP_CODE" == "401" ]]; then
 else
   fail "expected 401 for unauthenticated /api/me, got $HTTP_CODE"
 fi
+
+# --- 1b. Self-service signup ---
+SIGNUP_EMAIL="signup@nexus.test"
+SIGNUP_PASS="signup-pass-123"
+CONFIG=$(curl -sk "$CON_URL/api/auth/config")
+if echo "$CONFIG" | grep -q '"signup_enabled":true'; then
+  pass "signup enabled in /api/auth/config"
+else
+  fail "expected signup_enabled true: $CONFIG"
+fi
+
+BAD_PW=$(api POST /api/auth/register "{\"email\":\"bad@nexus.test\",\"password\":\"short\"}")
+if [[ "$(code)" == "400" ]]; then
+  pass "register rejects short password -> 400"
+else
+  fail "expected 400 for short password, got $(code): $BAD_PW"
+fi
+
+SIGNUP_RESP=$(api POST /api/auth/register "{\"email\":\"$SIGNUP_EMAIL\",\"password\":\"$SIGNUP_PASS\",\"provider\":\"openai\",\"provider_secret\":\"sk-signup-e2e-fake\"}")
+SIGNUP_SECRET=$(echo "$SIGNUP_RESP" | sed -n 's/.*"virtual_key":"\([^"]*\)".*/\1/p')
+if [[ "$(code)" == "201" || "$(code)" == "409" ]]; then
+  pass "self-service register (201 or 409 if already exists)"
+  if [[ -n "$SIGNUP_SECRET" ]]; then
+    pass "register returned virtual_key once"
+  elif [[ "$(code)" == "409" ]]; then
+    skip "virtual_key not returned (user already registered)"
+  else
+    fail "register missing virtual_key: $SIGNUP_RESP"
+  fi
+else
+  fail "register failed ($(code)): $SIGNUP_RESP"
+fi
+
+# Fresh session for signup user (register sets cookie on 201).
+SIGNUP_JAR="/tmp/nexus_byok_signup.txt"
+curl -s -o /dev/null -c "$SIGNUP_JAR" -X POST "$CON_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$SIGNUP_EMAIL\",\"password\":\"$SIGNUP_PASS\"}"
+SIGNUP_ME=$(curl -sk -b "$SIGNUP_JAR" "$CON_URL/api/me")
+if echo "$SIGNUP_ME" | grep -q '"role":"member"'; then
+  pass "registered user has member role"
+else
+  fail "signup user role unexpected: $SIGNUP_ME"
+fi
+rm -f "$SIGNUP_JAR"
 
 # --- 2. Login as admin ---
 api POST /api/auth/login "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}" >/dev/null
