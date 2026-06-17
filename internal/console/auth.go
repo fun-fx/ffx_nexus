@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -93,9 +94,50 @@ func bearerToken(r *http.Request) string {
 
 // --- Auth endpoints ---
 
+const minPasswordLen = 8
+
+func (s *Server) authConfig(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"signup_enabled": s.allowSignup && s.store != nil,
+	})
+}
+
+func setSessionCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(sessionTTL),
+	})
+}
+
+func validateEmail(email string) bool {
+	email = strings.TrimSpace(email)
+	at := strings.LastIndex(email, "@")
+	if at < 1 || at >= len(email)-1 {
+		return false
+	}
+	return strings.Contains(email[at+1:], ".")
+}
+
+func validatePassword(password string) bool {
+	return len(password) >= minPasswordLen
+}
+
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+type registerRequest struct {
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	Provider       string `json:"provider,omitempty"`
+	ProviderName   string `json:"provider_name,omitempty"`
+	ProviderSecret string `json:"provider_secret,omitempty"`
+	KeyName        string `json:"key_name,omitempty"`
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -117,15 +159,91 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "login failed"})
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(sessionTTL),
-	})
+	setSessionCookie(w, token)
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
+}
+
+func (s *Server) register(w http.ResponseWriter, r *http.Request) {
+	if !s.allowSignup {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "registration disabled"})
+		return
+	}
+	var req registerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	req.Email = strings.TrimSpace(req.Email)
+	if !validateEmail(req.Email) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email"})
+		return
+	}
+	if !validatePassword(req.Password) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "password must be at least 8 characters",
+		})
+		return
+	}
+	if req.ProviderSecret != "" && req.Provider == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "provider is required when provider_secret is set",
+		})
+		return
+	}
+	if !s.requireStore(w) {
+		return
+	}
+
+	u, err := s.store.CreateUser(r.Context(), orgID(r), req.Email, req.Password, core.RoleMember)
+	if errors.Is(err, core.ErrEmailTaken) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "email already registered"})
+		return
+	}
+	if err != nil {
+		s.log.Error("register failed", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "registration failed"})
+		return
+	}
+
+	resp := map[string]any{"user": u}
+	var warnings []string
+
+	if req.Provider != "" && req.ProviderSecret != "" {
+		_, credErr := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret)
+		switch {
+		case errors.Is(credErr, crypto.ErrNoMasterKey):
+			warnings = append(warnings, "provider key not stored: set NEXUS_MASTER_KEY to enable BYOK credentials")
+		case credErr != nil:
+			s.log.Error("register credential failed", "err", credErr, "user", u.ID)
+			warnings = append(warnings, "provider key not stored: registration failed to save credential")
+		default:
+			s.reloadCredentials(r.Context())
+			keyName := strings.TrimSpace(req.KeyName)
+			if keyName == "" {
+				keyName = "default"
+			}
+			_, plaintext, keyErr := s.store.CreateVirtualKey(r.Context(), u.OrgID, u.ID, keyName, nil, 0, 0, 0)
+			if keyErr != nil {
+				s.log.Error("register virtual key failed", "err", keyErr, "user", u.ID)
+				warnings = append(warnings, "virtual key not created: add one from the console")
+			} else {
+				resp["virtual_key"] = plaintext
+			}
+		}
+	}
+	if len(warnings) > 0 {
+		resp["warnings"] = warnings
+	}
+
+	token, authed, err := s.store.Authenticate(r.Context(), orgID(r), req.Email, req.Password, sessionTTL)
+	if err != nil {
+		s.log.Error("register auto-login failed", "err", err)
+		writeJSON(w, http.StatusCreated, resp)
+		return
+	}
+	setSessionCookie(w, token)
+	resp["user"] = authed
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {

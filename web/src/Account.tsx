@@ -5,12 +5,14 @@ import {
   createUser,
   deleteMyCredential,
   deleteUser,
+  fetchAuthConfig,
   fetchMyCredentials,
   fetchMyKeys,
   fetchUserQuality,
   fetchUsers,
   login,
   logout,
+  register,
   updateMe,
   type Credential,
   type User,
@@ -21,7 +23,7 @@ import {
 // Account renders the BYOK self-service area: login, my provider keys, my
 // virtual keys, the per-user budget toggle, and (for admins) user management.
 export function Account({ user, onUser }: { user: User | null; onUser: (u: User | null) => void }) {
-  if (!user) return <LoginForm onUser={onUser} />;
+  if (!user) return <AuthPanel onUser={onUser} />;
   return (
     <div className="account">
       <div className="account-head">
@@ -102,6 +104,43 @@ function UserQualityPanel() {
   );
 }
 
+function AuthPanel({ onUser }: { onUser: (u: User) => void }) {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [signupEnabled, setSignupEnabled] = useState(false);
+
+  useEffect(() => {
+    fetchAuthConfig().then((c) => setSignupEnabled(c.signup_enabled)).catch(() => {});
+  }, []);
+
+  return (
+    <div className="auth-panel">
+      {signupEnabled && (
+        <div className="auth-tabs">
+          <button
+            type="button"
+            className={mode === "login" ? "btn" : "btn ghost"}
+            onClick={() => setMode("login")}
+          >
+            Sign in
+          </button>
+          <button
+            type="button"
+            className={mode === "signup" ? "btn" : "btn ghost"}
+            onClick={() => setMode("signup")}
+          >
+            Create account
+          </button>
+        </div>
+      )}
+      {mode === "signup" && signupEnabled ? (
+        <SignupForm onUser={onUser} onSignIn={() => setMode("login")} />
+      ) : (
+        <LoginForm onUser={onUser} />
+      )}
+    </div>
+  );
+}
+
 function LoginForm({ onUser }: { onUser: (u: User) => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -131,6 +170,104 @@ function LoginForm({ onUser }: { onUser: (u: User) => void }) {
         </button>
       </form>
       {err && <div className="error">{err}</div>}
+    </section>
+  );
+}
+
+function SignupForm({
+  onUser,
+  onSignIn,
+}: {
+  onUser: (u: User) => void;
+  onSignIn: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [provider, setProvider] = useState("gemini");
+  const [providerSecret, setProviderSecret] = useState("");
+  const [providerName, setProviderName] = useState("");
+  const [virtualKey, setVirtualKey] = useState("");
+  const [pendingUser, setPendingUser] = useState<User | null>(null);
+  const [err, setErr] = useState("");
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr("");
+    setVirtualKey("");
+    setPendingUser(null);
+    try {
+      const res = await register({
+        email,
+        password,
+        provider: providerSecret ? provider : undefined,
+        provider_name: providerName || undefined,
+        provider_secret: providerSecret || undefined,
+      });
+      if (res.warnings?.length) {
+        setErr(res.warnings.join(" "));
+      }
+      if (res.virtual_key) {
+        setVirtualKey(res.virtual_key);
+        setPendingUser(res.user);
+        return;
+      }
+      onUser(res.user);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+  if (pendingUser && virtualKey) {
+    return (
+      <section className="panel">
+        <h2>Account created</h2>
+        <div className="notice">
+          Copy your virtual key now — it won't be shown again:
+          <code>{virtualKey}</code>
+        </div>
+        <button className="btn" type="button" onClick={() => onUser(pendingUser)}>
+          Continue to dashboard
+        </button>
+      </section>
+    );
+  }
+  return (
+    <section className="panel">
+      <h2>Create account</h2>
+      <p className="sub">
+        Register with your own LLM provider key (BYOK). Nexus stores it encrypted and
+        issues a virtual key for API calls — you pay your provider directly.
+      </p>
+      <form className="form" onSubmit={submit}>
+        <input placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input
+          type="password"
+          placeholder="password (min 8 characters)"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+          <option value="gemini">gemini</option>
+          <option value="openai">openai</option>
+          <option value="anthropic">anthropic</option>
+        </select>
+        <input
+          placeholder="provider key label (optional)"
+          value={providerName}
+          onChange={(e) => setProviderName(e.target.value)}
+        />
+        <input
+          type="password"
+          placeholder="your LLM API key (required for strict BYOK)"
+          value={providerSecret}
+          onChange={(e) => setProviderSecret(e.target.value)}
+        />
+        <button className="btn" type="submit">
+          Create account
+        </button>
+      </form>
+      {err && <div className="error">{err}</div>}
+      <button type="button" className="btn ghost" onClick={onSignIn}>
+        Already have an account? Sign in
+      </button>
     </section>
   );
 }

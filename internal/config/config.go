@@ -101,6 +101,10 @@ type Config struct {
 	// created on startup so the console has an initial login.
 	AdminEmail    string
 	AdminPassword string
+
+	// AllowSignup enables public self-service registration at POST /api/auth/register.
+	// New accounts are always created with the "member" role.
+	AllowSignup bool
 }
 
 // Load reads configuration from the environment, applying sane defaults. It
@@ -139,6 +143,7 @@ func Load() Config {
 		KeyMode:            env("NEXUS_KEY_MODE", "shared"),
 		AdminEmail:         env("NEXUS_ADMIN_EMAIL", ""),
 		AdminPassword:      env("NEXUS_ADMIN_PASSWORD", ""),
+		AllowSignup:        envBool("NEXUS_ALLOW_SIGNUP", false),
 
 		GuardrailsEnabled:     envBool("NEXUS_GUARDRAILS_ENABLED", false),
 		GuardrailBlockPIIIn:   envBool("NEXUS_GUARDRAILS_BLOCK_PII_INPUT", false),

@@ -281,6 +281,7 @@ func main() {
 
 	// Console server.
 	consoleSrvHandler := console.NewServer(hub, reader, store, log)
+	consoleSrvHandler.SetAllowSignup(cfg.AllowSignup)
 	if modelRouter != nil {
 		consoleSrvHandler.SetRouteStats(modelRouter)
 	}
