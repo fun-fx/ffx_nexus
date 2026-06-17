@@ -21,6 +21,7 @@ imagePullSecrets:
 
 config:
   keyMode: strict_byok
+  allowSignup: true
 
   routeGroups: "fast=gemini-2.5-flash,gemini-2.0-flash;smart=gemini-2.5-pro"
   routeWQuality: "0.6"

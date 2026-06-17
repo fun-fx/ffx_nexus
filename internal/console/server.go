@@ -30,14 +30,18 @@ type RouteStatsSource interface {
 // WebSocket feed, routing stats, and (when a store is configured)
 // key/credential management.
 type Server struct {
-	hub    *Hub
-	reader *observability.Reader // may be nil when ClickHouse is not configured
-	store  *core.Store           // may be nil when Postgres is not configured
-	routes RouteStatsSource      // may be nil when routing is disabled
-	reload func(context.Context) // may be nil when no hot-reload hook is wired
-	log    *slog.Logger
-	up     websocket.Upgrader
+	hub         *Hub
+	reader      *observability.Reader // may be nil when ClickHouse is not configured
+	store       *core.Store           // may be nil when Postgres is not configured
+	routes      RouteStatsSource      // may be nil when routing is disabled
+	reload      func(context.Context) // may be nil when no hot-reload hook is wired
+	allowSignup bool                  // public POST /api/auth/register
+	log         *slog.Logger
+	up          websocket.Upgrader
 }
+
+// SetAllowSignup toggles public self-service registration (member role only).
+func (s *Server) SetAllowSignup(allow bool) { s.allowSignup = allow }
 
 // SetRouteStats attaches a routing stats source for the /api/routing endpoint.
 func (s *Server) SetRouteStats(src RouteStatsSource) { s.routes = src }
@@ -84,7 +88,9 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/live", s.live)
 
 		// Session auth + self-service (requires Postgres).
+		r.Get("/auth/config", s.authConfig)
 		r.Post("/auth/login", s.login)
+		r.Post("/auth/register", s.register)
 		r.Post("/auth/logout", s.logout)
 		r.Get("/me", s.requireUser(s.me))
 		r.Patch("/me", s.requireUser(s.updateMe))
