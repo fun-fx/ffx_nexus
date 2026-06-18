@@ -181,16 +181,17 @@ type UserQuality struct {
 // endpoint).
 func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, userID string) ([]UserQuality, error) {
 	secs := int64(window.Seconds())
-	userFilter := ` AND user_id != ''`
+	// When userID is empty we filter out org-level / legacy rows with a literal
+	// predicate and bind only the two window seconds. When userID is set, we
+	// emit a `?` placeholder and bind the user id first.
+	var userFilter string
+	args := []any{secs, secs}
 	if userID != "" {
 		userFilter = ` AND user_id = ?`
+		args = []any{userID, secs, secs}
+	} else {
+		userFilter = ` AND user_id != ''`
 	}
-	args := []any{}
-	if userID != "" {
-		args = append(args, userID)
-	}
-	args = append(args, secs)
-	args = append(args, secs)
 	rows, err := r.conn.Query(ctx, `
 		WITH
 		  q AS (
