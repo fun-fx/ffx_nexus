@@ -219,6 +219,42 @@ else
   fail "expected 200 for /api/users/quality, got $HTTP_CODE"
 fi
 
+# --- 8c. Self-service usage endpoints (member scoped) ---
+MEMBER2_JAR="/tmp/nexus_byok_member2.txt"
+rm -f "$MEMBER2_JAR"
+curl -s -o /dev/null -c "$MEMBER2_JAR" -X POST "$CON_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$MEMBER_EMAIL\",\"password\":\"member-pass-123\"}"
+MSTATS=$(curl -sk -b "$MEMBER2_JAR" "$CON_URL/api/me/stats?window=1h")
+MTRACES=$(curl -sk -b "$MEMBER2_JAR" -o /dev/null -w "%{http_code}" "$CON_URL/api/me/traces?limit=5")
+MQUAL=$(curl -sk -b "$MEMBER2_JAR" -o /dev/null -w "%{http_code}" "$CON_URL/api/me/quality?window=24h")
+if echo "$MSTATS" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
+  pass "member /api/me/stats returns valid JSON"
+else
+  fail "member /api/me/stats invalid: $MSTATS"
+fi
+if [[ "$MTRACES" == "200" ]]; then
+  pass "member /api/me/traces -> 200"
+else
+  fail "member /api/me/traces: expected 200, got $MTRACES"
+fi
+if [[ "$MQUAL" == "200" ]]; then
+  pass "member /api/me/quality -> 200"
+else
+  fail "member /api/me/quality: expected 200, got $MQUAL"
+fi
+rm -f "$MEMBER2_JAR"
+
+# --- 8d. Unauthenticated /api/me/* -> 401 ---
+for path in /api/me/stats /api/me/traces /api/me/quality; do
+  CODE=$(curl -sk -o /dev/null -w "%{http_code}" "$CON_URL$path")
+  if [[ "$CODE" == "401" ]]; then
+    pass "unauthenticated GET $path -> 401"
+  else
+    fail "unauthenticated GET $path: expected 401, got $CODE"
+  fi
+done
+
 # --- 9. Logout invalidates the session ---
 api POST /api/auth/logout >/dev/null
 api GET /api/me >/dev/null

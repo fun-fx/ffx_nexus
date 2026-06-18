@@ -35,19 +35,26 @@ type TraceSummary struct {
 	CredentialSource string    `json:"credential_source"`
 }
 
-// RecentTraces returns the most recent traces, newest first.
-func (r *Reader) RecentTraces(ctx context.Context, limit int) ([]TraceSummary, error) {
+// RecentTraces returns the most recent traces, newest first. When userID is
+// non-empty, the result is scoped to that caller's traffic (BYOK dashboard).
+func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]TraceSummary, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	rows, err := r.conn.Query(ctx, `
+	query := `
 		SELECT trace_id, timestamp, provider_name, request_model,
 		       input_tokens, output_tokens, latency_ms, ttft_ms, cost_usd,
 		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
 		       user_id, credential_source
-		FROM gateway_traces
-		ORDER BY timestamp DESC
-		LIMIT ?`, limit)
+		FROM gateway_traces`
+	args := []any{}
+	if userID != "" {
+		query += ` WHERE user_id = ?`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY timestamp DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := r.conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -82,10 +89,11 @@ type Stats struct {
 	GuardrailEvents int64   `json:"guardrail_events"`
 }
 
-// WindowStats returns aggregate metrics over the trailing window.
-func (r *Reader) WindowStats(ctx context.Context, window time.Duration) (Stats, error) {
+// WindowStats returns aggregate metrics over the trailing window. When userID
+// is non-empty, aggregates are scoped to that caller's traffic.
+func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID string) (Stats, error) {
 	var s Stats
-	row := r.conn.QueryRow(ctx, `
+	query := `
 		SELECT
 			toInt64(count()) AS total,
 			if(count() = 0, 0, countIf(status_code >= 400) / count()) AS error_rate,
@@ -97,9 +105,14 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration) (Stats, 
 			if(count() = 0, 0, countIf(cache_hit = 1) / count()) AS cache_hit_rate,
 			toInt64(countIf(guardrail_action != '')) AS guardrail_events
 		FROM gateway_traces
-		WHERE timestamp >= now() - INTERVAL ? SECOND
-		SETTINGS max_memory_usage = 400000000`,
-		int64(window.Seconds()))
+		WHERE timestamp >= now() - INTERVAL ? SECOND`
+	args := []any{int64(window.Seconds())}
+	if userID != "" {
+		query += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+	query += ` SETTINGS max_memory_usage = 400000000`
+	row := r.conn.QueryRow(ctx, query, args...)
 	if err := row.Scan(
 		&s.TotalRequests, &s.ErrorRate, &s.AvgLatencyMs, &s.P95LatencyMs,
 		&s.TotalTokens, &s.TotalCostUSD, &s.CacheHits, &s.CacheHitRate, &s.GuardrailEvents,
@@ -163,9 +176,21 @@ type UserQuality struct {
 
 // UserQualitySummary returns per-user quality/safety aggregates joined with
 // per-user spend over the trailing window, ordered by sample count. Users with
-// no recorded user_id (legacy/org-level traffic) are excluded.
-func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration) ([]UserQuality, error) {
+// no recorded user_id (legacy/org-level traffic) are excluded. When userID is
+// non-empty, the result is restricted to that single user (for the /me/quality
+// endpoint).
+func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, userID string) ([]UserQuality, error) {
 	secs := int64(window.Seconds())
+	userFilter := ` AND user_id != ''`
+	if userID != "" {
+		userFilter = ` AND user_id = ?`
+	}
+	args := []any{}
+	if userID != "" {
+		args = append(args, userID)
+	}
+	args = append(args, secs)
+	args = append(args, secs)
 	rows, err := r.conn.Query(ctx, `
 		WITH
 		  q AS (
@@ -174,7 +199,7 @@ func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration) (
 		           avg(passed) AS pass_rate,
 		           toInt64(count()) AS samples
 		    FROM eval_scores
-		    WHERE timestamp >= now() - INTERVAL ? SECOND AND user_id != ''
+		    WHERE timestamp >= now() - INTERVAL ? SECOND`+userFilter+`
 		    GROUP BY user_id
 		  ),
 		  t AS (
@@ -182,7 +207,7 @@ func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration) (
 		           sum(cost_usd) AS cost_usd,
 		           toInt64(count()) AS requests
 		    FROM gateway_traces
-		    WHERE timestamp >= now() - INTERVAL ? SECOND AND user_id != ''
+		    WHERE timestamp >= now() - INTERVAL ? SECOND`+userFilter+`
 		    GROUP BY user_id
 		  )
 		SELECT q.user_id,
@@ -193,7 +218,7 @@ func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration) (
 		       t.requests
 		FROM q LEFT JOIN t ON q.user_id = t.user_id
 		ORDER BY q.samples DESC`,
-		secs, secs)
+		args...)
 	if err != nil {
 		return nil, err
 	}

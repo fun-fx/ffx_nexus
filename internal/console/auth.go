@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
+	"github.com/ffxnexus/nexus/internal/observability"
 )
 
 // sessionTTL is how long a console login session stays valid.
@@ -262,6 +264,71 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request, u core.User) {
 	writeJSON(w, http.StatusOK, u)
 }
 
+// --- Self-service usage (member's own data) ---
+//
+// /api/me/stats, /api/me/traces, /api/me/quality all scope to the caller's
+// user_id so members see only their own traffic, not the org-wide aggregate.
+// Mirrors the admin /api/stats|/traces|/users/quality responses; the only
+// difference is the WHERE user_id = ? filter (see internal/observability/reader.go).
+
+func (s *Server) myStats(w http.ResponseWriter, r *http.Request, u core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, observability.Stats{})
+		return
+	}
+	window := time.Hour
+	if q := r.URL.Query().Get("window"); q != "" {
+		if d, err := time.ParseDuration(q); err == nil {
+			window = d
+		}
+	}
+	st, err := s.reader.WindowStats(r.Context(), window, u.ID)
+	if err != nil {
+		s.log.Error("my stats query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) myTraces(w http.ResponseWriter, r *http.Request, u core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	traces, err := s.reader.RecentTraces(r.Context(), limit, u.ID)
+	if err != nil {
+		s.log.Error("my traces query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, traces)
+}
+
+// myQuality returns the caller's own rolling quality/spend aggregate as a
+// single-element array (matches the /api/users/quality row shape so the
+// client can reuse the UserQuality type).
+func (s *Server) myQuality(w http.ResponseWriter, r *http.Request, u core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, []observability.UserQuality{})
+		return
+	}
+	window := time.Hour
+	if q := r.URL.Query().Get("window"); q != "" {
+		if d, err := time.ParseDuration(q); err == nil {
+			window = d
+		}
+	}
+	rows, err := s.reader.UserQualitySummary(r.Context(), window, u.ID)
+	if err != nil {
+		s.log.Error("my quality query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
 type updateMeRequest struct {
 	EnforceLimits *bool `json:"enforce_limits"`
 }
@@ -352,7 +419,7 @@ func (s *Server) userQuality(w http.ResponseWriter, r *http.Request, _ core.User
 			window = d
 		}
 	}
-	rows, err := s.reader.UserQualitySummary(r.Context(), window)
+	rows, err := s.reader.UserQualitySummary(r.Context(), window, "")
 	if err != nil {
 		s.log.Error("user quality query failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
