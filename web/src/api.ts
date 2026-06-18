@@ -252,6 +252,44 @@ export interface UserQuality {
   requests: number;
 }
 
+export interface MyUsageStats {
+  total_requests: number;
+  error_rate: number;
+  avg_latency_ms: number;
+  p95_latency_ms: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  cache_hits: number;
+  cache_hit_rate: number;
+  guardrail_events: number;
+}
+
+export interface MyUsageQuality {
+  user_id: string;
+  avg_quality: number;
+  pass_rate: number;
+  samples: number;
+  cost_usd: number;
+  requests: number;
+}
+
+export async function fetchMyStats(window = "1h"): Promise<MyUsageStats> {
+  const res = await fetch(`/api/me/stats?window=${window}`);
+  return res.json();
+}
+
+export async function fetchMyTraces(limit = 20): Promise<TraceSummary[]> {
+  const res = await fetch(`/api/me/traces?limit=${limit}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+export async function fetchMyQuality(window = "24h"): Promise<MyUsageQuality[]> {
+  const res = await fetch(`/api/me/quality?window=${window}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
 // fetchUserQuality returns per-user rolling quality + spend (admin only). This
 // is the eval differentiator: quality per user, not just spend per key.
 export async function fetchUserQuality(window = "24h"): Promise<UserQuality[]> {
