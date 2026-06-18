@@ -94,6 +94,9 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/auth/logout", s.logout)
 		r.Get("/me", s.requireUser(s.me))
 		r.Patch("/me", s.requireUser(s.updateMe))
+		r.Get("/me/stats", s.requireUser(s.myStats))
+		r.Get("/me/traces", s.requireUser(s.myTraces))
+		r.Get("/me/quality", s.requireUser(s.myQuality))
 		r.Get("/me/keys", s.requireUser(s.listMyKeys))
 		r.Post("/me/keys", s.requireUser(s.createMyKey))
 		r.Delete("/me/keys/{id}", s.requireUser(s.revokeMyKey))
@@ -107,6 +110,10 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/users", s.requireAdmin(s.createUser))
 		r.Delete("/users/{id}", s.requireAdmin(s.deleteUser))
 		r.Get("/users/quality", s.requireAdmin(s.userQuality))
+
+		// Backwards-compat alias: /api/me/quality/stats (deprecated, prefer
+		// /api/me/quality) — kept for any client that has been wired against
+		// the original name. No admin-only path here; me/quality is per-user.
 
 		// Org-level key/credential management (requires Postgres).
 		r.Get("/keys", s.listKeys)
@@ -157,7 +164,7 @@ func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	traces, err := s.reader.RecentTraces(r.Context(), limit)
+	traces, err := s.reader.RecentTraces(r.Context(), limit, "")
 	if err != nil {
 		s.log.Error("recent traces query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -177,7 +184,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 			window = d
 		}
 	}
-	st, err := s.reader.WindowStats(r.Context(), window)
+	st, err := s.reader.WindowStats(r.Context(), window, "")
 	if err != nil {
 		s.log.Error("stats query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
