@@ -8,6 +8,9 @@ import {
   fetchAuthConfig,
   fetchMyCredentials,
   fetchMyKeys,
+  fetchMyStats,
+  fetchMyTraces,
+  fetchMyQuality,
   fetchUserQuality,
   fetchUsers,
   login,
@@ -15,6 +18,9 @@ import {
   register,
   updateMe,
   type Credential,
+  type MyUsageStats,
+  type MyUsageQuality,
+  type TraceSummary,
   type User,
   type UserQuality,
   type VirtualKey,
@@ -51,6 +57,7 @@ export function Account({ user, onUser }: { user: User | null; onUser: (u: User 
 
       {user.role === "admin" && <UserQualityPanel />}
       {user.role === "admin" && <Users />}
+      <MyUsage user={user} />
     </div>
   );
 }
@@ -446,6 +453,101 @@ function MyKeys() {
         </tbody>
       </table>
     </section>
+  );
+}
+
+function MyUsage({ user }: { user: User }) {
+  const [stats, setStats] = useState<MyUsageStats | null>(null);
+  const [quality, setQuality] = useState<MyUsageQuality[]>([]);
+  const [traces, setTraces] = useState<TraceSummary[]>([]);
+  const [err, setErr] = useState("");
+
+  const load = () => {
+    fetchMyStats("1h")
+      .then(setStats)
+      .catch((e) => setErr((e as Error).message));
+    fetchMyQuality("24h")
+      .then(setQuality)
+      .catch((e) => setErr((e as Error).message));
+    fetchMyTraces(20)
+      .then(setTraces)
+      .catch((e) => setErr((e as Error).message));
+  };
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const q = quality[0];
+  return (
+    <section className="panel">
+      <h2>
+        My usage <span className="sub">(last hour / last 24h quality)</span>
+      </h2>
+      <p className="sub">
+        {user.email} only — your own requests, cost, and rolling quality score.
+      </p>
+      {err && <div className="error">{err}</div>}
+      <div className="cards mini">
+        <UsageCard label="My requests (1h)" value={(stats?.total_requests ?? 0).toLocaleString()} />
+        <UsageCard label="My error rate" value={`${((stats?.error_rate ?? 0) * 100).toFixed(1)}%`} />
+        <UsageCard label="My avg latency" value={`${Math.round(stats?.avg_latency_ms ?? 0)} ms`} />
+        <UsageCard label="My tokens (1h)" value={(stats?.total_tokens ?? 0).toLocaleString()} />
+        <UsageCard label="My cost (1h)" value={`$${(stats?.total_cost_usd ?? 0).toFixed(4)}`} />
+        <UsageCard
+          label="My quality (24h)"
+          value={q ? (q.avg_quality > 0 ? q.avg_quality.toFixed(2) : "-") : "-"}
+        />
+      </div>
+      <h3>My recent traces</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Provider</th>
+            <th>Model</th>
+            <th>Tokens (in/out)</th>
+            <th>Latency</th>
+            <th>Cost</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {traces.length === 0 && (
+            <tr>
+              <td colSpan={7} className="empty">
+                No traffic under your account yet.
+              </td>
+            </tr>
+          )}
+          {traces.map((t) => (
+            <tr key={t.trace_id}>
+              <td>{new Date(t.timestamp).toLocaleTimeString()}</td>
+              <td>{t.provider_name}</td>
+              <td>{t.request_model}</td>
+              <td>
+                {t.input_tokens}/{t.output_tokens}
+              </td>
+              <td>{t.latency_ms} ms</td>
+              <td>${t.cost_usd.toFixed(5)}</td>
+              <td>{t.status_code}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function UsageCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="card">
+      <div className="card-label">{label}</div>
+      <div className="card-value">{value}</div>
+    </div>
   );
 }
 

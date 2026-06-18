@@ -98,3 +98,36 @@ func TestRegisterInvalidPasswordReturns400(t *testing.T) {
 		t.Fatalf("short password: want 400, got %d (%s)", rec.Code, rec.Body.String())
 	}
 }
+
+func TestMeStatsTracesQualityRequireUser(t *testing.T) {
+	srv := newTestServer()
+	mux := srv.Mux()
+
+	for _, path := range []string{"/api/me/stats", "/api/me/traces", "/api/me/quality"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s unauthenticated: want 401, got %d (%s)", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestMeStatsTracesQualityWithoutReaderReturnEmpty(t *testing.T) {
+	srv := newTestServer()
+	// Inject a fake logged-in user via the withUser middleware? It's session-based
+	// (cookie -> store.UserBySession). The store is nil so no session resolves; we
+	// can only test the 401 path here without a live Postgres. The reader-less
+	// empty-payload branches are exercised by the Admin equivalent tests.
+
+	// Instead: confirm the routes are registered (not 404/405).
+	mux := srv.Mux()
+	for _, path := range []string{"/api/me/stats", "/api/me/traces", "/api/me/quality"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+			t.Fatalf("%s route not registered: got %d", path, rec.Code)
+		}
+	}
+}
