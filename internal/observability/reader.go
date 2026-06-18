@@ -181,14 +181,16 @@ type UserQuality struct {
 // endpoint).
 func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, userID string) ([]UserQuality, error) {
 	secs := int64(window.Seconds())
-	// When userID is empty we filter out org-level / legacy rows with a literal
-	// predicate and bind only the two window seconds. When userID is set, we
-	// emit a `?` placeholder and bind the user id first.
+	// The user filter is appended to BOTH the eval_scores and gateway_traces
+	// CTEs, so the bind count is 2 (one per `?`) plus 2 for the window
+	// seconds on each side (4 placeholders total). With userID set we have
+	// 6 placeholders (2 user ids + 2 secs + 2 secs) — order matters and is
+	// [userID, secs, userID, secs] in the rendered SQL.
 	var userFilter string
 	args := []any{secs, secs}
 	if userID != "" {
 		userFilter = ` AND user_id = ?`
-		args = []any{userID, secs, secs}
+		args = []any{userID, secs, userID, secs}
 	} else {
 		userFilter = ` AND user_id != ''`
 	}
