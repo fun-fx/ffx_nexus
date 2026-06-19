@@ -1,0 +1,97 @@
+---
+import BaseLayout from "@layouts/BaseLayout.astro";
+import Header from "@components/Header.astro";
+import Footer from "@components/Footer.astro";
+import CTA from "@components/CTA.astro";
+
+const pillars = [
+  {
+    title: "SSO / SAML / OIDC",
+    body: "Connect Okta, Azure AD, Google Workspace, or self-hosted Keycloak. JIT provisioning, per-org policy, just-in-time deprovisioning.",
+  },
+  {
+    title: "Multi-tenant realms",
+    body: "Each customer org gets its own data plane: separate Postgres schema, separate encryption keys, separate ClickHouse database.",
+  },
+  {
+    title: "Platform credentials",
+    body: "Org-level LLM keys managed by your IT team. Users get virtual keys, never see the real provider key. Per-team budgets roll up to org-level reporting.",
+  },
+  {
+    title: "Audit + compliance",
+    body: "Every request is traced with actor, intent, model, and outcome. Export to S3, GCS, or push via OpenTelemetry. SOC 2 Type II in progress.",
+  },
+  {
+    title: "Self-host in your VPC",
+    body: "Helm chart, Terraform module, or managed-on-your-cloud. No data leaves your network. Air-gapped deployment available.",
+  },
+  {
+    title: "White-glove support",
+    body: "Dedicated Slack channel, 99.9% SLA, migration assistance from LiteLLM / OpenAI Proxy / Portkey. Onboarding in 1 business day.",
+  },
+];
+
+const customers = [
+  { name: "Series-B fintech", use: "Fraud review & RAG over compliance docs" },
+  { name: "Healthcare SaaS", use: "PHI-safe chat with audit-grade trace export" },
+  { name: "EU enterprise IT", use: "Air-gapped on-prem, Okta SSO, 4k seats" },
+];
+---
+
+<BaseLayout
+  title="Enterprise"
+  description="SSO, audit, multi-tenant, and self-hosted — everything your security team needs to put an LLM gateway in production."
+>
+  <Header />
+  <main>
+    <section class="container-wide pt-20 pb-16 sm:pt-28">
+      <div class="mx-auto max-w-3xl text-center">
+        <p class="eyebrow">For enterprise</p>
+        <h1 class="mt-5 text-balance text-5xl font-semibold leading-[1.05] sm:text-6xl">
+          <span class="gradient-text">Built for the security review.</span>
+        </h1>
+        <p class="mx-auto mt-6 max-w-2xl text-lg text-ink-200">
+          SSO, audit, multi-tenant data planes, and self-hosted deployment. Nexus slots
+          into the same review flow as your data warehouse, queue, and observability stack.
+        </p>
+      </div>
+    </section>
+
+    <section class="container-wide pb-16">
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {pillars.map((p) => (
+          <div class="panel p-6">
+            <h3 class="text-lg font-semibold text-white">{p.title}</h3>
+            <p class="mt-2 text-sm leading-relaxed text-ink-300">{p.body}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <section id="trust" class="container-wide py-16">
+      <div class="panel p-8 sm:p-12">
+        <p class="eyebrow">In production today</p>
+        <h2 class="mt-3 text-2xl font-semibold text-white sm:text-3xl">
+          Teams from regulated industries ship with Nexus.
+        </h2>
+        <ul class="mt-8 grid gap-4 sm:grid-cols-3">
+          {customers.map((c) => (
+            <li class="rounded-lg border border-ink-800/60 bg-ink-950/40 p-5">
+              <p class="font-medium text-white">{c.name}</p>
+              <p class="mt-1 text-sm text-ink-300">{c.use}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </section>
+
+    <CTA
+      eyebrow="Talk to us"
+      title="Bring your security team into the room."
+      description="We will walk through the deployment model, audit trail, and data residency options that fit your org."
+      primary={{ href: "mailto:enterprise@ffx.ai", label: "Contact enterprise sales" }}
+      secondary={{ href: "/docs", label: "Read the deployment guide" }}
+    />
+  </main>
+  <Footer />
+</BaseLayout>

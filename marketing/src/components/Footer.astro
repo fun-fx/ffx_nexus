@@ -1,0 +1,78 @@
+---
+const cols = [
+  {
+    title: "Product",
+    links: [
+      { href: "/#features", label: "Features" },
+      { href: "/#metrics", label: "Why Nexus" },
+      { href: "/enterprise", label: "Enterprise" },
+      { href: "/pricing", label: "Pricing" },
+    ],
+  },
+  {
+    title: "Resources",
+    links: [
+      { href: "/docs", label: "Documentation" },
+      { href: "https://github.com/fun-fx/ffx_nexus", label: "GitHub" },
+      { href: "https://github.com/fun-fx/ffx_nexus/blob/main/README.md", label: "README" },
+      { href: "/docs#api-reference", label: "API reference" },
+    ],
+  },
+  {
+    title: "Company",
+    links: [
+      { href: "/#trust", label: "Trust & security" },
+      { href: "mailto:hello@ffx.ai", label: "Contact" },
+    ],
+  },
+];
+
+const year = new Date().getFullYear();
+---
+
+<footer class="mt-32 border-t border-ink-800/60 bg-ink-950/60 py-16">
+  <div class="container-wide">
+    <div class="grid grid-cols-2 gap-8 md:grid-cols-4">
+      <div class="col-span-2 md:col-span-1">
+        <div class="flex items-center gap-2 font-semibold text-white">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M11 1L21 6.5V15.5L11 21L1 15.5V6.5L11 1Z" stroke="url(#fg)" stroke-width="1.5" fill="rgba(82,82,255,0.10)" />
+            <path d="M7.5 8.5L11 6.5L14.5 8.5V13.5L11 15.5L7.5 13.5V8.5Z" fill="url(#fg)" />
+            <defs>
+              <linearGradient id="fg" x1="1" y1="1" x2="21" y2="21">
+                <stop offset="0%" stop-color="#a8a8ff" />
+                <stop offset="100%" stop-color="#5252ff" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <span>Nexus</span>
+        </div>
+        <p class="mt-3 max-w-xs text-sm text-ink-300">
+          The open-source AI gateway for production. BYOK, virtual keys, guardrails, and observability — one endpoint for every LLM.
+        </p>
+      </div>
+
+      {cols.map((c) => (
+        <div>
+          <h4 class="text-xs font-semibold uppercase tracking-wider text-ink-300">{c.title}</h4>
+          <ul class="mt-4 space-y-2 text-sm">
+            {c.links.map((l) => (
+              <li>
+                <a href={l.href} class="text-ink-200 hover:text-white">{l.label}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+
+    <div class="mt-12 flex flex-col items-start justify-between gap-3 border-t border-ink-800/60 pt-8 text-xs text-ink-400 sm:flex-row sm:items-center">
+      <p>© {year} FFX. All rights reserved.</p>
+      <p>
+        Deployed on <a href="https://tailscale.com/kb/1223/funnel" class="hover:text-white">Tailscale</a>
+        · <a href="https://www.cloudflare.com/" class="hover:text-white">Cloudflare</a>
+        · Apache 2.0
+      </p>
+    </div>
+  </div>
+</footer>

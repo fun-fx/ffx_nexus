@@ -1,0 +1,23 @@
+---
+const metrics = [
+  { value: "1-line", label: "drop-in replacement", desc: "for the OpenAI / Anthropic / Gemini SDKs" },
+  { value: "10+", label: "providers", desc: "OpenAI, Anthropic, Gemini, Mistral, Bedrock, Azure, ..." },
+  { value: "5 min", label: "self-host time", desc: "Docker Compose for dev, Helm for prod" },
+  { value: "0", label: "data leaves your tenant", desc: "no third-party LLM proxy, no telemetry mining" },
+];
+---
+
+<section id="metrics" class="container-wide py-20">
+  <div class="panel relative overflow-hidden p-8 sm:p-12">
+    <div class="absolute inset-0 -z-10 bg-card-glow"></div>
+    <div class="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
+      {metrics.map((m) => (
+        <div>
+          <div class="text-4xl font-semibold tracking-tight text-white sm:text-5xl">{m.value}</div>
+          <div class="mt-1 text-sm font-medium text-brand-300">{m.label}</div>
+          <div class="mt-2 text-sm text-ink-300">{m.desc}</div>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>

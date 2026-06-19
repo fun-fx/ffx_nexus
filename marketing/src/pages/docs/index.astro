@@ -1,0 +1,200 @@
+---
+import BaseLayout from "@layouts/BaseLayout.astro";
+import Header from "@components/Header.astro";
+import Footer from "@components/Footer.astro";
+import CTA from "@components/CTA.astro";
+import CodeBlock from "@components/CodeBlock.astro";
+
+const sections = [
+  {
+    title: "Quickstart",
+    items: [
+      { label: "Install", desc: "Self-host in 5 minutes with Docker Compose or Helm.", href: "#quickstart" },
+      { label: "Configure", desc: "Set providers, virtual keys, and the first request.", href: "#quickstart" },
+    ],
+  },
+  {
+    title: "Concepts",
+    items: [
+      { label: "Virtual keys", desc: "The credential your app presents to Nexus.", href: "#concepts" },
+      { label: "BYOK & platform credentials", desc: "Who owns the LLM provider key.", href: "#concepts" },
+      { label: "Org & multi-tenancy", desc: "Isolated data planes for each customer.", href: "#concepts" },
+    ],
+  },
+  {
+    title: "Deployment",
+    items: [
+      { label: "Helm chart", desc: "Production-ready chart for Kubernetes.", href: "#deployment" },
+      { label: "Self-host on a single VM", desc: "Docker Compose for small teams.", href: "#deployment" },
+      { label: "Air-gapped install", desc: "Enterprise: no outbound network required.", href: "#deployment" },
+    ],
+  },
+  {
+    title: "API reference",
+    items: [
+      { label: "OpenAI-compatible", desc: "Drop-in base URL for the OpenAI / Anthropic SDKs.", href: "#api-reference" },
+      { label: "Console API", desc: "Manage keys, users, traces, and policies.", href: "#api-reference" },
+    ],
+  },
+];
+---
+
+<BaseLayout
+  title="Docs"
+  description="The Nexus documentation. Quickstart, concepts, deployment, and the full API reference."
+>
+  <Header />
+  <main>
+    <section class="container-wide pt-20 pb-12 sm:pt-28">
+      <div class="mx-auto max-w-3xl text-center">
+        <p class="eyebrow">Documentation</p>
+        <h1 class="mt-5 text-balance text-5xl font-semibold sm:text-6xl">
+          <span class="gradient-text">Build with Nexus.</span>
+        </h1>
+        <p class="mx-auto mt-6 max-w-2xl text-lg text-ink-200">
+          The full reference. Quickstart, concepts, deployment, and the API.
+        </p>
+      </div>
+    </section>
+
+    <section class="container-narrow pb-16">
+      <div class="grid gap-3 sm:grid-cols-2">
+        {sections.flatMap((s) => s.items).map((it) => (
+          <a href={it.href} class="panel block p-5 transition-colors hover:border-ink-700">
+            <p class="text-sm font-medium text-white">{it.label}</p>
+            <p class="mt-1 text-sm text-ink-300">{it.desc}</p>
+          </a>
+        ))}
+      </div>
+    </section>
+
+    <section id="quickstart" class="container-narrow pb-16">
+      <h2 class="text-3xl font-semibold text-white">Quickstart</h2>
+      <p class="mt-2 text-ink-200">Five minutes from <code class="text-brand-200">git clone</code> to your first request.</p>
+
+      <div class="mt-6 space-y-4">
+        <CodeBlock
+          language="bash"
+          filename="install.sh"
+          code={`# 1. Clone
+git clone https://github.com/fun-fx/ffx_nexus.git
+cd ffx_nexus
+
+# 2. Start the dev stack
+docker compose -f deploy/docker-compose.dev.yml up -d
+
+# 3. Wait for the console to be ready (~30s)
+curl -fsS http://localhost:8081/healthz`}
+        />
+        <CodeBlock
+          language="bash"
+          filename="first-call.sh"
+          code={`# 4. Create a virtual key from the CLI
+docker exec -it nexus nexus keys create \\
+  --name "my-first-key" \\
+  --model gemini-2.5-flash
+
+# 5. Make a request
+curl http://localhost:8080/v1/chat/completions \\
+  -H "Authorization: Bearer nxs_live_..." \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gemini-2.5-flash",
+    "messages": [{"role": "user", "content": "hi"}]
+  }'`}
+        />
+      </div>
+    </section>
+
+    <section id="concepts" class="container-narrow pb-16">
+      <h2 class="text-3xl font-semibold text-white">Concepts</h2>
+      <div class="mt-6 space-y-6">
+        <div class="panel p-6">
+          <h3 class="text-lg font-semibold text-white">Virtual key</h3>
+          <p class="mt-2 text-sm text-ink-200">
+            The credential a user or app presents to Nexus, formatted as <code class="text-brand-200">nxs_live_...</code>.
+            Each virtual key carries policy: allowed models, RPM limit, monthly budget, owner.
+            It is the only credential the user ever sees.
+          </p>
+        </div>
+        <div class="panel p-6">
+          <h3 class="text-lg font-semibold text-white">BYOK vs. platform credentials</h3>
+          <p class="mt-2 text-sm text-ink-200">
+            With <strong>BYOK</strong>, each user brings their own OpenAI/Gemini key and pays the provider directly.
+            With <strong>platform credentials</strong> (Enterprise), your IT team holds the provider key and your users
+            only see virtual keys. Both modes are first-class in Nexus.
+          </p>
+        </div>
+        <div class="panel p-6">
+          <h3 class="text-lg font-semibold text-white">Org &amp; multi-tenancy</h3>
+          <p class="mt-2 text-sm text-ink-200">
+            Each <em>org</em> is an isolated tenant. Separate Postgres schema, separate encryption keys,
+            separate ClickHouse database, separate SSO realm. Cross-tenant queries are impossible by design.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="deployment" class="container-narrow pb-16">
+      <h2 class="text-3xl font-semibold text-white">Deployment</h2>
+      <p class="mt-2 text-ink-200">Helm chart, Docker Compose, or air-gapped install. Pick the one that fits your org.</p>
+      <div class="mt-6 grid gap-4 sm:grid-cols-2">
+        <div class="panel p-6">
+          <h3 class="text-lg font-semibold text-white">Helm chart (production)</h3>
+          <CodeBlock
+            language="bash"
+            code={`helm repo add nexus https://fun-fx.github.io/ffx_nexus
+helm install nexus nexus/nexus \\
+  --namespace tenant-nexus \\
+  --create-namespace`}
+          />
+        </div>
+        <div class="panel p-6">
+          <h3 class="text-lg font-semibold text-white">Docker Compose (dev)</h3>
+          <CodeBlock
+            language="bash"
+            code={`git clone https://github.com/fun-fx/ffx_nexus.git
+cd ffx_nexus
+docker compose -f deploy/docker-compose.dev.yml up -d`}
+          />
+        </div>
+      </div>
+    </section>
+
+    <section id="api-reference" class="container-narrow pb-16">
+      <h2 class="text-3xl font-semibold text-white">API reference</h2>
+      <p class="mt-2 text-ink-200">
+        Nexus is OpenAI-compatible. Point your existing OpenAI / Anthropic / Vercel AI SDK at
+        <code class="text-brand-200">https://nexus.ffx.ai/v1</code> and you're done.
+      </p>
+      <CodeBlock
+        language="python"
+        code={`from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://nexus.ffx.ai/v1",
+    api_key="nxs_live_...",
+)
+
+resp = client.chat.completions.create(
+    model="gemini-2.5-flash",
+    messages=[{"role": "user", "content": "hi"}],
+    stream=True,
+)
+for chunk in resp:
+    print(chunk.choices[0].delta.content or "", end="")`}
+      />
+      <p class="mt-6 text-sm text-ink-300">
+        Full reference → <a href="https://github.com/fun-fx/ffx_nexus/blob/main/docs" class="text-brand-200 hover:underline">github.com/fun-fx/ffx_nexus/docs</a>
+      </p>
+    </section>
+
+    <CTA
+      eyebrow="Need more?"
+      title="We are happy to help you self-host."
+      primary={{ href: "mailto:hello@ffx.ai", label: "Email us" }}
+      secondary={{ href: "https://github.com/fun-fx/ffx_nexus/discussions", label: "Open a discussion" }}
+    />
+  </main>
+  <Footer />
+</BaseLayout>
