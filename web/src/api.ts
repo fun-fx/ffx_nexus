@@ -127,12 +127,27 @@ export async function login(email: string, password: string): Promise<User> {
 
 export interface AuthConfig {
   signup_enabled: boolean;
+  sso_enabled: boolean;
+  sso_label: string;
 }
 
 export async function fetchAuthConfig(): Promise<AuthConfig> {
   const res = await fetch(`/api/auth/config`);
-  if (!res.ok) return { signup_enabled: false };
-  return res.json();
+  if (!res.ok) return { signup_enabled: false, sso_enabled: false, sso_label: "" };
+  const data = await res.json();
+  return {
+    signup_enabled: !!data.signup_enabled,
+    sso_enabled: !!data.sso_enabled,
+    sso_label: data.sso_label || "",
+  };
+}
+
+// startSSOLogin redirects the browser to /api/auth/sso/login, which kicks
+// off the OIDC Authorization Code flow against the configured IdP
+// (Keycloak, Authentik, ...). The server does the token exchange and
+// creates a Nexus session, then bounces back to /.
+export function startSSOLogin(): void {
+  window.location.href = "/api/auth/sso/login";
 }
 
 export interface RegisterResult {
