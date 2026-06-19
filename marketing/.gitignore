@@ -1,0 +1,15 @@
+# build output
+dist/
+.astro/
+node_modules/
+
+# env / local
+.env
+.env.local
+.env.*.local
+
+# editor
+.DS_Store
+.vscode/
+.idea/
+*.log

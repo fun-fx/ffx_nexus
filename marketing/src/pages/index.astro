@@ -1,0 +1,60 @@
+---
+import BaseLayout from "@layouts/BaseLayout.astro";
+import Header from "@components/Header.astro";
+import Footer from "@components/Footer.astro";
+import Hero from "@components/Hero.astro";
+import Features from "@components/Features.astro";
+import Metrics from "@components/Metrics.astro";
+import HowItWorks from "@components/HowItWorks.astro";
+import FAQ from "@components/FAQ.astro";
+import CTA from "@components/CTA.astro";
+
+const faqs = [
+  {
+    q: "How is Nexus different from LiteLLM?",
+    a: "LiteLLM was built for the shared-key model (operator holds the LLM key). Nexus is built for BYOK and SSO first — your users bring their own provider keys, and your admin team gets org-level policy, audit, and quota on top. Both are open source; pick the model that fits your org.",
+  },
+  {
+    q: "Do my users' LLM keys leave my infrastructure?",
+    a: "No. Keys are encrypted at rest in our Postgres using AES-GCM with a key managed by your deployment. We never see plaintext keys. Calls go from your Nexus pod directly to the LLM provider — no proxy hop.",
+  },
+  {
+    q: "Which providers are supported?",
+    a: "OpenAI, Anthropic, Gemini, Mistral, Cohere, Groq, AWS Bedrock, Azure OpenAI, and any OpenAI-compatible endpoint (Ollama, vLLM, Together, Fireworks, OpenRouter, etc.).",
+  },
+  {
+    q: "Can I self-host?",
+    a: "Yes. Apache 2.0. Docker Compose for dev, Helm chart for prod. Postgres + Redis + ClickHouse are the only required deps. The whole stack runs on a single 2-CPU node for small teams.",
+  },
+  {
+    q: "How does pricing work?",
+    a: "Self-hosted Nexus is free and Apache 2.0. We charge for managed deployments and enterprise features (SSO/SAML, multi-region, audit export). See the pricing page for tiers.",
+  },
+  {
+    q: "What's on the roadmap?",
+    a: "Multi-tenant Keycloak realms, platform credentials (org-level LLM keys), MCP gateway, prompt playground, and a Vercel-style Edge runtime. See the GitHub issues for the full backlog.",
+  },
+];
+---
+
+<BaseLayout
+  title="Nexus"
+  description="Nexus is an open-source AI gateway with BYOK, virtual keys, guardrails, and observability. One drop-in endpoint for every LLM provider."
+>
+  <Header />
+  <main>
+    <Hero />
+    <Features />
+    <Metrics />
+    <HowItWorks />
+    <FAQ items={faqs} />
+    <CTA
+      eyebrow="Ready to ship?"
+      title="The fastest way to put an LLM in production."
+      description="Self-host in 5 minutes, or sign up for a managed tenant."
+      primary={{ href: "/pricing", label: "Get started — free" }}
+      secondary={{ href: "/docs", label: "Read the docs" }}
+    />
+  </main>
+  <Footer />
+</BaseLayout>
