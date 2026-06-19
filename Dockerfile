@@ -27,7 +27,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 # --- Runtime stage ---
 FROM alpine:3.20
+# ca-certificates.crt bundle is needed by Go's TLS stack (Keycloak OIDC
+# discovery, etc.). alpine 3.20's ca-certificates package no longer runs
+# update-ca-certificates as an install hook, so we call it explicitly
+# to populate the bundle that the runtime links against.
 RUN apk add --no-cache ca-certificates tzdata \
+    && update-ca-certificates \
     && adduser -D -H -u 65532 nexus
 COPY --from=build /out/nexus /usr/local/bin/nexus
 

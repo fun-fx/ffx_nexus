@@ -11,9 +11,13 @@
 existingSecret: nexus
 
 image:
-  # In-cluster Talos nodes resolve Harbor via the nip.io host, not MagicDNS.
-  repository: harbor.192.168.0.101.nip.io/ffx/nexus
-  tag: 0.3.3
+  # Use the Tailscale MagicDNS name so the kubelet can pull without
+  # having to trust the self-signed Harbor cert (the in-cluster
+  # containerd trusts the Tailscale cert chain). The image pushed
+  # to this registry is linux/amd64 (Talos nodes are amd64); the
+  # local Mac arm64 build is **not** what the cluster can run.
+  repository: harbor.tail7d361a.ts.net/ffx/nexus
+  tag: 0.3.5
 imagePullSecrets:
   - name: harbor
 

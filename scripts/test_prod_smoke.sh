@@ -95,6 +95,8 @@ else
       pass "routing alias fast -> 200"
     elif [[ "$FAST" == "401" || "$FAST" == "402" || "$FAST" == "429" ]]; then
       skip "routing alias fast -> $FAST (auth/quota)"
+    elif [[ "$FAST" == "502" ]] && grep -q "no provider registered" /tmp/prod_fast.json 2>/dev/null; then
+      skip "routing alias fast -> $FAST (admin BYOK credential missing; expected in strict_byok)"
     else
       fail "routing alias fast -> $FAST $(cat /tmp/prod_fast.json 2>/dev/null | head -c 200)"
     fi
