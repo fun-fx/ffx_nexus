@@ -16,6 +16,7 @@ import {
   login,
   logout,
   register,
+  startSSOLogin,
   updateMe,
   type Credential,
   type MyUsageStats,
@@ -114,13 +115,32 @@ function UserQualityPanel() {
 function AuthPanel({ onUser }: { onUser: (u: User) => void }) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [signupEnabled, setSignupEnabled] = useState(false);
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+  const [ssoLabel, setSsoLabel] = useState("SSO");
 
   useEffect(() => {
-    fetchAuthConfig().then((c) => setSignupEnabled(c.signup_enabled)).catch(() => {});
+    fetchAuthConfig()
+      .then((c) => {
+        setSignupEnabled(c.signup_enabled);
+        setSsoEnabled(c.sso_enabled);
+        setSsoLabel(c.sso_label || "SSO");
+      })
+      .catch(() => {});
   }, []);
 
   return (
     <div className="auth-panel">
+      {ssoEnabled && (
+        <section className="panel">
+          <h2>Sign in with your organization</h2>
+          <p className="sub">
+            Use single sign-on if your company runs an IdP (e.g. {ssoLabel}).
+          </p>
+          <button className="btn sso" type="button" onClick={() => startSSOLogin()}>
+            Sign in with {ssoLabel}
+          </button>
+        </section>
+      )}
       {signupEnabled && (
         <div className="auth-tabs">
           <button

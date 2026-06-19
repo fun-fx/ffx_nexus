@@ -47,6 +47,12 @@ func (s *Store) Close() { s.pool.Close() }
 // HasCipher reports whether secret encryption is available.
 func (s *Store) HasCipher() bool { return s.cipher != nil }
 
+// Pool exposes the underlying connection pool for callers that need to run
+// hand-written SQL outside the helpers in this file (the SSO callback
+// looks up users by their (provider, subject) identity, which is not a
+// hot enough path to warrant its own typed method).
+func (s *Store) Pool() *pgxpool.Pool { return s.pool }
+
 // --- Virtual keys ---
 
 // CreateVirtualKey generates a key, stores its hash, and returns the row plus
@@ -81,7 +87,7 @@ func (s *Store) CreateVirtualKey(ctx context.Context, orgID, userID, name string
 	if err != nil {
 		return VirtualKey{}, "", err
 	}
-	s.audit(ctx, orgID, "vkey.create", vk.ID, name)
+	s.Audit(ctx, orgID, "vkey.create", vk.ID, name)
 	return vk, plaintext, nil
 }
 
@@ -177,7 +183,7 @@ func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, id string) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.audit(ctx, orgID, "vkey.revoke", id, "")
+	s.Audit(ctx, orgID, "vkey.revoke", id, "")
 	return nil
 }
 
@@ -215,7 +221,7 @@ func (s *Store) CreateCredential(ctx context.Context, orgID, userID, provider, n
 	if err != nil {
 		return ProviderCredential{}, err
 	}
-	s.audit(ctx, orgID, "credential.create", cred.ID, fmt.Sprintf("%s/%s", provider, name))
+	s.Audit(ctx, orgID, "credential.create", cred.ID, fmt.Sprintf("%s/%s", provider, name))
 	return cred, nil
 }
 
@@ -295,7 +301,7 @@ func (s *Store) RotateCredential(ctx context.Context, orgID, id, newSecret strin
 	if err != nil {
 		return ProviderCredential{}, err
 	}
-	s.audit(ctx, orgID, "credential.rotate", c.ID, fmt.Sprintf("%s/%s", c.Provider, c.Name))
+	s.Audit(ctx, orgID, "credential.rotate", c.ID, fmt.Sprintf("%s/%s", c.Provider, c.Name))
 	return c, nil
 }
 
@@ -409,12 +415,12 @@ func (s *Store) DeleteCredential(ctx context.Context, orgID, id string) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.audit(ctx, orgID, "credential.delete", id, "")
+	s.Audit(ctx, orgID, "credential.delete", id, "")
 	return nil
 }
 
-// audit writes a best-effort audit entry; failures are swallowed.
-func (s *Store) audit(ctx context.Context, orgID, action, targetID, detail string) {
+// Audit writes a best-effort audit entry; failures are swallowed.
+func (s *Store) Audit(ctx context.Context, orgID, action, targetID, detail string) {
 	_, _ = s.pool.Exec(ctx, `
 		INSERT INTO audit_log (org_id, action, target_id, detail)
 		VALUES ($1,$2,$3,$4)`, orgID, action, targetID, detail)

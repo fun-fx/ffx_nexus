@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/gorilla/websocket"
 
+	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
@@ -36,12 +37,42 @@ type Server struct {
 	routes      RouteStatsSource      // may be nil when routing is disabled
 	reload      func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup bool                  // public POST /api/auth/register
+	sso         *ssoClient            // OIDC client; nil when SSO is not configured
 	log         *slog.Logger
 	up          websocket.Upgrader
 }
 
 // SetAllowSignup toggles public self-service registration (member role only).
 func (s *Server) SetAllowSignup(allow bool) { s.allowSignup = allow }
+
+// SetSSO configures the OIDC client used by /api/auth/sso/*. A nil or
+// disabled config is a no-op; the field stays nil and the SSO routes
+// 404, which keeps deployments without an IdP completely unaffected.
+func (s *Server) SetSSO(ctx context.Context, cfg config.SSOConfig) {
+	if !cfg.Enabled() {
+		s.log.Info("SSO not configured; /api/auth/sso/* routes disabled")
+		return
+	}
+	client, err := newSSOClient(ctx, cfg)
+	if err != nil {
+		s.log.Error("SSO init failed; /api/auth/sso/* routes disabled", "err", err)
+		return
+	}
+	s.sso = client
+	s.log.Info("SSO enabled", "issuer", cfg.Issuer, "client_id", cfg.ClientID, "label", cfg.LabelOrDefault())
+}
+
+// SSOEnabled reports whether /api/auth/sso/* is wired up. The console
+// uses this to decide whether to render the SSO sign-in button.
+func (s *Server) SSOEnabled() bool { return s.sso != nil }
+
+// SSOLabel is the UI label for the SSO button (e.g. "Keycloak").
+func (s *Server) SSOLabel() string {
+	if s.sso == nil {
+		return ""
+	}
+	return s.sso.cfg.LabelOrDefault()
+}
 
 // SetRouteStats attaches a routing stats source for the /api/routing endpoint.
 func (s *Server) SetRouteStats(src RouteStatsSource) { s.routes = src }
@@ -92,6 +123,8 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/auth/login", s.login)
 		r.Post("/auth/register", s.register)
 		r.Post("/auth/logout", s.logout)
+		r.Get("/auth/sso/login", s.ssoLogin)
+		r.Get("/auth/sso/callback", s.ssoCallback)
 		r.Get("/me", s.requireUser(s.me))
 		r.Patch("/me", s.requireUser(s.updateMe))
 		r.Get("/me/stats", s.requireUser(s.myStats))
@@ -256,6 +289,16 @@ func (s *Server) live(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// audit is a thin convenience wrapper that defers to the store's audit
+// log when one is available. Failures are swallowed (audit is best-effort
+// by design; see core.Store.Audit).
+func (s *Server) audit(ctx context.Context, orgID, action, targetID, detail string) {
+	if s.store == nil {
+		return
+	}
+	s.store.Audit(ctx, orgID, action, targetID, detail)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

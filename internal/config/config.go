@@ -105,6 +105,37 @@ type Config struct {
 	// AllowSignup enables public self-service registration at POST /api/auth/register.
 	// New accounts are always created with the "member" role.
 	AllowSignup bool
+
+	// SSO (OIDC). When Enabled() returns true, Nexus exposes
+	// /api/auth/sso/login and /api/auth/sso/callback and accepts a login
+	// flow that exchanges an authorization code for a verified identity at
+	// the configured issuer (Keycloak, Authentik, ...). Password login and
+	// self-service signup stay available as fallbacks.
+	SSO SSOConfig
+}
+
+// SSOConfig is the OIDC configuration. The Enabled() predicate returns
+// true only when all four required values are non-empty, so partial config
+// (e.g. issuer set but client secret missing) safely degrades to "no SSO".
+type SSOConfig struct {
+	Issuer       string // e.g. https://keycloak.example/realms/cozy
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string // e.g. https://console.example/api/auth/sso/callback
+	Label        string // UI button label, defaults to "SSO"
+}
+
+// Enabled reports whether the SSO flow is configured.
+func (c SSOConfig) Enabled() bool {
+	return c.Issuer != "" && c.ClientID != "" && c.ClientSecret != "" && c.RedirectURL != ""
+}
+
+// LabelOrDefault returns the configured label, or "SSO" if unset.
+func (c SSOConfig) LabelOrDefault() string {
+	if c.Label == "" {
+		return "SSO"
+	}
+	return c.Label
 }
 
 // Load reads configuration from the environment, applying sane defaults. It
@@ -144,6 +175,14 @@ func Load() Config {
 		AdminEmail:         env("NEXUS_ADMIN_EMAIL", ""),
 		AdminPassword:      env("NEXUS_ADMIN_PASSWORD", ""),
 		AllowSignup:        envBool("NEXUS_ALLOW_SIGNUP", false),
+
+		SSO: SSOConfig{
+			Issuer:       env("NEXUS_SSO_ISSUER", ""),
+			ClientID:     env("NEXUS_SSO_CLIENT_ID", ""),
+			ClientSecret: env("NEXUS_SSO_CLIENT_SECRET", ""),
+			RedirectURL:  env("NEXUS_SSO_REDIRECT_URL", ""),
+			Label:        env("NEXUS_SSO_LABEL", ""),
+		},
 
 		GuardrailsEnabled:     envBool("NEXUS_GUARDRAILS_ENABLED", false),
 		GuardrailBlockPIIIn:   envBool("NEXUS_GUARDRAILS_BLOCK_PII_INPUT", false),

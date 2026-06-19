@@ -125,6 +125,8 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 | `NEXUS_KEY_MODE` | `shared` | Upstream key resolution: `shared` / `byok` / `strict_byok` |
 | `NEXUS_ADMIN_EMAIL` / `NEXUS_ADMIN_PASSWORD` | — | Bootstrap the first console admin (only when no users exist) |
 | `NEXUS_ALLOW_SIGNUP` | `false` | Enable public `POST /api/auth/register` (member role only) |
+| `NEXUS_SSO_ISSUER` / `NEXUS_SSO_CLIENT_ID` / `NEXUS_SSO_CLIENT_SECRET` / `NEXUS_SSO_REDIRECT_URL` | — | OIDC SSO; when all four are set, `/api/auth/sso/login` is enabled. See [SSO (OIDC)](#sso-oidc-optional). |
+| `NEXUS_SSO_LABEL` | `SSO` | UI label for the SSO button (e.g. `Keycloak`) |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — | OpenAI provider |
 | `ANTHROPIC_API_KEY` | — | Anthropic provider |
 | `GEMINI_API_KEY` | — | Google Gemini provider |
@@ -266,6 +268,83 @@ off. Off = only the provider's own limits apply (the user's bill is their own);
 On = Nexus enforces the configured cap as a safety guardrail. The dashboard
 **Account** tab exposes this toggle; the trace flags column shows a `byok` badge
 when a request used a user's own key.
+
+### SSO (OIDC, optional)
+
+When SSO is enabled, the console shows a **Sign in with {label}** button above
+the email/password forms. Nexus uses the standard OIDC Authorization Code
+flow against a configurable IdP (Keycloak, Authentik, Zitadel, ...). The
+browser is redirected to the IdP, the IdP authenticates the user, and Nexus
+exchanges the code for tokens, verifies the ID token's signature + claims,
+and then either links the verified identity to an existing user (by email)
+or JIT-provisions a new `member` account.
+
+#### Enable SSO
+
+Set these environment variables on the gateway/console pod (and in
+`deploy/cozystack/values-prod.yaml` if you use the Helm chart):
+
+| Variable | Required | Example | Notes |
+|----------|----------|---------|-------|
+| `NEXUS_SSO_ISSUER` | yes | `https://keycloak.example.com/realms/cozy` | OIDC issuer URL; Nexus uses OIDC discovery against `<issuer>/.well-known/openid-configuration` |
+| `NEXUS_SSO_CLIENT_ID` | yes | `nexus-console` | Must match a client in the IdP |
+| `NEXUS_SSO_CLIENT_SECRET` | yes | (from IdP) | Confidential client; the secret is sent in the token-exchange body (HTTPS only) |
+| `NEXUS_SSO_REDIRECT_URL` | yes | `https://console.example.com/api/auth/sso/callback` | Must be registered as a valid redirect URI on the IdP client |
+| `NEXUS_SSO_LABEL` | no | `Keycloak` | UI label for the button; defaults to `SSO` |
+
+When all four required values are present, `SSOConfig.Enabled()` returns
+true, `GET /api/auth/config` reports `sso_enabled: true`, and the routes
+`/api/auth/sso/login` and `/api/auth/sso/callback` are wired up. If any
+value is missing, SSO is silently disabled and the existing email/password
+flow is the only sign-in path.
+
+#### Keycloak client setup (one-time)
+
+In the realm that should be allowed to sign in (e.g. `cozy`):
+
+1. **Realm → Clients → Create client**
+   - **Client type**: OpenID Connect
+   - **Client ID**: `nexus-console` (must match `NEXUS_SSO_CLIENT_ID`)
+2. **Capability config**:
+   - **Client authentication**: ON (this is a confidential client)
+   - **Authentication flow**: Standard flow (Authorization Code)
+   - **Direct access grants**: OFF
+3. **Login settings**:
+   - **Root URL**: `https://console.example.com`
+   - **Valid redirect URIs**: `https://console.example.com/api/auth/sso/callback`
+   - **Web origins**: `https://console.example.com` (or `*` for dev)
+4. Copy the **Client secret** into `NEXUS_SSO_CLIENT_SECRET`.
+5. Make sure every user that should be able to sign in has **Email verified**
+   checked (otherwise Nexus refuses to link/JIT the account — see security
+   notes below).
+
+#### How linking works
+
+When the IdP callback fires, Nexus:
+
+1. Verifies the ID token signature, issuer, and expiry.
+2. Requires `email` and `sub` claims, and `email_verified=true`.
+3. Looks up the user by `(org_id, sso_provider, sso_subject)` — a hit means
+   this identity has signed in before, reuse it.
+4. Falls back to `email` lookup — if a user with the same email already
+   exists, records the `(sso_provider, sso_subject, sso_issuer)` triple on
+   that row so subsequent logins skip the email lookup.
+5. Otherwise JIT-provisions a new `member` user with a random
+   unguessable placeholder password (password login is therefore
+   impossible for SSO-only users; the only way back in is via the IdP).
+
+#### Security notes
+
+- The OIDC `state` is a 32-byte random value stored in an `HttpOnly` cookie
+  scoped to `/api/auth/sso`; the callback compares cookie vs. query param
+  and rejects mismatches.
+- ID token signature, issuer, and audience (client_id) are all validated
+  by the upstream `coreos/go-oidc` library.
+- `email_verified` must be `true`; unverified emails are rejected to
+  prevent account takeover via IdP-side spoofing.
+- The `(org_id, sso_provider, sso_subject)` tuple is unique — re-binding a
+  user to a different IdP subject requires a manual DB update, so a
+  Keycloak user cannot be silently re-mapped to another Keycloak user.
 
 ### BYOK API
 
@@ -707,6 +786,7 @@ docker run --rm -p 8080:8080 -p 8081:8081 \
 - `GET /api/routing` — per-model rolling quality/cost/latency used for routing
 - `GET /api/live` — WebSocket live trace feed
 - `POST /api/auth/login`, `POST /api/auth/logout`, `GET/PATCH /api/me` — session auth + self settings
+- `GET /api/auth/sso/login`, `GET /api/auth/sso/callback` — OIDC SSO (only when SSO env vars are set)
 - `GET/POST /api/me/keys`, `GET/POST /api/me/credentials` — BYOK self-service
 - `GET/POST /api/users`, `DELETE /api/users/{id}` — admin user management
 - `GET /api/users/quality` — per-user rolling quality + spend (admin)

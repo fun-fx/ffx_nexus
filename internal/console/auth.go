@@ -99,8 +99,10 @@ func bearerToken(r *http.Request) string {
 const minPasswordLen = 8
 
 func (s *Server) authConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"signup_enabled": s.allowSignup && s.store != nil,
+		"sso_enabled":    s.SSOEnabled(),
+		"sso_label":      s.SSOLabel(),
 	})
 }
 
