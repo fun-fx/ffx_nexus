@@ -55,6 +55,7 @@ func main() {
 			for _, path := range []string{
 				"migrations/postgres/001_init.sql",
 				"migrations/postgres/002_byok.sql",
+				"migrations/postgres/003_sso.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {
