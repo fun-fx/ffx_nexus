@@ -1,0 +1,76 @@
+# Marketing site (nexus.ffx.ai) deploy workflow.
+#
+# Builds the Astro static site and deploys to Cloudflare Pages on every push
+# to main (and on manual dispatch).
+#
+# Required GitHub secrets:
+#   CLOUDFLARE_API_TOKEN — Cloudflare API token with Pages:Edit + Account:Read
+#   CLOUDFLARE_ACCOUNT_ID — Cloudflare account ID
+#
+# Required Cloudflare Pages project:
+#   Name: nexus-marketing
+#   Production branch: main
+#   Build command: npm run build (in marketing/)
+#   Build output: marketing/dist
+#
+# On first run, create the Pages project via the Cloudflare dashboard
+# (or `wrangler pages project create nexus-marketing --production-branch main`)
+# so that the deploy URL exists.
+
+name: marketing-pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "marketing/**"
+      - ".github/workflows/marketing-pages.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: marketing-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: marketing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: marketing/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: marketing/dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    steps:
+      - id: deploy
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: nexus-marketing
+          directory: marketing/dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,16 @@
+---
+import FaqItem from "./FaqItem.astro";
+const items = Astro.props.items as { q: string; a: string }[];
+---
+
+<section id="faq" class="container-narrow py-24 sm:py-32">
+  <div class="mx-auto max-w-2xl text-center">
+    <p class="eyebrow">FAQ</p>
+    <h2 class="mt-4 text-balance text-4xl font-semibold sm:text-5xl">Questions, answered.</h2>
+  </div>
+  <div class="mx-auto mt-12 max-w-2xl space-y-3">
+    {items.map((it) => (
+      <FaqItem title={it.q} description={it.a} />
+    ))}
+  </div>
+</section>

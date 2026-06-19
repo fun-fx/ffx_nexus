@@ -1,0 +1,24 @@
+---
+export interface Props {
+  title: string;
+  description?: string;
+}
+
+const { title, description } = Astro.props;
+const id = title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+---
+
+<details
+  name="faq"
+  class="group rounded-xl border border-ink-800/80 bg-ink-900/40 open:bg-ink-900/60 open:border-ink-700 transition-colors"
+>
+  <summary class="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 [&::-webkit-details-marker]:hidden">
+    <h3 id={`q-${id}`} class="text-base font-medium text-white">{title}</h3>
+    <svg viewBox="0 0 24 24" class="h-4 w-4 text-ink-300 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  </summary>
+  {description && (
+    <div class="px-5 pb-5 text-sm leading-relaxed text-ink-200">{description}</div>
+  )}
+</details>

@@ -1,0 +1,91 @@
+---
+const features = [
+  {
+    title: "BYOK, the right way",
+    body: "Users bring their own OpenAI / Anthropic / Gemini keys. Keys are encrypted at rest, never logged, and never leave your tenant.",
+    icon: "key",
+  },
+  {
+    title: "Virtual keys, real isolation",
+    body: "Mint per-team or per-app virtual keys with their own budgets, RPM limits, allowed models, and audit trail.",
+    icon: "shield",
+  },
+  {
+    title: "Quality-aware routing",
+    body: "Route by speed, cost, or rolling quality score. Add provider fallbacks that kick in before users see errors.",
+    icon: "route",
+  },
+  {
+    title: "Guardrails in-line",
+    body: "PII redaction, JSON-schema enforcement, and self-correction. Block bad inputs/outputs before they cost a cent.",
+    icon: "lock",
+  },
+  {
+    title: "Semantic cache",
+    body: "Embeddings-based cache cuts repeat traffic. 10× cheaper re-prompts, 0 code changes in your app.",
+    icon: "cache",
+  },
+  {
+    title: "OpenTelemetry out of the box",
+    body: "Every request is traced with model, tokens, cost, latency, cache hit, and quality score. Export to any OTLP backend.",
+    icon: "telemetry",
+  },
+  {
+    title: "SSO via OIDC / SAML",
+    body: "Connect Okta, Azure AD, Google Workspace, or self-hosted Keycloak. JIT provisioning + per-org policy.",
+    icon: "sso",
+  },
+  {
+    title: "Self-host in 5 minutes",
+    body: "Single binary, Postgres, Redis, ClickHouse. Docker Compose for dev, Helm for prod. No SaaS lock-in.",
+    icon: "box",
+  },
+];
+---
+
+<section id="features" class="container-wide py-24 sm:py-32">
+  <div class="mx-auto max-w-2xl text-center">
+    <p class="eyebrow">Features</p>
+    <h2 class="mt-4 text-balance text-4xl font-semibold sm:text-5xl">
+      Everything you need between<br />your app and the LLM.
+    </h2>
+    <p class="mt-4 text-ink-200">
+      Built for teams shipping AI features in production — not demos.
+    </p>
+  </div>
+
+  <div class="mt-16 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {features.map((f) => (
+      <div class="panel p-6 transition-colors hover:border-ink-700/80 hover:bg-ink-900/60">
+        <div class="flex h-9 w-9 items-center justify-center rounded-md bg-brand-500/10 text-brand-300">
+          {f.icon === "key" && (
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4" /><path d="M10.85 12.15 19 4M18 5l3 3M15 8l3 3" /></svg>
+          )}
+          {f.icon === "shield" && (
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /></svg>
+          )}
+          {f.icon === "route" && (
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2" /><circle cx="18" cy="5" r="2" /><path d="M8 19h6a4 4 0 0 0 0-8H10a4 4 0 0 1 0-8h6" /></svg>
+          )}
+          {f.icon === "lock" && (
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+          )}
+          {f.icon === "cache" && (
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3" /><path d="M4 6v6c0 1.66 3.58 3 8 3s8-1.34 8-3V6M4 12v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" /></svg>
+          )}
+          {f.icon === "telemetry" && (
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4" /></svg>
+          )}
+          {f.icon === "sso" && (
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 11a4 4 0 1 0-8 0M3 21v-1a6 6 0 0 1 12 0v1" /><path d="M21 21v-1a4 4 0 0 0-3-3.87" /><path d="M17 11a4 4 0 0 1 0 8" /></svg>
+          )}
+          {f.icon === "box" && (
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z" /><path d="M3.3 7.7 12 12l8.7-4.3M12 22V12" /></svg>
+          )}
+        </div>
+        <h3 class="mt-4 text-lg font-semibold text-white">{f.title}</h3>
+        <p class="mt-2 text-sm leading-relaxed text-ink-300">{f.body}</p>
+      </div>
+    ))}
+  </div>
+</section>
