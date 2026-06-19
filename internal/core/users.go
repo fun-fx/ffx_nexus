@@ -53,7 +53,7 @@ func (s *Store) CreateUser(ctx context.Context, orgID, email, password, role str
 		}
 		return User{}, err
 	}
-	s.audit(ctx, orgID, "user.create", u.ID, email)
+	s.Audit(ctx, orgID, "user.create", u.ID, email)
 	return u, nil
 }
 
@@ -93,6 +93,64 @@ func (s *Store) ListUsers(ctx context.Context, orgID string) ([]User, error) {
 	return out, rows.Err()
 }
 
+// GetUserByEmail looks up a user by email within an org. Used by the SSO
+// callback to decide whether the incoming IdP identity should be linked to
+// an existing account or should trigger JIT provisioning.
+func (s *Store) GetUserByEmail(ctx context.Context, orgID, email string) (User, error) {
+	if orgID == "" {
+		orgID = "default"
+	}
+	var u User
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, org_id, email, role, enforce_limits, created_at
+		FROM users WHERE org_id = $1 AND email = $2`, orgID, email).Scan(
+		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return u, err
+}
+
+// LinkSSOIdentity records that a user is now bound to a specific
+// (provider, subject) pair at the given issuer. Idempotent: re-binding to
+// the same identity is a no-op. Returns the (possibly already-existing) row.
+func (s *Store) LinkSSOIdentity(ctx context.Context, userID, provider, subject, issuer string) error {
+	if subject == "" || provider == "" {
+		return nil
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET sso_provider = $1, sso_subject = $2, sso_issuer = $3
+		WHERE id = $4
+		  AND (sso_subject IS NULL
+		       OR (sso_provider = $1 AND sso_subject = $2))`,
+		provider, subject, issuer, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// The user is already bound to a different identity — refuse to
+		// silently re-link. Surfaced as ErrNotFound so the caller can show
+		// a clear error rather than a generic 500.
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CreateSession inserts a session row directly, without a password check.
+// Used by the SSO callback (and any future non-password login path) where
+// the caller has already authenticated the identity out-of-band.
+func (s *Store) CreateSession(ctx context.Context, userID string, ttl time.Duration) (string, error) {
+	token := GenerateSessionToken()
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO user_sessions (token_hash, user_id, expires_at)
+		VALUES ($1,$2,$3)`, crypto.HashKey(token), userID, time.Now().Add(ttl))
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
 // SetEnforceLimits flips the per-user budget/RPM enforcement toggle.
 func (s *Store) SetEnforceLimits(ctx context.Context, userID string, enforce bool) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE users SET enforce_limits = $1 WHERE id = $2`, enforce, userID)
@@ -114,7 +172,7 @@ func (s *Store) DeleteUser(ctx context.Context, orgID, id string) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.audit(ctx, orgID, "user.delete", id, "")
+	s.Audit(ctx, orgID, "user.delete", id, "")
 	return nil
 }
 
@@ -159,7 +217,7 @@ func (s *Store) Authenticate(ctx context.Context, orgID, email, password string,
 	if err != nil {
 		return "", User{}, err
 	}
-	s.audit(ctx, orgID, "user.login", u.ID, email)
+	s.Audit(ctx, orgID, "user.login", u.ID, email)
 	return token, u, nil
 }
 
@@ -213,7 +271,7 @@ func (s *Store) RotateUserCredential(ctx context.Context, orgID, userID, id, new
 	if uid != nil {
 		c.UserID = *uid
 	}
-	s.audit(ctx, orgID, "credential.rotate", c.ID, c.Provider)
+	s.Audit(ctx, orgID, "credential.rotate", c.ID, c.Provider)
 	return c, nil
 }
 
@@ -226,7 +284,7 @@ func (s *Store) DeleteUserCredential(ctx context.Context, orgID, userID, id stri
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.audit(ctx, orgID, "credential.delete", id, "")
+	s.Audit(ctx, orgID, "credential.delete", id, "")
 	return nil
 }
 

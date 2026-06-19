@@ -55,6 +55,7 @@ func main() {
 			for _, path := range []string{
 				"migrations/postgres/001_init.sql",
 				"migrations/postgres/002_byok.sql",
+				"migrations/postgres/003_sso.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {
@@ -282,6 +283,10 @@ func main() {
 	// Console server.
 	consoleSrvHandler := console.NewServer(hub, reader, store, log)
 	consoleSrvHandler.SetAllowSignup(cfg.AllowSignup)
+	// OIDC SSO: discovery runs against cfg.SSO.Issuer at boot. Failures
+	// here only log a warning; the console still serves password login
+	// and the SSO routes simply return 404.
+	consoleSrvHandler.SetSSO(ctx, cfg.SSO)
 	if modelRouter != nil {
 		consoleSrvHandler.SetRouteStats(modelRouter)
 	}

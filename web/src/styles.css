@@ -329,6 +329,20 @@ tbody tr:hover {
   font-size: 12px;
 }
 
+.btn.sso {
+  background: linear-gradient(135deg, #2d3a8c, #4263eb);
+  color: #fff;
+  width: 100%;
+  padding: 10px 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.btn.sso:hover {
+  filter: brightness(1.1);
+}
+
 .toggle {
   display: flex;
   align-items: flex-start;
