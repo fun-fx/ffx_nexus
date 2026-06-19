@@ -22,7 +22,7 @@ spec:
           args:
             - --context=git://github.com/fun-fx/ffx_nexus.git#refs/heads/main
             - --dockerfile=Dockerfile
-            - --destination=harbor.<node-ip>.nip.io/ffx/nexus:0.3.3
+            - --destination=harbor.<node-ip>.nip.io/ffx/nexus:0.3.4
             - --skip-tls-verify
             - --skip-tls-verify-pull
           resources:
