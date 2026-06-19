@@ -283,6 +283,10 @@ func main() {
 	// Console server.
 	consoleSrvHandler := console.NewServer(hub, reader, store, log)
 	consoleSrvHandler.SetAllowSignup(cfg.AllowSignup)
+	// OIDC SSO: discovery runs against cfg.SSO.Issuer at boot. Failures
+	// here only log a warning; the console still serves password login
+	// and the SSO routes simply return 404.
+	consoleSrvHandler.SetSSO(ctx, cfg.SSO)
 	if modelRouter != nil {
 		consoleSrvHandler.SetRouteStats(modelRouter)
 	}
