@@ -1,0 +1,117 @@
+# Continuous deployment for prod (Talos + Cozystack, namespace tenant-nexus).
+# Mirrors the manual flow that previously lived in deploy/cozystack/README.md:
+#   1. helm upgrade --install nexus deploy/helm/nexus -f values-prod.yaml
+#   2. rollout restart
+#   3. rollout status
+#
+# Required GitHub secret:
+#   PROD_KUBECONFIG_B64 — base64-encoded kubeconfig with admin rights on the
+#                         prod cluster (Tailscale endpoint, OIDC aside).
+#
+# The deploy only targets the in-cluster Nexus release. Per-stack CRs
+# (Postgres, ClickHouse, Redis, Ollama, eval-service) are managed by
+# Cozystack operators and are NOT touched here. A new image tag is also
+# NOT built here: bump image.tag in deploy/cozystack/values-prod.yaml on
+# a separate release PR (e.g. via release.yml + a kaniko Job) and this
+# workflow picks up the new tag on the next main push.
+#
+# Concurrency: serial on main so a fast follow-up push doesn't get rolled
+# back by an in-flight upgrade. Workflow dispatch is allowed for manual
+# rollouts during incidents.
+
+name: CD (prod)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_restart:
+        description: "Restart the nexus deployment even if no chart change"
+        type: boolean
+        default: false
+
+concurrency:
+  group: cd-prod-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  helm-upgrade:
+    name: Helm upgrade (tenant-nexus)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    environment: prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p "$RUNNER_TEMP/kube"
+          echo "${{ secrets.PROD_KUBECONFIG_B64 }}" | base64 -d > "$RUNNER_TEMP/kube/config"
+          echo "KUBECONFIG=$RUNNER_TEMP/kube/config" >> "$GITHUB_ENV"
+          kubectl --kubeconfig "$RUNNER_TEMP/kube/config" version --client=true
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Helm dependency build
+        run: |
+          if [[ -f deploy/helm/nexus/Chart.yaml ]]; then
+            helm dependency build deploy/helm/nexus
+          fi
+
+      - name: Helm diff (best effort)
+        continue-on-error: true
+        run: |
+          helm plugin install https://github.com/databus23/helm-diff --version v3.9.13 || true
+          helm diff upgrade nexus deploy/helm/nexus \
+            --namespace tenant-nexus \
+            -f deploy/cozystack/values-prod.yaml \
+            --three-way-merge || true
+
+      - name: Helm upgrade --install
+        run: |
+          set -euo pipefail
+          helm upgrade --install nexus deploy/helm/nexus \
+            --namespace tenant-nexus \
+            --create-namespace \
+            -f deploy/cozystack/values-prod.yaml \
+            --wait \
+            --timeout 5m
+
+      - name: Restart (optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.force_restart == 'true' }}
+        run: |
+          kubectl -n tenant-nexus rollout restart deploy/nexus
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n tenant-nexus rollout status deploy/nexus --timeout=180s
+
+      - name: Smoke
+        env:
+          GW_URL: https://nexus.<tailnet>.ts.net
+          CON_URL: https://console.<tailnet>.ts.net
+        run: |
+          set -euo pipefail
+          for url in "$GW_URL/healthz" "$CON_URL/healthz"; do
+            code=$(curl -sk -o /dev/null -w "%{http_code}" "$url")
+            if [[ "$code" != "200" ]]; then
+              echo "::error::health check failed: $url -> $code"
+              exit 1
+            fi
+          done
+
+      - name: Post-run status
+        if: always()
+        run: |
+          kubectl -n tenant-nexus get deploy,po -l app.kubernetes.io/name=nexus -o wide

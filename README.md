@@ -636,6 +636,28 @@ GitHub Actions workflows live in [`.github/workflows/`](.github/workflows/).
 | **CI** | push / PR to `main` | `gofmt`, `go vet`, `go test -race`, Go build, `web/` TypeScript + Vite build |
 | **Integration** | push / PR to `main`, manual | Docker Compose (Postgres, ClickHouse, Redis) + `./scripts/test_all.sh` |
 | **Release** | tag `v*` (e.g. `v0.1.0`) | Build & push image to `ghcr.io/fun-fx/ffx_nexus` |
+| **CD (prod)** | push to `main`, manual dispatch | `helm upgrade --install nexus` against the prod cluster, rollout status, `/healthz` smoke |
+
+### CD (prod) prerequisites
+
+The CD workflow needs a single secret on the repo:
+
+- **`PROD_KUBECONFIG_B64`** — base64 of a kubeconfig that can talk to the
+  prod cluster (`https://<node-ip>:6443` over Tailscale) and apply
+  Helm releases in `tenant-nexus`. Generate locally with:
+
+  ```bash
+  base64 < kubeconfig-prod.yaml | tr -d '\n'   # paste the result as the secret
+  ```
+
+  The job is pinned to the `prod` GitHub environment so a required
+  reviewer can gate rollouts from the GitHub UI.
+
+CD only touches the Helm release; Cozystack CRs (Postgres, ClickHouse,
+Redis, Ollama, eval-service) are still managed by their operators. Bump
+`image.tag` in `deploy/cozystack/values-prod.yaml` on a separate release
+PR (or via the in-cluster Kaniko Job) — CD picks up the new tag on the
+next `main` push.
 
 ### Local parity
 
