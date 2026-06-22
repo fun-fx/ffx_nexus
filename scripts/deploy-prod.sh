@@ -61,18 +61,26 @@ done
 # ----- helpers -----
 say()  { printf '\n== %s ==\n' "$*"; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-run()  {
+# run: in dry-run mode, just print the command. Otherwise execute.
+run() {
   if [[ $DRY_RUN -eq 1 ]]; then
-    printf '+ %s\n' "$*"
+    local out='+'
+    for a in "$@"; do out+=" $(printf '%q' "$a")"; done
+    printf '%s\n' "$out"
   else
     "$@"
   fi
 }
 
+# In dry-run, neutralize KUBECONFIG so unset under `set -u` is not a problem
+[[ $DRY_RUN -eq 1 ]] && KUBECONFIG="${KUBECONFIG:-/dev/null}"
+
 # ----- preflight -----
 say "Preflight"
-[[ -n "${KUBECONFIG:-}" && -f "$KUBECONFIG" ]] || die "KUBECONFIG not set or file missing"
-command -v kubectl >/dev/null 2>&1 || die "kubectl not installed"
+if [[ $DRY_RUN -eq 0 ]]; then
+  [[ -n "${KUBECONFIG:-}" && -f "$KUBECONFIG" ]] || die "KUBECONFIG not set or file missing"
+  command -v kubectl >/dev/null 2>&1 || die "kubectl not installed"
+fi
 command -v helm    >/dev/null 2>&1 || die "helm not installed"
 [[ -f "$VALUES"  ]] || die "values file not found: $VALUES"
 [[ -f "$CHART/Chart.yaml" ]] || die "helm chart not found: $CHART"
@@ -86,11 +94,14 @@ fi
 
 # ----- step 1: bump tag -----
 if [[ -n "$KUSTOMIZE_TAG" ]]; then
-  say "Bumping image.tag -> $KUSTOMIZE_TAG in $VALUES"
-  # idempotent: replace tag line, or insert if missing
-  if grep -qE '^[[:space:]]*tag:' "$VALUES"; then
-    # use python for safe yaml-ish edit (single-line replacement)
-    python3 - "$VALUES" "$KUSTOMIZE_TAG" <<'PY'
+  if [[ $DRY_RUN -eq 1 ]]; then
+    say "Would bump image.tag -> $KUSTOMIZE_TAG in $VALUES (dry-run: SKIPPED)"
+  else
+    say "Bumping image.tag -> $KUSTOMIZE_TAG in $VALUES"
+    # idempotent: replace tag line, or insert if missing
+    if grep -qE '^[[:space:]]*tag:' "$VALUES"; then
+      # use python for safe yaml-ish edit (single-line replacement)
+      python3 - "$VALUES" "$KUSTOMIZE_TAG" <<'PY'
 import sys, re, pathlib
 path, tag = sys.argv[1], sys.argv[2]
 text = pathlib.Path(path).read_text()
@@ -99,12 +110,13 @@ if new == text:
     print('warn: tag line not replaced', file=sys.stderr)
 pathlib.Path(path).write_text(new)
 PY
-  else
-    sed -i.bak "/^image:/a\\
+    else
+      sed -i.bak "/^image:/a\\
   tag: $KUSTOMIZE_TAG" "$VALUES"
+    fi
+    echo "new tag:"
+    grep -E '^[[:space:]]*tag:' "$VALUES" || true
   fi
-  echo "new tag:"
-  grep -E '^[[:space:]]*tag:' "$VALUES" || true
 fi
 
 CURRENT_TAG=$(awk '/^image:/{p=1;next} p && /tag:/{print $2; exit}' "$VALUES")
@@ -155,8 +167,13 @@ run bash -c '
 
 # ----- step 4: helm upgrade -----
 say "Helm upgrade --install"
-run kubectl --kubeconfig "$KUBECONFIG" -n "$NS" create ns "$NS" --dry-run=client -o yaml \
-  | kubectl --kubeconfig "$KUBECONFIG" apply -f - >/dev/null
+if [[ $DRY_RUN -eq 0 ]]; then
+  # Ensure namespace exists (idempotent on Helm 3 but explicit for industrial Helm 2 upgrades)
+  kubectl --kubeconfig "$KUBECONFIG" -n "$NS" create ns "$NS" --dry-run=client -o yaml \
+    | kubectl --kubeconfig "$KUBECONFIG" apply -f - >/dev/null
+else
+  echo "+ kubectl create ns $NS --dry-run=client -o yaml | kubectl apply -f - (dry-run: SKIPPED)"
+fi
 
 run helm upgrade --install nexus "$CHART" \
   --namespace "$NS" \
