@@ -41,7 +41,7 @@ permissions:
 jobs:
   helm-upgrade:
     name: Helm upgrade (tenant-nexus)
-    runs-on: arc-runner-set
+    runs-on: self-hosted
     timeout-minutes: 15
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     environment: prod
