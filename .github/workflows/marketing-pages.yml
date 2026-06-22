@@ -68,7 +68,7 @@ jobs:
           node-version: 20
 
       - name: Install wrangler
-        run: npm install -g wrangler@^3.114.0
+        run: npm install -g wrangler@3.78.0
 
       - name: Deploy to Cloudflare Pages
         id: deploy
