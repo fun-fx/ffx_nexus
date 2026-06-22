@@ -356,6 +356,94 @@ ARC runner / GitHub App 권한 문제가 해결되면:
 
 ---
 
+## Marketing 사이트 (nexus.ffx.ai) 수동 deploy
+
+marketing 사이트는 Cloudflare Pages에 정적 사이트로 deploy됩니다.
+GitHub Actions (`.github/workflows/marketing-pages.yml`)가 main에 push되면
+자동 deploy하도록 설정되어 있으나, **wrangler Pages API 401 이슈가 있어**
+수동 deploy를 병행합니다.
+
+### 사전 요구사항
+
+- `node` 20+ (Astro 4 빌드)
+- `wrangler` 3.114+ (`npm install -g wrangler@^3.114.0`)
+- Cloudflare API token (Pages:Edit 권한) — `.env`에 저장
+- Cloudflare account ID — `.env`에 저장
+
+### 한 줄 deploy
+
+```bash
+cd marketing
+set -a && source ../.env && set +a
+npm run build
+CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
+CLOUDFLARE_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" \
+wrangler pages deploy dist \
+  --project-name=nexus-marketing \
+  --branch=main \
+  --commit-dirty=true \
+  --commit-message="Marketing deploy from $(hostname)"
+```
+
+### 단계별 deploy
+
+```bash
+# 1. (선택) marketing/ 변경사항 pull
+cd /Users/munsojin/ffx_nexus
+git checkout main
+git pull --rebase
+
+# 2. .env 로드
+set -a; source .env; set +a
+
+# 3. 빌드
+cd marketing
+npm ci
+npm run build
+
+# 4. Deploy
+CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
+CLOUDFLARE_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" \
+wrangler pages deploy dist \
+  --project-name=nexus-marketing \
+  --branch=main
+```
+
+### 검증
+
+```bash
+# Production custom domain
+curl -sS -k -o /dev/null -w "HTTP %{http_code} | TTFB %{time_starttransfer}s\n" \
+  --max-time 30 https://nexus.ffx.ai/
+
+# Pages deploy URL (이전 deploy URL을 wrangler 출력에서 확인)
+curl -sS -k -o /dev/null -w "HTTP %{http_code}\n" \
+  --max-time 30 https://<deploy-hash>.nexus-marketing.pages.dev/
+```
+
+### GitHub Actions 자동 deploy
+
+`.github/workflows/marketing-pages.yml`이 main push에 트리거되도록 설정됨.
+GitHub Actions에서 wrangler 401 에러 발생 시:
+
+1. **로컬 deploy로 우회** (위 절차)
+2. **GitHub Actions 디버깅**:
+   - workflow에 `echo "${#CLOUDFLARE_API_TOKEN}"` 추가 → env가 실제로 들어가는지 확인
+   - token이 Pages:Edit 외에 **Account: Cloudflare Pages: Edit** (새 명명) 권한 필요한지 확인
+   - 새 template "Edit Cloudflare Pages"로 token 재발급 후 GH secret 업데이트
+
+### Cloudflare Pages 프로젝트
+
+- Name: `nexus-marketing`
+- Production branch: `main`
+- Build command: `npm run build` (in `marketing/`)
+- Build output: `dist`
+- Root directory: `marketing`
+- Custom domain: `nexus.ffx.ai`
+- DNS: `nexus.ffx.ai` CNAME → `nexus-marketing.pages.dev` (Proxied)
+
+---
+
 ## Quick reference
 
 ```bash
