@@ -45,12 +45,21 @@ tailscale status | grep infrfx
 ### 3. prod kubeconfig
 
 prod cluster 관리자로부터 kubeconfig을 받아 `~/kubeconfig/prod.yaml`에 저장.
+**만약 이미 `~/talos-cozystack/kubeconfig`이 있다면 그걸 사용해도 됨** (server: `https://192.168.0.101:6443`).
 
 테스트:
 ```bash
 KUBECONFIG=~/kubeconfig/prod.yaml kubectl get ns
-# tenant-nexus 가 보여야 함
+# 또는
+KUBECONFIG=~/talos-cozystack/kubeconfig kubectl get ns
+# 둘 중 하나가 동작하면 OK
+# tenant-nexus, cozy-* namespace들이 보여야 함
 ```
+
+**실제 검증 결과 (2026-06-22)**:
+- server: `https://192.168.0.101:6443` → Tailscale 망에서 접근 가능
+- 192.168.0.101 ping: ~117ms RTT (Tailscale MagicDNS routing)
+- K8s server version: v1.35.0
 
 ### 4. Harbor 자격증명 (선택)
 
@@ -210,8 +219,8 @@ export KUBECONFIG=~/kubeconfig/prod.yaml
 | `CHART` | `deploy/helm/nexus` | helm chart 경로 |
 | `VALUES` | `deploy/cozystack/values-prod.yaml` | values 파일 |
 | `KANIKO_JOB` | `deploy/cozystack/kaniko-build.yaml` | kaniko 매니페스트 |
-| `TIMEOUT` | `5m` | helm upgrade timeout |
-| `ROLL_TIMEOUT` | `180s` | rollout status 대기 시간 |
+| `TIMEOUT` | `15m` | helm upgrade timeout (이전 timeout 5m은 부족했음, 15m 권장) |
+| `ROLL_TIMEOUT` | `300s` | rollout status 대기 시간 |
 | `GW_URL` | `https://nexus.tail7d361a.ts.net` | gateway health URL |
 | `CON_URL` | `https://console.tail7d361a.ts.net` | console health URL |
 
@@ -278,6 +287,30 @@ KUBECONFIG=~/kubeconfig/prod.yaml kubectl -n tenant-nexus get pods
 ```bash
 KUBECONFIG=~/kubeconfig/prod.yaml kubectl -n tenant-nexus describe pod -l app.kubernetes.io/name=nexus
 # Events 섹션에서 FailedScheduling 원인 확인
+```
+
+### Q: helm upgrade에서 `context deadline exceeded`
+
+**원인**: 기본 5m timeout이 부족. prod 환경에서 revision 19, 20이 이 에러로 failed 상태.
+
+**해결**: 기본 timeout이 15m으로 설정되어 있음. 그래도 부족하면:
+```bash
+./scripts/deploy-prod.sh --tag 0.3.6 -- --timeout 30m
+# 또는
+TIMEOUT=30m ./scripts/deploy-prod.sh --tag 0.3.6
+```
+
+**만약 helm upgrade가 timeout으로 fail**:
+- 새 pod는 떴지만 helm이 old pod 종료 확인 못 한 것
+- `kubectl get deploy nexus`로 새 Replicaset 확인
+- 새 Replicaset이 정상 동작하면 무시 가능 (helm release만 failed 표시)
+- 다음 deploy에서 자동으로 fix됨
+
+**history 정리** (failed revision들):
+```bash
+KUBECONFIG=~/kubeconfig/prod.yaml helm -n tenant-nexus history nexus
+# revision 19, 20이 failed로 보임
+# 다음 helm upgrade 시 자동으로 새 revision 생성 (failed는 남음)
 ```
 
 ### Q: Health check 502 / 503
