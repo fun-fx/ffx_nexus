@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -59,7 +61,7 @@ type createKeyRequest struct {
 	MinQuality    float64  `json:"min_quality_score"`
 }
 
-func (s *Server) createKey(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createKey(w http.ResponseWriter, r *http.Request, u core.User) {
 	if !s.requireStore(w) {
 		return
 	}
@@ -72,7 +74,7 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
-	vk, plaintext, err := s.store.CreateVirtualKey(r.Context(), orgID(r), req.UserID, req.Name, req.AllowedModels, req.RPMLimit, req.MonthlyBudget, req.MinQuality)
+	vk, plaintext, err := s.store.CreateVirtualKey(r.Context(), orgID(r), u.ID, req.UserID, req.Name, req.AllowedModels, req.RPMLimit, req.MonthlyBudget, req.MinQuality)
 	if err != nil {
 		s.log.Error("create key failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create failed"})
@@ -82,12 +84,12 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"key": vk, "secret": plaintext})
 }
 
-func (s *Server) revokeKey(w http.ResponseWriter, r *http.Request) {
+func (s *Server) revokeKey(w http.ResponseWriter, r *http.Request, u core.User) {
 	if !s.requireStore(w) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := s.store.RevokeVirtualKey(r.Context(), orgID(r), id); err != nil {
+	if err := s.store.RevokeVirtualKey(r.Context(), orgID(r), u.ID, id); err != nil {
 		s.writeStoreErr(w, err, "revoke failed")
 		return
 	}
@@ -119,7 +121,7 @@ type createCredentialRequest struct {
 	Secret   string `json:"secret"`
 }
 
-func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
+func (s *Server) createCredential(w http.ResponseWriter, r *http.Request, u core.User) {
 	if !s.requireStore(w) {
 		return
 	}
@@ -132,7 +134,7 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider and secret are required"})
 		return
 	}
-	cred, err := s.store.CreateCredential(r.Context(), orgID(r), "", req.Provider, req.Name, req.BaseURL, req.Secret)
+	cred, err := s.store.CreateCredential(r.Context(), orgID(r), u.ID, "", req.Provider, req.Name, req.BaseURL, req.Secret)
 	if errors.Is(err, crypto.ErrNoMasterKey) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "credential encryption disabled: set NEXUS_MASTER_KEY (32-byte base64/hex) to store provider keys",
@@ -148,12 +150,12 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, cred)
 }
 
-func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request) {
+func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request, u core.User) {
 	if !s.requireStore(w) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := s.store.DeleteCredential(r.Context(), orgID(r), id); err != nil {
+	if err := s.store.DeleteCredential(r.Context(), orgID(r), u.ID, id); err != nil {
 		s.writeStoreErr(w, err, "delete failed")
 		return
 	}
@@ -169,7 +171,7 @@ type rotateCredentialRequest struct {
 // secret is re-encrypted; the credential keeps its ID and references. After a
 // successful rotation the gateway's in-memory providers are reloaded so the new
 // secret takes effect without a restart.
-func (s *Server) rotateCredential(w http.ResponseWriter, r *http.Request) {
+func (s *Server) rotateCredential(w http.ResponseWriter, r *http.Request, u core.User) {
 	if !s.requireStore(w) {
 		return
 	}
@@ -183,7 +185,7 @@ func (s *Server) rotateCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	cred, err := s.store.RotateCredential(r.Context(), orgID(r), id, req.Secret)
+	cred, err := s.store.RotateCredential(r.Context(), orgID(r), u.ID, id, req.Secret)
 	if errors.Is(err, crypto.ErrNoMasterKey) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "credential encryption disabled: set NEXUS_MASTER_KEY (32-byte base64/hex) to rotate provider keys",
@@ -214,4 +216,46 @@ func (s *Server) writeStoreErr(w http.ResponseWriter, err error, msg string) {
 	}
 	s.log.Error(msg, "err", err)
 	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": msg})
+}
+
+// listAudit returns recent audit_log entries for the caller's org. Admin only
+// (the route is wrapped with requireAdmin in Mux). Supports ?limit=, ?action=,
+// ?user_id= (filters by actor), and ?since= (RFC3339 or duration like "24h").
+func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, _ core.User) {
+	if !s.requireStore(w) {
+		return
+	}
+	q := r.URL.Query()
+	opts := core.AuditListOptions{
+		Action:  q.Get("action"),
+		ActorID: q.Get("user_id"),
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a non-negative integer"})
+			return
+		}
+		opts.Limit = n
+	}
+	if v := q.Get("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			opts.Since = t
+		} else if d, err := time.ParseDuration(v); err == nil {
+			opts.Since = time.Now().Add(-d)
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "since must be RFC3339 or a duration like 24h"})
+			return
+		}
+	}
+	entries, err := s.store.ListAudit(r.Context(), orgID(r), opts)
+	if err != nil {
+		s.log.Error("list audit failed", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
+		return
+	}
+	if entries == nil {
+		entries = []core.AuditEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }

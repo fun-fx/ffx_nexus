@@ -143,6 +143,7 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/users", s.requireAdmin(s.createUser))
 		r.Delete("/users/{id}", s.requireAdmin(s.deleteUser))
 		r.Get("/users/quality", s.requireAdmin(s.userQuality))
+		r.Get("/audit", s.requireAdmin(s.listAudit))
 
 		// Backwards-compat alias: /api/me/quality/stats (deprecated, prefer
 		// /api/me/quality) — kept for any client that has been wired against
@@ -150,12 +151,12 @@ func (s *Server) Mux() http.Handler {
 
 		// Org-level key/credential management (requires Postgres).
 		r.Get("/keys", s.listKeys)
-		r.Post("/keys", s.createKey)
-		r.Delete("/keys/{id}", s.revokeKey)
+		r.Post("/keys", s.requireAdmin(s.createKey))
+		r.Delete("/keys/{id}", s.requireAdmin(s.revokeKey))
 		r.Get("/credentials", s.listCredentials)
-		r.Post("/credentials", s.createCredential)
-		r.Post("/credentials/{id}/rotate", s.rotateCredential)
-		r.Delete("/credentials/{id}", s.deleteCredential)
+		r.Post("/credentials", s.requireAdmin(s.createCredential))
+		r.Post("/credentials/{id}/rotate", s.requireAdmin(s.rotateCredential))
+		r.Delete("/credentials/{id}", s.requireAdmin(s.deleteCredential))
 	})
 
 	// Serve the embedded dashboard SPA for everything else, with a fallback to
@@ -293,12 +294,13 @@ func (s *Server) live(w http.ResponseWriter, r *http.Request) {
 
 // audit is a thin convenience wrapper that defers to the store's audit
 // log when one is available. Failures are swallowed (audit is best-effort
-// by design; see core.Store.Audit).
-func (s *Server) audit(ctx context.Context, orgID, action, targetID, detail string) {
+// by design; see core.Store.Audit). actorID is the user_id of the caller;
+// pass "" for system actions.
+func (s *Server) audit(ctx context.Context, actorID, orgID, action, targetID, detail string) {
 	if s.store == nil {
 		return
 	}
-	s.store.Audit(ctx, orgID, action, targetID, detail)
+	s.store.Audit(ctx, actorID, orgID, action, targetID, detail)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

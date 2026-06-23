@@ -56,6 +56,7 @@ func main() {
 				"migrations/postgres/001_init.sql",
 				"migrations/postgres/002_byok.sql",
 				"migrations/postgres/003_sso.sql",
+				"migrations/postgres/004_audit_index.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {
@@ -429,7 +430,9 @@ func bootstrapAdmin(ctx context.Context, st *core.Store, cfg config.Config, log 
 	if n > 0 {
 		return
 	}
-	if _, err := st.CreateUser(ctx, "default", cfg.AdminEmail, cfg.AdminPassword, core.RoleAdmin); err != nil {
+	// Bootstrap is a system action (no caller); empty actorID => audit_log stores
+	// "system" for the resulting user.create entry.
+	if _, err := st.CreateUser(ctx, "", "default", cfg.AdminEmail, cfg.AdminPassword, core.RoleAdmin); err != nil {
 		log.Error("bootstrap admin failed", "err", err)
 		return
 	}
