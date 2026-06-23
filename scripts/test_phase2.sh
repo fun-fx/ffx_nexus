@@ -34,15 +34,25 @@ export NEXUS_MASTER_KEY="${NEXUS_MASTER_KEY_FIXED:-$(openssl rand -hex 32)}"
 trap stop_nexus EXIT
 
 # Start without env provider keys — providers must come from DB after credential create.
+# Shared E2E admin email/password (the postgres volume is persistent across
+# test scripts, so each script that needs admin access resets the password
+# via raw SQL to guarantee the bootstrap env matches what we log in with).
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin-e2e@nexus.local}"
 ADMIN_PASS="${ADMIN_PASS:-admin-e2e-pass}"
-ADMIN_JAR="/tmp/nexus_phase2_admin.txt"
+
 start_nexus env \
   -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
   NEXUS_ALLOW_SIGNUP=true \
   NEXUS_ADMIN_EMAIL="$ADMIN_EMAIL" \
   NEXUS_ADMIN_PASSWORD="$ADMIN_PASS"
 pass "nexus started (no env provider keys)"
+
+# Reset the admin password so it matches what we'll log in with, regardless
+# of which previous test script created the row.
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -c \
+  "UPDATE users SET password_hash = crypt('$ADMIN_PASS', gen_salt('bf')), role='admin' WHERE email='$ADMIN_EMAIL'" \
+  >/dev/null 2>&1 || true
 
 # --- Admin login (org-level /api/keys, /api/credentials are admin-only since v1.1).
 # The bootstrap admin was created above via NEXUS_ADMIN_EMAIL/PASSWORD.

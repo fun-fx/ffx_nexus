@@ -102,6 +102,12 @@ start_nexus env \
   NEXUS_ADMIN_PASSWORD="$ADMIN_PASS"
 pass "nexus started"
 
+# Reset the admin password (the postgres volume is persistent across scripts).
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -c \
+  "UPDATE users SET password_hash = crypt('$ADMIN_PASS', gen_salt('bf')), role='admin' WHERE email='$ADMIN_EMAIL'" \
+  >/dev/null 2>&1 || true
+
 # Bootstrap admin was created above via NEXUS_ADMIN_EMAIL/PASSWORD.
 LOGIN=$(curl -s -o /dev/null -w '%{http_code}' -c "$ADMIN_JAR" -X POST "$CON_URL/api/auth/login" \
   -H 'Content-Type: application/json' \
