@@ -39,6 +39,7 @@ trap stop_nexus EXIT
 # via raw SQL to guarantee the bootstrap env matches what we log in with).
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin-e2e@nexus.local}"
 ADMIN_PASS="${ADMIN_PASS:-admin-e2e-pass}"
+ADMIN_JAR="/tmp/nexus_phase2_admin.txt"
 
 start_nexus env \
   -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
