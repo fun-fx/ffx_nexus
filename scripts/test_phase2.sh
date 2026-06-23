@@ -34,8 +34,8 @@ export NEXUS_MASTER_KEY="${NEXUS_MASTER_KEY_FIXED:-$(openssl rand -hex 32)}"
 trap stop_nexus EXIT
 
 # Start without env provider keys — providers must come from DB after credential create.
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@nexus.local}"
-ADMIN_PASS="${ADMIN_PASS:-admin-e2e-password}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin-phase2@nexus.local}"
+ADMIN_PASS="${ADMIN_PASS:-admin-phase2-pass}"
 ADMIN_JAR="/tmp/nexus_phase2_admin.txt"
 start_nexus env \
   -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \

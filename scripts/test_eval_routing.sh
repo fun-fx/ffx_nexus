@@ -88,8 +88,8 @@ fi
 trap stop_nexus EXIT
 # Boot with a bootstrap admin so /api/keys and /api/credentials (admin-only
 # since v1.1) accept the test calls below.
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@nexus.local}"
-ADMIN_PASS="${ADMIN_PASS:-admin-e2e-password}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin-eval-routing@nexus.local}"
+ADMIN_PASS="${ADMIN_PASS:-admin-eval-routing-pass}"
 ADMIN_JAR="/tmp/nexus_eval_routing_admin.txt"
 start_nexus env \
   NEXUS_ALLOW_SIGNUP=true \
