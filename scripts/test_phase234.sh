@@ -122,8 +122,8 @@ MODEL="${TEST_MODEL:-gemini-2.5-flash}"
 trap stop_nexus EXIT
 # Boot with a bootstrap admin so /api/keys and /api/credentials (admin-only
 # since v1.1) accept the test calls below.
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin-phase234@nexus.local}"
-ADMIN_PASS="${ADMIN_PASS:-admin-phase234-pass}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin-e2e@nexus.local}"
+ADMIN_PASS="${ADMIN_PASS:-admin-e2e-pass}"
 ADMIN_JAR="/tmp/nexus_phase234_admin.txt"
 start_nexus env \
   NEXUS_ALLOW_SIGNUP=true \
