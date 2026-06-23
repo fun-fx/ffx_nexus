@@ -42,7 +42,12 @@ stop_nexus() {
 
 start_nexus() {
   stop_nexus
-  "$BIN" &
+  # Optional env overrides passed as KEY=VAL arguments (e.g. NEXUS_KEY_MODE=byok).
+  if [[ $# -gt 0 ]]; then
+    env "$@" "$BIN" &
+  else
+    "$BIN" &
+  fi
   NEXUS_PID=$!
   for i in $(seq 1 30); do
     if curl -sf "$GW_URL/healthz" >/dev/null 2>&1; then
@@ -115,8 +120,32 @@ fi
 MODEL="${TEST_MODEL:-gemini-2.5-flash}"
 
 trap stop_nexus EXIT
-start_nexus
+# Boot with a bootstrap admin so /api/keys and /api/credentials (admin-only
+# since v1.1) accept the test calls below.
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin-e2e@nexus.local}"
+ADMIN_PASS="${ADMIN_PASS:-admin-e2e-pass}"
+ADMIN_JAR="/tmp/nexus_phase234_admin.txt"
+start_nexus env \
+  NEXUS_ALLOW_SIGNUP=true \
+  NEXUS_ADMIN_EMAIL="$ADMIN_EMAIL" \
+  NEXUS_ADMIN_PASSWORD="$ADMIN_PASS"
 pass "nexus started ($GW_URL)"
+
+# Reset the admin password (the postgres volume is persistent across scripts).
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -c \
+  "UPDATE users SET password_hash = crypt('$ADMIN_PASS', gen_salt('bf')), role='admin' WHERE email='$ADMIN_EMAIL'" \
+  >/dev/null 2>&1 || true
+
+# Bootstrap admin was created above via NEXUS_ADMIN_EMAIL/PASSWORD.
+LOGIN=$(curl -s -o /dev/null -w '%{http_code}' -c "$ADMIN_JAR" -X POST "$CON_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}")
+if [[ "$LOGIN" != "200" ]]; then
+  fail "admin login failed ($LOGIN)"
+  exit 1
+fi
+pass "admin login -> 200 + session cookie"
 
 # --- Phase 2b: auth sanity ---
 
@@ -128,7 +157,7 @@ if [[ "$code" == "401" ]]; then pass "no auth -> 401"; else fail "no auth -> exp
 
 # --- RPM limit (429) ---
 
-RPM_KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+RPM_KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-rpm","allowed_models":["'"$MODEL"'"],"rpm_limit":2}')
 RPM_SECRET=$(echo "$RPM_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -151,7 +180,7 @@ fi
 
 # --- Monthly budget (402) ---
 
-BUD_KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+BUD_KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-budget","allowed_models":["'"$MODEL"'"],"monthly_budget_usd":0.01}')
 BUD_SECRET=$(echo "$BUD_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -175,7 +204,7 @@ echo ""
 echo "== Phase 3: async evals =="
 
 if [[ "$HAS_PROVIDER" == "1" ]]; then
-  EVAL_KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+  EVAL_KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
     -H 'Content-Type: application/json' \
     -d '{"name":"e2e-eval","allowed_models":["'"$MODEL"'"]}')
   EVAL_SECRET=$(echo "$EVAL_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -250,7 +279,7 @@ fi
 echo ""
 echo "== Phase 4: quality-aware routing =="
 
-ROUTE_KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+ROUTE_KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-route","allowed_models":["'"$MODEL"'","auto","fast"]}')
 ROUTE_SECRET=$(echo "$ROUTE_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")

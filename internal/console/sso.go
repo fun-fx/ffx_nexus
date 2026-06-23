@@ -218,7 +218,7 @@ func (s *Server) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		s.renderSSOError(w, "SSO provisioning failed", err.Error())
 		return
 	}
-	s.audit(r.Context(), orgID, "sso.login", u.ID, email)
+	s.audit(r.Context(), u.ID, orgID, "sso.login", u.ID, email)
 
 	token, err := s.store.CreateSession(r.Context(), u.ID, sessionTTL)
 	if err != nil {
@@ -263,7 +263,9 @@ func (s *Server) ssoLinkOrCreate(ctx context.Context, orgID, email, subject, iss
 	if err != nil {
 		return core.User{}, err
 	}
-	u, err := s.store.CreateUser(ctx, orgID, email, randomSecret, core.RoleMember)
+	// SSO JIT provisioning is a system action (no caller yet), so actorID
+	// is empty and Store.Audit stores "system" in the audit_log.actor column.
+	u, err := s.store.CreateUser(ctx, orgID, "", email, randomSecret, core.RoleMember)
 	if err != nil {
 		return core.User{}, err
 	}
