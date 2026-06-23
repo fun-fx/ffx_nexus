@@ -203,7 +203,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 
 	// Self-signup: no caller yet, so actor is system. Store.CreateUser
 	// records user.create with actor="system" in this path.
-	u, err := s.store.CreateUser(r.Context(), "", orgID(r), req.Email, req.Password, core.RoleMember)
+	u, err := s.store.CreateUser(r.Context(), orgID(r), "", req.Email, req.Password, core.RoleMember)
 	if errors.Is(err, core.ErrEmailTaken) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "email already registered"})
 		return
@@ -218,7 +218,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var warnings []string
 
 	if req.Provider != "" && req.ProviderSecret != "" {
-		_, credErr := s.store.CreateCredential(r.Context(), u.ID, u.OrgID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret)
+		_, credErr := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret)
 		switch {
 		case errors.Is(credErr, crypto.ErrNoMasterKey):
 			warnings = append(warnings, "provider key not stored: set NEXUS_MASTER_KEY to enable BYOK credentials")

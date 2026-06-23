@@ -432,7 +432,7 @@ func bootstrapAdmin(ctx context.Context, st *core.Store, cfg config.Config, log 
 	}
 	// Bootstrap is a system action (no caller); empty actorID => audit_log stores
 	// "system" for the resulting user.create entry.
-	if _, err := st.CreateUser(ctx, "", "default", cfg.AdminEmail, cfg.AdminPassword, core.RoleAdmin); err != nil {
+	if _, err := st.CreateUser(ctx, "default", "", cfg.AdminEmail, cfg.AdminPassword, core.RoleAdmin); err != nil {
 		log.Error("bootstrap admin failed", "err", err)
 		return
 	}

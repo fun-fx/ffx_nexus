@@ -265,7 +265,7 @@ func (s *Server) ssoLinkOrCreate(ctx context.Context, orgID, email, subject, iss
 	}
 	// SSO JIT provisioning is a system action (no caller yet), so actorID
 	// is empty and Store.Audit stores "system" in the audit_log.actor column.
-	u, err := s.store.CreateUser(ctx, "", orgID, email, randomSecret, core.RoleMember)
+	u, err := s.store.CreateUser(ctx, orgID, "", email, randomSecret, core.RoleMember)
 	if err != nil {
 		return core.User{}, err
 	}
