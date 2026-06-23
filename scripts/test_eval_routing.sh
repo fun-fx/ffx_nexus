@@ -86,23 +86,18 @@ else
 fi
 
 trap stop_nexus EXIT
-start_nexus
-pass "nexus started"
-
-# --- Admin login (org-level /api/keys, /api/credentials are admin-only since v1.1).
+# Boot with a bootstrap admin so /api/keys and /api/credentials (admin-only
+# since v1.1) accept the test calls below.
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@nexus.local}"
 ADMIN_PASS="${ADMIN_PASS:-admin-e2e-password}"
 ADMIN_JAR="/tmp/nexus_eval_routing_admin.txt"
-# Register and promote to admin.
-REG=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CON_URL/api/auth/register" \
-  -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}")
-if [[ "$REG" != "201" && "$REG" != "409" ]]; then
-  fail "admin register unexpected: $REG"
-  exit 1
-fi
-docker compose -f deploy/docker-compose.yml exec -T postgres \
-  psql -U nexus -d nexus -c "UPDATE users SET role='admin' WHERE email='$ADMIN_EMAIL'" >/dev/null 2>&1 || true
+start_nexus env \
+  NEXUS_ALLOW_SIGNUP=true \
+  NEXUS_ADMIN_EMAIL="$ADMIN_EMAIL" \
+  NEXUS_ADMIN_PASSWORD="$ADMIN_PASS"
+pass "nexus started"
+
+# Bootstrap admin was created above via NEXUS_ADMIN_EMAIL/PASSWORD.
 LOGIN=$(curl -s -o /dev/null -w '%{http_code}' -c "$ADMIN_JAR" -X POST "$CON_URL/api/auth/login" \
   -H 'Content-Type: application/json' \
   -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}")
