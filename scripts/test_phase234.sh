@@ -118,6 +118,33 @@ trap stop_nexus EXIT
 start_nexus
 pass "nexus started ($GW_URL)"
 
+# --- Admin login (org-level /api/keys, /api/credentials are admin-only since v1.1).
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@nexus.local}"
+ADMIN_PASS="${ADMIN_PASS:-admin-e2e-password}"
+ADMIN_JAR="/tmp/nexus_phase234_admin.txt"
+# Register and promote to admin so the org-level routes accept our calls.
+# The first registered user is auto-promoted to admin when CountUsers() == 1,
+# so we just need to register once and log in.
+REG=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CON_URL/api/auth/register" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}")
+if [[ "$REG" != "201" && "$REG" != "409" ]]; then
+  fail "admin register unexpected: $REG"
+  exit 1
+fi
+# Make sure the user is admin (first-user-promotion may not always fire when
+# signups happen later).
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -c "UPDATE users SET role='admin' WHERE email='$ADMIN_EMAIL'" >/dev/null 2>&1 || true
+LOGIN=$(curl -s -o /dev/null -w '%{http_code}' -c "$ADMIN_JAR" -X POST "$CON_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}")
+if [[ "$LOGIN" != "200" ]]; then
+  fail "admin login failed ($LOGIN)"
+  exit 1
+fi
+pass "admin login -> 200 + session cookie"
+
 # --- Phase 2b: auth sanity ---
 
 echo ""
@@ -128,7 +155,7 @@ if [[ "$code" == "401" ]]; then pass "no auth -> 401"; else fail "no auth -> exp
 
 # --- RPM limit (429) ---
 
-RPM_KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+RPM_KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-rpm","allowed_models":["'"$MODEL"'"],"rpm_limit":2}')
 RPM_SECRET=$(echo "$RPM_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -151,7 +178,7 @@ fi
 
 # --- Monthly budget (402) ---
 
-BUD_KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+BUD_KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-budget","allowed_models":["'"$MODEL"'"],"monthly_budget_usd":0.01}')
 BUD_SECRET=$(echo "$BUD_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -175,7 +202,7 @@ echo ""
 echo "== Phase 3: async evals =="
 
 if [[ "$HAS_PROVIDER" == "1" ]]; then
-  EVAL_KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+  EVAL_KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
     -H 'Content-Type: application/json' \
     -d '{"name":"e2e-eval","allowed_models":["'"$MODEL"'"]}')
   EVAL_SECRET=$(echo "$EVAL_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -250,7 +277,7 @@ fi
 echo ""
 echo "== Phase 4: quality-aware routing =="
 
-ROUTE_KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+ROUTE_KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-route","allowed_models":["'"$MODEL"'","auto","fast"]}')
 ROUTE_SECRET=$(echo "$ROUTE_KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
