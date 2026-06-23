@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -56,8 +58,9 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // --- Virtual keys ---
 
 // CreateVirtualKey generates a key, stores its hash, and returns the row plus
-// the one-time plaintext. userID may be empty for an org-level key.
-func (s *Store) CreateVirtualKey(ctx context.Context, orgID, userID, name string, allowedModels []string, rpm int, monthlyBudget, minQuality float64) (VirtualKey, string, error) {
+// the one-time plaintext. userID may be empty for an org-level key. actorID
+// is the user_id of the caller (empty for system); recorded in the audit log.
+func (s *Store) CreateVirtualKey(ctx context.Context, orgID, actorID, userID, name string, allowedModels []string, rpm int, monthlyBudget, minQuality float64) (VirtualKey, string, error) {
 	if orgID == "" {
 		orgID = "default"
 	}
@@ -87,7 +90,7 @@ func (s *Store) CreateVirtualKey(ctx context.Context, orgID, userID, name string
 	if err != nil {
 		return VirtualKey{}, "", err
 	}
-	s.Audit(ctx, orgID, "vkey.create", vk.ID, name)
+	s.Audit(ctx, actorID, orgID, "vkey.create", vk.ID, name)
 	return vk, plaintext, nil
 }
 
@@ -174,8 +177,9 @@ func (s *Store) listVirtualKeys(ctx context.Context, orgID, userID string) ([]Vi
 	return out, rows.Err()
 }
 
-// RevokeVirtualKey marks a key revoked.
-func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, id string) error {
+// RevokeVirtualKey marks a key revoked. actorID is the user_id of the caller
+// (empty for system); recorded in the audit log.
+func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, actorID, id string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE virtual_keys SET revoked = TRUE WHERE id = $1`, id)
 	if err != nil {
 		return err
@@ -183,7 +187,7 @@ func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, id string) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, orgID, "vkey.revoke", id, "")
+	s.Audit(ctx, actorID, orgID, "vkey.revoke", id, "")
 	return nil
 }
 
@@ -191,8 +195,9 @@ func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, id string) error {
 
 // CreateCredential encrypts and stores an upstream provider secret. userID may
 // be empty for an org-level (shared/central) credential, or set for a BYOK
-// credential private to that user.
-func (s *Store) CreateCredential(ctx context.Context, orgID, userID, provider, name, baseURL, secret string) (ProviderCredential, error) {
+// credential private to that user. actorID is the user_id of the caller
+// (empty for system); recorded in the audit log.
+func (s *Store) CreateCredential(ctx context.Context, orgID, actorID, userID, provider, name, baseURL, secret string) (ProviderCredential, error) {
 	if s.cipher == nil {
 		return ProviderCredential{}, crypto.ErrNoMasterKey
 	}
@@ -221,7 +226,7 @@ func (s *Store) CreateCredential(ctx context.Context, orgID, userID, provider, n
 	if err != nil {
 		return ProviderCredential{}, err
 	}
-	s.Audit(ctx, orgID, "credential.create", cred.ID, fmt.Sprintf("%s/%s", provider, name))
+	s.Audit(ctx, actorID, orgID, "credential.create", cred.ID, fmt.Sprintf("%s/%s", provider, name))
 	return cred, nil
 }
 
@@ -275,8 +280,10 @@ func scanCredentials(rows pgx.Rows) ([]ProviderCredential, error) {
 // re-encrypting it under the master key and recording the rotation time. The
 // credential keeps its ID, provider, name, and base URL so existing references
 // (and registered providers) stay valid — only the secret material changes.
+// actorID is the user_id of the caller (empty for system); recorded in the
+// audit log.
 // Returns the updated metadata (never the plaintext).
-func (s *Store) RotateCredential(ctx context.Context, orgID, id, newSecret string) (ProviderCredential, error) {
+func (s *Store) RotateCredential(ctx context.Context, orgID, actorID, id, newSecret string) (ProviderCredential, error) {
 	if s.cipher == nil {
 		return ProviderCredential{}, crypto.ErrNoMasterKey
 	}
@@ -301,7 +308,7 @@ func (s *Store) RotateCredential(ctx context.Context, orgID, id, newSecret strin
 	if err != nil {
 		return ProviderCredential{}, err
 	}
-	s.Audit(ctx, orgID, "credential.rotate", c.ID, fmt.Sprintf("%s/%s", c.Provider, c.Name))
+	s.Audit(ctx, actorID, orgID, "credential.rotate", c.ID, fmt.Sprintf("%s/%s", c.Provider, c.Name))
 	return c, nil
 }
 
@@ -406,8 +413,9 @@ func nullStr(s string) any {
 	return s
 }
 
-// DeleteCredential removes a credential.
-func (s *Store) DeleteCredential(ctx context.Context, orgID, id string) error {
+// DeleteCredential removes a credential. actorID is the user_id of the caller
+// (empty for system); recorded in the audit log.
+func (s *Store) DeleteCredential(ctx context.Context, orgID, actorID, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM provider_credentials WHERE id = $1`, id)
 	if err != nil {
 		return err
@@ -415,13 +423,86 @@ func (s *Store) DeleteCredential(ctx context.Context, orgID, id string) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, orgID, "credential.delete", id, "")
+	s.Audit(ctx, actorID, orgID, "credential.delete", id, "")
 	return nil
 }
 
-// Audit writes a best-effort audit entry; failures are swallowed.
-func (s *Store) Audit(ctx context.Context, orgID, action, targetID, detail string) {
+// AuditEntry is one row of the audit_log table, surfaced to /api/audit.
+type AuditEntry struct {
+	ID        int64     `json:"id"`
+	OrgID     string    `json:"org_id"`
+	ActorID   string    `json:"actor"` // user_id of the caller; "system" for non-user actions
+	Action    string    `json:"action"`
+	TargetID  string    `json:"target_id"`
+	Detail    string    `json:"detail"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// AuditListOptions filters the /api/audit response.
+type AuditListOptions struct {
+	Limit   int       // max rows; default 50, hard cap 500
+	Action  string    // exact-match filter; empty = no filter
+	ActorID string    // exact-match filter on actor; empty = no filter
+	Since   time.Time // only entries newer than this; zero = no filter
+}
+
+// Audit writes a best-effort audit entry; failures are swallowed. actorID is
+// the user_id of the caller; pass "" for system actions. The audit_log table
+// (created in 001_init.sql) stores the value in the existing `actor` column,
+// which has a DEFAULT 'system' fallback.
+func (s *Store) Audit(ctx context.Context, actorID, orgID, action, targetID, detail string) {
+	if actorID == "" {
+		actorID = "system"
+	}
 	_, _ = s.pool.Exec(ctx, `
-		INSERT INTO audit_log (org_id, action, target_id, detail)
-		VALUES ($1,$2,$3,$4)`, orgID, action, targetID, detail)
+		INSERT INTO audit_log (org_id, actor, action, target_id, detail)
+		VALUES ($1,$2,$3,$4,$5)`, orgID, actorID, action, targetID, detail)
+}
+
+// ListAudit reads the most recent entries for an org, applying the supplied
+// filters. Used by GET /api/audit.
+func (s *Store) ListAudit(ctx context.Context, orgID string, opts AuditListOptions) ([]AuditEntry, error) {
+	if orgID == "" {
+		orgID = "default"
+	}
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	query := `
+		SELECT id, org_id, actor, action, target_id, detail, created_at
+		FROM audit_log
+		WHERE org_id = $1`
+	args := []any{orgID}
+	if opts.Action != "" {
+		args = append(args, opts.Action)
+		query += ` AND action = $` + strconv.Itoa(len(args))
+	}
+	if opts.ActorID != "" {
+		args = append(args, opts.ActorID)
+		query += ` AND actor = $` + strconv.Itoa(len(args))
+	}
+	if !opts.Since.IsZero() {
+		args = append(args, opts.Since)
+		query += ` AND created_at >= $` + strconv.Itoa(len(args))
+	}
+	args = append(args, limit)
+	query += ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditEntry
+	for rows.Next() {
+		var e AuditEntry
+		if err := rows.Scan(&e.ID, &e.OrgID, &e.ActorID, &e.Action, &e.TargetID, &e.Detail, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

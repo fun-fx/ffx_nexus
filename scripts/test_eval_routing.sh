@@ -40,7 +40,12 @@ stop_nexus() {
 
 start_nexus() {
   stop_nexus
-  "$BIN" &
+  # Optional env overrides passed as KEY=VAL arguments (e.g. NEXUS_KEY_MODE=byok).
+  if [[ $# -gt 0 ]]; then
+    env "$@" "$BIN" &
+  else
+    "$BIN" &
+  fi
   NEXUS_PID=$!
   for i in $(seq 1 30); do
     if curl -sf "$GW_URL/healthz" >/dev/null 2>&1; then
@@ -86,13 +91,37 @@ else
 fi
 
 trap stop_nexus EXIT
-start_nexus
+# Boot with a bootstrap admin so /api/keys and /api/credentials (admin-only
+# since v1.1) accept the test calls below.
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin-e2e@nexus.local}"
+ADMIN_PASS="${ADMIN_PASS:-admin-e2e-pass}"
+ADMIN_JAR="/tmp/nexus_eval_routing_admin.txt"
+start_nexus env \
+  NEXUS_ALLOW_SIGNUP=true \
+  NEXUS_ADMIN_EMAIL="$ADMIN_EMAIL" \
+  NEXUS_ADMIN_PASSWORD="$ADMIN_PASS"
 pass "nexus started"
+
+# Reset the admin password (the postgres volume is persistent across scripts).
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -c \
+  "UPDATE users SET password_hash = crypt('$ADMIN_PASS', gen_salt('bf')), role='admin' WHERE email='$ADMIN_EMAIL'" \
+  >/dev/null 2>&1 || true
+
+# Bootstrap admin was created above via NEXUS_ADMIN_EMAIL/PASSWORD.
+LOGIN=$(curl -s -o /dev/null -w '%{http_code}' -c "$ADMIN_JAR" -X POST "$CON_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}")
+if [[ "$LOGIN" != "200" ]]; then
+  fail "admin login failed ($LOGIN)"
+  exit 1
+fi
+pass "admin login -> 200 + session cookie"
 
 # Without env provider keys, seed a DB credential and restart so routing tests
 # have registered models (min_quality gate needs candidates in the auto group).
 if [[ "$HAS_PROVIDER" == "0" ]]; then
-  curl -s -X POST "$CON_URL/api/credentials" \
+  curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/credentials" \
     -H 'Content-Type: application/json' \
     -d '{"provider":"gemini","name":"e2e-seed","secret":"sk-e2e-fake-'"$(openssl rand -hex 8)"'"}' >/dev/null
   stop_nexus
@@ -107,7 +136,7 @@ echo "== min_quality_score enforcement =="
 
 # Exploration quality is 0.75; eff_quality caps at 1.0. Use 1.01 so no model
 # can pass regardless of accumulated ClickHouse stats.
-MQ_KEY=$(curl -s -X POST "$CON_URL/api/keys" \
+MQ_KEY=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-minq","allowed_models":["auto","'"$MODEL"'"],"min_quality_score":1.01}')
 MQ_SECRET=$(echo "$MQ_KEY" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -125,7 +154,7 @@ else
 fi
 
 # min_quality=0 should allow routing (exploration 0.75 >= 0).
-OK_KEY=$(curl -s -X POST "$CON_URL/api/keys" \
+OK_KEY=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-minq0","allowed_models":["auto","'"$MODEL"'"],"min_quality_score":0}')
 OK_SECRET=$(echo "$OK_KEY" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -208,7 +237,7 @@ echo "== provider fallback =="
 if [[ "$HAS_PROVIDER" == "1" ]]; then
   # Group: unregistered model first, then working model — resolve fails on first,
   # upstream succeeds on second (failover chain).
-  FB_KEY=$(curl -s -X POST "$CON_URL/api/keys" \
+  FB_KEY=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
     -H 'Content-Type: application/json' \
     -d '{"name":"e2e-fallback","allowed_models":["auto","fast","'"$MODEL"'","nonexistent-model-xyz"]}')
   FB_SECRET=$(echo "$FB_KEY" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -218,7 +247,7 @@ if [[ "$HAS_PROVIDER" == "1" ]]; then
   export NEXUS_ROUTE_GROUPS="failover=nonexistent-model-xyz,$MODEL"
   start_nexus
 
-  FB_KEY2=$(curl -s -X POST "$CON_URL/api/keys" \
+  FB_KEY2=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
     -H 'Content-Type: application/json' \
     -d '{"name":"e2e-fb2","allowed_models":["failover","'"$MODEL"'"]}')
   FB_SECRET2=$(echo "$FB_KEY2" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")

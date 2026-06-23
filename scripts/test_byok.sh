@@ -9,8 +9,11 @@ e2e_init
 
 NEXUS_LOG="/tmp/nexus_byok.log"
 JAR="/tmp/nexus_byok_cookies.txt"
-ADMIN_EMAIL="admin@nexus.test"
-ADMIN_PASS="admin-secret-123"
+# Shared admin across the e2e suite (see test_phase2.sh). The password is
+# reset via raw SQL on each test start because the postgres volume persists
+# between scripts in the same E2E run.
+ADMIN_EMAIL="admin-e2e@nexus.local"
+ADMIN_PASS="admin-e2e-pass"
 
 start_nexus_logged() {
   stop_nexus
@@ -53,6 +56,14 @@ start_nexus_logged \
   NEXUS_ALLOW_SIGNUP=true \
   NEXUS_ADMIN_EMAIL="$ADMIN_EMAIL" \
   NEXUS_ADMIN_PASSWORD="$ADMIN_PASS"
+
+# Reset the admin password (the postgres volume is persistent across scripts
+# in the same E2E run, so the row may exist with a stale hash from a
+# previous test that used a different password).
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -c \
+  "UPDATE users SET password_hash = crypt('$ADMIN_PASS', gen_salt('bf')), role='admin' WHERE email='$ADMIN_EMAIL'" \
+  >/dev/null 2>&1 || true
 
 if grep -q "bootstrap admin user created" "$NEXUS_LOG" || grep -q "per-request credential resolution enabled" "$NEXUS_LOG"; then
   pass "started in BYOK mode with bootstrap admin"

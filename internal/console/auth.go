@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -163,6 +164,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "login failed"})
 		return
 	}
+	// Store.Authenticate already records user.login in the audit log with
+	// the authenticated user as actor; nothing else to do here.
 	setSessionCookie(w, token)
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
 }
@@ -198,7 +201,9 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := s.store.CreateUser(r.Context(), orgID(r), req.Email, req.Password, core.RoleMember)
+	// Self-signup: no caller yet, so actor is system. Store.CreateUser
+	// records user.create with actor="system" in this path.
+	u, err := s.store.CreateUser(r.Context(), orgID(r), "", req.Email, req.Password, core.RoleMember)
 	if errors.Is(err, core.ErrEmailTaken) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "email already registered"})
 		return
@@ -213,7 +218,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var warnings []string
 
 	if req.Provider != "" && req.ProviderSecret != "" {
-		_, credErr := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret)
+		_, credErr := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret)
 		switch {
 		case errors.Is(credErr, crypto.ErrNoMasterKey):
 			warnings = append(warnings, "provider key not stored: set NEXUS_MASTER_KEY to enable BYOK credentials")
@@ -226,7 +231,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			if keyName == "" {
 				keyName = "default"
 			}
-			_, plaintext, keyErr := s.store.CreateVirtualKey(r.Context(), u.OrgID, u.ID, keyName, nil, 0, 0, 0)
+			_, plaintext, keyErr := s.store.CreateVirtualKey(r.Context(), u.OrgID, u.ID, u.ID, keyName, nil, 0, 0, 0)
 			if keyErr != nil {
 				s.log.Error("register virtual key failed", "err", keyErr, "user", u.ID)
 				warnings = append(warnings, "virtual key not created: add one from the console")
@@ -253,6 +258,11 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if s.store != nil {
 		if token := sessionTokenFrom(r); token != "" {
+			if u, ok := currentUser(r); ok {
+				// Record the logout before deleting the session so the actor
+				// is still resolvable. Best-effort (audit wrapper swallows).
+				s.audit(r.Context(), u.ID, u.OrgID, "auth.logout", u.ID, "")
+			}
 			_ = s.store.Logout(r.Context(), token)
 		}
 	}
@@ -347,6 +357,8 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request, u core.User) {
 			s.writeStoreErr(w, err, "update failed")
 			return
 		}
+		s.audit(r.Context(), u.ID, u.OrgID, "me.update", u.ID,
+			fmt.Sprintf("enforce_limits=%t", *req.EnforceLimits))
 		u.EnforceLimits = *req.EnforceLimits
 	}
 	writeJSON(w, http.StatusOK, u)
@@ -373,7 +385,7 @@ type createUserRequest struct {
 	Role     string `json:"role"`
 }
 
-func (s *Server) createUser(w http.ResponseWriter, r *http.Request, _ core.User) {
+func (s *Server) createUser(w http.ResponseWriter, r *http.Request, caller core.User) {
 	var req createUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -383,7 +395,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request, _ core.User)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email and password are required"})
 		return
 	}
-	u, err := s.store.CreateUser(r.Context(), orgID(r), req.Email, req.Password, req.Role)
+	u, err := s.store.CreateUser(r.Context(), orgID(r), caller.ID, req.Email, req.Password, req.Role)
 	if errors.Is(err, core.ErrEmailTaken) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "email already registered"})
 		return
@@ -449,9 +461,9 @@ func (s *Server) userQuality(w http.ResponseWriter, r *http.Request, _ core.User
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request, _ core.User) {
+func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request, caller core.User) {
 	id := chi.URLParam(r, "id")
-	if err := s.store.DeleteUser(r.Context(), orgID(r), id); err != nil {
+	if err := s.store.DeleteUser(r.Context(), orgID(r), caller.ID, id); err != nil {
 		s.writeStoreErr(w, err, "delete failed")
 		return
 	}
@@ -483,7 +495,7 @@ func (s *Server) createMyKey(w http.ResponseWriter, r *http.Request, u core.User
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
-	vk, plaintext, err := s.store.CreateVirtualKey(r.Context(), u.OrgID, u.ID, req.Name, req.AllowedModels, req.RPMLimit, req.MonthlyBudget, req.MinQuality)
+	vk, plaintext, err := s.store.CreateVirtualKey(r.Context(), u.OrgID, u.ID, u.ID, req.Name, req.AllowedModels, req.RPMLimit, req.MonthlyBudget, req.MinQuality)
 	if err != nil {
 		s.log.Error("create my key failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create failed"})
@@ -511,7 +523,7 @@ func (s *Server) revokeMyKey(w http.ResponseWriter, r *http.Request, u core.User
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	if err := s.store.RevokeVirtualKey(r.Context(), u.OrgID, id); err != nil {
+	if err := s.store.RevokeVirtualKey(r.Context(), u.OrgID, u.ID, id); err != nil {
 		s.writeStoreErr(w, err, "revoke failed")
 		return
 	}
@@ -543,7 +555,7 @@ func (s *Server) createMyCredential(w http.ResponseWriter, r *http.Request, u co
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider and secret are required"})
 		return
 	}
-	cred, err := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, req.Provider, req.Name, req.BaseURL, req.Secret)
+	cred, err := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.Name, req.BaseURL, req.Secret)
 	if errors.Is(err, crypto.ErrNoMasterKey) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "credential encryption disabled: set NEXUS_MASTER_KEY to store provider keys",

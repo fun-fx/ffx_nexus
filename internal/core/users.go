@@ -24,8 +24,9 @@ var ErrInvalidCredentials = errors.New("core: invalid credentials")
 // --- Users ---
 
 // CreateUser provisions a user with a bcrypt-hashed password. role defaults to
-// "member" when empty.
-func (s *Store) CreateUser(ctx context.Context, orgID, email, password, role string) (User, error) {
+// "member" when empty. actorID is the user_id of the caller (empty for
+// self-signup or system); recorded in the audit log.
+func (s *Store) CreateUser(ctx context.Context, orgID, actorID, email, password, role string) (User, error) {
 	if orgID == "" {
 		orgID = "default"
 	}
@@ -53,7 +54,7 @@ func (s *Store) CreateUser(ctx context.Context, orgID, email, password, role str
 		}
 		return User{}, err
 	}
-	s.Audit(ctx, orgID, "user.create", u.ID, email)
+	s.Audit(ctx, actorID, orgID, "user.create", u.ID, email)
 	return u, nil
 }
 
@@ -164,7 +165,9 @@ func (s *Store) SetEnforceLimits(ctx context.Context, userID string, enforce boo
 }
 
 // DeleteUser removes a user (cascades to their keys, credentials, sessions).
-func (s *Store) DeleteUser(ctx context.Context, orgID, id string) error {
+// actorID is the user_id of the caller (empty for system); recorded in the
+// audit log.
+func (s *Store) DeleteUser(ctx context.Context, orgID, actorID, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM users WHERE id = $1 AND org_id = $2`, id, orgID)
 	if err != nil {
 		return err
@@ -172,7 +175,7 @@ func (s *Store) DeleteUser(ctx context.Context, orgID, id string) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, orgID, "user.delete", id, "")
+	s.Audit(ctx, actorID, orgID, "user.delete", id, "")
 	return nil
 }
 
@@ -191,6 +194,7 @@ func (s *Store) CountUsers(ctx context.Context, orgID string) (int, error) {
 
 // Authenticate verifies an email+password and, on success, creates a session
 // returning the plaintext session token (stored only as a hash) and the user.
+// The audit log records the authenticated user as the actor (self-action).
 func (s *Store) Authenticate(ctx context.Context, orgID, email, password string, ttl time.Duration) (string, User, error) {
 	if orgID == "" {
 		orgID = "default"
@@ -217,7 +221,7 @@ func (s *Store) Authenticate(ctx context.Context, orgID, email, password string,
 	if err != nil {
 		return "", User{}, err
 	}
-	s.Audit(ctx, orgID, "user.login", u.ID, email)
+	s.Audit(ctx, u.ID, orgID, "user.login", u.ID, email)
 	return token, u, nil
 }
 
@@ -244,7 +248,8 @@ func (s *Store) Logout(ctx context.Context, token string) error {
 }
 
 // RotateUserCredential rotates a credential owned by a specific user (BYOK),
-// ensuring users can only rotate their own secrets.
+// ensuring users can only rotate their own secrets. The audit log records the
+// owning user as the actor (self-action).
 func (s *Store) RotateUserCredential(ctx context.Context, orgID, userID, id, newSecret string) (ProviderCredential, error) {
 	if s.cipher == nil {
 		return ProviderCredential{}, crypto.ErrNoMasterKey
@@ -271,11 +276,12 @@ func (s *Store) RotateUserCredential(ctx context.Context, orgID, userID, id, new
 	if uid != nil {
 		c.UserID = *uid
 	}
-	s.Audit(ctx, orgID, "credential.rotate", c.ID, c.Provider)
+	s.Audit(ctx, userID, orgID, "credential.rotate", c.ID, c.Provider)
 	return c, nil
 }
 
 // DeleteUserCredential deletes a credential owned by a specific user (BYOK).
+// The audit log records the owning user as the actor (self-action).
 func (s *Store) DeleteUserCredential(ctx context.Context, orgID, userID, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM provider_credentials WHERE id = $1 AND org_id = $2 AND user_id = $3`, id, orgID, userID)
 	if err != nil {
@@ -284,7 +290,7 @@ func (s *Store) DeleteUserCredential(ctx context.Context, orgID, userID, id stri
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, orgID, "credential.delete", id, "")
+	s.Audit(ctx, userID, orgID, "credential.delete", id, "")
 	return nil
 }
 

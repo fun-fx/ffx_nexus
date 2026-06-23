@@ -34,15 +34,45 @@ export NEXUS_MASTER_KEY="${NEXUS_MASTER_KEY_FIXED:-$(openssl rand -hex 32)}"
 trap stop_nexus EXIT
 
 # Start without env provider keys — providers must come from DB after credential create.
-start_nexus env -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY
+# Shared E2E admin email/password (the postgres volume is persistent across
+# test scripts, so each script that needs admin access resets the password
+# via raw SQL to guarantee the bootstrap env matches what we log in with).
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin-e2e@nexus.local}"
+ADMIN_PASS="${ADMIN_PASS:-admin-e2e-pass}"
+ADMIN_JAR="/tmp/nexus_phase2_admin.txt"
+
+start_nexus env \
+  -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
+  NEXUS_ALLOW_SIGNUP=true \
+  NEXUS_ADMIN_EMAIL="$ADMIN_EMAIL" \
+  NEXUS_ADMIN_PASSWORD="$ADMIN_PASS"
 pass "nexus started (no env provider keys)"
+
+# Reset the admin password so it matches what we'll log in with, regardless
+# of which previous test script created the row.
+docker compose -f deploy/docker-compose.yml exec -T postgres \
+  psql -U nexus -d nexus -c \
+  "UPDATE users SET password_hash = crypt('$ADMIN_PASS', gen_salt('bf')), role='admin' WHERE email='$ADMIN_EMAIL'" \
+  >/dev/null 2>&1 || true
+
+# --- Admin login (org-level /api/keys, /api/credentials are admin-only since v1.1).
+# The bootstrap admin was created above via NEXUS_ADMIN_EMAIL/PASSWORD.
+LOGIN=$(curl -s -o /dev/null -w '%{http_code}' -c "$ADMIN_JAR" -X POST "$CON_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASS\"}")
+if [[ "$LOGIN" == "200" ]]; then
+  pass "admin login -> 200 + session cookie"
+else
+  fail "admin login failed ($LOGIN)"
+  summary_exit
+fi
 
 # --- Virtual key lifecycle ---
 
 echo ""
 echo "-- virtual keys --"
 
-KEY_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+KEY_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-phase2","allowed_models":["'"$MODEL"'"],"rpm_limit":0}')
 SECRET=$(echo "$KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -56,7 +86,7 @@ else
   fail "virtual key create malformed: $KEY_JSON"
 fi
 
-LIST=$(curl -s "$CON_URL/api/keys")
+LIST=$(curl -s -b "$ADMIN_JAR" "$CON_URL/api/keys")
 if echo "$LIST" | python3 -c "
 import sys,json
 keys=json.load(sys.stdin)
@@ -79,7 +109,7 @@ if [[ "$code" == "401" ]]; then pass "bad virtual key -> 401"; else fail "bad ke
 
 # --- allowed_models enforcement ---
 
-RESTRICT_JSON=$(curl -s -X POST "$CON_URL/api/keys" \
+RESTRICT_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/keys" \
   -H 'Content-Type: application/json' \
   -d '{"name":"e2e-restricted","allowed_models":["gpt-4o-mini"]}')
 RESTRICT_SECRET=$(echo "$RESTRICT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['secret'])")
@@ -100,7 +130,7 @@ fi
 echo ""
 echo "-- provider credentials --"
 
-CRED_JSON=$(curl -s -X POST "$CON_URL/api/credentials" \
+CRED_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/credentials" \
   -H 'Content-Type: application/json' \
   -d '{"provider":"gemini","name":"e2e-gemini","secret":"'"$CRED_PLAINTEXT"'"}')
 CRED_ID=$(echo "$CRED_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
@@ -183,7 +213,7 @@ else
   NEW_SECRET="sk-e2e-rot-$(openssl rand -hex 8)"
 fi
 
-ROT_JSON=$(curl -s -X POST "$CON_URL/api/credentials/$CRED_ID/rotate" \
+ROT_JSON=$(curl -s -b "$ADMIN_JAR" -X POST "$CON_URL/api/credentials/$CRED_ID/rotate" \
   -H 'Content-Type: application/json' \
   -d '{"secret":"'"$NEW_SECRET"'"}')
 
@@ -242,7 +272,7 @@ else
 fi
 
 # Rotating a non-existent credential -> 404.
-code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$CON_URL/api/credentials/does-not-exist/rotate" \
+code=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_JAR" -X POST "$CON_URL/api/credentials/does-not-exist/rotate" \
   -H 'Content-Type: application/json' -d '{"secret":"whatever"}')
 if [[ "$code" == "404" ]]; then pass "rotate unknown credential -> 404"; else fail "rotate unknown -> expected 404, got $code"; fi
 
@@ -251,14 +281,14 @@ if [[ "$code" == "404" ]]; then pass "rotate unknown credential -> 404"; else fa
 echo ""
 echo "-- revoke --"
 
-curl -s -X DELETE "$CON_URL/api/keys/$KEY_ID" >/dev/null
+curl -s -b "$ADMIN_JAR" -X DELETE "$CON_URL/api/keys/$KEY_ID" >/dev/null
 code=$(http_code -H "Authorization: Bearer $SECRET" "$GW_URL/v1/models")
 if [[ "$code" == "401" ]]; then pass "revoked key -> 401"; else fail "revoked key -> expected 401, got $code"; fi
 
 # --- Delete credential ---
 
-curl -s -X DELETE "$CON_URL/api/credentials/$CRED_ID" >/dev/null
-CREDS=$(curl -s "$CON_URL/api/credentials")
+curl -s -b "$ADMIN_JAR" -X DELETE "$CON_URL/api/credentials/$CRED_ID" >/dev/null
+CREDS=$(curl -s -b "$ADMIN_JAR" "$CON_URL/api/credentials")
 if echo "$CREDS" | python3 -c "import sys,json; ids=[c['id'] for c in json.load(sys.stdin)]; sys.exit(0 if '$CRED_ID' not in ids else 1)" 2>/dev/null; then
   pass "credential deleted"
 else
