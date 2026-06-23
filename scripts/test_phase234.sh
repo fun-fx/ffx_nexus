@@ -42,7 +42,12 @@ stop_nexus() {
 
 start_nexus() {
   stop_nexus
-  "$BIN" &
+  # Optional env overrides passed as KEY=VAL arguments (e.g. NEXUS_KEY_MODE=byok).
+  if [[ $# -gt 0 ]]; then
+    env "$@" "$BIN" &
+  else
+    "$BIN" &
+  fi
   NEXUS_PID=$!
   for i in $(seq 1 30); do
     if curl -sf "$GW_URL/healthz" >/dev/null 2>&1; then
