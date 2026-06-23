@@ -30,7 +30,7 @@ SSO IdP: `https://keycloak.tail7d361a.ts.net` (Keycloak)
 2. 해당 계정으로 SSO 로그인
 3. 콘솔에서 "Signed in as `sso-test-1@nexus.local`" 확인
 4. 우상단 role tag가 `member` 인지 확인
-
+ㅊ
 **기대**: Nexus DB에 새 user row 자동 생성. admin console의 Users 목록에 새 email 등장 (`/api/users`).
 
 ## 4. Email linking (같은 email로 두 가지 방법 동시 사용)
