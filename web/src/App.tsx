@@ -13,6 +13,7 @@ import {
   type User,
 } from "./api";
 import { Account } from "./Account";
+import { Audit } from "./Audit";
 
 const EMPTY_STATS: Stats = {
   total_requests: 0,
@@ -32,7 +33,7 @@ export function App() {
   const [routing, setRouting] = useState<RoutingModel[]>([]);
   const [evals, setEvals] = useState<EvalMetric[]>([]);
   const [live, setLive] = useState(false);
-  const [tab, setTab] = useState<"overview" | "account">("overview");
+  const [tab, setTab] = useState<"overview" | "audit" | "account">("overview");
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
@@ -71,6 +72,11 @@ export function App() {
           <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
             Overview
           </button>
+          {user?.role === "admin" && (
+            <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>
+              Audit
+            </button>
+          )}
           <button className={tab === "account" ? "active" : ""} onClick={() => setTab("account")}>
             {user ? "Account" : "Sign in"}
           </button>
@@ -82,6 +88,8 @@ export function App() {
 
       {tab === "account" ? (
         <Account user={user} onUser={setUser} />
+      ) : tab === "audit" ? (
+        <Audit />
       ) : (
         <>
       <section className="cards">

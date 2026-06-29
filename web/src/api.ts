@@ -314,6 +314,38 @@ export async function fetchUserQuality(window = "24h"): Promise<UserQuality[]> {
   return Array.isArray(data) ? data : [];
 }
 
+// --- Admin: audit log (v1.1) ---
+
+export interface AuditEntry {
+  id: number;
+  org_id: string;
+  actor: string; // user_id of the caller; "system" for non-user actions
+  action: string; // e.g. "vkey.create", "credential.rotate", "auth.login"
+  target_id: string;
+  detail: string;
+  created_at: string;
+}
+
+export interface AuditQuery {
+  limit?: number;
+  action?: string;
+  user_id?: string;
+  since?: string; // RFC3339 or a duration like "24h"
+}
+
+export async function fetchAudit(q: AuditQuery = {}): Promise<AuditEntry[]> {
+  const params = new URLSearchParams();
+  if (q.limit != null) params.set("limit", String(q.limit));
+  if (q.action) params.set("action", q.action);
+  if (q.user_id) params.set("user_id", q.user_id);
+  if (q.since) params.set("since", q.since);
+  const qs = params.toString();
+  const res = await fetch(`/api/audit${qs ? "?" + qs : ""}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
 // connectLive opens the live trace WebSocket. The backend pushes a full Trace
 // object per gateway request; we map it to the summary shape used by the table.
 export function connectLive(onTrace: (t: TraceSummary) => void): WebSocket {
