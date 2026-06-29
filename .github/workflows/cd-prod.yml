@@ -56,6 +56,24 @@ jobs:
         with:
           fetch-depth: 1
 
+      # The ARC runner image ships without kubectl, so install it explicitly
+      # (azure/setup-helm below handles helm). Pinned to a stable channel.
+      - name: Install kubectl
+        run: |
+          set -euo pipefail
+          KVER="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KVER}/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          if sudo -n mv /tmp/kubectl /usr/local/bin/kubectl 2>/dev/null; then
+            :
+          else
+            mkdir -p "$HOME/.local/bin"
+            mv /tmp/kubectl "$HOME/.local/bin/kubectl"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          kubectl version --client=true
+
       - name: Configure kubectl
         run: |
           mkdir -p "$RUNNER_TEMP/kube"
