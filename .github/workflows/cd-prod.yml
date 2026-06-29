@@ -1,8 +1,7 @@
 # Continuous deployment for prod (Talos + Cozystack, namespace tenant-nexus).
 # Mirrors the manual flow that previously lived in deploy/cozystack/README.md:
 #   1. helm upgrade --install nexus deploy/helm/nexus -f values-prod.yaml
-#   2. rollout restart
-#   3. rollout status
+#   2. rollout status
 #
 # Required GitHub secret:
 #   PROD_KUBECONFIG_B64 — base64-encoded kubeconfig with admin rights on the
@@ -25,11 +24,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      force_restart:
-        description: "Restart the nexus deployment even if no chart change"
-        type: boolean
-        default: false
 
 concurrency:
   group: cd-prod-${{ github.ref }}
@@ -92,15 +86,6 @@ jobs:
             helm dependency build deploy/helm/nexus
           fi
 
-      - name: Helm diff (best effort)
-        continue-on-error: true
-        run: |
-          helm plugin install https://github.com/databus23/helm-diff --version v3.9.13 || true
-          helm diff upgrade nexus deploy/helm/nexus \
-            --namespace tenant-nexus \
-            -f deploy/cozystack/values-prod.yaml \
-            --three-way-merge || true
-
       - name: Helm upgrade --install
         run: |
           set -euo pipefail
@@ -110,11 +95,6 @@ jobs:
             -f deploy/cozystack/values-prod.yaml \
             --wait \
             --timeout 5m
-
-      - name: Restart (optional)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.force_restart == 'true' }}
-        run: |
-          kubectl -n tenant-nexus rollout restart deploy/nexus
 
       - name: Wait for rollout
         run: |
