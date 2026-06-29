@@ -17,6 +17,7 @@ import (
 
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/core"
+	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
 	nexusweb "github.com/ffxnexus/nexus/web"
@@ -38,6 +39,9 @@ type Server struct {
 	reload      func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup bool                  // public POST /api/auth/register
 	sso         *ssoClient            // OIDC client; nil when SSO is not configured
+	loginLim    *limiter.IPLimiter    // per-IP rate limit for /api/auth/login
+	registerLim *limiter.IPLimiter    // per-IP rate limit for /api/auth/register
+	ssoLim      *limiter.IPLimiter    // per-IP rate limit for /api/auth/sso/*
 	log         *slog.Logger
 	up          websocket.Upgrader
 }
@@ -89,6 +93,10 @@ func NewServer(hub *Hub, reader *observability.Reader, store *core.Store, log *s
 		reader: reader,
 		store:  store,
 		log:    log,
+		// Per design doc §4.2.5: 30 req/min/IP on anonymous auth routes.
+		loginLim:    limiter.NewIPLimiter(30, time.Minute),
+		registerLim: limiter.NewIPLimiter(30, time.Minute),
+		ssoLim:      limiter.NewIPLimiter(30, time.Minute),
 		up: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
@@ -98,6 +106,7 @@ func NewServer(hub *Hub, reader *observability.Reader, store *core.Store, log *s
 // Mux returns the console HTTP handler.
 func (s *Server) Mux() http.Handler {
 	r := chi.NewRouter()
+	r.Use(s.securityHeaders)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
@@ -111,6 +120,13 @@ func (s *Server) Mux() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// Anonymous auth routes get per-IP rate limiting (design doc §4.2.5).
+	// Limiters are per-route so an attacker cannot drain login by hammering
+	// /api/auth/register.
+	authRL := func(routeName string, lim *limiter.IPLimiter) func(http.Handler) http.Handler {
+		return s.ipRateLimit(routeName, lim)
+	}
+
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/traces", s.recentTraces)
 		r.Get("/stats", s.stats)
@@ -120,11 +136,11 @@ func (s *Server) Mux() http.Handler {
 
 		// Session auth + self-service (requires Postgres).
 		r.Get("/auth/config", s.authConfig)
-		r.Post("/auth/login", s.login)
-		r.Post("/auth/register", s.register)
+		r.With(authRL("login", s.loginLim)).Post("/auth/login", s.login)
+		r.With(authRL("register", s.registerLim)).Post("/auth/register", s.register)
 		r.Post("/auth/logout", s.logout)
-		r.Get("/auth/sso/login", s.ssoLogin)
-		r.Get("/auth/sso/callback", s.ssoCallback)
+		r.With(authRL("sso-login", s.ssoLim)).Get("/auth/sso/login", s.ssoLogin)
+		r.With(authRL("sso-callback", s.ssoLim)).Get("/auth/sso/callback", s.ssoCallback)
 		r.Get("/me", s.requireUser(s.me))
 		r.Patch("/me", s.requireUser(s.updateMe))
 		r.Get("/me/stats", s.requireUser(s.myStats))
