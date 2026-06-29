@@ -41,15 +41,12 @@ permissions:
 jobs:
   helm-upgrade:
     name: Helm upgrade (tenant-nexus)
-    # The prod ARC runner scale set is org-level (fun-fx/self-hosted, default
-    # group). Plain `runs-on: self-hosted` does not match on the org scope
-    # reliably — GitHub's runner matcher needs the group + labels spelled out.
-    # The values mirror what `kubectl -n arc-runners describe pod <runner>`
-    # shows: actions.github.com/runner-group-name=Default,
-    #        actions.github.com/runner-scale-set-name=self-hosted.
-    runs-on:
-      group: Default
-      labels: [self-hosted]
+    # ARC scale set "self-hosted" (org-level fun-fx, Default group). ARC matches
+    # a single label equal to the scale-set name, so plain `self-hosted` is the
+    # correct form (verified: fun-fx/ffx_web uses the same and succeeds).
+    # NOTE: org self-hosted runners are blocked for PUBLIC repos by default, so
+    # this repo must stay PRIVATE for CD to be picked up.
+    runs-on: self-hosted
     timeout-minutes: 15
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     environment: prod
