@@ -41,7 +41,15 @@ permissions:
 jobs:
   helm-upgrade:
     name: Helm upgrade (tenant-nexus)
-    runs-on: self-hosted
+    # The prod ARC runner scale set is org-level (fun-fx/self-hosted, default
+    # group). Plain `runs-on: self-hosted` does not match on the org scope
+    # reliably — GitHub's runner matcher needs the group + labels spelled out.
+    # The values mirror what `kubectl -n arc-runners describe pod <runner>`
+    # shows: actions.github.com/runner-group-name=Default,
+    #        actions.github.com/runner-scale-set-name=self-hosted.
+    runs-on:
+      group: Default
+      labels: [self-hosted]
     timeout-minutes: 15
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     environment: prod
