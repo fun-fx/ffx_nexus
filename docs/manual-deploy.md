@@ -1,9 +1,9 @@
 # 수동 배포 가이드 (Manual deploy)
 
-Status: **CURRENT** (CD 워크플로우가 ARC runner 권한 문제로 paused 되어 있으므로)
-Last updated: 2026-06-22
+Status: **CURRENT** (CD 워크플로우가 paused — 진단 결과 self-hosted runner가 0개라 잡이 queued로 멈춤, 자세한 진단은 `docs/cd-runner-diagnostic.md` 참고)
+Last updated: 2026-06-29
 
-`cd-prod.yml` GitHub Actions 워크플로우는 일시 중지되었습니다 (ARC self-hosted runner가 org-level GitHub App `FFX Actions Runner Controller`의 repository access에 `ffx_nexus`가 포함되지 않아 job이 queued 상태로 멈춤). 그 동안 **로컬에서 한 줄로 prod에 배포**할 수 있는 helper를 만들었습니다.
+runner 자체가 0개여서 잡이 queued로 멈춤 (`gh api repos/fun-fx/ffx_nexus/actions/runners` → `{"total_count":0,...}`). App `FFX Actions Runner Controller`는 **All repositories**로 정상 설정되어 있어 repo-access는 문제 아님. 그 동안 **로컬에서 한 줄로 prod에 배포**할 수 있는 helper를 만들었습니다.
 
 ---
 
@@ -347,8 +347,9 @@ ARC runner / GitHub App 권한 문제가 해결되면:
 
 ### 완전 자동화 복귀 조건
 
-- [ ] GitHub App `FFX Actions Runner Controller` (org-level, ID 2808183)가 `ffx_nexus` repository에 access 가능
-- [ ] Runner pod가 `Running` 상태에서 24시간 이상 healthy
+runner pod가 다시 뜨고 ffx_nexus에 등록되면 (자세한 진단은 `docs/cd-runner-diagnostic.md`):
+- [ ] `kubectl -n arc-system get pods`로 controller/runner 둘 다 Running
+- [ ] `gh api repos/fun-fx/ffx_nexus/actions/runners`로 `total_count > 0`
 - [ ] `cd-prod.yml`이 최소 3회 main push에서 자동 success
 - [ ] on-call 사용자가 `kubectl --kubeconfig=~/prod.yaml` 권한을 잃어도 됨 (full automation)
 
