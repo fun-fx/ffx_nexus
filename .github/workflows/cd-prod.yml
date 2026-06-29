@@ -120,16 +120,20 @@ jobs:
         run: |
           kubectl -n tenant-nexus rollout status deploy/nexus --timeout=180s
 
+      # The ARC runner lives inside the cluster (not on Tailscale), so it cannot
+      # resolve the public *.ts.net FQDNs. Probe the app from inside its own pod
+      # instead: gateway listens on :8080, console on :8081.
       - name: Smoke
-        env:
-          GW_URL: https://nexus.tail7d361a.ts.net
-          CON_URL: https://console.tail7d361a.ts.net
         run: |
           set -euo pipefail
-          for url in "$GW_URL/healthz" "$CON_URL/healthz"; do
-            code=$(curl -sk -o /dev/null -w "%{http_code}" "$url")
+          for endpoint in "8080:gateway" "8081:console"; do
+            port="${endpoint%%:*}"; name="${endpoint##*:}"
+            code=$(kubectl -n tenant-nexus exec deploy/nexus -- \
+              wget -q -O /dev/null -S "http://localhost:${port}/healthz" 2>&1 \
+              | awk '/HTTP\// {print $2; exit}')
+            echo "$name ($port) -> ${code:-no-response}"
             if [[ "$code" != "200" ]]; then
-              echo "::error::health check failed: $url -> $code"
+              echo "::error::health check failed: ${name} :${port}/healthz -> ${code:-no-response}"
               exit 1
             fi
           done
