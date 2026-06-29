@@ -1,17 +1,48 @@
 # CD self-hosted runner 진단 + 복구 runbook
 
-Status: **CURRENT** — `cd-prod.yml`의 `runs-on: self-hosted` 잡이 1주일 넘게 queued로 멈춤.
+Status: **RESOLVED** (2026-06-29) — 근본 원인 확정 및 해결.
 Last updated: 2026-06-29
 
-**결론부터**: GitHub App `FFX Actions Runner Controller`는 **All repositories**로 정상 설정. repo-access는 문제 아님.
-진짜 문제는 **`fun-fx/ffx_nexus`에 등록된 self-hosted runner가 0개**라는 것. ARC가 cluster에서 pod를 못 띄우거나, helm release가 없거나, 띄웠는데 죽었거나.
+## 결론 (확정)
 
-```
-$ gh api repos/fun-fx/ffx_nexus/actions/runners
-{"total_count":0,"runners":[]}
-```
+**근본 원인: `fun-fx/ffx_nexus`만 PUBLIC repo였고, GitHub org는 기본적으로 public repo가 org self-hosted runner를 쓰지 못하게 막는다.**
 
-GitHub 측에서는 매칭되는 runner가 0개라 잡이 `queued`로 영원히 머무름.
+진단 과정:
+
+- ARC 인프라는 100% 정상. controller/listener `Running`, runner pod 15시간+ `Running`,
+  listener가 GitHub와 통신 중(`lastMessageID` 갱신됨).
+- listener 로그의 `"assigned job": 0`은 고장이 아니라 **GitHub가 이 scale set에 잡을
+  배정하지 않는다**는 의미 — public repo라 org runner 정책에 의해 차단됨.
+- 같은 org의 `fun-fx/ffx_web`은 동일한 org-level scale set(`fun-fx/self-hosted`,
+  Default group)을 plain `runs-on: self-hosted`로 쓰며 **성공**. 유일한 차이는
+  ffx_web=PRIVATE, ffx_nexus=PUBLIC.
+
+| repo | `runs-on` | visibility | 결과 |
+|---|---|---|---|
+| `ffx_web` | `self-hosted` (plain) | PRIVATE | ✅ |
+| `metal_infrfx` | `arc-runner-set` | PRIVATE | ✅ |
+| `ffx_nexus` (이전) | `self-hosted` → group+labels | **PUBLIC** | ❌ 7일+ queued |
+
+**해결**: `ffx_nexus`를 PRIVATE으로 전환 (2026-06-29). `cd-prod.yml`은 검증된
+plain `runs-on: self-hosted`로 복원.
+
+> 참고: 만약 다시 PUBLIC으로 돌려야 한다면, org owner가
+> Settings → Actions → Runner groups → Default → "Allow public repositories" 를
+> 켜야 한다 (보안상 권장하지 않음). 또는 `runs-on: ubuntu-latest`로 GitHub-hosted
+> runner를 쓰도록 워크플로우를 바꾼다.
+
+### 참고: ARC `runs-on` 매칭 규칙
+
+ARC scale set은 **scale set 이름과 동일한 단일 label**로만 매칭된다. 따라서
+`runs-on: self-hosted`가 정답이고, 클래식 runner-group 문법
+(`runs-on: { group: Default, labels: [...] }`)은 ARC scale set에 부적절하다.
+
+---
+
+## (구) 잘못된 가설들 — 참고용 보존
+
+아래 진단 절차는 인프라 자체가 죽었을 때를 위한 것이며, 이번 사건의 원인은
+**repo visibility**였으므로 해당 없음. 향후 진짜 인프라 장애 시 참고.
 
 ---
 

@@ -1,9 +1,9 @@
 # 수동 배포 가이드 (Manual deploy)
 
-Status: **CURRENT** (CD 워크플로우가 paused — 진단 결과 self-hosted runner가 0개라 잡이 queued로 멈춤, 자세한 진단은 `docs/cd-runner-diagnostic.md` 참고)
+Status: **BACKUP** (CD가 복구됨 — repo를 PRIVATE으로 전환하여 org self-hosted runner가 잡을 받게 됨. 자세한 경위는 `docs/cd-runner-diagnostic.md` 참고)
 Last updated: 2026-06-29
 
-runner 자체가 0개여서 잡이 queued로 멈춤 (`gh api repos/fun-fx/ffx_nexus/actions/runners` → `{"total_count":0,...}`). App `FFX Actions Runner Controller`는 **All repositories**로 정상 설정되어 있어 repo-access는 문제 아님. 그 동안 **로컬에서 한 줄로 prod에 배포**할 수 있는 helper를 만들었습니다.
+CD가 1주일+ queued였던 근본 원인은 **`ffx_nexus`가 PUBLIC repo였기 때문** — GitHub org는 기본적으로 public repo가 org self-hosted runner를 쓰지 못하게 막는다 (ARC 인프라는 정상이었음). 2026-06-29에 repo를 PRIVATE으로 전환하여 해결. 이 수동 배포 가이드는 이제 CD 장애 시 **백업 절차**로 유지한다.
 
 ---
 
