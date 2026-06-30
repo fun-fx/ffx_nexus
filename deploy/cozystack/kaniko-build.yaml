@@ -27,6 +27,16 @@ spec:
             - --destination=PLACEHOLDER_DESTINATION
             - --skip-tls-verify
             - --skip-tls-verify-pull
+          # The repo is PRIVATE, so kaniko needs basic-auth to clone the
+          # git:// context. Kaniko reads GIT_USERNAME / GIT_TOKEN from the
+          # environment when --context starts with git://. kaniko-build.sh
+          # substitutes these placeholders with the CI-provided actor + the
+          # ephemeral GITHUB_TOKEN before applying the Job.
+          env:
+            - name: GIT_USERNAME
+              value: PLACEHOLDER_GIT_USERNAME
+            - name: GIT_TOKEN
+              value: PLACEHOLDER_GIT_TOKEN
           resources:
             requests:
               cpu: "1"
