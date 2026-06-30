@@ -19,10 +19,11 @@ import (
 // OpenAI adapts the OpenAI Chat Completions API. Because our canonical schema
 // is OpenAI-compatible, this adapter is essentially a typed pass-through.
 type OpenAI struct {
-	apiKey  string
-	baseURL string
-	models  []string
-	client  *http.Client
+	apiKey          string
+	baseURL         string
+	models          []string
+	embeddingModels []string
+	client          *http.Client
 }
 
 // NewOpenAI builds an OpenAI adapter.
@@ -33,8 +34,49 @@ func NewOpenAI(apiKey, baseURL string, timeout time.Duration) *OpenAI {
 		models: []string{
 			"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini",
 		},
+		embeddingModels: []string{
+			"text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002",
+		},
 		client: &http.Client{Timeout: timeout},
 	}
+}
+
+// EmbeddingModels implements gateway.EmbeddingsProvider.
+func (o *OpenAI) EmbeddingModels() []string { return o.embeddingModels }
+
+// Embed performs an OpenAI /v1/embeddings call. Honors per-request credential
+// overrides the same way ChatCompletion does (BYOK).
+func (o *OpenAI) Embed(ctx context.Context, req gateway.EmbeddingRequest) (*gateway.EmbeddingResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	apiKey, baseURL := o.apiKey, o.baseURL
+	if c, ok := gateway.CallerCredentialFrom(ctx); ok {
+		apiKey = c.Secret
+		if c.BaseURL != "" {
+			baseURL = strings.TrimRight(c.BaseURL, "/")
+		}
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, providerError("openai", resp)
+	}
+	var out gateway.EmbeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Name implements gateway.Provider.
