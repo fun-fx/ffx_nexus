@@ -19,11 +19,11 @@ import (
 // OpenAI adapts the OpenAI Chat Completions API. Because our canonical schema
 // is OpenAI-compatible, this adapter is essentially a typed pass-through.
 type OpenAI struct {
-	apiKey         string
-	baseURL        string
-	models         []string
+	apiKey          string
+	baseURL         string
+	models          []string
 	embeddingModels []string
-	client         *http.Client
+	client          *http.Client
 }
 
 // NewOpenAI builds an OpenAI adapter.

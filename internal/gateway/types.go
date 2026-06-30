@@ -179,9 +179,9 @@ type EmbeddingRequest struct {
 
 // EmbeddingResponse is the OpenAI-compatible /v1/embeddings response body.
 type EmbeddingResponse struct {
-	Object string             `json:"object"` // always "list"
-	Data   []EmbeddingItem    `json:"data"`
-	Model  string             `json:"model"`
+	Object string              `json:"object"` // always "list"
+	Data   []EmbeddingItem     `json:"data"`
+	Model  string              `json:"model"`
 	Usage  EmbeddingTokenUsage `json:"usage"`
 }
 
@@ -205,14 +205,14 @@ type EmbeddingTokenUsage struct {
 //
 // See https://platform.openai.com/docs/api-reference/responses/create
 type InputItem struct {
-	Type        string          `json:"type,omitempty"` // "message" | "function_call" | "function_call_output" | ...
-	Role        string          `json:"role,omitempty"` // "user" | "assistant" | "system" | "developer"
-	Content     json.RawMessage `json:"content,omitempty"`
-	Name        string          `json:"name,omitempty"` // for function_call_output
-	CallID      string          `json:"call_id,omitempty"`
-	Arguments   string          `json:"arguments,omitempty"`    // for function_call
-	Output      string          `json:"output,omitempty"`       // for function_call_output
-	Extra       map[string]json.RawMessage `json:"-"`
+	Type      string                     `json:"type,omitempty"` // "message" | "function_call" | "function_call_output" | ...
+	Role      string                     `json:"role,omitempty"` // "user" | "assistant" | "system" | "developer"
+	Content   json.RawMessage            `json:"content,omitempty"`
+	Name      string                     `json:"name,omitempty"` // for function_call_output
+	CallID    string                     `json:"call_id,omitempty"`
+	Arguments string                     `json:"arguments,omitempty"` // for function_call
+	Output    string                     `json:"output,omitempty"`    // for function_call_output
+	Extra     map[string]json.RawMessage `json:"-"`
 }
 
 // ResponsesRequest is the OpenAI Responses API request body. It is intentionally
@@ -220,28 +220,28 @@ type InputItem struct {
 // into a normal /v1/chat/completions request internally (which every backend
 // understands), then unwrap the response back into the Responses shape.
 type ResponsesRequest struct {
-	Model             string          `json:"model"`
-	Input             json.RawMessage `json:"input"` // string | []InputItem
-	Instructions      string          `json:"instructions,omitempty"`
-	Temperature       *float64        `json:"temperature,omitempty"`
-	TopP              *float64        `json:"top_p,omitempty"`
-	MaxOutputTokens   *int            `json:"max_output_tokens,omitempty"`
-	Stream            bool            `json:"stream,omitempty"`
-	Tools             []Tool          `json:"tools,omitempty"`
-	User              string          `json:"user,omitempty"`
-	NexusEval         *NexusEvalContext `json:"nexus_eval,omitempty"`
-	Extra             map[string]json.RawMessage `json:"-"`
+	Model           string                     `json:"model"`
+	Input           json.RawMessage            `json:"input"` // string | []InputItem
+	Instructions    string                     `json:"instructions,omitempty"`
+	Temperature     *float64                   `json:"temperature,omitempty"`
+	TopP            *float64                   `json:"top_p,omitempty"`
+	MaxOutputTokens *int                       `json:"max_output_tokens,omitempty"`
+	Stream          bool                       `json:"stream,omitempty"`
+	Tools           []Tool                     `json:"tools,omitempty"`
+	User            string                     `json:"user,omitempty"`
+	NexusEval       *NexusEvalContext          `json:"nexus_eval,omitempty"`
+	Extra           map[string]json.RawMessage `json:"-"`
 }
 
 // ResponsesResponse is the OpenAI Responses API response body.
 type ResponsesResponse struct {
-	ID        string             `json:"id"`
-	Object    string             `json:"object"` // always "response"
-	CreatedAt int64              `json:"created_at"`
-	Model     string             `json:"model"`
-	Status    string             `json:"status"`
-	Output    []ResponsesOutput  `json:"output"`
-	Usage     ResponsesUsage     `json:"usage"`
+	ID        string            `json:"id"`
+	Object    string            `json:"object"` // always "response"
+	CreatedAt int64             `json:"created_at"`
+	Model     string            `json:"model"`
+	Status    string            `json:"status"`
+	Output    []ResponsesOutput `json:"output"`
+	Usage     ResponsesUsage    `json:"usage"`
 }
 
 // ResponsesOutput is one element of the Responses API output array. Today we
@@ -259,7 +259,7 @@ type ResponsesOutput struct {
 // ResponsesContent is one content part inside a Responses output message.
 type ResponsesContent struct {
 	Type string `json:"type"`           // "output_text"
-	Text string `json:"text,omitempty"`  // rendered assistant text
+	Text string `json:"text,omitempty"` // rendered assistant text
 }
 
 // ResponsesUsage covers the standard input/output token accounting.
