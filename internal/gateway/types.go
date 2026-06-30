@@ -17,6 +17,23 @@ type ChatCompletionRequest struct {
 	Stop        []string  `json:"stop,omitempty"`
 	Tools       []Tool    `json:"tools,omitempty"`
 	User        string    `json:"user,omitempty"`
+
+	// ToolChoice follows the OpenAI v1 spec:
+	//   "none"                       — model must not call any tool
+	//   "auto"                       — model decides (default)
+	//   "required"                   — model must call at least one tool
+	//   {"type":"function","function":{"name":"X"}} — force a specific tool
+	//
+	// Captured as a raw JSON value so we preserve the string vs object shape
+	// exactly across the wire. Adapters translate it to their native
+	// equivalent (e.g. Anthropic's tool_choice variant) or drop it where
+	// the provider does not support it.
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
+
+	// ParallelToolCalls mirrors the OpenAI 1.1+ field. nil means "let the
+	// provider default"; false disables parallel; true forces the provider
+	// to emit as many tool calls as it can in one turn.
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 	// ResponseFormat follows the OpenAI schema. When set to json_object or
 	// json_schema it is forwarded upstream AND used by the schema guardrail to
 	// validate the model's output. Left intact for providers that support it.
@@ -220,17 +237,21 @@ type InputItem struct {
 // into a normal /v1/chat/completions request internally (which every backend
 // understands), then unwrap the response back into the Responses shape.
 type ResponsesRequest struct {
-	Model           string                     `json:"model"`
-	Input           json.RawMessage            `json:"input"` // string | []InputItem
-	Instructions    string                     `json:"instructions,omitempty"`
-	Temperature     *float64                   `json:"temperature,omitempty"`
-	TopP            *float64                   `json:"top_p,omitempty"`
-	MaxOutputTokens *int                       `json:"max_output_tokens,omitempty"`
-	Stream          bool                       `json:"stream,omitempty"`
-	Tools           []Tool                     `json:"tools,omitempty"`
-	User            string                     `json:"user,omitempty"`
-	NexusEval       *NexusEvalContext          `json:"nexus_eval,omitempty"`
-	Extra           map[string]json.RawMessage `json:"-"`
+	Model           string          `json:"model"`
+	Input           json.RawMessage `json:"input"` // string | []InputItem
+	Instructions    string          `json:"instructions,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	TopP            *float64        `json:"top_p,omitempty"`
+	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
+	Stream          bool            `json:"stream,omitempty"`
+	Tools           []Tool          `json:"tools,omitempty"`
+	// ToolChoice is forwarded to the chat-completions backend without
+	// translation. See ChatCompletionRequest.ToolChoice for the contract.
+	ToolChoice        json.RawMessage            `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                      `json:"parallel_tool_calls,omitempty"`
+	User              string                     `json:"user,omitempty"`
+	NexusEval         *NexusEvalContext          `json:"nexus_eval,omitempty"`
+	Extra             map[string]json.RawMessage `json:"-"`
 }
 
 // ResponsesResponse is the OpenAI Responses API response body.
