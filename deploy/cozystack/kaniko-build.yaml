@@ -1,15 +1,17 @@
-# In-cluster image build with kaniko: builds the multi-stage Dockerfile straight
-# from the public GitHub repo and pushes to the in-cluster Harbor. Run with:
+# In-cluster image build with kaniko. Uses the standard harbor.pull secret
+# already in the namespace to authenticate the push. For tag / destination
+# substitution, run deploy/cozystack/kaniko-build.sh instead of applying
+# this file directly — the script replaces the placeholder lines below.
 #
-#   kubectl -n tenant-nexus apply -f deploy/cozystack/kaniko-build.yaml
-#   kubectl -n tenant-nexus logs -f job/nexus-build
+# Manual one-shot (e.g. for a v0.3.6 release build):
+#   IMAGE_TAG=0.3.6 ./deploy/cozystack/kaniko-build.sh
 #
-# The Harbor registry uses a self-signed cert, hence --skip-tls-verify. The
-# `harbor` docker-registry secret (already in the namespace) provides push auth.
+# CI-driven (cd-prod.yml) one-shot after a push to main:
+#   IMAGE_TAG=main-latest ./deploy/cozystack/kaniko-build.sh
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: nexus-build
+  name: PLACEHOLDER_JOB_NAME
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 600
@@ -20,9 +22,9 @@ spec:
         - name: kaniko
           image: gcr.io/kaniko-project/executor:latest
           args:
-            - --context=git://github.com/fun-fx/ffx_nexus.git#refs/heads/main
+            - --context=git://github.com/fun-fx/ffx_nexus.git#PLACEHOLDER_REVISION
             - --dockerfile=Dockerfile
-            - --destination=harbor.<node-ip>.nip.io/ffx/nexus:0.3.4
+            - --destination=PLACEHOLDER_DESTINATION
             - --skip-tls-verify
             - --skip-tls-verify-pull
           resources:

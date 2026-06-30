@@ -16,8 +16,15 @@ image:
   # containerd trusts the Tailscale cert chain). The image pushed
   # to this registry is linux/amd64 (Talos nodes are amd64); the
   # local Mac arm64 build is **not** what the cluster can run.
+  #
+  # Tag strategy: floating `main-latest` rebuilt by cd-prod.yml on every
+  # push to main. This keeps CD single-click: a `git push origin main`
+  # rolls out. Tagged releases (v0.3.6, v0.3.7, ...) are still built by the
+  # same kaniko script — operators run `IMAGE_TAG=vX.Y.Z ./deploy/cozystack/
+  # kaniko-build.sh` then bump image.tag here to that semver. Older tags
+  # do not have to be rebuilt at every release.
   repository: harbor.<tailnet>.ts.net/ffx/nexus
-  tag: 0.3.5
+  tag: main-latest
 imagePullSecrets:
   - name: harbor
 
