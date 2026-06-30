@@ -1,23 +1,27 @@
 # Continuous deployment for prod (Talos + Cozystack, namespace tenant-nexus).
-# Mirrors the manual flow that previously lived in deploy/cozystack/README.md:
-#   1. helm upgrade --install nexus deploy/helm/nexus -f values-prod.yaml
-#   2. rollout status
+#
+# Single-push-to-main flow:
+#   1. Build a fresh image from refs/heads/main via kaniko in-cluster, pushing
+#      to harbor.tail7d361a.ts.net/ffx/nexus:main-latest. This tag is the
+#      floating one — every main push rebuilds it.
+#   2. Helm upgrade --install using deploy/cozystack/values-prod.yaml, which
+#      pins image.tag to `main-latest` so the chart rolls to the new image.
+#   3. In-cluster smoke probes (gateway :8080/healthz, console :8081/healthz).
+#
+# Why floating tag:
+#   Pulling the build out of the CI runner (the runner image doesn't even have
+#   docker/buildx) and into the cluster (where kaniko already works against
+#   the in-cluster Harbor with the existing `harbor` pull-secret) keeps CD
+#   one click: `git push origin main`.
 #
 # Required GitHub secret:
 #   PROD_KUBECONFIG_B64 — base64-encoded kubeconfig with admin rights on the
 #                         prod cluster (Tailscale endpoint, OIDC aside).
+#                         Used by every step in this job.
 #
-# The deploy only targets the in-cluster Nexus release. Per-stack CRs
-# (Postgres, ClickHouse, Redis, Ollama, eval-service) are managed by
-# Cozystack operators and are NOT touched here. A new image tag is also
-# NOT built here: bump image.tag in deploy/cozystack/values-prod.yaml on
-# a separate release PR (e.g. via release.yml + a kaniko Job) and this
-# workflow picks up the new tag on the next main push.
-#
-# Concurrency: serial on main so a fast follow-up push doesn't get rolled
-# back by an in-flight upgrade. Workflow dispatch is allowed for manual
-# rollouts during incidents.
-
+# Concurrency: serial on main so a fast follow-up push doesn't roll an
+# in-progress upgrade back. `cancel-in-progress: false` matches a deployment
+# cadence where each push wins over the previous; in-flight runs finish first.
 name: CD (prod)
 
 on:
@@ -33,15 +37,15 @@ permissions:
   contents: read
 
 jobs:
-  helm-upgrade:
-    name: Helm upgrade (tenant-nexus)
+  cd:
+    name: Build + deploy (tenant-nexus)
     # ARC scale set "self-hosted" (org-level fun-fx, Default group). ARC matches
     # a single label equal to the scale-set name, so plain `self-hosted` is the
     # correct form (verified: fun-fx/ffx_web uses the same and succeeds).
     # NOTE: org self-hosted runners are blocked for PUBLIC repos by default, so
     # this repo must stay PRIVATE for CD to be picked up.
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 25
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     environment: prod
     steps:
@@ -80,12 +84,26 @@ jobs:
         with:
           version: v3.16.2
 
+      # Step 1 of 3: build a fresh image in-cluster. The kaniko Job pulls the
+      # main branch's Dockerfile straight over git and pushes into the
+      # production registry under the "main-latest" floating tag.
+      - name: Build image (kaniko in-cluster)
+        env:
+          IMAGE_TAG: main-latest
+          NAMESPACE: tenant-nexus
+        run: |
+          set -euo pipefail
+          chmod +x deploy/cozystack/kaniko-build.sh
+          ./deploy/cozystack/kaniko-build.sh
+
       - name: Helm dependency build
         run: |
           if [[ -f deploy/helm/nexus/Chart.yaml ]]; then
             helm dependency build deploy/helm/nexus
           fi
 
+      # Step 2 of 3: helm upgrade. With image.tag floating to `main-latest`,
+      # the chart always pulls in the just-built image.
       - name: Helm upgrade --install
         run: |
           set -euo pipefail
@@ -100,9 +118,9 @@ jobs:
         run: |
           kubectl -n tenant-nexus rollout status deploy/nexus --timeout=180s
 
-      # The ARC runner lives inside the cluster (not on Tailscale), so it cannot
-      # resolve the public *.ts.net FQDNs. Probe the app from inside its own pod
-      # instead: gateway listens on :8080, console on :8081.
+      # Step 3 of 3: smoke. ARC runner lives inside the cluster (not on
+      # Tailscale), so it cannot resolve *.ts.net public FQDNs. Probe the
+      # freshly-rolled app from inside its own pod instead.
       - name: Smoke
         run: |
           set -euo pipefail
