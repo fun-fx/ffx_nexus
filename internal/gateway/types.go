@@ -162,3 +162,109 @@ type APIErrorBody struct {
 	Type    string `json:"type"`
 	Code    string `json:"code,omitempty"`
 }
+
+// EmbeddingRequest is the OpenAI-compatible /v1/embeddings request body.
+// Input may be a string or an array of strings/tokens; the union is captured as
+// raw JSON and forwarded to providers that also accept that shape. We validate
+// upstream-side format support lazily: most providers expect []string.
+//
+// See https://platform.openai.com/docs/api-reference/embeddings/create
+type EmbeddingRequest struct {
+	Model          string          `json:"model"`
+	Input          json.RawMessage `json:"input"`
+	EncodingFormat string          `json:"encoding_format,omitempty"` // "float" | "base64"
+	User           string          `json:"user,omitempty"`
+	Dimensions     *int            `json:"dimensions,omitempty"`
+}
+
+// EmbeddingResponse is the OpenAI-compatible /v1/embeddings response body.
+type EmbeddingResponse struct {
+	Object string              `json:"object"` // always "list"
+	Data   []EmbeddingItem     `json:"data"`
+	Model  string              `json:"model"`
+	Usage  EmbeddingTokenUsage `json:"usage"`
+}
+
+// EmbeddingItem is one vector in the embeddings response.
+type EmbeddingItem struct {
+	Object    string    `json:"object"` // always "embedding"
+	Index     int       `json:"index"`
+	Embedding []float32 `json:"embedding"`
+}
+
+// EmbeddingTokenUsage is the token accounting for an embeddings call.
+type EmbeddingTokenUsage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+// InputItem is a single entry of the OpenAI Responses API `input` array.
+// We support the common subset: text messages, role-prefixed messages, and
+// tool-call / tool-result exchanges. Anything unknown is preserved as raw JSON
+// in Extra so we can forward it to providers that understand more shapes.
+//
+// See https://platform.openai.com/docs/api-reference/responses/create
+type InputItem struct {
+	Type      string                     `json:"type,omitempty"` // "message" | "function_call" | "function_call_output" | ...
+	Role      string                     `json:"role,omitempty"` // "user" | "assistant" | "system" | "developer"
+	Content   json.RawMessage            `json:"content,omitempty"`
+	Name      string                     `json:"name,omitempty"` // for function_call_output
+	CallID    string                     `json:"call_id,omitempty"`
+	Arguments string                     `json:"arguments,omitempty"` // for function_call
+	Output    string                     `json:"output,omitempty"`    // for function_call_output
+	Extra     map[string]json.RawMessage `json:"-"`
+}
+
+// ResponsesRequest is the OpenAI Responses API request body. It is intentionally
+// a superset of ChatCompletionRequest fields so the gateway can translate it
+// into a normal /v1/chat/completions request internally (which every backend
+// understands), then unwrap the response back into the Responses shape.
+type ResponsesRequest struct {
+	Model           string                     `json:"model"`
+	Input           json.RawMessage            `json:"input"` // string | []InputItem
+	Instructions    string                     `json:"instructions,omitempty"`
+	Temperature     *float64                   `json:"temperature,omitempty"`
+	TopP            *float64                   `json:"top_p,omitempty"`
+	MaxOutputTokens *int                       `json:"max_output_tokens,omitempty"`
+	Stream          bool                       `json:"stream,omitempty"`
+	Tools           []Tool                     `json:"tools,omitempty"`
+	User            string                     `json:"user,omitempty"`
+	NexusEval       *NexusEvalContext          `json:"nexus_eval,omitempty"`
+	Extra           map[string]json.RawMessage `json:"-"`
+}
+
+// ResponsesResponse is the OpenAI Responses API response body.
+type ResponsesResponse struct {
+	ID        string            `json:"id"`
+	Object    string            `json:"object"` // always "response"
+	CreatedAt int64             `json:"created_at"`
+	Model     string            `json:"model"`
+	Status    string            `json:"status"`
+	Output    []ResponsesOutput `json:"output"`
+	Usage     ResponsesUsage    `json:"usage"`
+}
+
+// ResponsesOutput is one element of the Responses API output array. Today we
+// only emit "message" items (text content); future additions (reasoning,
+// file_citation, etc.) can be added as new types without breaking clients that
+// only read Content.
+type ResponsesOutput struct {
+	Type    string             `json:"type"` // "message"
+	ID      string             `json:"id,omitempty"`
+	Role    string             `json:"role"` // "assistant"
+	Status  string             `json:"status,omitempty"`
+	Content []ResponsesContent `json:"content"`
+}
+
+// ResponsesContent is one content part inside a Responses output message.
+type ResponsesContent struct {
+	Type string `json:"type"`           // "output_text"
+	Text string `json:"text,omitempty"` // rendered assistant text
+}
+
+// ResponsesUsage covers the standard input/output token accounting.
+type ResponsesUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
