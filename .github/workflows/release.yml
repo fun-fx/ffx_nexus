@@ -1,5 +1,26 @@
-# Build and publish a container image to GitHub Container Registry on version tags.
-# Usage: git tag v0.1.0 && git push origin v0.1.0
+# Build and publish a container image, mirror it to the production cluster's
+# private registry.
+#
+# Trigger: git tag vX.Y.Z and `git push origin vX.Y.Z`
+# Outputs:
+#   1. ghcr.io/fun-fx/ffx_nexus  (public, for any user that wants to pull)
+#   2. harbor.<tailnet>.ts.net/ffx/nexus:0.3.6  (Kubelet pulls from here)
+#
+# The harbor mirror requires the operator to register a Harbor robot account
+# (Settings → User settings → Robot accounts → New robot account, scope
+# `harbor_project:ffx`, role `project admin`) and store the credentials in the
+# repo's GitHub secrets:
+#
+#   HARBOR_ROBOT_USERNAME  — robot account name (e.g. "robot$ffx+ci")
+#   HARBOR_ROBOT_SECRET    — the JWT-style secret token Harbor prints once on
+#                            creation. Re-creating the robot account issues a
+#                            new token.
+#
+# See docs/harbor-mirror.md for the one-shot fallback if the mirror step is
+# disabled or the robot account is missing. The Helm chart image tag in
+# deploy/cozystack/values-prod.yaml still needs a manual bump on each release
+# (tracked separately — could be made automatic with a follow-up PR that
+# adds a `cd-bump-tag` job with `contents: write`).
 name: Release
 
 on:
@@ -43,3 +64,51 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Mirror ghcr → Harbor (production registry)
+        # The kubelet on the Talos cluster pulls from
+        # harbor.<tailnet>.ts.net/ffx/nexus, not ghcr.io. Without this mirror
+        # step, helm-upgrade in cd-prod.yml rolls an unchanged image because
+        # the chart's image.tag is bumped manually after the operator copies
+        # the ghcr artifact across.
+        #
+        # Skip-if: HARBOR_ROBOT_USERNAME / HARBOR_ROBOT_SECRET secrets absent —
+        # the run logs a warning and exits 0 so a release can still be cut
+        # without Harbor credentials, and the operator can fall back to the
+        # one-shot instructions in docs/harbor-mirror.md.
+        env:
+          HARBOR_REGISTRY: harbor.<tailnet>.ts.net
+          HARBOR_PROJECT: ffx
+          HARBOR_IMAGE: nexus
+          GV_VERSION: ${{ steps.meta.outputs.version }}   # e.g. v0.3.6
+        run: |
+          set -euo pipefail
+          if [[ -z "${HARBOR_ROBOT_USERNAME:-}" || -z "${HARBOR_ROBOT_SECRET:-}" ]]; then
+            echo "::warning::HARBOR_ROBOT_USERNAME or HARBOR_ROBOT_SECRET missing; skipping mirror."
+            echo "Pods will keep running the previous image tag until the operator runs the"
+            echo "manual fallback (see docs/harbor-mirror.md)."
+            exit 0
+          fi
+          SHORT_VERSION="${GV_VERSION#v}"  # v0.3.6 -> 0.3.6
+          SOURCE_TAG="${GV_VERSION}"
+          TARGET_TAG="${SHORT_VERSION}"
+          SOURCE="ghcr.io/${{ github.repository }}:${SOURCE_TAG}"
+          TARGET="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${HARBOR_IMAGE}:${TARGET_TAG}"
+          echo "Mirroring ${SOURCE}"
+          echo "        ->  ${TARGET}"
+          echo "${HARBOR_ROBOT_SECRET}" | \
+            docker login "${HARBOR_REGISTRY}" \
+              -u "${HARBOR_ROBOT_USERNAME}" \
+              --password-stdin
+          docker pull   "${SOURCE}"
+          docker tag    "${SOURCE}" "${TARGET}"
+          docker push   "${TARGET}"
+          # Pin the major.minor tag too so the chart can bump `image.tag`
+          # itself at any granularity (e.g. 0.3.7 keeps `0.3` as the running
+          # alias, allowing in-place minor upgrades).
+          TARGET_MINOR="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${HARBOR_IMAGE}:$(echo "${TARGET_TAG}" | awk -F. '{print $1"."$2}')"
+          if [[ "${TARGET_MINOR}" != "${TARGET}" ]]; then
+            docker tag  "${SOURCE}" "${TARGET_MINOR}"
+            docker push "${TARGET_MINOR}"
+            echo "Also pushed minor alias: ${TARGET_MINOR}"
+          fi
