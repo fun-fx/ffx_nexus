@@ -98,6 +98,49 @@ func (o *OpenAI) Name() string { return "openai" }
 // Models implements gateway.Provider.
 func (o *OpenAI) Models() []string { return o.models }
 
+// OpenAICompat extends OpenAI with a configurable provider name and model
+// list. Used to register an OpenAI-shaped backend under a distinct provider
+// id (e.g. "groq", "mistral") so callers can disambiguate them at the
+// gateway edge with the "provider/model" prefix.
+//
+// The base OpenAI adapter is intentionally a self-contained struct so this
+// type can embed it freely: the BYOK credential override, the SSE parser,
+// and the individual capability methods are inherited unchanged.
+type OpenAICompat struct {
+	*OpenAI
+	name string
+}
+
+// NewOpenAICompat builds an OpenAICompat with its own provider name and
+// advertised models. Pass nil for a model-slice argument to keep the
+// default OpenAI surface; pass an explicit slice to scope the provider to
+// its real model catalog (e.g. Groq only serves Llama / Mixtral / Gemma /
+// Whisper, so we don't want the embed/moderation/image surface to be
+// falsely advertised there).
+func NewOpenAICompat(name, apiKey, baseURL string, chatModels, embedModels, moderationModels, imageModels []string, timeout time.Duration) *OpenAICompat {
+	o := &OpenAI{
+		apiKey:  apiKey,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		client:  &http.Client{Timeout: timeout},
+	}
+	if chatModels != nil {
+		o.models = chatModels
+	}
+	if embedModels != nil {
+		o.embeddingModels = embedModels
+	}
+	if moderationModels != nil {
+		o.moderationModels = moderationModels
+	}
+	if imageModels != nil {
+		o.imageModels = imageModels
+	}
+	return &OpenAICompat{OpenAI: o, name: name}
+}
+
+// Name overrides the OpenAI name with the registered compat provider name.
+func (c *OpenAICompat) Name() string { return c.name }
+
 // ChatCompletion implements gateway.Provider.
 func (o *OpenAI) ChatCompletion(ctx context.Context, req gateway.ChatCompletionRequest) (*gateway.ChatCompletionResponse, error) {
 	req = req.ForProvider()
