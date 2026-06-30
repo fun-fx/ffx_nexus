@@ -268,3 +268,86 @@ type ResponsesUsage struct {
 	OutputTokens int `json:"output_tokens"`
 	TotalTokens  int `json:"total_tokens"`
 }
+
+// ModerationRequest is the OpenAI-compatible /v1/moderations request body.
+// Input may be a single string or a string array; the union is captured as raw
+// JSON to preserve both shapes across the API surface.
+//
+// See https://platform.openai.com/docs/api-reference/moderations/create
+type ModerationRequest struct {
+	Model string          `json:"model,omitempty"` // optional; defaults to omni-moderation-latest
+	Input json.RawMessage `json:"input"`           // string | []string
+	User  string          `json:"user,omitempty"`
+}
+
+// ModerationResponse is the OpenAI-compatible /v1/moderations response body.
+type ModerationResponse struct {
+	ID      string             `json:"id"`
+	Model   string             `json:"model"`
+	Results []ModerationResult `json:"results"`
+}
+
+// ModerationResult is a single per-input moderation outcome.
+type ModerationResult struct {
+	Flagged    bool            `json:"flagged"`
+	Categories ModerationCats  `json:"categories"`
+	Scores     ModerationScore `json:"category_scores"`
+}
+
+// ModerationCats maps OpenAI category names to booleans. Only the supported
+// subset of omni-moderation-latest is listed here; providers that return extra
+// categories land in Extra.
+type ModerationCats struct {
+	Hate            bool `json:"hate"`
+	HateThreatening bool `json:"hate/threatening"`
+	Harassment      bool `json:"harassment"`
+	HarassmentThr   bool `json:"harassment/threatening"`
+	SelfHarm        bool `json:"self-harm"`
+	SelfHarmIntent  bool `json:"self-harm/intent"`
+	SelfHarmInstr   bool `json:"self-harm/instructions"`
+	Sexual          bool `json:"sexual"`
+	SexualMinors    bool `json:"sexual/minors"`
+	Violence        bool `json:"violence"`
+	ViolenceGraphic bool `json:"violence/graphic"`
+}
+
+// ModerationScore mirrors ModerationCats with confidence scores (0..1).
+type ModerationScore struct {
+	Hate            float64 `json:"hate"`
+	HateThreatening float64 `json:"hate/threatening"`
+	Harassment      float64 `json:"harassment"`
+	HarassmentThr   float64 `json:"harassment/threatening"`
+	SelfHarm        float64 `json:"self-harm"`
+	SelfHarmIntent  float64 `json:"self-harm/intent"`
+	SelfHarmInstr   float64 `json:"self-harm/instructions"`
+	Sexual          float64 `json:"sexual"`
+	SexualMinors    float64 `json:"sexual/minors"`
+	Violence        float64 `json:"violence"`
+	ViolenceGraphic float64 `json:"violence/graphic"`
+}
+
+// ImageGenerationRequest is the OpenAI-compatible /v1/images/generations body.
+type ImageGenerationRequest struct {
+	Model          string `json:"model,omitempty"` // dall-e-2 | dall-e-3 | gpt-image-1
+	Prompt         string `json:"prompt"`
+	N              *int   `json:"n,omitempty"`
+	Quality        string `json:"quality,omitempty"`         // standard | hd (dall-e-3)
+	Size           string `json:"size,omitempty"`            // 256x256 | 512x512 | 1024x1024 | 1792x1024 | 1024x1792
+	ResponseFormat string `json:"response_format,omitempty"` // url | b64_json
+	User           string `json:"user,omitempty"`
+	Style          string `json:"style,omitempty"`      // vivid | natural (dall-e-3)
+	Background     string `json:"background,omitempty"` // transparent | opaque | auto (gpt-image-1)
+}
+
+// ImageGenerationResponse is the OpenAI-compatible /v1/images/generations body.
+type ImageGenerationResponse struct {
+	Created int64           `json:"created"`
+	Data    []ImageDataItem `json:"data"`
+}
+
+// ImageDataItem is one image in the generation response.
+type ImageDataItem struct {
+	B64JSON       string `json:"b64_json,omitempty"`
+	URL           string `json:"url,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}

@@ -567,7 +567,39 @@ func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 	for _, m := range models {
 		data = append(data, model{ID: m, Object: "model", OwnedBy: "nexus"})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+
+	// Embedding, moderation, and image models are reported under separate
+	// data keys so LLM SDKs (and our console) can discover them without a
+	// separate API call. Matches the convention LiteLLM and Bifrost use: a
+	// single /v1/models that exposes every capability the gateway serves.
+	embeddings := h.registry.AllEmbeddingModels()
+	moderations := h.registry.AllModerationModels()
+	images := h.registry.AllImageModels()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   data,
+		"embeddings": map[string]any{
+			"object": "list",
+			"data":   toIDList(embeddings),
+		},
+		"moderations": map[string]any{
+			"object": "list",
+			"data":   toIDList(moderations),
+		},
+		"images": map[string]any{
+			"object": "list",
+			"data":   toIDList(images),
+		},
+	})
+}
+
+func toIDList(ids []string) []map[string]any {
+	out := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, map[string]any{"id": id, "object": "model", "owned_by": "nexus"})
+	}
+	return out
 }
 
 func (h *Handler) newTrace(r *http.Request, req ChatCompletionRequest, providerName string) observability.Trace {
