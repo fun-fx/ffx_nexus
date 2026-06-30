@@ -92,13 +92,11 @@ jobs:
       - name: Ensure harbor-push secret (ts.net host)
         run: |
           set -euo pipefail
+          remap() {
+            python3 -c 'import json,sys; d=json.load(sys.stdin); src=next(iter(d["auths"].values())); print(json.dumps({"auths":{"harbor.tail7d361a.ts.net":src}}))'
+          }
           cfg="$(kubectl -n tenant-nexus get secret harbor \
-            -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d \
-            | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-src=next(iter(d["auths"].values()))
-print(json.dumps({"auths":{"harbor.tail7d361a.ts.net":src}}))')"
+            -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | remap)"
           kubectl -n tenant-nexus create secret generic harbor-push \
             --type=kubernetes.io/dockerconfigjson \
             --from-literal=.dockerconfigjson="$cfg" \
