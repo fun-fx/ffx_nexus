@@ -84,11 +84,18 @@ jobs:
         with:
           version: v3.16.2
 
-      # Step 1 of 3: build a fresh image in-cluster. The kaniko Job pulls the
-      # main branch's Dockerfile straight over git and pushes into the
-      # production registry under the "main-latest" floating tag.
+      # Step 1 of 3: build a fresh image in-cluster. The kaniko Job clones
+      # github.com/fun-fx/ffx_nexus at refs/heads/main via HTTPS and pushes
+      # the resulting image to harbor.<tailnet>.ts.net under the
+      # floating `main-latest` tag. The repo is PRIVATE, so we hand kaniko
+      # the ephemeral GITHUB_TOKEN exposed by Actions + the workflow's
+      # `github.actor` user as the basic-auth pair. Kaniko reads these from
+      # env vars GIT_USERNAME / GIT_TOKEN automatically when --context starts
+      # with `git://`.
       - name: Build image (kaniko in-cluster)
         env:
+          GIT_USERNAME: ${{ github.actor }}
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_TAG: main-latest
           NAMESPACE: tenant-nexus
         run: |
