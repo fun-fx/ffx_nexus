@@ -485,6 +485,10 @@ func registerStoredCredentials(ctx context.Context, reg *gateway.Registry, st *c
 			reg.Register(providers.NewAnthropic(c.Secret, cfg.UpstreamTimeout))
 		case "gemini":
 			reg.Register(providers.NewGemini(c.Secret, cfg.UpstreamTimeout))
+		case "groq":
+			reg.Register(providers.NewGroq(c.Secret, cfg.UpstreamTimeout))
+		case "mistral":
+			reg.Register(providers.NewMistral(c.Secret, cfg.UpstreamTimeout))
 		default:
 			log.Warn("unknown provider in credential store", "provider", c.Provider)
 			continue
@@ -513,5 +517,13 @@ func registerProviders(reg *gateway.Registry, cfg config.Config, log *slog.Logge
 	if cfg.GeminiAPIKey != "" {
 		reg.Register(providers.NewGemini(cfg.GeminiAPIKey, cfg.UpstreamTimeout))
 		log.Info("provider registered", "name", "gemini")
+	}
+	if cfg.GroqAPIKey != "" {
+		reg.Register(providers.NewGroq(cfg.GroqAPIKey, cfg.UpstreamTimeout))
+		log.Info("provider registered", "name", "groq")
+	}
+	if cfg.MistralAPIKey != "" {
+		reg.Register(providers.NewMistral(cfg.MistralAPIKey, cfg.UpstreamTimeout))
+		log.Info("provider registered", "name", "mistral")
 	}
 }
