@@ -116,7 +116,7 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 
 | Endpoint | Notes |
 | --- | --- |
-| `POST /v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming, tools, structured output) |
+| `POST /v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming, tools with `tool_choice` + `parallel_tool_calls`, structured output) |
 | `POST /v1/responses` | OpenAI Responses API (string or array `input`, tool calls surfaced as `function_call` items). Implemented as a thin shim over `/v1/chat/completions`. |
 | `POST /v1/embeddings` | OpenAI-compatible embeddings for providers that implement the `EmbeddingsProvider` interface (OpenAI / Mistral today; Anthropic / Gemini / Groq to follow). Supports string and string-array `input`. |
 | `POST /v1/moderations` | OpenAI-compatible content moderation. Omitted `model` defaults to `omni-moderation-latest`. Same `Auth`+`Enforce`+`BYOK` chain as chat. |
