@@ -30,6 +30,8 @@ func NewMux(h *Handler, auth VKeyAuthenticator, lim Limiter, log *slog.Logger) h
 		r.Post("/v1/chat/completions", h.ChatCompletions)
 		r.Post("/v1/responses", h.Responses)
 		r.Post("/v1/embeddings", h.Embeddings)
+		r.Post("/v1/moderations", h.Moderations)
+		r.Post("/v1/images/generations", h.Images)
 		r.Get("/v1/models", h.Models)
 	})
 

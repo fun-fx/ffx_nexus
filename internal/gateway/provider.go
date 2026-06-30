@@ -38,6 +38,29 @@ type EmbeddingsProvider interface {
 	Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error)
 }
 
+// ModerationsProvider is an optional capability for OpenAI-compatible
+// /v1/moderations. A provider that does not implement it cannot serve
+// moderation requests; the handler returns 404 model_not_found.
+type ModerationsProvider interface {
+	Provider
+	// ModerationModels is the set of moderation model ids the provider serves
+	// (e.g. omni-moderation-latest, text-moderation-stable).
+	ModerationModels() []string
+	// Moderate runs the moderation call.
+	Moderate(ctx context.Context, req ModerationRequest) (*ModerationResponse, error)
+}
+
+// ImageGenerationProvider is an optional capability for OpenAI-compatible
+// /v1/images/generations. Same discovery pattern via type assertion.
+type ImageGenerationProvider interface {
+	Provider
+	// ImageModels returns the set of image model ids the provider serves
+	// (e.g. dall-e-3, gpt-image-1).
+	ImageModels() []string
+	// GenerateImages runs the image generation call.
+	GenerateImages(ctx context.Context, req ImageGenerationRequest) (*ImageGenerationResponse, error)
+}
+
 // Registry maps model IDs to providers and supports prefix-based routing
 // (e.g. "openai/gpt-4o" forces the openai provider).
 type Registry struct {
@@ -124,26 +147,29 @@ func (r *Registry) AllEmbeddingModels() []string {
 }
 
 // ResolveEmbedding picks an EmbeddingsProvider for the requested model. The
-// returned Provider is also a generic Provider so callers can read its name for
-// trace attribution. ok=false means no embed-capable provider serves that model.
+// returned Provider is also a generic Provider so callers can read its name
+// for trace attribution. ok=false means no embed-capable provider serves
+// that model. Honors a "provider/model" prefix just like Resolve.
 func (r *Registry) ResolveEmbedding(model string) (EmbeddingsProvider, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if name, rest, hit := strings.Cut(model, "/"); hit {
+		for _, p := range r.providers {
+			ep, ok := p.(EmbeddingsProvider)
+			if !ok || p.Name() != name {
+				continue
+			}
+			for _, m := range ep.EmbeddingModels() {
+				if m == rest {
+					return ep, true
+				}
+			}
+		}
+		return nil, false
+	}
 	for _, p := range r.providers {
 		ep, ok := p.(EmbeddingsProvider)
 		if !ok {
-			continue
-		}
-		// Honor an explicit "provider/model" prefix so a multi-tenant deployment
-		// can disambiguate when two providers share a model id.
-		if name, rest, hit := strings.Cut(model, "/"); hit {
-			if p.Name() == name {
-				for _, m := range ep.EmbeddingModels() {
-					if m == rest {
-						return ep, true
-					}
-				}
-			}
 			continue
 		}
 		for _, m := range ep.EmbeddingModels() {
@@ -153,4 +179,115 @@ func (r *Registry) ResolveEmbedding(model string) (EmbeddingsProvider, bool) {
 		}
 	}
 	return nil, false
+}
+
+// AllModerationModels returns the union of moderation model ids from every
+// provider that implements ModerationsProvider, sorted for stable output.
+func (r *Registry) AllModerationModels() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := map[string]struct{}{}
+	for _, p := range r.providers {
+		mp, ok := p.(ModerationsProvider)
+		if !ok {
+			continue
+		}
+		for _, m := range mp.ModerationModels() {
+			seen[m] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for m := range seen {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ResolveModeration picks a ModerationsProvider for the requested model. An
+// empty model falls back to the first registered provider's primary model
+// (matches the OpenAI default of omni-moderation-latest).
+func (r *Registry) ResolveModeration(model string) (ModerationsProvider, string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		mp, ok := p.(ModerationsProvider)
+		if !ok {
+			continue
+		}
+		for _, m := range mp.ModerationModels() {
+			if model == "" || model == m {
+				return mp, m, true
+			}
+		}
+		if name, rest, hit := strings.Cut(model, "/"); hit && p.Name() == name {
+			for _, m := range mp.ModerationModels() {
+				if m == rest {
+					return mp, m, true
+				}
+			}
+		}
+	}
+	return nil, "", false
+}
+
+// AllImageModels returns the union of image model ids across providers.
+func (r *Registry) AllImageModels() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := map[string]struct{}{}
+	for _, p := range r.providers {
+		ip, ok := p.(ImageGenerationProvider)
+		if !ok {
+			continue
+		}
+		for _, m := range ip.ImageModels() {
+			seen[m] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for m := range seen {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ResolveImage picks an ImageGenerationProvider for the requested model.
+// An empty model resolves to the first image-capable provider's primary
+// model (matches the OpenAI default dall-e-3). Honors a "provider/model"
+// prefix the same way Resolve does.
+func (r *Registry) ResolveImage(model string) (ImageGenerationProvider, string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if name, rest, ok := strings.Cut(model, "/"); ok {
+		for _, p := range r.providers {
+			ip, ok := p.(ImageGenerationProvider)
+			if !ok || p.Name() != name {
+				continue
+			}
+			for _, m := range ip.ImageModels() {
+				if m == rest {
+					return ip, m, true
+				}
+			}
+		}
+		return nil, "", false
+	}
+	for _, p := range r.providers {
+		ip, ok := p.(ImageGenerationProvider)
+		if !ok {
+			continue
+		}
+		ms := ip.ImageModels()
+		if model == "" && len(ms) > 0 {
+			return ip, ms[0], true
+		}
+		for _, m := range ms {
+			if m == model {
+				return ip, m, true
+			}
+		}
+	}
+	return nil, "", false
 }
