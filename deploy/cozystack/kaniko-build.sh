@@ -18,7 +18,7 @@ set -euo pipefail
 
 : "${IMAGE_TAG:?must set IMAGE_TAG (e.g. 0.3.6 or main-latest)}"
 : "${NAMESPACE:=tenant-nexus}"
-: "${REGISTRY:=harbor.<tailnet>.ts.net}"
+: "${REGISTRY:=harbor.<node-ip>.nip.io}"
 : "${PROJECT:=ffx}"
 : "${IMAGE:=nexus}"
 : "${REVISION:=refs/heads/main}"

@@ -1,27 +1,30 @@
 # Continuous deployment for prod (Talos + Cozystack, namespace tenant-nexus).
 #
-# Single-push-to-main flow:
-#   1. Build a fresh image from refs/heads/main via kaniko in-cluster, pushing
-#      to harbor.<tailnet>.ts.net/ffx/nexus:main-latest. This tag is the
-#      floating one — every main push rebuilds it.
-#   2. Helm upgrade --install using deploy/cozystack/values-prod.yaml, which
-#      pins image.tag to `main-latest` so the chart rolls to the new image.
+# Single-push-to-main flow (modeled on the proven fun-fx/ffx_web pipeline):
+#   1. An in-cluster kaniko Job builds the image. An initContainer clones the
+#      repo at this commit using the ephemeral Actions token, drops the source
+#      into a shared emptyDir, and kaniko builds that LOCAL context (no git://
+#      clone inside kaniko, so no PAT is needed). The image is pushed to the
+#      LAN Harbor host (harbor.<node-ip>.nip.io) — the same host the nodes
+#      already pull from — under an IMMUTABLE git-SHA tag (+ a convenience
+#      `main-latest`).
+#   2. helm upgrade --install pins image.tag to that SHA, so the Deployment
+#      spec changes every push and Kubernetes rolls automatically (no force
+#      restart, no floating-tag cache ambiguity).
 #   3. In-cluster smoke probes (gateway :8080/healthz, console :8081/healthz).
 #
-# Why floating tag:
-#   Pulling the build out of the CI runner (the runner image doesn't even have
-#   docker/buildx) and into the cluster (where kaniko already works against
-#   the in-cluster Harbor with the existing `harbor` pull-secret) keeps CD
-#   one click: `git push origin main`.
+# Why this shape:
+#   - The ARC runner image has no docker/buildx, so the build runs in-cluster.
+#   - The initContainer clone pattern means kaniko never authenticates to
+#     GitHub itself; the short-lived `github.token` is enough (matches ffx_web).
+#   - Pushing/pulling on the LAN host reuses the existing `harbor` secret, so
+#     no extra push secret or host remap is required.
 #
 # Required GitHub secret:
-#   PROD_KUBECONFIG_B64 — base64-encoded kubeconfig with admin rights on the
-#                         prod cluster (Tailscale endpoint, OIDC aside).
-#                         Used by every step in this job.
+#   PROD_KUBECONFIG_B64 — base64 kubeconfig with rights on the prod cluster.
 #
 # Concurrency: serial on main so a fast follow-up push doesn't roll an
-# in-progress upgrade back. `cancel-in-progress: false` matches a deployment
-# cadence where each push wins over the previous; in-flight runs finish first.
+# in-progress upgrade back; in-flight runs finish first.
 name: CD (prod)
 
 on:
@@ -35,6 +38,11 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  REGISTRY: harbor.<node-ip>.nip.io
+  IMAGE: ffx/nexus
+  NAMESPACE: tenant-nexus
 
 jobs:
   cd:
@@ -84,44 +92,123 @@ jobs:
         with:
           version: v3.16.2
 
-      # kaniko pushes to the Tailscale host (harbor.<tailnet>.ts.net) but the
-      # default `harbor` pull-secret's auth entry is keyed by the LAN host
-      # (…nip.io), which kaniko can't match for that push. Derive a host-correct
-      # copy keyed by the ts.net host so the push authenticates. Idempotent:
-      # re-applied every run so the secret survives namespace resets.
-      - name: Ensure harbor-push secret (ts.net host)
+      # Step 1 of 3: build the image in-cluster with kaniko. An initContainer
+      # clones THIS commit via x-access-token + the ephemeral Actions token into
+      # a shared emptyDir; kaniko then builds that local context and pushes to
+      # the LAN Harbor host using the existing `harbor` pull/push secret.
+      # Immutable git-SHA tag + a floating `main-latest` for convenience.
+      - name: Build & push image (kaniko in-cluster)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          remap() {
-            python3 -c 'import json,sys; d=json.load(sys.stdin); src=next(iter(d["auths"].values())); print(json.dumps({"auths":{"harbor.<tailnet>.ts.net":src}}))'
-          }
-          cfg="$(kubectl -n tenant-nexus get secret harbor \
-            -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | remap)"
-          kubectl -n tenant-nexus create secret generic harbor-push \
-            --type=kubernetes.io/dockerconfigjson \
-            --from-literal=.dockerconfigjson="$cfg" \
+          SHA="${GITHUB_SHA}"
+          JOB_NAME="nexus-build-${SHA::7}"
+          echo "JOB_NAME=$JOB_NAME" >> "$GITHUB_ENV"
+          echo "IMAGE_SHA=${REGISTRY}/${IMAGE}:${SHA}" >> "$GITHUB_ENV"
+
+          # Short-lived git credential for the clone initContainer.
+          kubectl -n "$NAMESPACE" create secret generic kaniko-git-creds \
+            --from-literal=.git-credentials="https://x-access-token:${GH_TOKEN}@github.com" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      # Step 1 of 3: build a fresh image in-cluster. The kaniko Job clones
-      # github.com/fun-fx/ffx_nexus at refs/heads/main via HTTPS and pushes
-      # the resulting image to harbor.<tailnet>.ts.net under the floating
-      # `main-latest` tag. The repo is PRIVATE, so we hand kaniko the
-      # ephemeral GITHUB_TOKEN exposed by Actions. The basic-auth USERNAME
-      # for an Actions token MUST be the literal `x-access-token` — GitHub
-      # rejects (github.actor + app-token) with "Password authentication is
-      # not supported". Kaniko reads GIT_USERNAME / GIT_TOKEN from env when
-      # --context starts with `git://`. The push itself is authenticated by
-      # the in-cluster `harbor-push` secret mounted by the Job.
-      - name: Build image (kaniko in-cluster)
-        env:
-          GIT_USERNAME: x-access-token
-          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IMAGE_TAG: main-latest
-          NAMESPACE: tenant-nexus
-        run: |
-          set -euo pipefail
-          chmod +x deploy/cozystack/kaniko-build.sh
-          ./deploy/cozystack/kaniko-build.sh
+          # Drop any previous build job of the same name (re-run safety).
+          kubectl -n "$NAMESPACE" delete job "$JOB_NAME" --ignore-not-found
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${JOB_NAME}
+            namespace: ${NAMESPACE}
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 600
+            template:
+              spec:
+                restartPolicy: Never
+                initContainers:
+                  - name: clone
+                    image: alpine/git:latest
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        set -e
+                        git config --global credential.helper store
+                        cp /git-creds/.git-credentials ~/.git-credentials
+                        git clone --depth=1 https://github.com/${GITHUB_REPOSITORY}.git /workspace
+                        cd /workspace && git fetch --depth=1 origin ${SHA} && git checkout ${SHA}
+                        echo "cloned ${GITHUB_REPOSITORY} at ${SHA}"
+                    volumeMounts:
+                      - name: workspace
+                        mountPath: /workspace
+                      - name: git-creds
+                        mountPath: /git-creds
+                        readOnly: true
+                containers:
+                  - name: kaniko
+                    image: gcr.io/kaniko-project/executor:latest
+                    args:
+                      - --dockerfile=/workspace/Dockerfile
+                      - --context=/workspace
+                      - --destination=${REGISTRY}/${IMAGE}:${SHA}
+                      - --destination=${REGISTRY}/${IMAGE}:main-latest
+                      - --skip-tls-verify
+                      - --cache=false
+                    resources:
+                      requests:
+                        cpu: "1"
+                        memory: 2Gi
+                      limits:
+                        cpu: "2"
+                        memory: 4Gi
+                    volumeMounts:
+                      - name: workspace
+                        mountPath: /workspace
+                      - name: docker-config
+                        mountPath: /kaniko/.docker
+                        readOnly: true
+                volumes:
+                  - name: workspace
+                    emptyDir: {}
+                  - name: git-creds
+                    secret:
+                      secretName: kaniko-git-creds
+                  - name: docker-config
+                    secret:
+                      secretName: harbor
+                      items:
+                        - key: .dockerconfigjson
+                          path: config.json
+          EOF
+
+          # Poll for a terminal state. `kubectl wait --for=condition=complete`
+          # never returns on a Failed job, so a broken build would hang for the
+          # full timeout — poll both conditions and bail the moment it fails.
+          echo "waiting for build job ${JOB_NAME} (timeout 600s)"
+          deadline=$(( $(date +%s) + 600 ))
+          phase=""
+          while :; do
+            if kubectl -n "$NAMESPACE" get job "$JOB_NAME" \
+                -o 'jsonpath={.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null | grep -q True; then
+              phase="complete"; break
+            fi
+            if kubectl -n "$NAMESPACE" get job "$JOB_NAME" \
+                -o 'jsonpath={.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null | grep -q True; then
+              phase="failed"; break
+            fi
+            if (( $(date +%s) >= deadline )); then phase="timeout"; break; fi
+            sleep 5
+          done
+
+          if [[ "$phase" != "complete" ]]; then
+            echo "::error::kaniko build ${phase}"
+            kubectl -n "$NAMESPACE" logs "job/${JOB_NAME}" -c clone --tail=40 || true
+            kubectl -n "$NAMESPACE" logs "job/${JOB_NAME}" -c kaniko --tail=80 || true
+            exit 1
+          fi
+          echo "build OK: ${REGISTRY}/${IMAGE}:${SHA}"
 
       - name: Helm dependency build
         run: |
@@ -129,29 +216,24 @@ jobs:
             helm dependency build deploy/helm/nexus
           fi
 
-      # Step 2 of 3: helm upgrade. With image.tag floating to `main-latest`,
-      # the chart always pulls in the just-built image.
+      # Step 2 of 3: helm upgrade pinned to the immutable SHA tag. Because the
+      # tag changes every push, the Deployment spec changes and Kubernetes rolls
+      # automatically — no force restart needed.
       - name: Helm upgrade --install
         run: |
           set -euo pipefail
           helm upgrade --install nexus deploy/helm/nexus \
-            --namespace tenant-nexus \
+            --namespace "$NAMESPACE" \
             --create-namespace \
             -f deploy/cozystack/values-prod.yaml \
+            --set image.repository="${REGISTRY}/${IMAGE}" \
+            --set image.tag="${GITHUB_SHA}" \
             --wait \
             --timeout 5m
 
-      # The image tag is floating (`main-latest`), so helm upgrade leaves the
-      # Deployment spec byte-identical across pushes and would NOT restart any
-      # pod even though the image digest changed. Force a rollout so the new
-      # `main-latest` (pullPolicy: Always) is actually pulled.
-      - name: Force rollout (floating tag)
-        run: |
-          kubectl -n tenant-nexus rollout restart deploy/nexus
-
       - name: Wait for rollout
         run: |
-          kubectl -n tenant-nexus rollout status deploy/nexus --timeout=180s
+          kubectl -n "$NAMESPACE" rollout status deploy/nexus --timeout=180s
 
       # Step 3 of 3: smoke. ARC runner lives inside the cluster (not on
       # Tailscale), so it cannot resolve *.ts.net public FQDNs. Probe the
@@ -161,7 +243,7 @@ jobs:
           set -euo pipefail
           for endpoint in "8080:gateway" "8081:console"; do
             port="${endpoint%%:*}"; name="${endpoint##*:}"
-            code=$(kubectl -n tenant-nexus exec deploy/nexus -- \
+            code=$(kubectl -n "$NAMESPACE" exec deploy/nexus -- \
               wget -q -O /dev/null -S "http://localhost:${port}/healthz" 2>&1 \
               | awk '/HTTP\// {print $2; exit}')
             echo "$name ($port) -> ${code:-no-response}"
@@ -174,4 +256,4 @@ jobs:
       - name: Post-run status
         if: always()
         run: |
-          kubectl -n tenant-nexus get deploy,po -l app.kubernetes.io/name=nexus -o wide
+          kubectl -n "$NAMESPACE" get deploy,po -l app.kubernetes.io/name=nexus -o wide

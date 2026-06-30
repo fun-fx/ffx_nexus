@@ -11,24 +11,17 @@
 existingSecret: nexus
 
 image:
-  # Use the Tailscale MagicDNS name so the kubelet can pull without
-  # having to trust the self-signed Harbor cert (the in-cluster
-  # containerd trusts the Tailscale cert chain). The image pushed
-  # to this registry is linux/amd64 (Talos nodes are amd64); the
-  # local Mac arm64 build is **not** what the cluster can run.
+  # LAN Harbor host that the Talos nodes already pull from (verified: ffx_web
+  # runs on the same host). The image is linux/amd64 (Talos nodes are amd64).
   #
-  # Tag strategy: floating `main-latest` rebuilt by cd-prod.yml on every
-  # push to main. This keeps CD single-click: a `git push origin main`
-  # rolls out. Tagged releases (v0.3.6, v0.3.7, ...) are still built by the
-  # same kaniko script — operators run `IMAGE_TAG=vX.Y.Z ./deploy/cozystack/
-  # kaniko-build.sh` then bump image.tag here to that semver. Older tags
-  # do not have to be rebuilt at every release.
-  repository: harbor.<tailnet>.ts.net/ffx/nexus
+  # Tag strategy: cd-prod.yml builds an IMMUTABLE git-SHA tag on every push to
+  # main and passes it via `--set image.tag=<sha>`. Because the tag changes
+  # each push, the Deployment spec changes and Kubernetes rolls automatically —
+  # no floating tag, no force restart, no stale-cache ambiguity. The default
+  # below (`main-latest`) is only a convenience for manual `helm upgrade`.
+  repository: harbor.<node-ip>.nip.io/ffx/nexus
   tag: main-latest
-  # Floating tag: the digest behind `main-latest` changes on every main push,
-  # but the tag string does not. IfNotPresent would let a node keep serving a
-  # stale cached layer, so force a fresh pull each rollout.
-  pullPolicy: Always
+  pullPolicy: IfNotPresent
 imagePullSecrets:
   - name: harbor
 
