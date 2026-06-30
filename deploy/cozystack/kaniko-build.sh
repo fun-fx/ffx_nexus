@@ -26,16 +26,34 @@ set -euo pipefail
 : "${WAIT_TIMEOUT_SECS:=600}"
 
 # Render manifest with sed to keep the template portable (no helm dependency).
+# GNU sed-only `0,/PATTERN/{...}` first-occurrence syntax was tempting but
+# breaks under BSD sed (macOS / busybox). We instead use python3 which is
+# universally available in CI runners and in the operator's typical macOS
+# environment (`brew install python` or the bundled Xcode toolchain).
 TEMPLATE="$(cd "$(dirname "$0")" && pwd)/kaniko-build.yaml"
 RENDERED="$(mktemp -t kaniko-build.XXXXXX.yaml)"
 trap 'rm -f "$RENDERED"' EXIT
 
-# Replace the placeholder --destination line to a single positional arg.
 DEST="${REGISTRY}/${PROJECT}/${IMAGE}:${IMAGE_TAG}"
-sed -E \
-    -e "s#(--destination=)[^[:space:]]+#\1${DEST}#" \
-    -e "s#(\"name\":[[:space:]]*\")[^\"]*(\")#\1${JOB_NAME}\2#" \
-    "$TEMPLATE" > "$RENDERED"
+REVISION="${REVISION}" \
+JOB_NAME="${JOB_NAME}" \
+DEST="${DEST}" \
+    python3 - "$TEMPLATE" "$RENDERED" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+replacements = {
+    "PLACEHOLDER_DESTINATION": os.environ["DEST"],
+    "PLACEHOLDER_JOB_NAME":     os.environ["JOB_NAME"],
+    "PLACEHOLDER_REVISION":     os.environ["REVISION"],
+}
+text = open(src).read()
+for needle, val in replacements.items():
+    if text.count(needle) != 1:
+        sys.exit(f"expected exactly one occurrence of {needle}, "
+                 f"got {text.count(needle)}; bailing out")
+    text = text.replace(needle, val, 1)
+open(dst, "w").write(text)
+PY
 
 # Drop any previous run of the build job; if pod is still terminating we want
 # the new one to own resources afresh rather than queue.
