@@ -24,6 +24,11 @@ set -euo pipefail
 : "${REVISION:=refs/heads/main}"
 : "${JOB_NAME:=nexus-build}"
 : "${WAIT_TIMEOUT_SECS:=600}"
+# Git basic-auth for cloning the PRIVATE repo context. In CI these come from
+# the workflow (github.actor + ephemeral GITHUB_TOKEN); for a manual operator
+# build, export a PAT first. Left empty they will simply produce an auth error.
+: "${GIT_USERNAME:=}"
+: "${GIT_TOKEN:=}"
 
 # Render manifest with sed to keep the template portable (no helm dependency).
 # GNU sed-only `0,/PATTERN/{...}` first-occurrence syntax was tempting but
@@ -38,13 +43,17 @@ DEST="${REGISTRY}/${PROJECT}/${IMAGE}:${IMAGE_TAG}"
 REVISION="${REVISION}" \
 JOB_NAME="${JOB_NAME}" \
 DEST="${DEST}" \
+GIT_USERNAME="${GIT_USERNAME}" \
+GIT_TOKEN="${GIT_TOKEN}" \
     python3 - "$TEMPLATE" "$RENDERED" <<'PY'
 import os, sys
 src, dst = sys.argv[1], sys.argv[2]
 replacements = {
-    "PLACEHOLDER_DESTINATION": os.environ["DEST"],
+    "PLACEHOLDER_DESTINATION":  os.environ["DEST"],
     "PLACEHOLDER_JOB_NAME":     os.environ["JOB_NAME"],
     "PLACEHOLDER_REVISION":     os.environ["REVISION"],
+    "PLACEHOLDER_GIT_USERNAME": os.environ.get("GIT_USERNAME", ""),
+    "PLACEHOLDER_GIT_TOKEN":    os.environ.get("GIT_TOKEN", ""),
 }
 text = open(src).read()
 for needle, val in replacements.items():
@@ -63,8 +72,30 @@ echo "==> applying Kaniko build job (tag=${IMAGE_TAG}, dest=${DEST})"
 kubectl -n "$NAMESPACE" apply -f "$RENDERED"
 
 echo "==> waiting for build job to finish (timeout ${WAIT_TIMEOUT_SECS}s)"
-if ! kubectl -n "$NAMESPACE" wait --for=condition=Complete --timeout="${WAIT_TIMEOUT_SECS}s" "job/${JOB_NAME}"; then
-    echo "build job did not complete cleanly; dumping recent logs:" >&2
+# `kubectl wait --for=condition=Complete` never returns on a Failed job, so a
+# broken build would hang here for the full timeout. Poll for *either* terminal
+# condition and bail the moment the job fails.
+deadline=$(( $(date +%s) + WAIT_TIMEOUT_SECS ))
+status=""
+while :; do
+    if kubectl -n "$NAMESPACE" get "job/${JOB_NAME}" \
+        -o 'jsonpath={.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null \
+        | grep -q True; then
+        status="complete"; break
+    fi
+    if kubectl -n "$NAMESPACE" get "job/${JOB_NAME}" \
+        -o 'jsonpath={.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null \
+        | grep -q True; then
+        status="failed"; break
+    fi
+    if (( $(date +%s) >= deadline )); then
+        status="timeout"; break
+    fi
+    sleep 5
+done
+
+if [[ "$status" != "complete" ]]; then
+    echo "build job did not complete cleanly (status=${status}); dumping recent logs:" >&2
     kubectl -n "$NAMESPACE" logs --tail=200 "job/${JOB_NAME}" >&2 || true
     kubectl -n "$NAMESPACE" describe "job/${JOB_NAME}" >&2 || true
     exit 1
