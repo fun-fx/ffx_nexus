@@ -1,7 +1,10 @@
-# In-cluster image build with kaniko. Uses the standard harbor.pull secret
-# already in the namespace to authenticate the push. For tag / destination
-# substitution, run deploy/cozystack/kaniko-build.sh instead of applying
-# this file directly — the script replaces the placeholder lines below.
+# In-cluster image build with kaniko. Authenticates the PUSH with the
+# `harbor-push` secret — a dockerconfigjson whose auth entry is keyed by the
+# Tailscale host (harbor.<tailnet>.ts.net) that --destination targets. The
+# default `harbor` pull secret is keyed by the LAN host (…nip.io), which kaniko
+# can't match for the ts.net push, so a host-correct copy is required. For tag /
+# destination substitution, run deploy/cozystack/kaniko-build.sh instead of
+# applying this file directly — the script replaces the placeholder lines below.
 #
 # Manual one-shot (e.g. for a v0.3.6 release build):
 #   IMAGE_TAG=0.3.6 ./deploy/cozystack/kaniko-build.sh
@@ -50,7 +53,7 @@ spec:
       volumes:
         - name: docker-config
           secret:
-            secretName: harbor
+            secretName: harbor-push
             items:
               - key: .dockerconfigjson
                 path: config.json

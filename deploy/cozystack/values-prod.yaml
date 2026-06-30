@@ -25,6 +25,10 @@ image:
   # do not have to be rebuilt at every release.
   repository: harbor.<tailnet>.ts.net/ffx/nexus
   tag: main-latest
+  # Floating tag: the digest behind `main-latest` changes on every main push,
+  # but the tag string does not. IfNotPresent would let a node keep serving a
+  # stale cached layer, so force a fresh pull each rollout.
+  pullPolicy: Always
 imagePullSecrets:
   - name: harbor
 

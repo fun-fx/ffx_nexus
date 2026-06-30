@@ -84,17 +84,39 @@ jobs:
         with:
           version: v3.16.2
 
+      # kaniko pushes to the Tailscale host (harbor.<tailnet>.ts.net) but the
+      # default `harbor` pull-secret's auth entry is keyed by the LAN host
+      # (…nip.io), which kaniko can't match for that push. Derive a host-correct
+      # copy keyed by the ts.net host so the push authenticates. Idempotent:
+      # re-applied every run so the secret survives namespace resets.
+      - name: Ensure harbor-push secret (ts.net host)
+        run: |
+          set -euo pipefail
+          cfg="$(kubectl -n tenant-nexus get secret harbor \
+            -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d \
+            | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+src=next(iter(d["auths"].values()))
+print(json.dumps({"auths":{"harbor.<tailnet>.ts.net":src}}))')"
+          kubectl -n tenant-nexus create secret generic harbor-push \
+            --type=kubernetes.io/dockerconfigjson \
+            --from-literal=.dockerconfigjson="$cfg" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       # Step 1 of 3: build a fresh image in-cluster. The kaniko Job clones
       # github.com/fun-fx/ffx_nexus at refs/heads/main via HTTPS and pushes
-      # the resulting image to harbor.<tailnet>.ts.net under the
-      # floating `main-latest` tag. The repo is PRIVATE, so we hand kaniko
-      # the ephemeral GITHUB_TOKEN exposed by Actions + the workflow's
-      # `github.actor` user as the basic-auth pair. Kaniko reads these from
-      # env vars GIT_USERNAME / GIT_TOKEN automatically when --context starts
-      # with `git://`.
+      # the resulting image to harbor.<tailnet>.ts.net under the floating
+      # `main-latest` tag. The repo is PRIVATE, so we hand kaniko the
+      # ephemeral GITHUB_TOKEN exposed by Actions. The basic-auth USERNAME
+      # for an Actions token MUST be the literal `x-access-token` — GitHub
+      # rejects (github.actor + app-token) with "Password authentication is
+      # not supported". Kaniko reads GIT_USERNAME / GIT_TOKEN from env when
+      # --context starts with `git://`. The push itself is authenticated by
+      # the in-cluster `harbor-push` secret mounted by the Job.
       - name: Build image (kaniko in-cluster)
         env:
-          GIT_USERNAME: ${{ github.actor }}
+          GIT_USERNAME: x-access-token
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_TAG: main-latest
           NAMESPACE: tenant-nexus
@@ -120,6 +142,14 @@ jobs:
             -f deploy/cozystack/values-prod.yaml \
             --wait \
             --timeout 5m
+
+      # The image tag is floating (`main-latest`), so helm upgrade leaves the
+      # Deployment spec byte-identical across pushes and would NOT restart any
+      # pod even though the image digest changed. Force a rollout so the new
+      # `main-latest` (pullPolicy: Always) is actually pulled.
+      - name: Force rollout (floating tag)
+        run: |
+          kubectl -n tenant-nexus rollout restart deploy/nexus
 
       - name: Wait for rollout
         run: |
