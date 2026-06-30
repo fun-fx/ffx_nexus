@@ -25,6 +25,19 @@ type Provider interface {
 	ChatCompletionStream(ctx context.Context, req ChatCompletionRequest) (<-chan StreamEvent, error)
 }
 
+// EmbeddingsProvider is an optional capability for providers that also serve
+// an OpenAI-compatible /v1/embeddings endpoint. The gateway uses the type
+// assertion to discover embed-capable providers and to validate embedding
+// model ids. Providers that do not implement this interface simply do not
+// satisfy any embeddings request.
+type EmbeddingsProvider interface {
+	Provider
+	// EmbeddingModels returns the set of embedding model ids this provider serves.
+	EmbeddingModels() []string
+	// Embed performs the embeddings call and returns one vector per input.
+	Embed(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error)
+}
+
 // Registry maps model IDs to providers and supports prefix-based routing
 // (e.g. "openai/gpt-4o" forces the openai provider).
 type Registry struct {
@@ -87,4 +100,57 @@ func (r *Registry) AllModels() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// AllEmbeddingModels returns the union of embedding model ids from every
+// provider that implements EmbeddingsProvider, sorted for stable output.
+func (r *Registry) AllEmbeddingModels() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := map[string]struct{}{}
+	for _, p := range r.providers {
+		if ep, ok := p.(EmbeddingsProvider); ok {
+			for _, m := range ep.EmbeddingModels() {
+				seen[m] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for m := range seen {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ResolveEmbedding picks an EmbeddingsProvider for the requested model. The
+// returned Provider is also a generic Provider so callers can read its name for
+// trace attribution. ok=false means no embed-capable provider serves that model.
+func (r *Registry) ResolveEmbedding(model string) (EmbeddingsProvider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.providers {
+		ep, ok := p.(EmbeddingsProvider)
+		if !ok {
+			continue
+		}
+		// Honor an explicit "provider/model" prefix so a multi-tenant deployment
+		// can disambiguate when two providers share a model id.
+		if name, rest, hit := strings.Cut(model, "/"); hit {
+			if p.Name() == name {
+				for _, m := range ep.EmbeddingModels() {
+					if m == rest {
+						return ep, true
+					}
+				}
+			}
+			continue
+		}
+		for _, m := range ep.EmbeddingModels() {
+			if m == model {
+				return ep, true
+			}
+		}
+	}
+	return nil, false
 }

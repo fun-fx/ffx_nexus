@@ -112,6 +112,40 @@ curl http://localhost:8080/v1/chat/completions \
 
 Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-4-5`.
 
+### Supported endpoints
+
+| Endpoint | Notes |
+| --- | --- |
+| `POST /v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming, tools, structured output) |
+| `POST /v1/responses` | OpenAI Responses API (string or array `input`, tool calls surfaced as `function_call` items). Implemented as a thin shim over `/v1/chat/completions`. |
+| `POST /v1/embeddings` | OpenAI-compatible embeddings for providers that implement the `EmbeddingsProvider` interface (OpenAI today; Anthropic/Gemini to follow). Supports string and string-array `input`. |
+| `GET  /v1/models` | Union of all registered chat model ids |
+
+All four endpoints go through the same `Auth` + `Enforce` middleware chain, so
+virtual-key RPM/budget limits and BYOK credential resolution apply uniformly.
+
+```bash
+# Embeddings
+curl http://localhost:8080/v1/embeddings \
+  -H "Authorization: Bearer nxs_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{"model":"text-embedding-3-small","input":["hello","world"]}'
+
+# Responses API (multi-message + tool call)
+curl http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer nxs_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "instructions": "Reply concisely.",
+    "input": [
+      {"role":"user","content":"What is the capital of France?"},
+      {"role":"assistant","content":"Paris."},
+      {"role":"user","content":"And of Italy?"}
+    ]
+  }'
+```
+
 ## Configuration
 
 | Env var | Default | Purpose |
