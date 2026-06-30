@@ -277,7 +277,7 @@ KUBECONFIG=~/kubeconfig/prod.yaml kubectl -n tenant-nexus get pods
 
 **원인 2**: Talos containerd가 Harbor 자체 서명 cert를 trust 안 함.
 
-**해결**: `values-prod.yaml`의 `image.repository`가 `harbor.tail7d361a.ts.net/ffx/nexus`인지 확인. Tailscale MagicDNS 사용. `192.168.0.101.nip.io` 호스트는 kubelet이 못 풂.
+**해결**: `values-prod.yaml`의 `image.repository`가 `harbor.192.168.0.101.nip.io/ffx/nexus`인지 확인. 노드 containerd는 이 LAN 호스트를 신뢰한다(검증: 같은 호스트로 fun-fx/ffx_web이 정상 배포/pull 중). CD 파이프라인도 동일 호스트로 push/pull한다.
 
 ### Q: Helm upgrade 성공했는데 rollout이 Pending
 
