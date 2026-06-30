@@ -118,10 +118,10 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming, tools, structured output) |
 | `POST /v1/responses` | OpenAI Responses API (string or array `input`, tool calls surfaced as `function_call` items). Implemented as a thin shim over `/v1/chat/completions`. |
-| `POST /v1/embeddings` | OpenAI-compatible embeddings for providers that implement the `EmbeddingsProvider` interface (OpenAI today; Anthropic/Gemini to follow). Supports string and string-array `input`. |
+| `POST /v1/embeddings` | OpenAI-compatible embeddings for providers that implement the `EmbeddingsProvider` interface (OpenAI / Mistral today; Anthropic / Gemini / Groq to follow). Supports string and string-array `input`. |
 | `POST /v1/moderations` | OpenAI-compatible content moderation. Omitted `model` defaults to `omni-moderation-latest`. Same `Auth`+`Enforce`+`BYOK` chain as chat. |
 | `POST /v1/images/generations` | OpenAI-compatible image generation (`dall-e-3` and friends). Omitted `model` defaults to `dall-e-3`. |
-| `GET  /v1/models` | Union of registered chat / embedding / moderation / image model ids |
+| `GET  /v1/models` | Union of registered chat / embedding / moderation / image model ids across all installed providers |
 
 All six endpoints go through the same `Auth` + `Enforce` middleware chain, so
 virtual-key RPM/budget limits and BYOK credential resolution apply uniformly.
@@ -178,6 +178,8 @@ curl http://localhost:8080/v1/images/generations \
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — | OpenAI provider |
 | `ANTHROPIC_API_KEY` | — | Anthropic provider |
 | `GEMINI_API_KEY` | — | Google Gemini provider |
+| `GROQ_API_KEY` | — | Groq OpenAI-compatible endpoint (Llama 3.x, Mixtral, Gemma, Whisper, llama-guard; chat model ids auto-listed) |
+| `MISTRAL_API_KEY` | — | Mistral OpenAI-compatible endpoint (mistral-large/small, codestral, mixtral, pixtral) |
 | `NEXUS_JUDGE_BASE_URL` / `NEXUS_JUDGE_MODEL` | — / `qwen2.5:7b` | Local SLM judge (Phase 3) |
 | `NEXUS_JUDGE_API_KEY` / `NEXUS_EVAL_SAMPLE_RATE` | — / `1.0` | Judge auth + judge sampling fraction |
 | `NEXUS_EVAL_SERVICE_URL` / `_METRICS` | — / `answer_relevancy,toxicity,bias` | Python eval sidecar (DeepEval/RAGAS) |
