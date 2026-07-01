@@ -100,7 +100,7 @@ func (o *OpenAI) Models() []string { return o.models }
 
 // OpenAICompat extends OpenAI with a configurable provider name and model
 // list. Used to register an OpenAI-shaped backend under a distinct provider
-// id (e.g. "groq", "mistral") so callers can disambiguate them at the
+// id (e.g. "groq", "mistral", "grid") so callers can disambiguate them at the
 // gateway edge with the "provider/model" prefix.
 //
 // The base OpenAI adapter is intentionally a self-contained struct so this
@@ -117,11 +117,22 @@ type OpenAICompat struct {
 // its real model catalog (e.g. Groq only serves Llama / Mixtral / Gemma /
 // Whisper, so we don't want the embed/moderation/image surface to be
 // falsely advertised there).
+//
+// The returned client installs a CheckRedirect policy that strips the
+// Authorization header on cross-origin redirects. This matters for The
+// Grid: its consumption API replies with 307 Temporary Redirect to the
+// actual supplier endpoint, and we never want the Grid API key to leak
+// to supplier access logs. For providers that don't redirect (OpenAI,
+// Mistral, Groq, ...), the callback is never invoked, so existing
+// behaviour is preserved.
 func NewOpenAICompat(name, apiKey, baseURL string, chatModels, embedModels, moderationModels, imageModels []string, timeout time.Duration) *OpenAICompat {
 	o := &OpenAI{
 		apiKey:  apiKey,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: timeout},
+		client: &http.Client{
+			Timeout:       timeout,
+			CheckRedirect: stripAuthorizationOnCrossOriginRedirect,
+		},
 	}
 	if chatModels != nil {
 		o.models = chatModels
@@ -140,6 +151,32 @@ func NewOpenAICompat(name, apiKey, baseURL string, chatModels, embedModels, mode
 
 // Name overrides the OpenAI name with the registered compat provider name.
 func (c *OpenAICompat) Name() string { return c.name }
+
+// stripAuthorizationOnCrossOriginRedirect is the http.Client.CheckRedirect
+// callback used by every OpenAICompat request. Go's default behaviour is
+// to forward Authorization on every redirect hop, which is fine for
+// same-origin relays but unsafe when the upstream is a redirect-based
+// spot market like The Grid (whose consumption API redirects to supplier
+// endpoints on different domains). On cross-origin hops we strip the
+// Authorization header so the original credential never reaches the
+// second-hop host.
+//
+// The function returns nil to continue following the redirect, or
+// http.ErrUseLastResponse to return the 3xx response directly.
+func stripAuthorizationOnCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	prev := via[len(via)-1].URL
+	if prev.Scheme == req.URL.Scheme && prev.Host == req.URL.Host {
+		// Same-origin redirect — keep the Authorization header so the
+		// second hop can re-validate against the same auth backend.
+		return nil
+	}
+	req.Header.Del("Authorization")
+	req.Header.Del("x-api-key")
+	return nil
+}
 
 // ChatCompletion implements gateway.Provider.
 func (o *OpenAI) ChatCompletion(ctx context.Context, req gateway.ChatCompletionRequest) (*gateway.ChatCompletionResponse, error) {

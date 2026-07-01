@@ -489,6 +489,8 @@ func registerStoredCredentials(ctx context.Context, reg *gateway.Registry, st *c
 			reg.Register(providers.NewGroq(c.Secret, cfg.UpstreamTimeout))
 		case "mistral":
 			reg.Register(providers.NewMistral(c.Secret, cfg.UpstreamTimeout))
+		case "grid":
+			reg.Register(providers.NewGrid(c.Secret, cfg.UpstreamTimeout))
 		default:
 			log.Warn("unknown provider in credential store", "provider", c.Provider)
 			continue
@@ -525,5 +527,9 @@ func registerProviders(reg *gateway.Registry, cfg config.Config, log *slog.Logge
 	if cfg.MistralAPIKey != "" {
 		reg.Register(providers.NewMistral(cfg.MistralAPIKey, cfg.UpstreamTimeout))
 		log.Info("provider registered", "name", "mistral")
+	}
+	if cfg.GridAPIKey != "" {
+		reg.Register(providers.NewGrid(cfg.GridAPIKey, cfg.UpstreamTimeout))
+		log.Info("provider registered", "name", "grid")
 	}
 }

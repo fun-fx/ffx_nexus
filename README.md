@@ -180,6 +180,7 @@ curl http://localhost:8080/v1/images/generations \
 | `GEMINI_API_KEY` | — | Google Gemini provider |
 | `GROQ_API_KEY` | — | Groq OpenAI-compatible endpoint (Llama 3.x, Mixtral, Gemma, Whisper, llama-guard; chat model ids auto-listed) |
 | `MISTRAL_API_KEY` | — | Mistral OpenAI-compatible endpoint (mistral-large/small, codestral, mixtral, pixtral) |
+| `GRID_API_KEY` | — | The Grid (thegrid.ai) OpenAI-compatible endpoint — instruments: text-{standard,prime,max}, code-{standard,prime,max}, agent-{standard,prime,max} |
 | `NEXUS_JUDGE_BASE_URL` / `NEXUS_JUDGE_MODEL` | — / `qwen2.5:7b` | Local SLM judge (Phase 3) |
 | `NEXUS_JUDGE_API_KEY` / `NEXUS_EVAL_SAMPLE_RATE` | — / `1.0` | Judge auth + judge sampling fraction |
 | `NEXUS_EVAL_SERVICE_URL` / `_METRICS` | — / `answer_relevancy,toxicity,bias` | Python eval sidecar (DeepEval/RAGAS) |
