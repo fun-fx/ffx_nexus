@@ -124,6 +124,9 @@ secrets:
   openaiApiKey: ""
   anthropicApiKey: ""
   geminiApiKey: ""
+  groqApiKey: ""
+  mistralApiKey: ""
+  gridApiKey: ""
   # 32-byte hex/base64 KEK for the encrypted credential store. Generate with
   # `openssl rand -hex 32` and PERSIST IT (needed to decrypt provider secrets).
   masterKey: ""
