@@ -28,6 +28,7 @@ type Config struct {
 	GeminiAPIKey    string
 	GroqAPIKey      string
 	MistralAPIKey   string
+	GridAPIKey      string
 
 	// MasterKey is the KEK used to encrypt provider credentials at rest. Inject
 	// from a secret manager/KMS in production. Empty disables the credential
@@ -157,6 +158,7 @@ func Load() Config {
 		GeminiAPIKey:    env("GEMINI_API_KEY", ""),
 		GroqAPIKey:      env("GROQ_API_KEY", ""),
 		MistralAPIKey:   env("MISTRAL_API_KEY", ""),
+		GridAPIKey:      env("GRID_API_KEY", ""),
 		MasterKey:       env("NEXUS_MASTER_KEY", ""),
 		JudgeBaseURL:    env("NEXUS_JUDGE_BASE_URL", ""),
 		JudgeModel:      env("NEXUS_JUDGE_MODEL", "qwen2.5:7b"),
