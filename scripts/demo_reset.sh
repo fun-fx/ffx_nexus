@@ -56,8 +56,8 @@ nohup env \
   NEXUS_CLICKHOUSE_URL='clickhouse://nexus:nexus@localhost:9000/nexus' \
   NEXUS_REDIS_URL='redis://localhost:6379/0' \
   NEXUS_MASTER_KEY="$(openssl rand -base64 32)" \
+  NEXUS_GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
   NEXUS_ALLOW_SIGNUP=true \
-  "${GEMINI_API_KEY:-}" \
   "$ROOT/bin/nexus" >"$HOME/.nexus/nexus.log" 2>&1 &
 echo $! > "$HOME/.nexus/nexus.pid"
 
@@ -71,7 +71,7 @@ for i in $(seq 1 30); do
 done
 
 _step "Launch Vite dev server (:5173) for the React dashboard"
-(cd "$ROOT/web" && nohup npm run dev > "$HOME/.nexus/vite.log" 2>&1 &)
+(cd "$ROOT/web" && VITE_API_PROXY="http://localhost:8091" nohup npm run dev > "$HOME/.nexus/vite.log" 2>&1 &)
 for i in $(seq 1 60); do
   if curl -fsS --max-time 1 http://localhost:5173 >/dev/null 2>&1; then
     _ok "vite ready after $i s"
