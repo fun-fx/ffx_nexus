@@ -39,6 +39,15 @@ deploy/              docker-compose (ClickHouse/Postgres/Redis/Ollama/eval-servi
 
 ## Quick start
 
+> **TL;DR** — one line, zero prompts:
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/fun-fx/ffx_nexus/main/scripts/install.sh | bash
+> ```
+> Or with the friendly alias (once DNS is wired up): `curl -fsSL install.nexus.ffx.ai | bash`.
+> The installer boots Postgres + Redis + ClickHouse + Ollama, builds the
+> Go binary, and starts the gateway on `:8090` / console on `:8091`. See
+> [`docs/quickstart.md`](docs/quickstart.md) for the full step-by-step.
+
 ```bash
 # 1. (optional) start local datastores
 docker compose -f deploy/docker-compose.yml up -d clickhouse
