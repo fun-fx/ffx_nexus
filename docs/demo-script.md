@@ -5,6 +5,8 @@ Nexus instance, mint a virtual key, hit the gateway, see the trace land in
 the dashboard. The script assumes Nexus is running locally on a freshly
 reset dev stack (see `scripts/demo_reset.sh`).
 
+> **한국어 버전**: [`docs/demo-script.ko.md`](demo-script.ko.md)
+
 The script deliberately avoids pasting real provider keys on screen; we use
 the `AQ.Ab8R...xxxx` style placeholder. Use a *throwaway* Gemini / OpenAI
 key for the live demo, or a recorded-key-with-redaction overlay.
