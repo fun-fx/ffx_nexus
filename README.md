@@ -360,14 +360,32 @@ Upstream provider keys are resolved per request, in precedence order:
 
 | `NEXUS_KEY_MODE` | Behavior |
 | --- | --- |
-| `shared` *(default)* | Legacy: everyone uses the org/env key. No per-user keys. |
+| `strict_byok` *(default since v0.1.0)* | Require a per-user key; reject callers without one. The operator never pays for user usage. |
 | `byok` | Prefer the caller's own key; fall back to org → env. |
-| `strict_byok` | Require a per-user key; reject callers without one. |
+| `shared` | Legacy: everyone uses the org/env key. No per-user keys. |
 
 BYOK modes need Postgres + `NEXUS_MASTER_KEY`; otherwise Nexus falls back to
 `shared`. The resolved key never touches logs; the trace records only its
 **source** (`user` / `org` / `env`) so operators can see BYOK adoption and isolate
 quality/cost per credential source.
+
+### Opt-in shared-key fallback (`NEXUS_ALLOW_SHARED_KEYS`)
+
+By default in v0.1.0+, the **env-provided** provider keys (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GRID_API_KEY`, …) are loaded into the
+process for visibility but never reach the data path — every gateway call goes
+out on the caller's own stored credential. To re-enable the legacy "process owners
+the bill" behavior, set:
+
+```
+NEXUS_ALLOW_SHARED_KEYS=true
+```
+
+When set, the env keys are registered as a fallback in any `NEXUS_KEY_MODE`. When
+unset (the default), Nexus logs a single `env provider key present but unused under
+strict-byok default` warning per provider at startup so operators can see exactly
+which keys are present but inert, and route statistics are kept free of shadow
+env-key traffic.
 
 ### Console identity & sessions
 
