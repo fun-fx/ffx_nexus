@@ -102,9 +102,6 @@ First publicly consumable release. Grid team pilot.
   `NEXUS_ALLOW_SHARED_KEYS` escape hatch.
 - New dashboard tab: *Playground* — a one-pane chat-completion test
   surface modeled on LiteLLM's in-console playground.
-- New recorded demo (`docs/demo-script.md`, `docs/demo-script.ko.md`)
-  walks through signup → virtual key → cache badge → PII guardrail →
-  auto routing in under five minutes.
 - `docs/release-notes/v0.1.0.md` — pilot-handoff letter for the Grid team.
 
 ### Changed
