@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -197,7 +198,11 @@ func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, actorID, id string)
 // be empty for an org-level (shared/central) credential, or set for a BYOK
 // credential private to that user. actorID is the user_id of the caller
 // (empty for system); recorded in the audit log.
-func (s *Store) CreateCredential(ctx context.Context, orgID, actorID, userID, provider, name, baseURL, secret string) (ProviderCredential, error) {
+//
+// models carries the optional per-credential model inventory the owner wants
+// advertised at /v1/models; pass an empty CredentialModels (not nil) for
+// built-in providers that ship their own catalog.
+func (s *Store) CreateCredential(ctx context.Context, orgID, actorID, userID, provider, name, baseURL, secret string, models CredentialModels) (ProviderCredential, error) {
 	if s.cipher == nil {
 		return ProviderCredential{}, crypto.ErrNoMasterKey
 	}
@@ -215,14 +220,19 @@ func (s *Store) CreateCredential(ctx context.Context, orgID, actorID, userID, pr
 		Provider:    provider,
 		Name:        name,
 		BaseURL:     baseURL,
+		Models:      models,
 		SecretLast4: Last4(secret),
 		Enabled:     true,
 	}
+	modelsJSON, err := json.Marshal(models)
+	if err != nil {
+		return ProviderCredential{}, err
+	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO provider_credentials
-			(id, org_id, user_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,TRUE)`,
-		cred.ID, cred.OrgID, nullStr(userID), cred.Provider, cred.Name, cred.BaseURL, ct, cred.SecretLast4)
+			(id, org_id, user_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled, models)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,TRUE,$9)`,
+		cred.ID, cred.OrgID, nullStr(userID), cred.Provider, cred.Name, cred.BaseURL, ct, cred.SecretLast4, modelsJSON)
 	if err != nil {
 		return ProviderCredential{}, err
 	}
@@ -237,7 +247,7 @@ func (s *Store) ListCredentials(ctx context.Context, orgID string) ([]ProviderCr
 		orgID = "default"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, user_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at
+		SELECT id, org_id, user_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at, models
 		FROM provider_credentials WHERE org_id = $1 AND user_id IS NULL ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		return nil, err
@@ -251,7 +261,7 @@ func (s *Store) ListCredentialsForUser(ctx context.Context, orgID, userID string
 		orgID = "default"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, user_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at
+		SELECT id, org_id, user_id, provider, name, base_url, secret_last4, enabled, created_at, rotated_at, models
 		FROM provider_credentials WHERE org_id = $1 AND user_id = $2 ORDER BY created_at DESC`, orgID, userID)
 	if err != nil {
 		return nil, err
@@ -265,11 +275,17 @@ func scanCredentials(rows pgx.Rows) ([]ProviderCredential, error) {
 	for rows.Next() {
 		var c ProviderCredential
 		var uid *string
-		if err := rows.Scan(&c.ID, &c.OrgID, &uid, &c.Provider, &c.Name, &c.BaseURL, &c.SecretLast4, &c.Enabled, &c.CreatedAt, &c.RotatedAt); err != nil {
+		var modelsRaw []byte
+		if err := rows.Scan(&c.ID, &c.OrgID, &uid, &c.Provider, &c.Name, &c.BaseURL, &c.SecretLast4, &c.Enabled, &c.CreatedAt, &c.RotatedAt, &modelsRaw); err != nil {
 			return nil, err
 		}
 		if uid != nil {
 			c.UserID = *uid
+		}
+		if len(modelsRaw) > 0 {
+			if err := json.Unmarshal(modelsRaw, &c.Models); err != nil {
+				return nil, fmt.Errorf("decode models for credential %s: %w", c.ID, err)
+			}
 		}
 		out = append(out, c)
 	}
@@ -331,7 +347,7 @@ func (s *Store) LoadEnabledCredentials(ctx context.Context, orgID string) ([]Dec
 		orgID = "default"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled, created_at
+		SELECT id, org_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled, created_at, models
 		FROM provider_credentials WHERE org_id = $1 AND user_id IS NULL AND enabled = TRUE ORDER BY created_at`, orgID)
 	if err != nil {
 		return nil, err
@@ -341,8 +357,8 @@ func (s *Store) LoadEnabledCredentials(ctx context.Context, orgID string) ([]Dec
 	var out []DecryptedCredential
 	for rows.Next() {
 		var c DecryptedCredential
-		var ct []byte
-		if err := rows.Scan(&c.ID, &c.OrgID, &c.Provider, &c.Name, &c.BaseURL, &ct, &c.SecretLast4, &c.Enabled, &c.CreatedAt); err != nil {
+		var ct, modelsRaw []byte
+		if err := rows.Scan(&c.ID, &c.OrgID, &c.Provider, &c.Name, &c.BaseURL, &ct, &c.SecretLast4, &c.Enabled, &c.CreatedAt, &modelsRaw); err != nil {
 			return nil, err
 		}
 		secret, err := s.cipher.Decrypt(ct)
@@ -350,6 +366,11 @@ func (s *Store) LoadEnabledCredentials(ctx context.Context, orgID string) ([]Dec
 			return nil, fmt.Errorf("decrypt credential %s: %w", c.ID, err)
 		}
 		c.Secret = string(secret)
+		if len(modelsRaw) > 0 {
+			if err := json.Unmarshal(modelsRaw, &c.Models); err != nil {
+				return nil, fmt.Errorf("decode models for credential %s: %w", c.ID, err)
+			}
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -373,7 +394,7 @@ func (s *Store) ResolveCredential(ctx context.Context, orgID, userID, provider s
 	}
 	// Order: user-owned first (BYOK), then org-level. created_at as tiebreaker.
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, user_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled, created_at
+		SELECT id, org_id, user_id, provider, name, base_url, secret_ciphertext, secret_last4, enabled, created_at, models
 		FROM provider_credentials
 		WHERE org_id = $1 AND provider = $2 AND enabled = TRUE
 		  AND (user_id = $3 OR user_id IS NULL)
@@ -388,8 +409,8 @@ func (s *Store) ResolveCredential(ctx context.Context, orgID, userID, provider s
 	}
 	var c DecryptedCredential
 	var uid *string
-	var ct []byte
-	if err := rows.Scan(&c.ID, &c.OrgID, &uid, &c.Provider, &c.Name, &c.BaseURL, &ct, &c.SecretLast4, &c.Enabled, &c.CreatedAt); err != nil {
+	var ct, modelsRaw []byte
+	if err := rows.Scan(&c.ID, &c.OrgID, &uid, &c.Provider, &c.Name, &c.BaseURL, &ct, &c.SecretLast4, &c.Enabled, &c.CreatedAt, &modelsRaw); err != nil {
 		return DecryptedCredential{}, "", err
 	}
 	secret, err := s.cipher.Decrypt(ct)
@@ -397,6 +418,11 @@ func (s *Store) ResolveCredential(ctx context.Context, orgID, userID, provider s
 		return DecryptedCredential{}, "", fmt.Errorf("decrypt credential %s: %w", c.ID, err)
 	}
 	c.Secret = string(secret)
+	if len(modelsRaw) > 0 {
+		if err := json.Unmarshal(modelsRaw, &c.Models); err != nil {
+			return DecryptedCredential{}, "", fmt.Errorf("decode models for credential %s: %w", c.ID, err)
+		}
+	}
 	source := "org"
 	if uid != nil {
 		c.UserID = *uid
