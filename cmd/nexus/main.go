@@ -57,6 +57,7 @@ func main() {
 				"migrations/postgres/002_byok.sql",
 				"migrations/postgres/003_sso.sql",
 				"migrations/postgres/004_audit_index.sql",
+				"migrations/postgres/005_credential_models.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {
@@ -501,7 +502,30 @@ func registerStoredCredentials(ctx context.Context, reg *gateway.Registry, st *c
 		case "grid":
 			reg.Register(providers.NewGrid(c.Secret, cfg.UpstreamTimeout))
 		default:
-			log.Warn("unknown provider in credential store", "provider", c.Provider)
+			// Dynamic OpenAI-compatible credential: any owner-supplied provider
+			// name falls through here. The base URL is required so the gateway
+			// knows where to forward calls; only OpenAI-shaped wire formats are
+			// supported, so we wrap with the OpenAICompat adapter.
+			//
+			// Model ids are namespaced as "user/<provider>/<model>" in the
+			// registry so they cannot collide with built-in catalog ids; clients
+			// call the gateway with the prefix (or the short-form
+			// "<provider>/<model>" which Resolver already knows to cut on the
+			// first "/").
+			if c.BaseURL == "" {
+				log.Warn("user-defined credential skipped: base_url required for non-builtin providers",
+					"provider", c.Provider, "last4", c.SecretLast4)
+				continue
+			}
+			// Inner adapter uses the raw model ids the owner registered; the
+			// UserCompat wrapper exposes them under "user/<provider>/<model>"
+			// through Models()/EmbeddingModels() so callers do not collide
+			// with the built-in catalog id space at /v1/models.
+			compat := providers.NewOpenAICompat(c.Provider, c.Secret, c.BaseURL,
+				c.Models.Chat, c.Models.Embed, nil, nil, cfg.UpstreamTimeout)
+			reg.Register(providers.NewUserCompat(compat))
+			log.Info("dynamic compat provider registered", "name", c.Provider, "last4", c.SecretLast4,
+				"chat_models", len(c.Models.Chat), "embed_models", len(c.Models.Embed))
 			continue
 		}
 		log.Info("provider registered from credential store", "name", c.Provider, "last4", c.SecretLast4)

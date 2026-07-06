@@ -27,19 +27,33 @@ type VirtualKey struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// CredentialModels is the per-credential model inventory. Owners of a dynamic
+// OpenAI-compatible credential populate this so the gateway can advertise
+// their model ids at /v1/models without booting the upstream to ask. Empty
+// slices are valid (the credential then serves whatever model id a caller
+// passes through) and are the default for every built-in provider credential.
+//
+// Stored as JSONB: {"chat": [...], "embed": [...]} so adding new capability
+// slots later does not need a schema change.
+type CredentialModels struct {
+	Chat  []string `json:"chat,omitempty"`
+	Embed []string `json:"embed,omitempty"`
+}
+
 // ProviderCredential is an upstream provider API key, stored encrypted. The
 // plaintext secret is returned only once, at creation.
 type ProviderCredential struct {
-	ID          string     `json:"id"`
-	OrgID       string     `json:"org_id"`
-	UserID      string     `json:"user_id,omitempty"` // owning user (BYOK); empty = org-level
-	Provider    string     `json:"provider"`
-	Name        string     `json:"name"`
-	BaseURL     string     `json:"base_url,omitempty"`
-	SecretLast4 string     `json:"secret_last4"`
-	Enabled     bool       `json:"enabled"`
-	CreatedAt   time.Time  `json:"created_at"`
-	RotatedAt   *time.Time `json:"rotated_at,omitempty"`
+	ID          string           `json:"id"`
+	OrgID       string           `json:"org_id"`
+	UserID      string           `json:"user_id,omitempty"` // owning user (BYOK); empty = org-level
+	Provider    string           `json:"provider"`
+	Name        string           `json:"name"`
+	BaseURL     string           `json:"base_url,omitempty"`
+	Models      CredentialModels `json:"models,omitempty"`
+	SecretLast4 string           `json:"secret_last4"`
+	Enabled     bool             `json:"enabled"`
+	CreatedAt   time.Time        `json:"created_at"`
+	RotatedAt   *time.Time       `json:"rotated_at,omitempty"`
 }
 
 // User is a human identity within an org. Virtual keys and BYOK provider

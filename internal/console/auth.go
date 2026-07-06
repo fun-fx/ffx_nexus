@@ -137,12 +137,13 @@ type loginRequest struct {
 }
 
 type registerRequest struct {
-	Email          string `json:"email"`
-	Password       string `json:"password"`
-	Provider       string `json:"provider,omitempty"`
-	ProviderName   string `json:"provider_name,omitempty"`
-	ProviderSecret string `json:"provider_secret,omitempty"`
-	KeyName        string `json:"key_name,omitempty"`
+	Email          string                `json:"email"`
+	Password       string                `json:"password"`
+	Provider       string                `json:"provider,omitempty"`
+	ProviderName   string                `json:"provider_name,omitempty"`
+	ProviderSecret string                `json:"provider_secret,omitempty"`
+	Models         core.CredentialModels `json:"models,omitempty"`
+	KeyName        string                `json:"key_name,omitempty"`
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +219,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var warnings []string
 
 	if req.Provider != "" && req.ProviderSecret != "" {
-		_, credErr := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret)
+		_, credErr := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret, req.Models)
 		switch {
 		case errors.Is(credErr, crypto.ErrNoMasterKey):
 			warnings = append(warnings, "provider key not stored: set NEXUS_MASTER_KEY to enable BYOK credentials")
@@ -555,7 +556,7 @@ func (s *Server) createMyCredential(w http.ResponseWriter, r *http.Request, u co
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider and secret are required"})
 		return
 	}
-	cred, err := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.Name, req.BaseURL, req.Secret)
+	cred, err := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.Name, req.BaseURL, req.Secret, req.Models)
 	if errors.Is(err, crypto.ErrNoMasterKey) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "credential encryption disabled: set NEXUS_MASTER_KEY to store provider keys",
