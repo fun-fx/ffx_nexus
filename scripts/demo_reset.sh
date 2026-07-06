@@ -23,12 +23,15 @@ cd "$ROOT"
 _step()  { printf "\n\033[1;34m==>\033[0m %s\n" "$*"; }
 _ok()    { printf "  \033[1;32m✓\033[0m %s\n" "$*"; }
 
-_step "Stop existing nexus / vite"
+EMB_PORT=8300
+
+_step "Stop existing nexus / vite / fake embeddings"
 pkill -f "bin/nexus" 2>/dev/null || true
 pkill -f "vite"      2>/dev/null || true
 pkill -f "npm run dev" 2>/dev/null || true
+pkill -f "fake_embeddings.py" 2>/dev/null || true
 sleep 1
-_ok "no leftover processes on :8090/:8091/:5173"
+_ok "no leftover processes on :8090/:8091/:5173/:${EMB_PORT}"
 
 _step "Wipe Postgres user data (keep admin@nexus.test)"
 docker exec deploy-postgres-1 psql -U nexus -d nexus -c "
@@ -47,6 +50,20 @@ curl -sS "http://localhost:8123/" -u "nexus:nexus" --data-binary \
   "TRUNCATE TABLE nexus.eval_scores"
 _ok "clickhouse: traces + eval_scores truncated"
 
+_step "Launch fake embeddings stub (:${EMB_PORT}) for semantic cache demo"
+nohup python3 "$ROOT/scripts/lib/fake_embeddings.py" "$EMB_PORT" \
+  >"$HOME/.nexus/embeddings.log" 2>&1 &
+echo $! > "$HOME/.nexus/embeddings.pid"
+for i in $(seq 1 10); do
+  if curl -fsS --max-time 1 -X POST "http://127.0.0.1:${EMB_PORT}/v1/embeddings" \
+    -H "Content-Type: application/json" \
+    -d '{"input":"probe"}' >/dev/null 2>&1; then
+    _ok "fake embeddings ready (pid $(cat "$HOME/.nexus/embeddings.pid"))"
+    break
+  fi
+  sleep 0.3
+done
+
 _step "Launch Nexus gateway (:8090) and console (:8091)"
 mkdir -p "$HOME/.nexus"
 nohup env \
@@ -57,7 +74,13 @@ nohup env \
   NEXUS_REDIS_URL='redis://localhost:6379/0' \
   NEXUS_MASTER_KEY="$(openssl rand -base64 32)" \
   NEXUS_GEMINI_API_KEY="${GEMINI_API_KEY:-}" \
+  NEXUS_GRID_API_KEY="${GRID_API_KEY:-}" \
   NEXUS_ALLOW_SIGNUP=true \
+  NEXUS_SEMANTIC_CACHE_ENABLED=true \
+  NEXUS_EMBEDDINGS_URL="http://127.0.0.1:${EMB_PORT}/v1" \
+  NEXUS_SEMANTIC_CACHE_THRESHOLD=0.99 \
+  NEXUS_GUARDRAILS_ENABLED=true \
+  NEXUS_GUARDRAILS_BLOCK_PII_INPUT=true \
   "$ROOT/bin/nexus" >"$HOME/.nexus/nexus.log" 2>&1 &
 echo $! > "$HOME/.nexus/nexus.pid"
 
@@ -92,8 +115,22 @@ Sign-in credentials:
   email:    admin@nexus.test
   password: admin-e2e-pass
 
-For the very first demo run (so a brand-new user can hit "Create account"):
-  NEXUS_ALLOW_SIGNUP=true is already set — no extra env var needed.
+Demo features pre-enabled (no extra env vars needed):
+  - NEXUS_ALLOW_SIGNUP=true        → "Create account" tab visible
+  - NEXUS_SEMANTIC_CACHE_ENABLED   → step 7 cache badge
+  - NEXUS_GUARDRAILS_ENABLED       → step 8 blocked badge
+  - quality-aware routing (`auto`) → step 9 routes across all registered providers
+
+Providers auto-detected from env:
+  GEMINI_API_KEY  → gemini provider
+  GRID_API_KEY    → grid provider (The Grid spot market)
+  OPENAI_API_KEY  → openai provider
+  ANTHROPIC_API_KEY → anthropic provider
+If only one provider is set, `auto` will pick that single model — the routing
+*mechanism* still runs, but Model routing will show one row. Export two or more
+of the above before reset for a multi-vendor table:
+
+  export GRID_API_KEY=... GEMINI_API_KEY=...    # then bash scripts/demo_reset.sh
 
 To record the demo:
   - Press Cmd+Shift+5 (Mac) → record selected portion of the screen
