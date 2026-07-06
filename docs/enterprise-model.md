@@ -16,7 +16,7 @@ Scope: how Nexus evolves from strict-BYOK self-hosted to multi-tenant enterprise
 | Multi-tenant | Single org (`default`); Postgres row-level isolation |
 | Observability | ClickHouse + OpenTelemetry, per-user quality / spend rollups |
 | Eval | Async heuristic + SLM judge (Ollama) + Python sidecar (DeepEval / RAGAS) |
-| Hosting | Self-hosted Helm chart, prod on Talos + Cozystack at `*.tail7d361a.ts.net` |
+| Hosting | Self-hosted Helm chart, prod on Talos + Cozystack (private ops repo) |
 
 **What works for**: small teams (1–20 users) who already have provider accounts and are happy to plug their own keys in.
 
