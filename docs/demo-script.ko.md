@@ -1,8 +1,12 @@
 # 데모 영상 스크립트 — Nexus 첫 사용 90초 가이드
 
-> 데모 **녹화용** 워크스루. 처음 사용하는 사용자 시점 — 가입 → 키 발급 → 첫 호출 → 대시보드에서 실시간으로 결과 확인. 데모 환경은 깨끗하게 reset 된 상태에서 시작한다고 가정 (`scripts/demo_reset.sh` 참고).
+> 데모 **녹화용** 워크스루. 처음 사용하는 사용자 시점 — 가입 → 키 발급 → 첫 호출 → 대시보드에서 실시간으로 결과 확인.
+>
+> **반드시** `bash scripts/demo_reset.sh` 로 환경을 시작하세요. 이 스크립트가 semantic cache·guardrail·signup·quality-aware routing(`auto`) 을 한 번에 켭니다. Nexus 를 수동으로 띄우면 7·8·9단계(cache / blocked / auto routing)가 동작하지 않습니다.
 >
 > 스크립트는 실제 provider key 를 화면에 노출하지 않습니다 — `AQ.Ab8R...xxxx` 처럼 마스킹된 자리표시자를 사용하거나, 화면 캡처 시 오버레이로 가려주세요. 또는 테스트용 throwaway Gemini / OpenAI key 를 새로 발급해서 사용해도 됩니다.
+>
+> `demo_reset.sh` 는 Postgres 의 모든 user·session 을 **삭제**합니다. reset 직후에 브라우저는 stale 세션 쿠키를 들고 있어서 `My usage` 가 `login required` 응답을 받게 되고, React 가 빈 body 를 JSON.parse 하려고 하면 콘솔에 `Unexpected end of JSON input` 가 찍힙니다. **반드시 시크릿 창 (Cmd+Shift+N) 으로 시작**해서 이 상황을 피하세요 — 데모 스크립트의 다른 단계도 같은 시크릿 창에서 진행합니다.
 >
 > **English version**: [`docs/demo-script.md`](demo-script.md)
 
@@ -16,6 +20,7 @@
 4. Chrome 창 크기를 **1440 × 900** 으로 조정.
 5. 화면 녹화 시작: **Cmd+Shift+5 → 선택 영역 녹화** (권장) — 다른 앱 알림이 들어와도 영역 밖이라 안전.
 6. Chrome 확대 100%, 밝은 테마 설정 (설정 → 모양 → 라이트).
+7. **(선택, 9단계 auto routing)** 라우팅 비교를 풍부하게 보여주려면 녹화 전에 provider key 를 두 개 이상 export 한 뒤 reset 하세요. 예: `export GEMINI_API_KEY=...` 와 `export OPENAI_API_KEY=...` → `bash scripts/demo_reset.sh`. key 가 하나만 있어도 `auto` 는 동작하지만, **Model routing** 테이블에 모델이 하나만 보입니다.
 
 ---
 
@@ -24,7 +29,8 @@
 > **내레이션:**
 > "안녕하세요. 이번엔 Nexus 를 처음 사용하는 모습을 시연해 보겠습니다.
 > 가입부터, provider key 등록, virtual key 발급, 첫 chat completion 호출,
-> 그리고 대시보드에서 실시간으로 결과가 뜨는 것까지 — 전체 약 90초 정도면 됩니다."
+> cache·guardrail, 그리고 eval 기반 **auto** 라우팅까지 — 대시보드에서
+> 실시간으로 확인합니다."
 
 커서: 비어 있는 `localhost:5173` 페이지 위에 idle 상태.
 
@@ -138,8 +144,10 @@ curl http://localhost:8090/v1/chat/completions \
 액션:
 
 1. 터미널에서 <kbd>↑</kbd> 키를 눌러 **동일한** curl 한 번 더 실행.
-2. 훨씬 빠른 응답 (1초 미만) 받기.
+2. 훨씬 빠른 응답 (수십 ms) 받기.
 3. Chrome 으로 다시 전환.
+
+> **참고:** 첫 호출은 upstream(Gemini)으로 가서 응답을 **저장**합니다. 두 번째 **완전히 동일한** 호출부터 cache 배지가 뜹니다. `demo_reset.sh` 없이 Nexus 를 띄웠다면 cache 가 꺼져 있어서 배지가 안 나옵니다.
 
 > **내레이션:**
 > "이제 정확히 같은 요청을 다시 실행합니다. 이번엔 몇 밀리초 만에 결과를 받았고,
@@ -181,14 +189,55 @@ Chrome 으로 돌아와서 가리키기:
 
 ---
 
-## 9. 마무리 (≈ 4:05–4:30)
+## 9. Auto routing — eval 기반 모델 선택 (≈ 4:05–4:50)
+
+액션:
+
+1. 터미널에서 `model` 을 **`auto`** 로 바꾼 curl 실행 (virtual key 는 그대로):
+
+   ```bash
+   curl http://localhost:8090/v1/chat/completions \
+     -H "Authorization: Bearer nxs_live_..." \
+     -H "Content-Type: application/json" \
+     -d '{
+       "model": "auto",
+       "messages": [{"role": "user", "content": "List three benefits of an AI gateway in one sentence each."}]
+     }'
+   ```
+
+2. 응답 JSON 확인:
+   * 요청의 `"model": "auto"` — 클라이언트가 보낸 **alias**
+   * 응답의 `"model": "gemini-2.5-flash"` (또는 다른 concrete id) — Nexus 가 **실제로 고른** upstream 모델
+
+3. **같은 curl 을 2~3번 더** 실행 (prompt 를 조금 바꿔도 됨). eval worker 가 trace 를 비동기로 채점하고, routing stats 가 쌓입니다.
+
+4. Chrome 으로 전환 → Overview 상단으로 스크롤.
+
+> **내레이션:**
+> "이제 model 이름 대신 **`auto`** 를 씁니다. 지금 등록된 provider 는 **Gemini** 와 **The Grid** (spot market) 두 개예요. Nexus 가 ClickHouse trace 와 eval score 로 품질·비용·latency 를 집계해서, 이 순간에 더 나은 쪽으로 자동 라우팅합니다. 앱 코드는 `auto` 만 고정하면 되고, 실제로 어떤 모델이 선택됐는지는 응답 JSON 의 `model` 필드와 trace 에서 확인할 수 있습니다."
+
+커서로 가리키기:
+
+* **Model routing** 테이블 — `eff_quality` 막대, `avg_latency_ms`, `avg_cost_usd`, `samples`
+* **Eval scores (24h)** — 앞선 호출들에서 쌓인 `completeness`, `pii_leak` 등 (heuristics)
+* **Recent traces** — `request_model` 이 `auto` 인 row 와, 실제 provider/model
+
+> **참고:**
+> * `demo_reset.sh` 는 환경변수 `GRID_API_KEY`, `GEMINI_API_KEY` 를 자동 등록합니다. 두 개 이상 있으면 Model routing 테이블에 각 provider 의 모델별 통계가 뜹니다.
+> * concrete model (`gemini-2.5-flash`) 을 지정하면 라우터를 **거치지 않습니다**. `auto` 또는 custom alias (`fast` 등) 만 라우팅 대상입니다.
+> * provider key 가 하나뿐이면 `auto` 도 그 모델만 선택합니다 — 라우팅 **로직**은 동일하게 동작하지만 볼게 한 줄로 줄어듭니다.
+> * LLM-as-judge eval 은 기본값에서 꺼져 있을 수 있습니다. heuristics 만으로도 routing signal 이 쌓입니다.
+
+---
+
+## 10. 마무리 (≈ 4:50–5:15)
 
 Overview 페이지 상단으로 스크롤, 카드들 보여주며:
 
 > **내레이션:**
-> "이게 Nexus 입니다 — 한 명령으로 설치, 5분이면 deploy, 실시간으로 동작
-> 확인까지. 소스는 Apache 2.0, 대시보드는 MIT 라이선스입니다. 추가로 연결할
-> 것도 없습니다. 시청해 주셔서 감사합니다."
+> "이게 Nexus 입니다 — 한 명령으로 설치, 5분이면 deploy, trace·cache·guardrail,
+> eval 기반 **auto** 라우팅까지 실시간으로 확인할 수 있습니다. 소스는 Apache 2.0,
+> 대시보드는 MIT 라이선스입니다. 시청해 주셔서 감사합니다."
 
 녹화 종료.
 
@@ -209,7 +258,8 @@ pkill -f vite                    # dashboard 종료
 ## (선택) 시간이 부족할 때 컷
 
 * **curl 단계 생략.** OpenAI Python SDK 에 `base_url="http://localhost:8090/v1"` 만 설정해서 동일한 효과.
-* **Guardrail 섹션 생략.** ≈ 50초 절약; cache 섹션만으로도 충분히 인상적.
+* **Guardrail 섹션 생략.** ≈ 50초 절약; cache + auto routing 만으로도 충분히 인상적.
+* **Auto routing 섹션 생략.** provider key 하나·시간 부족할 때. cache + guardrail 만 녹화해도 됨.
 * **큰 화면 사용.** `localhost:5173` 는 4K 까지 반응형이지만, 1440×900 에서 좌우 8개 카드가 가장 깔끔.
 
 ---
