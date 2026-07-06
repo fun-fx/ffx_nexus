@@ -210,9 +210,6 @@ function SignupForm({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [provider, setProvider] = useState("gemini");
-  const [providerSecret, setProviderSecret] = useState("");
-  const [providerName, setProviderName] = useState("");
   const [virtualKey, setVirtualKey] = useState("");
   const [pendingUser, setPendingUser] = useState<User | null>(null);
   const [err, setErr] = useState("");
@@ -222,13 +219,7 @@ function SignupForm({
     setVirtualKey("");
     setPendingUser(null);
     try {
-      const res = await register({
-        email,
-        password,
-        provider: providerSecret ? provider : undefined,
-        provider_name: providerName || undefined,
-        provider_secret: providerSecret || undefined,
-      });
+      const res = await register({ email, password });
       if (res.warnings?.length) {
         setErr(res.warnings.join(" "));
       }
@@ -247,9 +238,15 @@ function SignupForm({
       <section className="panel">
         <h2>Account created</h2>
         <div className="notice">
-          Copy your virtual key now — it won't be shown again:
+          Copy your virtual key now — it won&apos;t be shown again:
           <code>{virtualKey}</code>
         </div>
+        <p className="sub">
+          Next: head to <strong>My provider keys (BYOK)</strong> below and add
+          at least one provider key (e.g. <code>gemini</code>) so that Nexus
+          can bill your provider instead of the operator. In strict-byok
+          (default since v0.1.0) every call needs your own key.
+        </p>
         <button className="btn" type="button" onClick={() => onUser(pendingUser)}>
           Continue to dashboard
         </button>
@@ -260,8 +257,9 @@ function SignupForm({
     <section className="panel">
       <h2>Create account</h2>
       <p className="sub">
-        Register with your own LLM provider key (BYOK). Nexus stores it encrypted and
-        issues a virtual key for API calls — you pay your provider directly.
+        Just an email and password. After signing up, you&apos;ll paste at
+        least one provider key (BYOK) so Nexus can call upstream providers on
+        your behalf — your provider bills you directly, Nexus never pays.
       </p>
       <form className="form" onSubmit={submit}>
         <input placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -270,22 +268,6 @@ function SignupForm({
           placeholder="password (min 8 characters)"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-        />
-        <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-          <option value="gemini">gemini</option>
-          <option value="openai">openai</option>
-          <option value="anthropic">anthropic</option>
-        </select>
-        <input
-          placeholder="provider key label (optional)"
-          value={providerName}
-          onChange={(e) => setProviderName(e.target.value)}
-        />
-        <input
-          type="password"
-          placeholder="your LLM API key (required for strict BYOK)"
-          value={providerSecret}
-          onChange={(e) => setProviderSecret(e.target.value)}
         />
         <button className="btn" type="submit">
           Create account
@@ -352,11 +334,18 @@ function MyCredentials() {
   return (
     <section className="panel">
       <h2>My provider keys (BYOK)</h2>
+      <p className="sub">
+        Nexus stores each provider key encrypted under its own KEK. Strict-byok
+        (default) rejects gateway calls from anyone who hasn&apos;t registered a
+        key for the target provider — register at least one here before sending
+        traffic.
+      </p>
       <form className="form row" onSubmit={add}>
         <select value={provider} onChange={(e) => setProvider(e.target.value)}>
           <option value="openai">openai</option>
           <option value="anthropic">anthropic</option>
           <option value="gemini">gemini</option>
+          <option value="the_grid">the_grid</option>
         </select>
         <input placeholder="label (optional)" value={name} onChange={(e) => setName(e.target.value)} />
         <input

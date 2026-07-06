@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { Account } from "./Account";
 import { Audit } from "./Audit";
+import { Playground } from "./Playground";
 
 const EMPTY_STATS: Stats = {
   total_requests: 0,
@@ -27,20 +28,32 @@ const EMPTY_STATS: Stats = {
   guardrail_events: 0,
 };
 
+type Tab = "overview" | "playground" | "audit" | "account";
+
 export function App() {
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
   const [traces, setTraces] = useState<TraceSummary[]>([]);
   const [routing, setRouting] = useState<RoutingModel[]>([]);
   const [evals, setEvals] = useState<EvalMetric[]>([]);
   const [live, setLive] = useState(false);
-  const [tab, setTab] = useState<"overview" | "audit" | "account">("overview");
+  const [tab, setTab] = useState<Tab>("overview");
   const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
-    fetchMe().then(setUser).catch(() => {});
+    fetchMe().then((u) => {
+      setUser(u);
+      // Anonymous users see the Sign-in panel first. Logged-in users start
+      // on Overview, but the PlayGround is always one click away.
+      if (!u) setTab("account");
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
+    if (!user) {
+      // Defer /api/* polling until we know there is a session. Avoids
+      // spamming the gateway with 401s on the first paint.
+      return;
+    }
     const load = () => {
       fetchStats().then(setStats).catch(() => {});
       fetchTraces().then(setTraces).catch(() => {});
@@ -60,7 +73,7 @@ export function App() {
       clearInterval(interval);
       ws.close();
     };
-  }, []);
+  }, [user]);
 
   return (
     <div className="app">
@@ -69,9 +82,16 @@ export function App() {
           <span className="logo">◆</span> Nexus <span className="sub">LLM Gateway</span>
         </div>
         <nav className="tabs">
-          <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
-            Overview
-          </button>
+          {user && tab !== "account" && tab !== "audit" && (
+            <>
+              <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
+                Overview
+              </button>
+              <button className={tab === "playground" ? "active" : ""} onClick={() => setTab("playground")}>
+                Playground
+              </button>
+            </>
+          )}
           {user?.role === "admin" && (
             <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>
               Audit
@@ -88,6 +108,8 @@ export function App() {
 
       {tab === "account" ? (
         <Account user={user} onUser={setUser} />
+      ) : tab === "playground" ? (
+        <Playground />
       ) : tab === "audit" ? (
         <Audit />
       ) : (
