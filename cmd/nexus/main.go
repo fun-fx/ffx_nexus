@@ -260,15 +260,24 @@ func main() {
 		}
 	}
 
-	// BYOK: per-request upstream key resolution. In "byok"/"strict_byok" mode
-	// each caller's request uses their own stored provider key (falling back to
-	// shared keys in soft BYOK). A short-TTL cache avoids re-decrypting per call.
+	// BYOK: per-request upstream key resolution. Default mode is strict_byok
+	// (each caller must own a provider key for the target provider; the
+	// operator never pays for user usage). Setting NEXUS_KEY_MODE=byok or
+	// =shared softens this, and NEXUS_ALLOW_SHARED_KEYS=true additionally
+	// re-enables env-key registration via registerProviders.
 	keyMode := gateway.ParseKeyMode(cfg.KeyMode)
 	var credResolver *gateway.CredentialResolver
 	if keyMode != gateway.KeyModeShared {
 		if store == nil || !store.HasCipher() {
-			log.Warn("NEXUS_KEY_MODE requires Postgres + NEXUS_MASTER_KEY; falling back to shared keys", "mode", cfg.KeyMode)
-			keyMode = gateway.KeyModeShared
+			if cfg.AllowSharedKeys {
+				log.Warn("NEXUS_KEY_MODE requires Postgres + NEXUS_MASTER_KEY; falling back to shared keys (NEXUS_ALLOW_SHARED_KEYS=true)",
+					"mode", cfg.KeyMode)
+				keyMode = gateway.KeyModeShared
+			} else {
+				log.Warn("NEXUS_KEY_MODE requires Postgres + NEXUS_MASTER_KEY; strict-byok disabled until storage configured",
+					"mode", cfg.KeyMode)
+				keyMode = gateway.KeyModeShared
+			}
 		} else {
 			credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 60*time.Second)
 			gwHandler.SetCredentialResolution(credResolver, keyMode)
@@ -508,6 +517,24 @@ func serve(wg *sync.WaitGroup, srv *http.Server, name, addr string, log *slog.Lo
 }
 
 func registerProviders(reg *gateway.Registry, cfg config.Config, log *slog.Logger) {
+	// Env-configured providers are only useful when the operator has opted in
+	// to shared-key fallback (NEXUS_ALLOW_SHARED_KEYS=true) or when the
+	// gateway is running in KeyModeShared. In v0.1.0 the default is
+	// strict_byok and AllowSharedKeys is false, so the env keys below are
+	// loaded into the struct for visibility but never reach the Registry.
+	// We log a single warn line so operators can see exactly which env keys
+	// are present but unused; setting NEXUS_ALLOW_SHARED_KEYS=true re-enables
+	// registration.
+	if cfg.KeyMode != "" && !cfg.AllowSharedKeys {
+		for _, name := range []string{"openai", "anthropic", "gemini", "groq", "mistral", "grid"} {
+			if envKeySet(name, cfg) {
+				log.Warn("env provider key present but unused under strict-byok default",
+					"provider", name,
+					"opt_in", "set NEXUS_ALLOW_SHARED_KEYS=true to enable shared fallback")
+			}
+		}
+		return
+	}
 	if cfg.OpenAIAPIKey != "" {
 		reg.Register(providers.NewOpenAI(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, cfg.UpstreamTimeout))
 		log.Info("provider registered", "name", "openai")
@@ -531,5 +558,26 @@ func registerProviders(reg *gateway.Registry, cfg config.Config, log *slog.Logge
 	if cfg.GridAPIKey != "" {
 		reg.Register(providers.NewGrid(cfg.GridAPIKey, cfg.UpstreamTimeout))
 		log.Info("provider registered", "name", "grid")
+	}
+}
+
+// envKeySet reports whether the named provider has a non-empty env-configured
+// key in the active config.
+func envKeySet(name string, cfg config.Config) bool {
+	switch name {
+	case "openai":
+		return cfg.OpenAIAPIKey != ""
+	case "anthropic":
+		return cfg.AnthropicAPIKey != ""
+	case "gemini":
+		return cfg.GeminiAPIKey != ""
+	case "groq":
+		return cfg.GroqAPIKey != ""
+	case "mistral":
+		return cfg.MistralAPIKey != ""
+	case "grid":
+		return cfg.GridAPIKey != ""
+	default:
+		return false
 	}
 }
