@@ -132,10 +132,11 @@ of the above before reset for a multi-vendor table:
 
   export GRID_API_KEY=... GEMINI_API_KEY=...    # then bash scripts/demo_reset.sh
 
-To record the demo:
-  - Press Cmd+Shift+5 (Mac) → record selected portion of the screen
-  - Walk through the steps in docs/demo-script.md
-  - Stop the recording with Cmd+Shift+5 → Stop
+To record yourself walking through the console:
+  - Press Cmd+Shift+5 (Mac) -> record selected portion of the screen
+  - Use a fresh Chrome Incognito (Cmd+Shift+N) so stale cookies from a
+    prior session don't surface as `login required` on `My usage`
+  - Stop the recording with Cmd+Shift+5 -> Stop
 
 Cleanup:
   bash scripts/demo_reset.sh        # resets everything
