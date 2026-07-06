@@ -2,14 +2,23 @@
 
 A recorded walkthrough of the *very first* user journey — signup in an empty
 Nexus instance, mint a virtual key, hit the gateway, see the trace land in
-the dashboard. The script assumes Nexus is running locally on a freshly
-reset dev stack (see `scripts/demo_reset.sh`).
+the dashboard. **Start with** `bash scripts/demo_reset.sh` — it enables signup,
+semantic cache, guardrails, and quality-aware routing (`auto`) for steps 7–9.
+Manually starting Nexus skips those features and the cache/blocked/auto badges
+will not appear.
 
 > **한국어 버전**: [`docs/demo-script.ko.md`](demo-script.ko.md)
 
 The script deliberately avoids pasting real provider keys on screen; we use
 the `AQ.Ab8R...xxxx` style placeholder. Use a *throwaway* Gemini / OpenAI
 key for the live demo, or a recorded-key-with-redaction overlay.
+
+> **`demo_reset.sh` wipes every user and session in Postgres.** Right after a
+> reset, any logged-in browser tab still carries a stale session cookie. `My usage`
+> then receives `login required`; when the React poller tries to `JSON.parse`
+> an empty body, the console prints `Unexpected end of JSON input`.
+> **Always start the demo from a fresh Chrome Incognito window (Cmd+Shift+N)**
+> and stay in that window through every step.
 
 ---
 
@@ -27,15 +36,20 @@ key for the live demo, or a recorded-key-with-redaction overlay.
 If you want a uniform look, set Chrome zoom to 100 % and pick a neutral
 light theme (Settings → Appearance → Light).
 
+7. **(Optional, step 9 auto routing)** Export two or more provider keys before
+   reset for a richer **Model routing** table — e.g. `export GEMINI_API_KEY=...`
+   and `export OPENAI_API_KEY=...`, then `bash scripts/demo_reset.sh`. One key
+   still works; you will only see one row in routing stats.
+
 ---
 
 ## 1. Intro (≈ 0:00–0:20)
 
 > **Voiceover:**
 > "Hi, I'm going to show you what it's like to use Nexus for the first
-> time. I'll sign up, paste a provider key, mint a virtual key, send one
-> chat completion, then watch the dashboard update in real time. Total
-> elapsed: about ninety seconds."
+> time. I'll sign up, paste a provider key, mint a virtual key, send chat
+> completions, then watch cache, guardrails, and eval-driven **auto**
+> routing update the dashboard in real time."
 
 Cursor: idle on the empty `localhost:5173` page.
 
@@ -158,8 +172,12 @@ Point out with the cursor:
 Action:
 
 1. In the terminal, press <kbd>↑</kbd> to repeat the *exact same* curl.
-2. Wait for the response (much faster this time — sub-second).
+2. Wait for the response (much faster — tens of ms from cache).
 3. Switch back to Chrome.
+
+> **Note:** The first call goes upstream and *stores* the response. The
+> second identical call gets the `cache` badge. If Nexus was started without
+> `demo_reset.sh`, semantic cache stays off and no badge appears.
 
 > **Voiceover:**
 > "Now I rerun the *exact same* request. It comes back in just a few
@@ -204,15 +222,66 @@ Switch back to Chrome, point out:
 
 ---
 
-## 9. Closing (≈ 4:05–4:30)
+## 9. Auto routing — eval-driven model selection (≈ 4:05–4:50)
+
+Action:
+
+1. In the terminal, run curl with **`"model": "auto"`** (same virtual key):
+
+   ```bash
+   curl http://localhost:8090/v1/chat/completions \
+     -H "Authorization: Bearer nxs_live_..." \
+     -H "Content-Type: application/json" \
+     -d '{
+       "model": "auto",
+       "messages": [{"role": "user", "content": "List three benefits of an AI gateway in one sentence each."}]
+     }'
+   ```
+
+2. Inspect the JSON response:
+   * request used `"model": "auto"` — the **alias** your app sends
+   * response `"model": "gemini-2.5-flash"` (or similar) — the **concrete**
+     upstream model Nexus actually chose
+
+3. Run the same curl **two or three more times** (slightly different prompts
+   are fine). The async eval worker scores traces and routing stats accumulate.
+
+4. Switch to Chrome → scroll to the top of **Overview**.
+
+> **Voiceover:**
+> "Now we send **`auto`** instead of a fixed model name. We have two providers
+> registered: **Gemini** and **The Grid** (spot-market inference). Nexus
+> aggregates quality, cost, and latency from ClickHouse traces and eval scores,
+> then routes each request to the better option automatically. Your app code
+> stays on `auto`; the actual upstream model chosen is visible in the response
+> JSON and on the dashboard trace table."
+
+Point out with the cursor:
+
+* **Model routing** table — `eff_quality` bar, `avg_latency_ms`, `avg_cost_usd`, `samples`
+* **Eval scores (24h)** — `completeness`, `pii_leak`, etc. from earlier calls
+* **Recent traces** — rows where `request_model` is `auto`
+
+> **Note:**
+> * `demo_reset.sh` auto-registers any provider keys exported (`GRID_API_KEY`,
+>   `GEMINI_API_KEY`, etc.). Routing stats show one row per model across all
+>   registered providers when two or more are configured.
+> * A concrete model (`gemini-2.5-flash`) **bypasses** the router. Only `auto`
+>   or custom aliases (`fast`, etc.) are routed.
+> * With one provider key, `auto` still picks that single model — the routing
+>   *mechanism* runs identically; the table simply shows one row.
+> * LLM-as-judge eval may be off locally; heuristics alone still feed routing.
+
+---
+
+## 10. Closing (≈ 4:50–5:15)
 
 Cut back to the Overview page, scroll to the top and on the cards:
 
 > **Voiceover:**
-> "That's Nexus — a self-hosted AI gateway you can install with one
-> command, deploy in five minutes, and watch work in real time. The
-> source is Apache 2.0, the dashboard is MIT, and there's nothing else
-> to plug in. Thanks for watching."
+> "That's Nexus — install with one command, deploy in five minutes, and watch
+> traces, cache, guardrails, and eval-driven **auto** routing work in real
+> time. The source is Apache 2.0, the dashboard is MIT. Thanks for watching."
 
 End the recording.
 
@@ -234,7 +303,9 @@ The next demo starts from the same empty instance.
 
 * **Skip the curl entirely.** Use the OpenAI Python SDK with
   `base_url="http://localhost:8090/v1"` — same effect.
-* **Skip the guardrail section.** Saves ≈ 50 s; the cache section alone
-  is the strongest single visual.
+* **Skip the guardrail section.** Saves ≈ 50 s; cache + auto routing alone
+  are strong visuals.
+* **Skip auto routing.** When you only have one provider key or are short on
+  time; cache + guardrail alone still demo well.
 * **Switch to a bigger screen.** `localhost:5173` is responsive up to
   4 K — at 1440 × 900 the side-by-side cards stay readable.

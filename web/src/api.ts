@@ -289,20 +289,48 @@ export interface MyUsageQuality {
 }
 
 export async function fetchMyStats(window = "1h"): Promise<MyUsageStats> {
-  const res = await fetch(`/api/me/stats?window=${window}`);
-  return res.json();
+  const data = await jsonOrThrow(
+    await fetch(`/api/me/stats?window=${window}`)
+  ).catch(() => ({}));
+  // Normalize to the documented shape so a stale session / 401 cannot crash
+  // downstream code that dereferences fields (e.g. requests, cost_usd).
+  return {
+    total_requests: data.total_requests ?? 0,
+    error_rate: data.error_rate ?? 0,
+    avg_latency_ms: data.avg_latency_ms ?? 0,
+    p95_latency_ms: data.p95_latency_ms ?? 0,
+    total_tokens: data.total_tokens ?? 0,
+    total_cost_usd: data.total_cost_usd ?? 0,
+    cache_hits: data.cache_hits ?? 0,
+    cache_hit_rate: data.cache_hit_rate ?? 0,
+    guardrail_events: data.guardrail_events ?? 0,
+  };
 }
 
 export async function fetchMyTraces(limit = 20): Promise<TraceSummary[]> {
   const res = await fetch(`/api/me/traces?limit=${limit}`);
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
+  if (!res.ok) return [];
+  const text = await res.text();
+  if (!text) return [];
+  try {
+    const data = JSON.parse(text);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchMyQuality(window = "24h"): Promise<MyUsageQuality[]> {
   const res = await fetch(`/api/me/quality?window=${window}`);
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
+  if (!res.ok) return [];
+  const text = await res.text();
+  if (!text) return [];
+  try {
+    const data = JSON.parse(text);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
 }
 
 // fetchUserQuality returns per-user rolling quality + spend (admin only). This
