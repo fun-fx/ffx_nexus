@@ -19,6 +19,7 @@ import {
   startSSOLogin,
   updateMe,
   type Credential,
+  type CredentialModels,
   type MyUsageStats,
   type MyUsageQuality,
   type TraceSummary,
@@ -61,6 +62,27 @@ export function Account({ user, onUser }: { user: User | null; onUser: (u: User 
       <MyUsage user={user} />
     </div>
   );
+}
+
+// BUILTIN_PROVIDERS lists the provider names whose adapter is shipped in
+// the Go binary. Anything else routes through the dynamic OpenAI-compatible
+// path that PR #68 added: the user provides base_url + an optional model
+// inventory and the gateway auto-registers a wrapper on the next boot.
+const BUILTIN_PROVIDERS = ["openai", "anthropic", "gemini", "groq", "mistral", "the_grid"];
+
+// summarizeModels renders the per-credential model inventory as a compact
+// "N chat / M embed" string for the credential table; "—" when the owner
+// did not declare a list (the gateway forwards whatever model id the
+// caller sends).
+function summarizeModels(m: CredentialModels | undefined): string {
+  if (!m) return "—";
+  const chat = m.chat?.length ?? 0;
+  const embed = m.embed?.length ?? 0;
+  if (chat === 0 && embed === 0) return "—";
+  const parts: string[] = [];
+  if (chat > 0) parts.push(`${chat} chat`);
+  if (embed > 0) parts.push(`${embed} embed`);
+  return parts.join(" / ");
 }
 
 // UserQualityPanel is Nexus's eval differentiator surfaced in the console: each
@@ -311,7 +333,15 @@ function EnforceToggle({ user, onUser }: { user: User; onUser: (u: User) => void
 
 function MyCredentials() {
   const [creds, setCreds] = useState<Credential[]>([]);
-  const [provider, setProvider] = useState("openai");
+  // Stock providers are registered out of the box; any value in
+  // "BUILTIN_PROVIDERS" is a normal label. Anything else routes through the
+  // dynamic OpenAI-compatible path: OBS sends base_url, models becomes
+  // /v1/models.
+  const [provider, setProvider] = useState<string>("openai");
+  const [customName, setCustomName] = useState<string>("");
+  const [baseURL, setBaseURL] = useState<string>("");
+  const [chatModels, setChatModels] = useState<string>("");
+  const [embedModels, setEmbedModels] = useState<string>("");
   const [secret, setSecret] = useState("");
   const [name, setName] = useState("");
   const [err, setErr] = useState("");
@@ -319,13 +349,44 @@ function MyCredentials() {
   useEffect(() => {
     load();
   }, []);
+  const isBuiltin = BUILTIN_PROVIDERS.includes(provider);
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr("");
+    const finalProvider = isBuiltin ? provider : customName.trim();
+    if (!finalProvider) {
+      setErr("Provider is required.");
+      return;
+    }
+    if (!isBuiltin && !baseURL.trim()) {
+      setErr("base_url is required for custom providers.");
+      return;
+    }
+    // Build a clean models payload only when something was provided; the
+    // backend stores {} otherwise and the gateway uses its built-in catalog.
+    const parseList = (raw: string): string[] =>
+      raw
+        .split(/[\s,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    const models =
+      !isBuiltin && (chatModels.trim() || embedModels.trim())
+        ? { chat: parseList(chatModels), embed: parseList(embedModels) }
+        : undefined;
     try {
-      await createMyCredential({ provider, name, secret });
+      await createMyCredential({
+        provider: finalProvider,
+        name,
+        base_url: isBuiltin ? undefined : baseURL.trim(),
+        secret,
+        ...(models ? { models } : {}),
+      });
       setSecret("");
       setName("");
+      setBaseURL("");
+      setChatModels("");
+      setEmbedModels("");
+      setCustomName("");
       load();
     } catch (e) {
       setErr((e as Error).message);
@@ -340,23 +401,60 @@ function MyCredentials() {
         key for the target provider — register at least one here before sending
         traffic.
       </p>
-      <form className="form row" onSubmit={add}>
-        <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-          <option value="openai">openai</option>
-          <option value="anthropic">anthropic</option>
-          <option value="gemini">gemini</option>
-          <option value="the_grid">the_grid</option>
-        </select>
-        <input placeholder="label (optional)" value={name} onChange={(e) => setName(e.target.value)} />
-        <input
-          placeholder="API key"
-          value={secret}
-          onChange={(e) => setSecret(e.target.value)}
-          type="password"
-        />
-        <button className="btn" type="submit">
-          Add
-        </button>
+      <form className="form" onSubmit={add}>
+        <div className="form row">
+          <select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+          >
+            {BUILTIN_PROVIDERS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+            <option value="_custom">Custom (OpenAI-compatible)…</option>
+          </select>
+          <input placeholder="label (optional)" value={name} onChange={(e) => setName(e.target.value)} />
+          <input
+            placeholder="API key"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            type="password"
+          />
+          <button className="btn" type="submit">
+            Add
+          </button>
+        </div>
+        {!isBuiltin && (
+          <>
+            <input
+              placeholder="provider name (e.g. openrouter, together, fireworks)"
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+            />
+            <input
+              placeholder="base URL (https://api.example.com/v1)"
+              value={baseURL}
+              onChange={(e) => setBaseURL(e.target.value)}
+              required
+            />
+            <input
+              placeholder="chat models (comma-separated, optional)"
+              value={chatModels}
+              onChange={(e) => setChatModels(e.target.value)}
+            />
+            <input
+              placeholder="embed models (comma-separated, optional)"
+              value={embedModels}
+              onChange={(e) => setEmbedModels(e.target.value)}
+            />
+            <p className="sub">
+              Models are exposed at <code>/v1/models</code> under{" "}
+              <code>user/&lt;provider&gt;/&lt;model&gt;</code>; pass any model id
+              the upstream accepts if you&apos;d rather skip the inventory list.
+            </p>
+          </>
+        )}
       </form>
       {err && <div className="error">{err}</div>}
       <table>
@@ -365,6 +463,7 @@ function MyCredentials() {
             <th>Provider</th>
             <th>Label</th>
             <th>Key</th>
+            <th>Models</th>
             <th>Added</th>
             <th />
           </tr>
@@ -372,7 +471,7 @@ function MyCredentials() {
         <tbody>
           {creds.length === 0 && (
             <tr>
-              <td colSpan={5} className="empty">
+              <td colSpan={6} className="empty">
                 No personal keys yet. Add one to call providers with your own account.
               </td>
             </tr>
@@ -381,9 +480,11 @@ function MyCredentials() {
             <tr key={c.id}>
               <td>
                 <span className="tag">{c.provider}</span>
+                {c.base_url && <small className="muted"> {c.base_url}</small>}
               </td>
               <td>{c.name || "-"}</td>
               <td className="muted">****{c.secret_last4}</td>
+              <td className="muted">{summarizeModels(c.models)}</td>
               <td>{new Date(c.created_at).toLocaleDateString()}</td>
               <td>
                 <button

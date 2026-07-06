@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchMyCredentials, fetchMyKeys } from "./api";
+import { fetchGatewayModels, fetchMyCredentials, fetchMyKeys, type GatewayModelCatalog } from "./api";
 
 // Playground is a one-shot chat completion panel modeled on LiteLLM's
 // in-console playground. It uses the user's own virtual key (BYOK) directly
@@ -25,11 +25,18 @@ export function Playground() {
 
   // Read-only glance at the user's own keys & creds so they can pick the
   // right key without leaving the panel.
+  const [catalog, setCatalog] = useState<GatewayModelCatalog>({ chat: [], embed: [], user: [] });
   useEffect(() => {
     fetchMyKeys().then(setKeys).catch(() => setKeys([]));
     fetchMyCredentials().then((rows) => {
       setCreds(rows.map((c) => ({ provider: c.provider, id: c.id, secret_last4: c.secret_last4 })));
     }).catch(() => setCreds([]));
+    // The /v1/models list is the union of every registered provider's
+    // catalog; user-defined OpenAI-compatible credentials show up under
+    // the "user/<provider>/<model>" prefix. Surfacing it here gives the
+    // Playground picker autocomplete suggestions without forcing the user
+    // to remember the prefix.
+    fetchGatewayModels().then(setCatalog).catch(() => setCatalog({ chat: [], embed: [], user: [] }));
   }, []);
 
   // Suggest a default model from the providers we see registered for the user.
@@ -124,10 +131,20 @@ export function Playground() {
         <label className="row">
           <span>Model</span>
           <input
+            list="playground-model-options"
             placeholder="gemini-2.5-flash, gpt-4o-mini, auto, fast, ..."
             value={model}
             onChange={(e) => setModel(e.target.value)}
           />
+          <datalist id="playground-model-options">
+            {catalog.chat.map((id) => (
+              <option key={id} value={id} />
+            ))}
+            {/* user/<provider>/<model> ids are already in catalog.chat via
+                collectUserModels; flat here so a user typing "user/" still
+                gets them. The rest of UX comes from the Account page's
+                credential list. */}
+          </datalist>
         </label>
         <label className="row column">
           <span>Prompt</span>

@@ -39,11 +39,17 @@ export interface User {
   created_at: string;
 }
 
+export interface CredentialModels {
+  chat?: string[];
+  embed?: string[];
+}
+
 export interface Credential {
   id: string;
   provider: string;
   name: string;
   base_url?: string;
+  models?: CredentialModels;
   secret_last4: string;
   enabled: boolean;
   created_at: string;
@@ -107,6 +113,59 @@ export async function fetchEvals(window = "24h"): Promise<EvalMetric[]> {
   return Array.isArray(data) ? data : [];
 }
 
+// --- Gateway /v1/models (open-source discovery) ---
+
+export interface GatewayModel {
+  id: string;
+  owned_by: string;
+}
+
+export interface GatewayModelCatalog {
+  chat: string[];
+  embed: string[];
+  user: { provider: string; models: string[] }[];
+}
+
+// fetchGatewayModels hits /v1/models and returns the union list, plus a
+// breakdown of any user/<provider>/... entries so the Playground picker can
+// offer them grouped. Tolerates a 401/404 when the gateway is not reachable
+// from the console (e.g. users running the dashboard alone) by returning an
+// empty catalog so the UI renders the small set of stock options instead of
+// crashing.
+export async function fetchGatewayModels(): Promise<GatewayModelCatalog> {
+  try {
+    const res = await fetch(`/v1/models`);
+    if (!res.ok) return { chat: [], embed: [], user: [] };
+    const data = await res.json();
+    const chat = Array.isArray(data?.data) ? data.data.map((m: { id: string }) => m.id) : [];
+    const embed = Array.isArray(data?.embeddings?.data) ? data.embeddings.data.map((m: { id: string }) => m.id) : [];
+    const user = collectUserModels(chat);
+    return { chat, embed, user };
+  } catch {
+    return { chat: [], embed: [], user: [] };
+  }
+}
+
+// collectUserModels groups the catalog by the "user/<provider>/" schema
+// introduced by user-definable OpenAI-compatible credentials. Anything not
+// matching that prefix is left in chat to be shown as a flat list.
+function collectUserModels(ids: string[]): { provider: string; models: string[] }[] {
+  const map = new Map<string, string[]>();
+  for (const id of ids) {
+    if (!id.startsWith("user/")) continue;
+    const rest = id.slice("user/".length);
+    const slash = rest.indexOf("/");
+    if (slash <= 0) continue;
+    const provider = rest.slice(0, slash);
+    const model = rest.slice(slash + 1);
+    if (!model) continue;
+    const list = map.get(provider) ?? [];
+    list.push(model);
+    map.set(provider, list);
+  }
+  return Array.from(map.entries()).map(([provider, models]) => ({ provider, models }));
+}
+
 // --- Auth / self-service (BYOK) ---
 
 async function jsonOrThrow(res: Response) {
@@ -162,6 +221,7 @@ export async function register(input: {
   provider?: string;
   provider_name?: string;
   provider_secret?: string;
+  models?: CredentialModels;
   key_name?: string;
 }): Promise<RegisterResult> {
   const res = await fetch(`/api/auth/register`, {
@@ -203,6 +263,7 @@ export async function createMyCredential(input: {
   name: string;
   base_url?: string;
   secret: string;
+  models?: CredentialModels;
 }): Promise<Credential> {
   const res = await fetch(`/api/me/credentials`, {
     method: "POST",
