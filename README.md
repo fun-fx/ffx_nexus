@@ -879,6 +879,10 @@ For real Gemini/OpenAI completion, eval, and routing tests, add a repository sec
 
 ### Release a version
 
+See [`CHANGELOG.md`](CHANGELOG.md) for what changed in each release and
+[`docs/release-notes/v0.1.0.md`](docs/release-notes/v0.1.0.md) for the
+current pilot handoff letter.
+
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
