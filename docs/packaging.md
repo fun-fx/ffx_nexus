@@ -19,12 +19,12 @@ Available under the project license in the repository root.
 | Routing | Quality-aware aliases, load balancing, policy gates |
 | Guardrails | PII block/redact, JSON schema validation, self-correction |
 | Semantic cache | Redis + embeddings endpoint |
-| Deployment | Docker, Compose, Helm chart, Cozystack manifests |
+| Deployment | Docker, Compose, Helm chart |
 
 **Self-host minimum:** run the binary with env provider keys (zero-dependency mode).
 
-**Self-host full stack:** Postgres + ClickHouse + Redis + Helm chart or
-`deploy/cozystack/` manifests. See [deploy/cozystack/README.md](../deploy/cozystack/README.md).
+**Self-host full stack:** Postgres + ClickHouse + Redis + the Helm chart under
+[`deploy/helm/nexus`](../deploy/helm/nexus).
 
 ## Commercial (planned, not in OSS tree)
 
@@ -46,8 +46,8 @@ differentiator and remain in this repository.
 
 | Artifact | Registry / path | Purpose |
 | --- | --- | --- |
-| `ffx/nexus` | `ghcr.io/fun-fx/ffx_nexus` (CI), Harbor (prod) | Gateway + console |
-| `ffx/nexus-eval` | Harbor (prod), build from `eval-service/` | Optional eval sidecar |
+| `ffx/nexus` | `ghcr.io/fun-fx/ffx_nexus` | Gateway + console |
+| `ffx/nexus-eval` | build from `eval-service/` | Optional eval sidecar |
 
 ## Versioning
 
@@ -55,18 +55,9 @@ differentiator and remain in this repository.
 - **Database migrations** — applied on Nexus startup from `migrations/`
 - **Breaking changes** — noted in release tags and `DESCRIPTION.md`
 
-## Single-command self-hosting (Phase 5)
+## Single-command self-hosting
 
-**Cozystack / Talos:**
-
-```bash
-./deploy/cozystack/install-full.sh
-```
-
-Or step-by-step: Cozystack CRs → `06-bootstrap-secret.yaml` → Ollama/eval manifests →
-`helm upgrade --install nexus deploy/helm/nexus -f deploy/cozystack/values-full.yaml`.
-
-**Generic Kubernetes:** wire your own Postgres/ClickHouse/Redis, then:
+**Kubernetes (Helm):** wire your own Postgres/ClickHouse/Redis, then:
 
 ```bash
 helm upgrade --install nexus deploy/helm/nexus -f deploy/helm/nexus/values-full.yaml

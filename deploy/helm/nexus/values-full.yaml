@@ -2,11 +2,9 @@
 # + eval stack + semantic cache. Requires external Postgres, ClickHouse, Redis,
 # and (for judge/embeddings/eval sidecar) in-cluster Ollama + eval-service.
 #
-# Cozystack users: run deploy/cozystack/06-bootstrap-secret.yaml first, then:
+# Usage: set existingSecret or populate secrets.* + dependency URLs, then:
 #   helm upgrade --install nexus deploy/helm/nexus \
-#     -n tenant-nexus -f deploy/cozystack/values-full.yaml
-#
-# Generic Kubernetes: set existingSecret or populate secrets.* + dependency URLs.
+#     -n nexus -f deploy/helm/nexus/values-full.yaml
 
 existingSecret: nexus
 
