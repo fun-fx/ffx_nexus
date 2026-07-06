@@ -907,3 +907,20 @@ docker run --rm -p 8080:8080 -p 8081:8081 \
 - `GET/POST /api/me/keys`, `GET/POST /api/me/credentials` — BYOK self-service
 - `GET/POST /api/users`, `DELETE /api/users/{id}` — admin user management
 - `GET /api/users/quality` — per-user rolling quality + spend (admin)
+
+## License
+
+Nexus is dual-licensed:
+
+- The **Go gateway, console, and bundled binaries** in this repository
+  (everything under `cmd/`, `internal/`, `migrations/`, `eval-service/`,
+  `scripts/`, `deploy/`, `Dockerfile`, plus CLI tooling) are released under
+  the Apache License 2.0. See [`LICENSE`](LICENSE).
+- The **React/TypeScript dashboard** under `web/` (and the corresponding
+  embedded SPA assets) is released under the MIT License. See
+  [`LICENSE-MIT`](LICENSE-MIT).
+
+By contributing, you agree that new contributions fall under the same terms
+as the file they touch — Apache-2.0 for backend / infra files, MIT for
+dashboard files. The full license texts are the authoritative source; the
+table above is a summary.
