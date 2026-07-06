@@ -22,6 +22,33 @@ key for the live demo, or a recorded-key-with-redaction overlay.
 
 ---
 
+## 3b. Plug in your own OpenAI-shaped upstream (optional cut, ≈ 0:15 add-on)
+
+> **Skip this section** if you're demoing the built-in Gemini / OpenAI / Grid
+> flow. Keep it for the demo where the audience asks “can I use OpenRouter,
+> Together, or my own LLM gateway?”.
+
+In the **Create account** form from §3 the provider dropdown ends with
+**Custom (OpenAI-compatible)…**. Picking it reveals four extra fields:
+
+1. **Provider name** — a short identifier, e.g. `openrouter`, `together`,
+   `fireworks`, `mycorp-llm`. Lowercase letters and digits only.
+2. **Base URL** — the OpenAI-compatible root, e.g.
+   `https://openrouter.ai/api/v1` or `https://llm.example.com/v1`.
+3. **Chat models** (optional) — comma-separated, e.g.
+   `openai/gpt-4o, anthropic/claude-3.5-sonnet`.
+4. **Embed models** (optional) — comma-separated, e.g.
+   `text-embedding-3-large`.
+
+Press **Create account** as usual. Nexus auto-registers a wrapper adapter on
+the next boot. Your chat models appear in the Playground's model picker
+autocomplete as `user/<provider>/<model>` (e.g.
+`user/openrouter/openai/gpt-4o`), and the prefix is stripped before the
+outbound request so the upstream sees the raw model id. No Go rebuild, no
+config edit, no provider-side adapter to ship.
+
+---
+
 ## 0. Before you press record
 
 1. Close every other tab and notification (System Settings → notifications

@@ -24,6 +24,25 @@
 
 ---
 
+## 3b. 자신의 OpenAI-호환 upstream 연결하기 (선택, ≈ 0:15 추가)
+
+> **데모 시간 여유가 있을 때만 사용.** Built-in Gemini/OpenAI/Grid 데모만으로도 핵심은 다 보여주므로, 별도 시간이 없는 릴리스 데모라면 이 단계는 건너뛰고 §4 부터 진행하세요. 청중이 “OpenRouter 같은 외부 gateway 도 붙을 수 있나요?”를 물어볼 때만 꺼내면 됩니다.
+
+세 번째 (§3) **Create account** 형식의 provider 드롭다운을 실행한 후 dropdown 끝에서 선택하세요:
+
+**Custom (OpenAI-compatible)…**.
+
+선택하면 세 가지 추가 입력 필드가 나타납니다:
+
+1. **Provider name** — `openrouter`, `together`, `fireworks`, `mycorp-llm` 같은 쉼은 식별자. 소문자+숫자만 허용.
+2. **Base URL** — OpenAI-호환 루트. 예: `https://openrouter.ai/api/v1` 또는 `https://llm.example.com/v1`.
+3. **Chat models** (선택) — 콤마로 구분. 예: `openai/gpt-4o, anthropic/claude-3.5-sonnet`.
+4. **Embed models** (선택) — 콤마로 구분. 예: `text-embedding-3-large`.
+
+**Create account** 버튼을 누르면 Nexus 가 다음 boot 시 자동으로 UserCompat 어댑터를 자가 등록합니다. 채팅 모델은 Playground model picker 자동완성에 `user/<provider>/<model>` 형태로 나타납고 (예: `user/openrouter/openai/gpt-4o`), outbound 요청 시에는 prefix 가 자동으로 떼어 upstream 에 원래 model id 만 전달됩니다. Go 리빌드, config 수정, provider-side adapter 없이 연결 가능합니다.
+
+---
+
 ## 1. 인트로 (≈ 0:00–0:20)
 
 > **내레이션:**
