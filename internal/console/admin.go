@@ -115,11 +115,11 @@ func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request) {
 }
 
 type createCredentialRequest struct {
-	Provider string                  `json:"provider"`
-	Name     string                  `json:"name"`
-	BaseURL  string                  `json:"base_url"`
-	Secret   string                  `json:"secret"`
-	Models   core.CredentialModels   `json:"models,omitempty"`
+	Provider string                `json:"provider"`
+	Name     string                `json:"name"`
+	BaseURL  string                `json:"base_url"`
+	Secret   string                `json:"secret"`
+	Models   core.CredentialModels `json:"models,omitempty"`
 }
 
 func (s *Server) createCredential(w http.ResponseWriter, r *http.Request, u core.User) {
