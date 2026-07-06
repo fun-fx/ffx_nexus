@@ -93,12 +93,22 @@ type Config struct {
 	UpstreamTimeout time.Duration
 
 	// KeyMode controls how upstream provider keys are resolved per request:
-	//   "shared" (default) — use the process-wide env/org keys for everyone.
+	//   "shared" (default prior to v1) — use the process-wide env/org keys for everyone.
 	//   "byok"             — each caller's request uses their own stored key,
 	//                        falling back to org/env keys when they have none.
 	//   "strict_byok"      — require a per-user key; reject calls from users who
 	//                        have not registered a key for the target provider.
+	//
+	// As of v0.1.0 the default is "strict_byok" so the operator never pays for
+	// user usage. To restore the legacy shared-key behavior, set
+	// NEXUS_ALLOW_SHARED_KEYS=true (opt-in escape hatch — see AllowSharedKeys).
 	KeyMode string
+
+	// AllowSharedKeys is an opt-in escape hatch that re-enables env/orig-keys
+	// as a soft fallback in any KeyMode. Defaults to false. When false, env
+	// keys are still loaded for visibility (so an operator can see what is set)
+	// but never reach the data path.
+	AllowSharedKeys bool
 
 	// Bootstrap admin: when set and no users exist yet, an admin account is
 	// created on startup so the console has an initial login.
@@ -177,7 +187,8 @@ func Load() Config {
 		RouteRefresh:       envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
 		OTLPEnabled:        envBool("NEXUS_OTLP_ENABLED", false),
 		UpstreamTimeout:    envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
-		KeyMode:            env("NEXUS_KEY_MODE", "shared"),
+		KeyMode:            env("NEXUS_KEY_MODE", "strict_byok"),
+		AllowSharedKeys:    envBool("NEXUS_ALLOW_SHARED_KEYS", false),
 		AdminEmail:         env("NEXUS_ADMIN_EMAIL", ""),
 		AdminPassword:      env("NEXUS_ADMIN_PASSWORD", ""),
 		AllowSignup:        envBool("NEXUS_ALLOW_SIGNUP", false),
