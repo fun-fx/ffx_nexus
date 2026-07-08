@@ -13,8 +13,11 @@ import (
 // EvalConfigSnapshot is the effective eval + routing configuration exposed to
 // the console. Secrets are never returned in plaintext.
 type EvalConfigSnapshot struct {
-	EvalEnabled    bool `json:"eval_enabled"`
-	RoutingEnabled bool `json:"routing_enabled"`
+	EvalEnabled    bool   `json:"eval_enabled"`
+	RoutingEnabled bool   `json:"routing_enabled"`
+	ScoreStore     string `json:"score_store"`     // clickhouse | noop
+	TraceStore     string `json:"trace_store"`     // clickhouse | live_only
+	ScorePersisted bool   `json:"score_persisted"` // true when scores land in durable storage
 	Eval           struct {
 		PIIEnabled          bool    `json:"pii_enabled"`
 		CompletenessEnabled bool    `json:"completeness_enabled"`
@@ -73,7 +76,7 @@ type EvalConfigApplier interface {
 func (s *Server) getEvalConfig(w http.ResponseWriter, _ *http.Request, _ core.User) {
 	if s.evalConfigSrc == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "eval config unavailable (ClickHouse not configured)",
+			"error": "eval config unavailable (eval worker disabled)",
 		})
 		return
 	}
@@ -83,7 +86,7 @@ func (s *Server) getEvalConfig(w http.ResponseWriter, _ *http.Request, _ core.Us
 func (s *Server) patchEvalConfig(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.evalConfigApply == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "eval config unavailable (ClickHouse not configured)",
+			"error": "eval config unavailable (eval worker disabled)",
 		})
 		return
 	}

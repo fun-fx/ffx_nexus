@@ -35,6 +35,9 @@ type Config struct {
 	// store (gateway then uses provider keys from env only).
 	MasterKey string
 
+	// EvalEnabled toggles the async eval worker (heuristics + optional judges).
+	EvalEnabled bool
+
 	// Eval judge (local SLM via OpenAI-compatible inference server).
 	JudgeBaseURL   string // e.g. http://localhost:11434/v1 (Ollama) or vLLM
 	JudgeModel     string
@@ -170,6 +173,7 @@ func Load() Config {
 		MistralAPIKey:   env("MISTRAL_API_KEY", ""),
 		GridAPIKey:      env("GRID_API_KEY", ""),
 		MasterKey:       env("NEXUS_MASTER_KEY", ""),
+		EvalEnabled:     envBool("NEXUS_EVAL_ENABLED", true),
 		JudgeBaseURL:    env("NEXUS_JUDGE_BASE_URL", ""),
 		JudgeModel:      env("NEXUS_JUDGE_MODEL", "qwen2.5:7b"),
 		JudgeAPIKey:     env("NEXUS_JUDGE_API_KEY", ""),

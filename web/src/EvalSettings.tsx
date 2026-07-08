@@ -96,7 +96,7 @@ export function EvalSettings() {
         <h2>Quality &amp; Routing</h2>
         {error && <div className="error">{error}</div>}
         <p className="empty">
-          Eval requires a ClickHouse connection. Set <code>NEXUS_CLICKHOUSE_URL</code> and restart.
+          Eval worker is disabled. Set <code>NEXUS_EVAL_ENABLED=true</code> (default) and restart.
         </p>
       </section>
     );
@@ -111,7 +111,7 @@ export function EvalSettings() {
             <span className="badge cache">Free &middot; Instant</span>
           </div>
           <p className="muted" style={{ marginTop: 6, marginBottom: 14 }}>
-            Runs automatically on every gateway response when ClickHouse is connected.
+            Runs automatically on every successful gateway response. Scores persist when ClickHouse is connected.
           </p>
 
           {error && <div className="error" style={{ marginBottom: 10 }}>{error}</div>}
@@ -239,6 +239,7 @@ export function EvalSettings() {
           </div>
           <p className="muted" style={{ marginTop: 6, marginBottom: 14 }}>
             Chooses the best model for <code>model: auto</code> requests based on weights.
+            {!cfg.routing_enabled && " Requires ClickHouse for rolling stats."}
           </p>
 
           <div className="field-row">
@@ -312,7 +313,17 @@ export function EvalSettings() {
         <h2 style={{ marginTop: 0 }}>Status</h2>
         <div className="status-grid">
           <StatusCard label="Eval worker" value={cfg.eval_enabled ? "Running" : "Off"} ok={cfg.eval_enabled} />
-          <StatusCard label="Routing" value={cfg.routing_enabled ? "Enabled" : "Off"} ok={cfg.routing_enabled} />
+          <StatusCard
+            label="Score persistence"
+            value={cfg.score_persisted ? "ClickHouse" : "Not persisted"}
+            ok={cfg.score_persisted}
+          />
+          <StatusCard
+            label="Trace store"
+            value={cfg.trace_store === "clickhouse" ? "ClickHouse" : "Live only"}
+            ok={cfg.trace_store === "clickhouse"}
+          />
+          <StatusCard label="Routing" value={cfg.routing_enabled ? "Enabled" : "Requires ClickHouse"} ok={cfg.routing_enabled} />
           <StatusCard label="SLM judge" value={cfg.eval.judge.enabled ? "Active" : "Inactive"} ok={cfg.eval.judge.enabled} />
           <StatusCard label="Remote eval" value={cfg.eval.remote.enabled ? "Active" : "Inactive"} ok={cfg.eval.remote.enabled} />
           <StatusCard label="Workers" value={String(cfg.eval.workers)} />
