@@ -1,0 +1,116 @@
+package main
+
+import (
+	"log/slog"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/ffxnexus/nexus/internal/config"
+	"github.com/ffxnexus/nexus/internal/console"
+	"github.com/ffxnexus/nexus/internal/evals"
+	"github.com/ffxnexus/nexus/internal/observability"
+	"github.com/ffxnexus/nexus/internal/router"
+)
+
+const (
+	traceStoreClickHouse = "clickhouse"
+	traceStoreLiveOnly   = "live_only"
+)
+
+// NexusStack holds composed trace, eval, and routing subsystems. Each piece
+// uses its own interface (Recorder, Sink, StatsProvider) so backends can be
+// swapped independently.
+type NexusStack struct {
+	Recorder    observability.Recorder
+	Reader      *observability.Reader
+	EvalWorker  *evals.Worker
+	ModelRouter *router.Router
+	ScoreStore  evals.StoreKind
+	TraceStore  string
+}
+
+func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHRecorder, log *slog.Logger) NexusStack {
+	var stack NexusStack
+	stack.TraceStore = traceStoreLiveOnly
+
+	recorders := []observability.Recorder{hub}
+	if chRec != nil {
+		stack.Reader = chRec.NewReader()
+		stack.TraceStore = traceStoreClickHouse
+		recorders = append(recorders, chRec)
+	}
+
+	stack.ScoreStore = evals.ScoreStoreKind(chRec != nil)
+	if cfg.EvalEnabled {
+		stack.EvalWorker = buildEvalWorker(cfg, chRec, stack.ScoreStore, stack.TraceStore, log)
+		recorders = append(recorders, stack.EvalWorker)
+	} else {
+		log.Info("eval worker disabled (NEXUS_EVAL_ENABLED=false)")
+	}
+
+	stack.Recorder = observability.NewMultiRecorder(recorders...)
+
+	if chRec != nil {
+		stack.ModelRouter = router.New(
+			router.NewCHStatsProvider(chRec.Conn()),
+			router.Weights{Quality: cfg.RouteWQuality, Cost: cfg.RouteWCost, Latency: cfg.RouteWLatency},
+			cfg.RouteWindow, cfg.RouteRefresh, log,
+		)
+		log.Info("quality-aware routing enabled", "groups_spec", cfg.RouteGroups, "alias", "auto")
+	} else {
+		log.Info("clickhouse not configured; quality-aware routing disabled")
+	}
+
+	return stack
+}
+
+func buildEvalWorker(cfg config.Config, chRec *observability.CHRecorder, scoreKind evals.StoreKind, traceStore string, log *slog.Logger) *evals.Worker {
+	var chConn driver.Conn
+	if chRec != nil {
+		chConn = chRec.Conn()
+	}
+	sink := evals.NewScoreSink(scoreKind, chConn)
+	if scoreKind.Persisted() {
+		log.Info("eval score persistence enabled", "store", scoreKind)
+	} else {
+		log.Info("eval scores not persisted", "store", scoreKind, "hint", "set NEXUS_CLICKHOUSE_URL for persistence")
+	}
+
+	var judges []evals.Evaluator
+	if judge := evals.NewSLMJudge(evals.JudgeConfig{
+		BaseURL: cfg.JudgeBaseURL,
+		Model:   cfg.JudgeModel,
+		APIKey:  cfg.JudgeAPIKey,
+	}); judge != nil {
+		judges = append(judges, judge)
+		log.Info("eval SLM judge enabled", "model", cfg.JudgeModel, "sample_rate", cfg.EvalSampleRate)
+	} else {
+		log.Info("eval SLM judge disabled (set NEXUS_JUDGE_BASE_URL); heuristics still run")
+	}
+	if remote := evals.NewRemoteEvaluator(evals.RemoteConfig{
+		BaseURL: cfg.EvalServiceURL,
+		Metrics: splitCSV(cfg.EvalServiceMetrics),
+		Timeout: cfg.EvalServiceTimeout,
+	}); remote != nil {
+		judges = append(judges, remote)
+		log.Info("external eval service enabled", "url", cfg.EvalServiceURL, "metrics", cfg.EvalServiceMetrics)
+	} else {
+		log.Info("external eval service disabled (set NEXUS_EVAL_SERVICE_URL)")
+	}
+
+	worker := evals.NewWorker(evals.Options{
+		PIIEnabled:          true,
+		CompletenessEnabled: true,
+		Judges:              judges,
+		Sink:                sink,
+		JudgeBaseURL:        cfg.JudgeBaseURL,
+		JudgeModel:          cfg.JudgeModel,
+		JudgeAPIKey:         cfg.JudgeAPIKey,
+		RemoteURL:           cfg.EvalServiceURL,
+		RemoteMetrics:       splitCSV(cfg.EvalServiceMetrics),
+		RemoteTimeout:       cfg.EvalServiceTimeout,
+		JudgeSampleRate:     cfg.EvalSampleRate,
+		Workers:             cfg.EvalWorkers,
+	}, log)
+	log.Info("eval worker enabled", "score_store", scoreKind, "trace_store", traceStore)
+	return worker
+}

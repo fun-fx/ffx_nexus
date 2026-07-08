@@ -266,6 +266,7 @@ curl http://localhost:8080/v1/images/generations \
 | `MISTRAL_API_KEY` | — | Mistral OpenAI-compatible endpoint (mistral-large/small, codestral, mixtral, pixtral) |
 | `GRID_API_KEY` | — | The Grid (thegrid.ai) OpenAI-compatible endpoint — instruments: text-{standard,prime,max}, code-{standard,prime,max}, agent-{standard,prime,max}. On 307 supplier redirect, `Authorization` is auto-stripped when the new host is not `api.thegrid.ai` (security). See [Provider catalog opt-in](#provider-catalog-opt-in). |
 | `NEXUS_JUDGE_BASE_URL` / `NEXUS_JUDGE_MODEL` | — / `qwen2.5:7b` | Local SLM judge (Phase 3) |
+| `NEXUS_EVAL_ENABLED` | `true` | Async eval worker (heuristics + optional judges) |
 | `NEXUS_JUDGE_API_KEY` / `NEXUS_EVAL_SAMPLE_RATE` | — / `1.0` | Judge auth + judge sampling fraction |
 | `NEXUS_EVAL_SERVICE_URL` / `_METRICS` | — / `answer_relevancy,toxicity,bias` | Python eval sidecar (DeepEval/RAGAS) |
 | `NEXUS_EVAL_WORKERS` / `NEXUS_EVAL_SERVICE_TIMEOUT` | `4` / `30s` | Eval worker concurrency + sidecar timeout |
@@ -550,11 +551,12 @@ in-memory limiter is used (correct for single-node only). `0` means unlimited.
 
 ## Evals (Phase 3)
 
-When ClickHouse is configured, completed traces are evaluated **out-of-band** by
-a background worker — never on the request hot path. Results land in the
-`eval_scores` table and feed quality-aware routing.
+When enabled (`NEXUS_EVAL_ENABLED=true`, default), completed traces are evaluated
+**out-of-band** by a background worker — never on the request hot path. Heuristics
+and judges run without ClickHouse; **score persistence** and **quality-aware routing**
+require `NEXUS_CLICKHOUSE_URL` (scores land in the `eval_scores` table).
 
-- **Heuristics (always on, cheap):** `heuristic_pii` (flags emails/SSN/phone/card
+- **Heuristics (always on when eval is enabled, cheap):** `heuristic_pii` (flags emails/SSN/phone/card
   patterns in output) and `heuristic_completeness` (empty or truncated answers).
 - **LLM-as-judge (sampled):** a local SLM (Ollama/vLLM, OpenAI-compatible API)
   scores response `quality` 0..1. Runs on `NEXUS_EVAL_SAMPLE_RATE` of traces and

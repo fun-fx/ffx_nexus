@@ -20,13 +20,11 @@ import (
 	"github.com/ffxnexus/nexus/internal/console"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
-	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/gateway/providers"
 	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
-	"github.com/ffxnexus/nexus/internal/router"
 	"github.com/ffxnexus/nexus/internal/semcache"
 )
 
@@ -106,8 +104,6 @@ func main() {
 	// Observability: ClickHouse persistence (optional) + live dashboard hub.
 	hub := console.NewHub()
 	var chRec *observability.CHRecorder
-	var reader *observability.Reader
-	recorders := []observability.Recorder{hub}
 
 	if cfg.ClickHouseURL != "" {
 		rec, err := observability.NewCHRecorder(ctx, cfg.ClickHouseURL, observability.CHOptions{}, log)
@@ -127,63 +123,17 @@ func main() {
 				}
 			}
 			chRec = rec
-			reader = rec.NewReader()
-			recorders = append(recorders, rec)
 			log.Info("clickhouse trace persistence enabled")
 		}
 	} else {
 		log.Info("clickhouse not configured; traces are live-only (set NEXUS_CLICKHOUSE_URL to persist)")
 	}
 
-	// Eval worker (Phase 3): async, out-of-band quality evaluation. Heuristics
-	// (PII/completeness) always run; the local SLM judge runs on sampled traces.
-	// Scores persist to ClickHouse eval_scores and feed quality-aware routing.
-	var evalWorker *evals.Worker
-	if chRec != nil {
-		var judges []evals.Evaluator
-		if judge := evals.NewSLMJudge(evals.JudgeConfig{
-			BaseURL: cfg.JudgeBaseURL,
-			Model:   cfg.JudgeModel,
-			APIKey:  cfg.JudgeAPIKey,
-		}); judge != nil {
-			judges = append(judges, judge)
-			log.Info("eval SLM judge enabled", "model", cfg.JudgeModel, "sample_rate", cfg.EvalSampleRate)
-		} else {
-			log.Info("eval SLM judge disabled (set NEXUS_JUDGE_BASE_URL); heuristics still run")
-		}
-		// External Python eval service (DeepEval/RAGAS). Sample-gated like the
-		// SLM judge; failures degrade gracefully to the Go heuristics.
-		if remote := evals.NewRemoteEvaluator(evals.RemoteConfig{
-			BaseURL: cfg.EvalServiceURL,
-			Metrics: splitCSV(cfg.EvalServiceMetrics),
-			Timeout: cfg.EvalServiceTimeout,
-		}); remote != nil {
-			judges = append(judges, remote)
-			log.Info("external eval service enabled", "url", cfg.EvalServiceURL, "metrics", cfg.EvalServiceMetrics)
-		} else {
-			log.Info("external eval service disabled (set NEXUS_EVAL_SERVICE_URL)")
-		}
-		evalWorker = evals.NewWorker(evals.Options{
-			PIIEnabled:          true,
-			CompletenessEnabled: true,
-			Judges:              judges,
-			Sink:                evals.NewCHSink(chRec.Conn()),
-			JudgeBaseURL:        cfg.JudgeBaseURL,
-			JudgeModel:          cfg.JudgeModel,
-			JudgeAPIKey:         cfg.JudgeAPIKey,
-			RemoteURL:           cfg.EvalServiceURL,
-			RemoteMetrics:       splitCSV(cfg.EvalServiceMetrics),
-			RemoteTimeout:       cfg.EvalServiceTimeout,
-			JudgeSampleRate:     cfg.EvalSampleRate,
-			Workers:             cfg.EvalWorkers,
-		}, log)
-		recorders = append(recorders, evalWorker)
-		log.Info("eval worker enabled (async quality evaluation)")
-	} else {
-		log.Info("clickhouse not configured; eval worker disabled")
-	}
-
-	recorder := observability.NewMultiRecorder(recorders...)
+	stack := buildStack(cfg, hub, chRec, log)
+	recorder := stack.Recorder
+	reader := stack.Reader
+	evalWorker := stack.EvalWorker
+	modelRouter := stack.ModelRouter
 
 	// Gateway server.
 	gwHandler := gateway.NewHandler(reg, recorder, lim, log)
@@ -217,24 +167,14 @@ func main() {
 		log.Info("structured-output self-correction enabled", "max_retries", cfg.SelfCorrectionMaxRetries)
 	}
 
-	// Quality-aware routing (Phase 4): blend rolling eval quality with cost and
-	// latency to pick the best model for routing aliases ("auto" or groups).
-	var modelRouter *router.Router
-	if chRec != nil {
-		modelRouter = router.New(
-			router.NewCHStatsProvider(chRec.Conn()),
-			router.Weights{Quality: cfg.RouteWQuality, Cost: cfg.RouteWCost, Latency: cfg.RouteWLatency},
-			cfg.RouteWindow, cfg.RouteRefresh, log,
-		)
+	// Quality-aware routing (Phase 4): attached when ClickHouse stats are available.
+	if modelRouter != nil {
 		groups := config.ParseRouteGroups(cfg.RouteGroups)
 		gwHandler.SetRouter(modelRouter, groups)
 		if cfg.RouteLoadBalance {
 			gwHandler.SetLoadBalancing(balancer.NewWeightedRR())
 			log.Info("route load balancing enabled (rank-weighted round-robin within quality-qualified tiers)")
 		}
-		log.Info("quality-aware routing enabled", "groups", len(groups), "alias", "auto")
-	} else {
-		log.Info("clickhouse not configured; quality-aware routing disabled")
 	}
 
 	// Semantic cache: Redis-backed, embedding-similarity response cache.
@@ -308,7 +248,7 @@ func main() {
 		consoleSrvHandler.SetRouteStats(modelRouter)
 	}
 	if evalWorker != nil {
-		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler)
+		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore)
 		consoleSrvHandler.SetEvalConfig(erc, erc)
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new

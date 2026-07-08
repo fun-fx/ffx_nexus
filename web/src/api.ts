@@ -118,6 +118,9 @@ export async function fetchEvals(window = "24h"): Promise<EvalMetric[]> {
 export interface EvalConfigSnapshot {
   eval_enabled: boolean;
   routing_enabled: boolean;
+  score_store: string;
+  trace_store: string;
+  score_persisted: boolean;
   eval: {
     pii_enabled: boolean;
     completeness_enabled: boolean;

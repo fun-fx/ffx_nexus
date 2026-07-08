@@ -47,6 +47,8 @@ type evalRuntimeController struct {
 	gwHandler    *gateway.Handler
 	routeRefresh time.Duration
 	loadBalance  bool
+	scoreStore   evals.StoreKind
+	traceStore   string
 }
 
 func newEvalRuntimeController(
@@ -54,6 +56,8 @@ func newEvalRuntimeController(
 	worker *evals.Worker,
 	modelRouter *router.Router,
 	gwHandler *gateway.Handler,
+	scoreStore evals.StoreKind,
+	traceStore string,
 ) *evalRuntimeController {
 	return &evalRuntimeController{
 		cfg:          cfg,
@@ -62,6 +66,8 @@ func newEvalRuntimeController(
 		gwHandler:    gwHandler,
 		routeRefresh: cfg.RouteRefresh,
 		loadBalance:  cfg.RouteLoadBalance,
+		scoreStore:   scoreStore,
+		traceStore:   traceStore,
 	}
 }
 
@@ -75,6 +81,9 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 	var snap console.EvalConfigSnapshot
 	snap.EvalEnabled = c.worker != nil
 	snap.RoutingEnabled = c.modelRouter != nil
+	snap.ScoreStore = c.scoreStore.String()
+	snap.TraceStore = c.traceStore
+	snap.ScorePersisted = c.scoreStore.Persisted()
 
 	if c.worker != nil {
 		st := c.worker.RuntimeState()

@@ -88,6 +88,10 @@ export GEMINI_API_KEY=sk-...      # or OPENAI_API_KEY, ANTHROPIC_API_KEY, ...
 Console: <http://localhost:8081>
 Gateway: <http://localhost:8080>
 
+**Eval without ClickHouse:** the eval worker runs heuristics (PII/completeness) by default
+(`NEXUS_EVAL_ENABLED=true`). Without `NEXUS_CLICKHOUSE_URL`, scores are not persisted and
+quality-aware routing stays off; trace history in Overview is live-only.
+
 > **Tip:** the manual path uses the binary's upstream defaults (`:8080`/`:8081`).
 > If you arrived here from the one-line installer at the top of this page, your
 > Console is on <http://localhost:8091> and your Gateway on <http://localhost:8090>.
