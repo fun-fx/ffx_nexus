@@ -28,6 +28,8 @@ export interface TraceSummary {
   cache_hit: number;
   guardrail_action: string;
   credential_source: string;
+  user_id?: string;
+  user_email?: string;
 }
 
 export interface User {
@@ -111,6 +113,60 @@ export async function fetchEvals(window = "24h"): Promise<EvalMetric[]> {
   const res = await fetch(`/api/evals?window=${window}`);
   const data = await res.json();
   return Array.isArray(data) ? data : [];
+}
+
+export interface EvalConfigSnapshot {
+  eval_enabled: boolean;
+  routing_enabled: boolean;
+  eval: {
+    pii_enabled: boolean;
+    completeness_enabled: boolean;
+    sample_rate: number;
+    workers: number;
+    judge: {
+      enabled: boolean;
+      base_url: string;
+      model: string;
+      api_key_set: boolean;
+    };
+    remote: {
+      enabled: boolean;
+      url: string;
+      metrics: string[];
+      timeout: string;
+    };
+  };
+  routing: {
+    weights: { quality?: number; cost?: number; latency?: number };
+    window: string;
+    refresh: string;
+    groups: Record<string, string[]>;
+    groups_spec: string;
+    load_balance: boolean;
+  };
+  restart_required: string[];
+}
+
+export async function fetchEvalConfig(): Promise<EvalConfigSnapshot> {
+  const res = await fetch("/api/eval/config");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function patchEvalConfig(patch: Record<string, unknown>): Promise<EvalConfigSnapshot> {
+  const res = await fetch("/api/eval/config", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 // --- Gateway /v1/models (open-source discovery) ---
@@ -459,6 +515,7 @@ export function connectLive(onTrace: (t: TraceSummary) => void): WebSocket {
         cache_hit: raw.cache_hit ? 1 : 0,
         guardrail_action: raw.guardrail_action ?? "",
         credential_source: raw.credential_source ?? "",
+        user_id: raw.user_id ?? "",
       });
     } catch {
       /* ignore malformed frames */

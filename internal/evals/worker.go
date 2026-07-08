@@ -15,12 +15,22 @@ import (
 // gateway's recorder fan-out; Record() is a non-blocking enqueue that never
 // adds latency to the request path.
 type Worker struct {
-	heuristics []Evaluator // run on every sampled trace (cheap)
-	judges     []Evaluator // LLM-as-judge; gated by judgeSampleRate (expensive)
-	sink       Sink
-	log        *slog.Logger
+	mu sync.RWMutex
 
+	piiEnabled          bool
+	completenessEnabled bool
+	judges              []Evaluator // LLM-as-judge; gated by judgeSampleRate (expensive)
+	sink                Sink
+	log                 *slog.Logger
+
+	judgeBaseURL    string
+	judgeModel      string
+	judgeAPIKey     string
+	remoteURL       string
+	remoteMetrics   []string
+	remoteTimeout   time.Duration
 	judgeSampleRate float64
+	workerCount     int
 	evalTimeout     time.Duration
 
 	ch     chan observability.Trace
@@ -33,13 +43,20 @@ type Worker struct {
 
 // Options configures the Worker.
 type Options struct {
-	Heuristics      []Evaluator
-	Judges          []Evaluator
-	Sink            Sink
-	JudgeSampleRate float64 // 0..1, fraction of traces sent to LLM judges
-	Workers         int     // concurrent eval goroutines
-	BufferSize      int
-	EvalTimeout     time.Duration
+	PIIEnabled          bool
+	CompletenessEnabled bool
+	Judges              []Evaluator
+	Sink                Sink
+	JudgeBaseURL        string
+	JudgeModel          string
+	JudgeAPIKey         string
+	RemoteURL           string
+	RemoteMetrics       []string
+	RemoteTimeout       time.Duration
+	JudgeSampleRate     float64 // 0..1, fraction of traces sent to LLM judges
+	Workers             int     // concurrent eval goroutines
+	BufferSize          int
+	EvalTimeout         time.Duration
 }
 
 // NewWorker builds and starts an eval worker.
@@ -58,16 +75,24 @@ func NewWorker(opts Options, log *slog.Logger) *Worker {
 	}
 
 	w := &Worker{
-		heuristics:      opts.Heuristics,
-		judges:          opts.Judges,
-		sink:            opts.Sink,
-		log:             log,
-		judgeSampleRate: opts.JudgeSampleRate,
-		evalTimeout:     opts.EvalTimeout,
-		ch:              make(chan observability.Trace, opts.BufferSize),
-		done:            make(chan struct{}),
-		closed:          make(chan struct{}),
-		rnd:             rand.New(rand.NewSource(time.Now().UnixNano())),
+		piiEnabled:          opts.PIIEnabled,
+		completenessEnabled: opts.CompletenessEnabled,
+		judges:              opts.Judges,
+		sink:                opts.Sink,
+		log:                 log,
+		judgeBaseURL:        opts.JudgeBaseURL,
+		judgeModel:          opts.JudgeModel,
+		judgeAPIKey:         opts.JudgeAPIKey,
+		remoteURL:           opts.RemoteURL,
+		remoteMetrics:       opts.RemoteMetrics,
+		remoteTimeout:       opts.RemoteTimeout,
+		judgeSampleRate:     opts.JudgeSampleRate,
+		workerCount:         opts.Workers,
+		evalTimeout:         opts.EvalTimeout,
+		ch:                  make(chan observability.Trace, opts.BufferSize),
+		done:                make(chan struct{}),
+		closed:              make(chan struct{}),
+		rnd:                 rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 
 	w.wg.Add(opts.Workers)
@@ -115,10 +140,22 @@ func (w *Worker) evaluate(t observability.Trace) {
 	ctx, cancel := context.WithTimeout(context.Background(), w.evalTimeout)
 	defer cancel()
 
-	evaluators := make([]Evaluator, 0, len(w.heuristics)+len(w.judges))
-	evaluators = append(evaluators, w.heuristics...)
-	if len(w.judges) > 0 && w.sampleJudge() {
-		evaluators = append(evaluators, w.judges...)
+	w.mu.RLock()
+	piiOn := w.piiEnabled
+	compOn := w.completenessEnabled
+	judges := append([]Evaluator(nil), w.judges...)
+	rate := w.judgeSampleRate
+	w.mu.RUnlock()
+
+	evaluators := make([]Evaluator, 0, 4+len(judges))
+	if piiOn {
+		evaluators = append(evaluators, PIIEvaluator{})
+	}
+	if compOn {
+		evaluators = append(evaluators, CompletenessEvaluator{})
+	}
+	if len(judges) > 0 && w.sampleJudge(rate) {
+		evaluators = append(evaluators, judges...)
 	}
 
 	var scores []Score
@@ -146,16 +183,16 @@ func (w *Worker) evaluate(t observability.Trace) {
 	}
 }
 
-func (w *Worker) sampleJudge() bool {
-	if w.judgeSampleRate >= 1 {
+func (w *Worker) sampleJudge(rate float64) bool {
+	if rate >= 1 {
 		return true
 	}
-	if w.judgeSampleRate <= 0 {
+	if rate <= 0 {
 		return false
 	}
 	w.rndMu.Lock()
 	defer w.rndMu.Unlock()
-	return w.rnd.Float64() < w.judgeSampleRate
+	return w.rnd.Float64() < rate
 }
 
 // Close stops the workers and drains buffered traces.

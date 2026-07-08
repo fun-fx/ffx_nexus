@@ -48,6 +48,18 @@ deploy/              docker-compose (ClickHouse/Postgres/Redis/Ollama/eval-servi
 > Go binary, and starts the gateway on `:8090` / console on `:8091`. See
 > [`docs/quickstart.md`](docs/quickstart.md) for the full step-by-step.
 
+| Path | Gateway | Console | Notes |
+| --- | --- | --- | --- |
+| One-line `install.sh` | `:8090` | `:8091` | Ports chosen to avoid clashes on a fresh machine; overridden by `NEXUS_GATEWAY_PORT` / `NEXUS_CONSOLE_PORT`. |
+| `go run ./cmd/nexus` (source) | `:8080` | `:8081` | The Go binary defaults. Override with `NEXUS_GATEWAY_ADDR` / `NEXUS_CONSOLE_ADDR`. |
+| Docker (`docker run ghcr.io/fun-fx/ffx_nexus`) | `:8080` | `:8081` | Same defaults; map with `-p 8080:8080 -p 8081:8081` or pass the `*_ADDR` envs. |
+| Helm chart | `:8080` | `:8081` | Container defaults; expose via `service.port` / Ingress. |
+
+Pick any row — every path is fully supported. The rest of this README uses
+`:8080` / `:8081` everywhere (the binary default); the `install.sh` row uses
+`:8090` / `:8091` to dodge a port already bound by another tool on most
+laptops.
+
 ```bash
 # 1. (optional) start local datastores
 docker compose -f deploy/docker-compose.yml up -d clickhouse
@@ -60,10 +72,16 @@ export NEXUS_CLICKHOUSE_URL="clickhouse://nexus:nexus@localhost:9000/nexus"
 
 # 3. run the gateway + console
 go run ./cmd/nexus
+# → gateway on :8080  •  console on :8081
 
 # 4. (dev) run the dashboard
 cd web && npm install && npm run dev   # http://localhost:5173
 ```
+
+> **Heads-up:** the dashboard dev server (`npm run dev`) serves a hot-reloading
+> SPA on `:5173` and proxies its `/api` calls to the console on `:8081`. If you'd
+> rather skip the dev server, the console on `:8081` already serves a built SPA
+> embedded into the Go binary. Both URLs fully functional.
 
 The gateway boots even with no API keys or ClickHouse configured (traces are
 then live-only). Set keys/URL to enable providers and persistence.
@@ -230,8 +248,8 @@ curl http://localhost:8080/v1/images/generations \
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `NEXUS_GATEWAY_ADDR` | `:8080` | Gateway proxy listen address |
-| `NEXUS_CONSOLE_ADDR` | `:8081` | Console API / dashboard listen address |
+| `NEXUS_GATEWAY_ADDR` | `:8080` | Gateway proxy listen address (override when `:8080` clashes; e.g. `install.sh` uses `:8090` via `NEXUS_GATEWAY_PORT`) |
+| `NEXUS_CONSOLE_ADDR` | `:8081` | Console API / dashboard listen address (override similarly; e.g. `install.sh` uses `:8091` via `NEXUS_CONSOLE_PORT`) |
 | `NEXUS_CLICKHOUSE_URL` | _(empty)_ | Native DSN; empty disables persistence |
 | `NEXUS_POSTGRES_URL` | _(empty)_ | Control plane DSN; empty disables key auth & credential store |
 | `NEXUS_REDIS_URL` | _(empty)_ | Shared rate limits + budgets across replicas; empty = in-memory |
