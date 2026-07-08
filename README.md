@@ -47,6 +47,7 @@ deploy/              docker-compose (ClickHouse/Postgres/Redis/Ollama/eval-servi
 > The installer boots Postgres + Redis + ClickHouse + Ollama, builds the
 > Go binary, and starts the gateway on `:8090` / console on `:8091`. See
 > [`docs/quickstart.md`](docs/quickstart.md) for the full step-by-step.
+> Joining a **shared team instance** (VPN + ingress)? See [`docs/onboarding.md`](docs/onboarding.md).
 
 | Path | Gateway | Console | Notes |
 | --- | --- | --- | --- |
