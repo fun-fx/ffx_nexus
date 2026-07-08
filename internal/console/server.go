@@ -39,8 +39,8 @@ type Server struct {
 	reload          func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup     bool                  // public POST /api/auth/register
 	sso             *ssoClient            // OIDC client; nil when SSO is not configured
-	evalConfigSrc   EvalConfigSource  // nil when eval worker is disabled
-	evalConfigApply EvalConfigApplier // nil when eval worker is disabled
+	evalConfigSrc   EvalConfigSource      // nil when eval worker is disabled
+	evalConfigApply EvalConfigApplier     // nil when eval worker is disabled
 	loginLim        *limiter.IPLimiter    // per-IP rate limit for /api/auth/login
 	registerLim     *limiter.IPLimiter    // per-IP rate limit for /api/auth/register
 	ssoLim          *limiter.IPLimiter    // per-IP rate limit for /api/auth/sso/*
