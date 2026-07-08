@@ -111,7 +111,7 @@ export function EvalSettings() {
             <span className="badge cache">Free &middot; Instant</span>
           </div>
           <p className="muted" style={{ marginTop: 6, marginBottom: 14 }}>
-            Runs automatically on every successful gateway response. Scores persist when ClickHouse is connected.
+            Runs automatically on every successful gateway response. Scores persist to ClickHouse or Postgres when configured.
           </p>
 
           {error && <div className="error" style={{ marginBottom: 10 }}>{error}</div>}
@@ -315,7 +315,7 @@ export function EvalSettings() {
           <StatusCard label="Eval worker" value={cfg.eval_enabled ? "Running" : "Off"} ok={cfg.eval_enabled} />
           <StatusCard
             label="Score persistence"
-            value={cfg.score_persisted ? "ClickHouse" : "Not persisted"}
+            value={scoreStoreLabel(cfg.score_store, cfg.score_persisted)}
             ok={cfg.score_persisted}
           />
           <StatusCard
@@ -345,6 +345,13 @@ export function EvalSettings() {
       </section>
     </>
   );
+}
+
+function scoreStoreLabel(store: string, persisted: boolean): string {
+  if (!persisted) return "Not persisted";
+  if (store === "postgres") return "Postgres";
+  if (store === "clickhouse") return "ClickHouse";
+  return store;
 }
 
 function StatusCard({ label, value, ok }: { label: string; value: string; ok?: boolean }) {

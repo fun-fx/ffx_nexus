@@ -554,8 +554,9 @@ in-memory limiter is used (correct for single-node only). `0` means unlimited.
 
 When enabled (`NEXUS_EVAL_ENABLED=true`, default), completed traces are evaluated
 **out-of-band** by a background worker — never on the request hot path. Heuristics
-and judges run without ClickHouse; **score persistence** and **quality-aware routing**
-require `NEXUS_CLICKHOUSE_URL` (scores land in the `eval_scores` table).
+and judges run without ClickHouse; **score persistence** uses ClickHouse when
+`NEXUS_CLICKHOUSE_URL` is set, otherwise **Postgres** when `NEXUS_POSTGRES_URL`
+is set. **Quality-aware routing** still requires ClickHouse for rolling stats.
 
 - **Heuristics (always on when eval is enabled, cheap):** `heuristic_pii` (flags emails/SSN/phone/card
   patterns in output) and `heuristic_completeness` (empty or truncated answers).

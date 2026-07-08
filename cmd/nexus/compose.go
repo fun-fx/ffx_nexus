@@ -6,6 +6,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/console"
+	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
@@ -28,7 +29,7 @@ type NexusStack struct {
 	TraceStore  string
 }
 
-func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHRecorder, log *slog.Logger) NexusStack {
+func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHRecorder, store *core.Store, log *slog.Logger) NexusStack {
 	var stack NexusStack
 	stack.TraceStore = traceStoreLiveOnly
 
@@ -39,9 +40,10 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 		recorders = append(recorders, chRec)
 	}
 
-	stack.ScoreStore = evals.ScoreStoreKind(chRec != nil)
+	pgConnected := store != nil
+	stack.ScoreStore = evals.ScoreStoreKind(chRec != nil, pgConnected)
 	if cfg.EvalEnabled {
-		stack.EvalWorker = buildEvalWorker(cfg, chRec, stack.ScoreStore, stack.TraceStore, log)
+		stack.EvalWorker = buildEvalWorker(cfg, chRec, store, stack.ScoreStore, stack.TraceStore, log)
 		recorders = append(recorders, stack.EvalWorker)
 	} else {
 		log.Info("eval worker disabled (NEXUS_EVAL_ENABLED=false)")
@@ -63,16 +65,21 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	return stack
 }
 
-func buildEvalWorker(cfg config.Config, chRec *observability.CHRecorder, scoreKind evals.StoreKind, traceStore string, log *slog.Logger) *evals.Worker {
+func buildEvalWorker(cfg config.Config, chRec *observability.CHRecorder, store *core.Store, scoreKind evals.StoreKind, traceStore string, log *slog.Logger) *evals.Worker {
 	var chConn driver.Conn
 	if chRec != nil {
 		chConn = chRec.Conn()
 	}
-	sink := evals.NewScoreSink(scoreKind, chConn)
+	deps := evals.ScoreSinkDeps{CHConn: chConn}
+	if store != nil {
+		deps.PGPool = store.Pool()
+	}
+	sink := evals.NewScoreSink(scoreKind, deps)
 	if scoreKind.Persisted() {
 		log.Info("eval score persistence enabled", "store", scoreKind)
 	} else {
-		log.Info("eval scores not persisted", "store", scoreKind, "hint", "set NEXUS_CLICKHOUSE_URL for persistence")
+		log.Info("eval scores not persisted", "store", scoreKind,
+			"hint", "set NEXUS_CLICKHOUSE_URL or NEXUS_POSTGRES_URL for persistence")
 	}
 
 	var judges []evals.Evaluator
