@@ -13,17 +13,18 @@ import (
 )
 
 // Score is a single evaluation result for one trace, mirroring the eval_scores
-// ClickHouse table.
+// table schema.
 type Score struct {
-	TraceID    string
-	UserID     string // owning user (BYOK); empty for org-level/legacy traces
-	Timestamp  time.Time
-	Evaluator  string  // e.g. "heuristic_pii", "slm_judge"
-	Metric     string  // e.g. "pii_leak", "completeness", "quality"
-	Score      float64 // normalized 0..1 (higher is better)
-	Passed     bool
-	Rationale  string
-	JudgeModel string // model used for LLM-as-judge, empty for heuristics
+	TraceID      string
+	UserID       string // owning user (BYOK); empty for org-level/legacy traces
+	RequestModel string // model that served the trace; used for PG routing stats
+	Timestamp    time.Time
+	Evaluator    string  // e.g. "heuristic_pii", "slm_judge"
+	Metric       string  // e.g. "pii_leak", "completeness", "quality"
+	Score        float64 // normalized 0..1 (higher is better)
+	Passed       bool
+	Rationale    string
+	JudgeModel   string // model used for LLM-as-judge, empty for heuristics
 }
 
 // Evaluator scores a single trace. Implementations must be safe for concurrent

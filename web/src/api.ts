@@ -121,6 +121,7 @@ export interface EvalConfigSnapshot {
   score_store: string;
   trace_store: string;
   score_persisted: boolean;
+  routing_stats_store: string;
   eval: {
     pii_enabled: boolean;
     completeness_enabled: boolean;

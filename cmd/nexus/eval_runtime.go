@@ -41,14 +41,15 @@ func formatDuration(d time.Duration) string {
 type evalRuntimeController struct {
 	mu sync.Mutex
 
-	cfg          config.Config
-	worker       *evals.Worker
-	modelRouter  *router.Router
-	gwHandler    *gateway.Handler
-	routeRefresh time.Duration
-	loadBalance  bool
-	scoreStore   evals.StoreKind
-	traceStore   string
+	cfg               config.Config
+	worker            *evals.Worker
+	modelRouter       *router.Router
+	gwHandler         *gateway.Handler
+	routeRefresh      time.Duration
+	loadBalance       bool
+	scoreStore        evals.StoreKind
+	traceStore        string
+	routingStatsStore string
 }
 
 func newEvalRuntimeController(
@@ -58,16 +59,18 @@ func newEvalRuntimeController(
 	gwHandler *gateway.Handler,
 	scoreStore evals.StoreKind,
 	traceStore string,
+	routingStatsStore string,
 ) *evalRuntimeController {
 	return &evalRuntimeController{
-		cfg:          cfg,
-		worker:       worker,
-		modelRouter:  modelRouter,
-		gwHandler:    gwHandler,
-		routeRefresh: cfg.RouteRefresh,
-		loadBalance:  cfg.RouteLoadBalance,
-		scoreStore:   scoreStore,
-		traceStore:   traceStore,
+		cfg:               cfg,
+		worker:            worker,
+		modelRouter:       modelRouter,
+		gwHandler:         gwHandler,
+		routeRefresh:      cfg.RouteRefresh,
+		loadBalance:       cfg.RouteLoadBalance,
+		scoreStore:        scoreStore,
+		traceStore:        traceStore,
+		routingStatsStore: routingStatsStore,
 	}
 }
 
@@ -84,6 +87,7 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 	snap.ScoreStore = c.scoreStore.String()
 	snap.TraceStore = c.traceStore
 	snap.ScorePersisted = c.scoreStore.Persisted()
+	snap.RoutingStatsStore = c.routingStatsStore
 
 	if c.worker != nil {
 		st := c.worker.RuntimeState()

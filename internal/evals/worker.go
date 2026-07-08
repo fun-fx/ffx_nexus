@@ -177,6 +177,9 @@ func (w *Worker) evaluate(t observability.Trace) {
 		if scores[i].UserID == "" {
 			scores[i].UserID = t.UserID
 		}
+		if scores[i].RequestModel == "" {
+			scores[i].RequestModel = traceModel(t)
+		}
 	}
 	if err := w.sink.WriteScores(ctx, scores); err != nil {
 		w.log.Error("write eval scores failed", "trace_id", t.TraceID, "err", err)

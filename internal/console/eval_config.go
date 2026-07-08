@@ -13,12 +13,13 @@ import (
 // EvalConfigSnapshot is the effective eval + routing configuration exposed to
 // the console. Secrets are never returned in plaintext.
 type EvalConfigSnapshot struct {
-	EvalEnabled    bool   `json:"eval_enabled"`
-	RoutingEnabled bool   `json:"routing_enabled"`
-	ScoreStore     string `json:"score_store"`     // clickhouse | noop
-	TraceStore     string `json:"trace_store"`     // clickhouse | live_only
-	ScorePersisted bool   `json:"score_persisted"` // true when scores land in durable storage
-	Eval           struct {
+	EvalEnabled       bool   `json:"eval_enabled"`
+	RoutingEnabled    bool   `json:"routing_enabled"`
+	ScoreStore        string `json:"score_store"`         // clickhouse | postgres | noop
+	TraceStore        string `json:"trace_store"`         // clickhouse | live_only
+	ScorePersisted    bool   `json:"score_persisted"`     // true when scores land in durable storage
+	RoutingStatsStore string `json:"routing_stats_store"` // clickhouse | postgres | empty
+	Eval              struct {
 		PIIEnabled          bool    `json:"pii_enabled"`
 		CompletenessEnabled bool    `json:"completeness_enabled"`
 		SampleRate          float64 `json:"sample_rate"`
