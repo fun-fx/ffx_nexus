@@ -239,7 +239,7 @@ export function EvalSettings() {
           </div>
           <p className="muted" style={{ marginTop: 6, marginBottom: 14 }}>
             Chooses the best model for <code>model: auto</code> requests based on weights.
-            {!cfg.routing_enabled && " Requires ClickHouse for rolling stats."}
+            {!cfg.routing_enabled && " Requires ClickHouse or Postgres eval scores for rolling stats."}
           </p>
 
           <div className="field-row">
@@ -323,7 +323,12 @@ export function EvalSettings() {
             value={cfg.trace_store === "clickhouse" ? "ClickHouse" : "Live only"}
             ok={cfg.trace_store === "clickhouse"}
           />
-          <StatusCard label="Routing" value={cfg.routing_enabled ? "Enabled" : "Requires ClickHouse"} ok={cfg.routing_enabled} />
+          <StatusCard
+            label="Routing stats"
+            value={routingStatsLabel(cfg.routing_stats_store, cfg.routing_enabled)}
+            ok={cfg.routing_enabled}
+          />
+          <StatusCard label="Routing" value={cfg.routing_enabled ? "Enabled" : "Disabled"} ok={cfg.routing_enabled} />
           <StatusCard label="SLM judge" value={cfg.eval.judge.enabled ? "Active" : "Inactive"} ok={cfg.eval.judge.enabled} />
           <StatusCard label="Remote eval" value={cfg.eval.remote.enabled ? "Active" : "Inactive"} ok={cfg.eval.remote.enabled} />
           <StatusCard label="Workers" value={String(cfg.eval.workers)} />
@@ -345,6 +350,13 @@ export function EvalSettings() {
       </section>
     </>
   );
+}
+
+function routingStatsLabel(store: string, enabled: boolean): string {
+  if (!enabled) return "Disabled";
+  if (store === "postgres") return "Postgres (eval-only)";
+  if (store === "clickhouse") return "ClickHouse";
+  return store || "Unknown";
 }
 
 function scoreStoreLabel(store: string, persisted: boolean): string {

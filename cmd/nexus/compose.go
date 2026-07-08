@@ -15,18 +15,22 @@ import (
 const (
 	traceStoreClickHouse = "clickhouse"
 	traceStoreLiveOnly   = "live_only"
+
+	statsStoreClickHouse = "clickhouse"
+	statsStorePostgres   = "postgres"
 )
 
 // NexusStack holds composed trace, eval, and routing subsystems. Each piece
 // uses its own interface (Recorder, Sink, StatsProvider) so backends can be
 // swapped independently.
 type NexusStack struct {
-	Recorder    observability.Recorder
-	Reader      *observability.Reader
-	EvalWorker  *evals.Worker
-	ModelRouter *router.Router
-	ScoreStore  evals.StoreKind
-	TraceStore  string
+	Recorder          observability.Recorder
+	Reader            *observability.Reader
+	EvalWorker        *evals.Worker
+	ModelRouter       *router.Router
+	ScoreStore        evals.StoreKind
+	TraceStore        string
+	RoutingStatsStore string
 }
 
 func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHRecorder, store *core.Store, log *slog.Logger) NexusStack {
@@ -51,18 +55,29 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 
 	stack.Recorder = observability.NewMultiRecorder(recorders...)
 
-	if chRec != nil {
+	if provider, src := routingStatsProvider(chRec, store, stack.ScoreStore); provider != nil {
+		stack.RoutingStatsStore = src
 		stack.ModelRouter = router.New(
-			router.NewCHStatsProvider(chRec.Conn()),
+			provider,
 			router.Weights{Quality: cfg.RouteWQuality, Cost: cfg.RouteWCost, Latency: cfg.RouteWLatency},
 			cfg.RouteWindow, cfg.RouteRefresh, log,
 		)
-		log.Info("quality-aware routing enabled", "groups_spec", cfg.RouteGroups, "alias", "auto")
+		log.Info("quality-aware routing enabled", "stats_store", src, "groups_spec", cfg.RouteGroups, "alias", "auto")
 	} else {
-		log.Info("clickhouse not configured; quality-aware routing disabled")
+		log.Info("quality-aware routing disabled (needs ClickHouse or Postgres eval scores)")
 	}
 
 	return stack
+}
+
+func routingStatsProvider(chRec *observability.CHRecorder, store *core.Store, scoreStore evals.StoreKind) (router.StatsProvider, string) {
+	if chRec != nil {
+		return router.NewCHStatsProvider(chRec.Conn()), statsStoreClickHouse
+	}
+	if store != nil && scoreStore == evals.StorePostgres {
+		return router.NewPGStatsProvider(store.Pool()), statsStorePostgres
+	}
+	return nil, ""
 }
 
 func buildEvalWorker(cfg config.Config, chRec *observability.CHRecorder, store *core.Store, scoreKind evals.StoreKind, traceStore string, log *slog.Logger) *evals.Worker {

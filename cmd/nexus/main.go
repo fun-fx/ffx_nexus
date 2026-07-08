@@ -57,6 +57,7 @@ func main() {
 				"migrations/postgres/004_audit_index.sql",
 				"migrations/postgres/005_credential_models.sql",
 				"migrations/postgres/006_eval_scores.sql",
+				"migrations/postgres/007_eval_scores_model.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {
@@ -249,7 +250,7 @@ func main() {
 		consoleSrvHandler.SetRouteStats(modelRouter)
 	}
 	if evalWorker != nil {
-		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore)
+		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore)
 		consoleSrvHandler.SetEvalConfig(erc, erc)
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
