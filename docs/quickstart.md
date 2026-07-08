@@ -194,6 +194,7 @@ Go back to <http://localhost:8091> and look at:
 | Block PII / prune unsafe prompts | Set `NEXUS_GUARDRAILS_ENABLED=true` (Azure-side: see [guardrails](security.md)) |
 | See what users actually do (admin only) | **Audit** tab |
 | Run the same prompt in dev vs prod | Repeat at the prod ingress URL; same trace shape |
+| Onboard a teammate on shared prod | [`onboarding.md`](onboarding.md) — VPN, BYOK, virtual key, Cursor |
 
 ---
 
