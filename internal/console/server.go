@@ -32,20 +32,20 @@ type RouteStatsSource interface {
 // WebSocket feed, routing stats, and (when a store is configured)
 // key/credential management.
 type Server struct {
-	hub         *Hub
-	reader      *observability.Reader // may be nil when ClickHouse is not configured
-	store       *core.Store           // may be nil when Postgres is not configured
-	routes      RouteStatsSource      // may be nil when routing is disabled
-	reload      func(context.Context) // may be nil when no hot-reload hook is wired
-	allowSignup bool                  // public POST /api/auth/register
-	sso         *ssoClient            // OIDC client; nil when SSO is not configured
-	evalConfigSrc   EvalConfigSource  // nil when ClickHouse/eval is disabled
-	evalConfigApply EvalConfigApplier // nil when ClickHouse/eval is disabled
-	loginLim    *limiter.IPLimiter    // per-IP rate limit for /api/auth/login
-	registerLim *limiter.IPLimiter    // per-IP rate limit for /api/auth/register
-	ssoLim      *limiter.IPLimiter    // per-IP rate limit for /api/auth/sso/*
-	log         *slog.Logger
-	up          websocket.Upgrader
+	hub             *Hub
+	reader          *observability.Reader // may be nil when ClickHouse is not configured
+	store           *core.Store           // may be nil when Postgres is not configured
+	routes          RouteStatsSource      // may be nil when routing is disabled
+	reload          func(context.Context) // may be nil when no hot-reload hook is wired
+	allowSignup     bool                  // public POST /api/auth/register
+	sso             *ssoClient            // OIDC client; nil when SSO is not configured
+	evalConfigSrc   EvalConfigSource      // nil when ClickHouse/eval is disabled
+	evalConfigApply EvalConfigApplier     // nil when ClickHouse/eval is disabled
+	loginLim        *limiter.IPLimiter    // per-IP rate limit for /api/auth/login
+	registerLim     *limiter.IPLimiter    // per-IP rate limit for /api/auth/register
+	ssoLim          *limiter.IPLimiter    // per-IP rate limit for /api/auth/sso/*
+	log             *slog.Logger
+	up              websocket.Upgrader
 }
 
 // SetAllowSignup toggles public self-service registration (member role only).

@@ -84,9 +84,9 @@ func TestWorkerIsolatesRemoteFailure(t *testing.T) {
 		PIIEnabled:          true,
 		CompletenessEnabled: true,
 		Judges:              []Evaluator{remote},
-		Sink:            sink,
-		JudgeSampleRate: 1.0,
-		Workers:         2,
+		Sink:                sink,
+		JudgeSampleRate:     1.0,
+		Workers:             2,
 	}, discardLogger())
 
 	w.Record(observability.Trace{

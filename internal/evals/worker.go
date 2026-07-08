@@ -17,21 +17,21 @@ import (
 type Worker struct {
 	mu sync.RWMutex
 
-	piiEnabled             bool
-	completenessEnabled    bool
-	judges                 []Evaluator // LLM-as-judge; gated by judgeSampleRate (expensive)
-	sink                   Sink
-	log                    *slog.Logger
+	piiEnabled          bool
+	completenessEnabled bool
+	judges              []Evaluator // LLM-as-judge; gated by judgeSampleRate (expensive)
+	sink                Sink
+	log                 *slog.Logger
 
-	judgeBaseURL     string
-	judgeModel       string
-	judgeAPIKey      string
-	remoteURL        string
-	remoteMetrics    []string
-	remoteTimeout    time.Duration
-	judgeSampleRate  float64
-	workerCount      int
-	evalTimeout      time.Duration
+	judgeBaseURL    string
+	judgeModel      string
+	judgeAPIKey     string
+	remoteURL       string
+	remoteMetrics   []string
+	remoteTimeout   time.Duration
+	judgeSampleRate float64
+	workerCount     int
+	evalTimeout     time.Duration
 
 	ch     chan observability.Trace
 	done   chan struct{}
@@ -89,10 +89,10 @@ func NewWorker(opts Options, log *slog.Logger) *Worker {
 		judgeSampleRate:     opts.JudgeSampleRate,
 		workerCount:         opts.Workers,
 		evalTimeout:         opts.EvalTimeout,
-		ch:              make(chan observability.Trace, opts.BufferSize),
-		done:            make(chan struct{}),
-		closed:          make(chan struct{}),
-		rnd:             rand.New(rand.NewSource(time.Now().UnixNano())),
+		ch:                  make(chan observability.Trace, opts.BufferSize),
+		done:                make(chan struct{}),
+		closed:              make(chan struct{}),
+		rnd:                 rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 
 	w.wg.Add(opts.Workers)
