@@ -56,6 +56,7 @@ func main() {
 				"migrations/postgres/003_sso.sql",
 				"migrations/postgres/004_audit_index.sql",
 				"migrations/postgres/005_credential_models.sql",
+				"migrations/postgres/006_eval_scores.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {
@@ -129,7 +130,7 @@ func main() {
 		log.Info("clickhouse not configured; traces are live-only (set NEXUS_CLICKHOUSE_URL to persist)")
 	}
 
-	stack := buildStack(cfg, hub, chRec, log)
+	stack := buildStack(cfg, hub, chRec, store, log)
 	recorder := stack.Recorder
 	reader := stack.Reader
 	evalWorker := stack.EvalWorker

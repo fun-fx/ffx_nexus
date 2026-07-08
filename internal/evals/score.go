@@ -41,7 +41,7 @@ type Sink interface {
 	WriteScores(ctx context.Context, scores []Score) error
 }
 
-// NoopSink discards scores. Used when ClickHouse is not configured.
+// NoopSink discards scores. Used when no score store backend is configured.
 type NoopSink struct{}
 
 // WriteScores implements Sink.

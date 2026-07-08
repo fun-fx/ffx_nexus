@@ -108,7 +108,7 @@ Cursor can route OpenAI-compatible traffic through Nexus so traces appear in **O
 | **Overview** | Live traces, latency, cost, cache/guardrail flags (your traces only; admins see all) |
 | **Account** | BYOK credentials, virtual keys, usage |
 | **Playground** | Quick chat against the gateway with your session |
-| **Eval** (admin) | Heuristics, judge, routing settings — eval runs without ClickHouse; score history needs ClickHouse |
+| **Eval** (admin) | Heuristics, judge, routing settings — eval runs without ClickHouse; scores persist to ClickHouse or Postgres; routing stats need ClickHouse |
 
 After a successful gateway call, refresh **Overview**. You should see your request within a few seconds (WebSocket **LIVE** dot in the header).
 
