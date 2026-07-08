@@ -294,6 +294,37 @@ func normalize(w Weights) Weights {
 	return Weights{Quality: w.Quality / sum, Cost: w.Cost / sum, Latency: w.Latency / sum}
 }
 
+// SetWeights updates routing quality/cost/latency trade-offs at runtime.
+func (r *Router) SetWeights(w Weights) {
+	r.mu.Lock()
+	r.weights = normalize(w)
+	r.mu.Unlock()
+}
+
+// SetWindow changes the rolling stats window used for Refresh().
+func (r *Router) SetWindow(window time.Duration) {
+	if window <= 0 {
+		window = time.Hour
+	}
+	r.mu.Lock()
+	r.window = window
+	r.mu.Unlock()
+}
+
+// Weights returns the current normalized routing weights.
+func (r *Router) Weights() Weights {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.weights
+}
+
+// Window returns the current stats aggregation window.
+func (r *Router) Window() time.Duration {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.window
+}
+
 // Close stops the background refresher.
 func (r *Router) Close() {
 	close(r.done)

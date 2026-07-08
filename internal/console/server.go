@@ -39,6 +39,8 @@ type Server struct {
 	reload      func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup bool                  // public POST /api/auth/register
 	sso         *ssoClient            // OIDC client; nil when SSO is not configured
+	evalConfigSrc   EvalConfigSource  // nil when ClickHouse/eval is disabled
+	evalConfigApply EvalConfigApplier // nil when ClickHouse/eval is disabled
 	loginLim    *limiter.IPLimiter    // per-IP rate limit for /api/auth/login
 	registerLim *limiter.IPLimiter    // per-IP rate limit for /api/auth/register
 	ssoLim      *limiter.IPLimiter    // per-IP rate limit for /api/auth/sso/*
@@ -86,6 +88,12 @@ func (s *Server) SetRouteStats(src RouteStatsSource) { s.routes = src }
 // restart. Optional; when unset, credential changes apply on next restart.
 func (s *Server) SetCredentialReloader(fn func(context.Context)) { s.reload = fn }
 
+// SetEvalConfig wires eval/routing runtime config for GET/PATCH /api/eval/config.
+func (s *Server) SetEvalConfig(src EvalConfigSource, apply EvalConfigApplier) {
+	s.evalConfigSrc = src
+	s.evalConfigApply = apply
+}
+
 // NewServer builds the console server. reader and store may be nil.
 func NewServer(hub *Hub, reader *observability.Reader, store *core.Store, log *slog.Logger) *Server {
 	return &Server{
@@ -128,11 +136,13 @@ func (s *Server) Mux() http.Handler {
 	}
 
 	r.Route("/api", func(r chi.Router) {
-		r.Get("/traces", s.recentTraces)
-		r.Get("/stats", s.stats)
+		r.Get("/traces", s.requireUser(s.recentTraces))
+		r.Get("/stats", s.requireUser(s.stats))
 		r.Get("/routing", s.routing)
 		r.Get("/evals", s.evals)
-		r.Get("/live", s.live)
+		r.Get("/eval/config", s.requireAdmin(s.getEvalConfig))
+		r.Patch("/eval/config", s.requireAdmin(s.patchEvalConfig))
+		r.Get("/live", s.requireUser(s.live))
 
 		// Session auth + self-service (requires Postgres).
 		r.Get("/auth/config", s.authConfig)
@@ -208,22 +218,51 @@ func spaHandler(log *slog.Logger) http.Handler {
 	})
 }
 
-func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request) {
+func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	traces, err := s.reader.RecentTraces(r.Context(), limit, "")
+	uid := ""
+	if u.Role != core.RoleAdmin {
+		uid = u.ID
+	}
+	traces, err := s.reader.RecentTraces(r.Context(), limit, uid)
 	if err != nil {
 		s.log.Error("recent traces query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
+	if u.Role == core.RoleAdmin {
+		s.enrichTraceUserEmails(r.Context(), orgID(r), traces)
+	}
 	writeJSON(w, http.StatusOK, traces)
 }
 
-func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
+// enrichTraceUserEmails attaches caller emails to trace rows for the admin
+// overview. ClickHouse stores only user_id; emails live in Postgres.
+func (s *Server) enrichTraceUserEmails(ctx context.Context, org string, traces []observability.TraceSummary) {
+	if s.store == nil || len(traces) == 0 {
+		return
+	}
+	users, err := s.store.ListUsers(ctx, org)
+	if err != nil {
+		s.log.Warn("trace user email lookup failed", "err", err)
+		return
+	}
+	byID := make(map[string]string, len(users))
+	for _, u := range users {
+		byID[u.ID] = u.Email
+	}
+	for i := range traces {
+		if traces[i].UserID != "" {
+			traces[i].UserEmail = byID[traces[i].UserID]
+		}
+	}
+}
+
+func (s *Server) stats(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
 		writeJSON(w, http.StatusOK, observability.Stats{})
 		return
@@ -234,7 +273,11 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 			window = d
 		}
 	}
-	st, err := s.reader.WindowStats(r.Context(), window, "")
+	uid := ""
+	if u.Role != core.RoleAdmin {
+		uid = u.ID
+	}
+	st, err := s.reader.WindowStats(r.Context(), window, uid)
 	if err != nil {
 		s.log.Error("stats query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -281,14 +324,18 @@ func (s *Server) evals(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) live(w http.ResponseWriter, r *http.Request) {
+func (s *Server) live(w http.ResponseWriter, r *http.Request, u core.User) {
 	conn, err := s.up.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
 
-	ch := s.hub.subscribe()
+	uid := ""
+	if u.Role != core.RoleAdmin {
+		uid = u.ID
+	}
+	ch := s.hub.subscribe(uid)
 	defer s.hub.unsubscribe(ch)
 
 	// Reader goroutine to detect client disconnect.

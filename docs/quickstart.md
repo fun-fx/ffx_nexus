@@ -11,6 +11,18 @@ nexus.ffx.ai required. You only need Docker and Git.
 > # curl -fsSL https://install.nexus.ffx.ai | bash
 > # then open http://localhost:8091 in your browser
 > ```
+>
+> **Ports cheat-sheet**
+>
+> | Path | Gateway | Console |
+> | --- | --- | --- |
+> | One-line `install.sh` (TL;DR above) | `:8090` | `:8091` |
+> | Manual `go run ./cmd/nexus` / Docker | `:8080` | `:8081` |
+>
+> The installer picks `:8090`/`:8091` to dodge common collisions on a fresh
+> laptop; running the binary directly uses the upstream defaults `:8080`/`:8081`.
+> You can override either side with `NEXUS_GATEWAY_ADDR` / `NEXUS_CONSOLE_ADDR`
+> (or, for the installer, `NEXUS_GATEWAY_PORT` / `NEXUS_CONSOLE_PORT`).
 
 ---
 
@@ -69,10 +81,16 @@ go build -o ./bin/nexus ./cmd/nexus
 # 5. Pick at least one provider key from .env, then launch
 export GEMINI_API_KEY=sk-...      # or OPENAI_API_KEY, ANTHROPIC_API_KEY, ...
 ./bin/nexus
+# (override the listen ports if 8080/8081 are taken on this box:
+#   NEXUS_GATEWAY_ADDR=:9090 NEXUS_CONSOLE_ADDR=:9091 ./bin/nexus)
 ```
 
-Console: <http://localhost:8091>
-Gateway: <http://localhost:8090>
+Console: <http://localhost:8081>
+Gateway: <http://localhost:8080>
+
+> **Tip:** the manual path uses the binary's upstream defaults (`:8080`/`:8081`).
+> If you arrived here from the one-line installer at the top of this page, your
+> Console is on <http://localhost:8091> and your Gateway on <http://localhost:8090>.
 
 ---
 

@@ -32,6 +32,7 @@ type TraceSummary struct {
 	CacheHit         uint8     `json:"cache_hit"`
 	GuardrailAction  string    `json:"guardrail_action"`
 	UserID           string    `json:"user_id"`
+	UserEmail        string    `json:"user_email,omitempty"`
 	CredentialSource string    `json:"credential_source"`
 }
 

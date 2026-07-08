@@ -81,8 +81,9 @@ func TestWorkerIsolatesRemoteFailure(t *testing.T) {
 	sink := &fakeSink{}
 	remote := NewRemoteEvaluator(RemoteConfig{BaseURL: deadURL, Timeout: 200 * time.Millisecond})
 	w := NewWorker(Options{
-		Heuristics:      []Evaluator{PIIEvaluator{}},
-		Judges:          []Evaluator{remote},
+		PIIEnabled:          true,
+		CompletenessEnabled: true,
+		Judges:              []Evaluator{remote},
 		Sink:            sink,
 		JudgeSampleRate: 1.0,
 		Workers:         2,

@@ -82,6 +82,23 @@ func (h *Handler) SetLoadBalancing(rr *balancer.WeightedRR) {
 	h.lb = rr
 }
 
+// SetRouteGroups replaces routing alias -> candidate model mappings.
+func (h *Handler) SetRouteGroups(groups map[string][]string) {
+	if groups == nil {
+		groups = map[string][]string{}
+	}
+	h.groups = groups
+}
+
+// RouteGroups returns a copy of the current routing alias map.
+func (h *Handler) RouteGroups() map[string][]string {
+	out := make(map[string][]string, len(h.groups))
+	for k, v := range h.groups {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
 // SetSemanticCache enables embedding-based response caching on the hot path.
 func (h *Handler) SetSemanticCache(s *semcache.Service) {
 	h.scache = s

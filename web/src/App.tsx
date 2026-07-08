@@ -6,6 +6,7 @@ import {
   fetchRouting,
   fetchStats,
   fetchTraces,
+  fetchUsers,
   type EvalMetric,
   type RoutingModel,
   type Stats,
@@ -14,6 +15,7 @@ import {
 } from "./api";
 import { Account } from "./Account";
 import { Audit } from "./Audit";
+import { EvalSettings } from "./EvalSettings";
 import { Playground } from "./Playground";
 
 const EMPTY_STATS: Stats = {
@@ -28,7 +30,14 @@ const EMPTY_STATS: Stats = {
   guardrail_events: 0,
 };
 
-type Tab = "overview" | "playground" | "audit" | "account";
+function traceUserLabel(t: TraceSummary, emails: Record<string, string>): string {
+  if (t.user_email) return t.user_email;
+  if (t.user_id && emails[t.user_id]) return emails[t.user_id];
+  if (t.user_id) return "unknown user";
+  return "-";
+}
+
+type Tab = "overview" | "playground" | "eval" | "audit" | "account";
 
 export function App() {
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
@@ -38,6 +47,7 @@ export function App() {
   const [live, setLive] = useState(false);
   const [tab, setTab] = useState<Tab>("overview");
   const [user, setUser] = useState<User | null>(null);
+  const [userEmails, setUserEmails] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchMe().then((u) => {
@@ -59,6 +69,15 @@ export function App() {
       fetchTraces().then(setTraces).catch(() => {});
       fetchRouting().then(setRouting).catch(() => {});
       fetchEvals().then(setEvals).catch(() => {});
+      if (user.role === "admin") {
+        fetchUsers()
+          .then((users) => {
+            const map: Record<string, string> = {};
+            for (const u of users) map[u.id] = u.email;
+            setUserEmails(map);
+          })
+          .catch(() => {});
+      }
     };
     load();
     const interval = setInterval(load, 5000);
@@ -75,6 +94,20 @@ export function App() {
     };
   }, [user]);
 
+  useEffect(() => {
+    if (user?.role !== "admin") {
+      setUserEmails({});
+      return;
+    }
+    fetchUsers()
+      .then((users) => {
+        const map: Record<string, string> = {};
+        for (const u of users) map[u.id] = u.email;
+        setUserEmails(map);
+      })
+      .catch(() => {});
+  }, [user?.role, user?.id]);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -82,7 +115,7 @@ export function App() {
           <span className="logo">◆</span> Nexus <span className="sub">LLM Gateway</span>
         </div>
         <nav className="tabs">
-          {user && tab !== "account" && tab !== "audit" && (
+          {user && (
             <>
               <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
                 Overview
@@ -91,6 +124,11 @@ export function App() {
                 Playground
               </button>
             </>
+          )}
+          {user?.role === "admin" && (
+            <button className={tab === "eval" ? "active" : ""} onClick={() => setTab("eval")}>
+              Eval
+            </button>
           )}
           {user?.role === "admin" && (
             <button className={tab === "audit" ? "active" : ""} onClick={() => setTab("audit")}>
@@ -110,6 +148,8 @@ export function App() {
         <Account user={user} onUser={setUser} />
       ) : tab === "playground" ? (
         <Playground />
+      ) : tab === "eval" ? (
+        <EvalSettings />
       ) : tab === "audit" ? (
         <Audit />
       ) : (
@@ -217,17 +257,20 @@ export function App() {
               <th>Cost</th>
               <th>Flags</th>
               <th>Status</th>
+              {user?.role === "admin" ? <th>User</th> : null}
             </tr>
           </thead>
           <tbody>
             {traces.length === 0 && (
               <tr>
-                <td colSpan={9} className="empty">
+                <td colSpan={10} className="empty">
                   No traces yet. Send a request to the gateway on :8080.
                 </td>
               </tr>
             )}
-            {traces.map((t) => (
+            {traces.map((t) => {
+              const who = user?.role === "admin" ? traceUserLabel(t, userEmails) : "";
+              return (
               <tr key={t.trace_id}>
                 <td>{new Date(t.timestamp).toLocaleTimeString()}</td>
                 <td><span className="tag">{t.provider_name}</span></td>
@@ -257,8 +300,15 @@ export function App() {
                     {t.status_code}
                   </span>
                 </td>
+                {user?.role === "admin" ? (
+                  <td>
+                    {who === "-"
+                      ? <span className="muted">-</span>
+                      : who}
+                  </td>
+                ) : null}
               </tr>
-            ))}
+            );})}
           </tbody>
         </table>
       </section>

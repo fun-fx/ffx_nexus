@@ -140,7 +140,6 @@ func main() {
 	// Scores persist to ClickHouse eval_scores and feed quality-aware routing.
 	var evalWorker *evals.Worker
 	if chRec != nil {
-		heuristics := []evals.Evaluator{evals.PIIEvaluator{}, evals.CompletenessEvaluator{}}
 		var judges []evals.Evaluator
 		if judge := evals.NewSLMJudge(evals.JudgeConfig{
 			BaseURL: cfg.JudgeBaseURL,
@@ -165,11 +164,18 @@ func main() {
 			log.Info("external eval service disabled (set NEXUS_EVAL_SERVICE_URL)")
 		}
 		evalWorker = evals.NewWorker(evals.Options{
-			Heuristics:      heuristics,
-			Judges:          judges,
-			Sink:            evals.NewCHSink(chRec.Conn()),
-			JudgeSampleRate: cfg.EvalSampleRate,
-			Workers:         cfg.EvalWorkers,
+			PIIEnabled:          true,
+			CompletenessEnabled: true,
+			Judges:              judges,
+			Sink:                evals.NewCHSink(chRec.Conn()),
+			JudgeBaseURL:        cfg.JudgeBaseURL,
+			JudgeModel:          cfg.JudgeModel,
+			JudgeAPIKey:         cfg.JudgeAPIKey,
+			RemoteURL:           cfg.EvalServiceURL,
+			RemoteMetrics:       splitCSV(cfg.EvalServiceMetrics),
+			RemoteTimeout:       cfg.EvalServiceTimeout,
+			JudgeSampleRate:     cfg.EvalSampleRate,
+			Workers:             cfg.EvalWorkers,
 		}, log)
 		recorders = append(recorders, evalWorker)
 		log.Info("eval worker enabled (async quality evaluation)")
@@ -220,7 +226,7 @@ func main() {
 			router.Weights{Quality: cfg.RouteWQuality, Cost: cfg.RouteWCost, Latency: cfg.RouteWLatency},
 			cfg.RouteWindow, cfg.RouteRefresh, log,
 		)
-		groups := parseRouteGroups(cfg.RouteGroups)
+		groups := config.ParseRouteGroups(cfg.RouteGroups)
 		gwHandler.SetRouter(modelRouter, groups)
 		if cfg.RouteLoadBalance {
 			gwHandler.SetLoadBalancing(balancer.NewWeightedRR())
@@ -301,6 +307,10 @@ func main() {
 	if modelRouter != nil {
 		consoleSrvHandler.SetRouteStats(modelRouter)
 	}
+	if evalWorker != nil {
+		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler)
+		consoleSrvHandler.SetEvalConfig(erc, erc)
+	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
 	// secret takes effect without restarting the gateway.
 	if store != nil && store.HasCipher() {
@@ -371,34 +381,6 @@ func splitCSV(spec string) []string {
 	return out
 }
 
-// parseRouteGroups parses a spec like
-// "fast=gpt-4o-mini,gemini-2.5-flash;smart=gpt-4o,claude-3-5-sonnet" into a map
-// of alias -> candidate models. Malformed entries are skipped.
-func parseRouteGroups(spec string) map[string][]string {
-	groups := map[string][]string{}
-	for _, group := range strings.Split(spec, ";") {
-		group = strings.TrimSpace(group)
-		if group == "" {
-			continue
-		}
-		alias, list, ok := strings.Cut(group, "=")
-		alias = strings.TrimSpace(alias)
-		if !ok || alias == "" {
-			continue
-		}
-		var models []string
-		for _, m := range strings.Split(list, ",") {
-			if m = strings.TrimSpace(m); m != "" {
-				models = append(models, m)
-			}
-		}
-		if len(models) > 0 {
-			groups[alias] = models
-		}
-	}
-	return groups
-}
-
 // makeAuthenticator adapts the store into a gateway virtual-key authenticator.
 func makeAuthenticator(st *core.Store) gateway.VKeyAuthenticator {
 	return func(ctx context.Context, plaintext string) (gateway.AuthResult, error) {
@@ -456,6 +438,10 @@ type storeCredentialSource struct{ st *core.Store }
 
 func (s *storeCredentialSource) ResolveCredential(ctx context.Context, orgID, userID, provider string) (gateway.ResolvedCredential, bool, error) {
 	cred, source, err := s.st.ResolveCredential(ctx, orgID, userID, provider)
+	// Console stores The Grid as "the_grid"; the gateway adapter is "grid".
+	if errors.Is(err, core.ErrNotFound) && provider == "grid" {
+		cred, source, err = s.st.ResolveCredential(ctx, orgID, userID, "the_grid")
+	}
 	if errors.Is(err, core.ErrNotFound) {
 		return gateway.ResolvedCredential{}, false, nil
 	}
@@ -499,7 +485,7 @@ func registerStoredCredentials(ctx context.Context, reg *gateway.Registry, st *c
 			reg.Register(providers.NewGroq(c.Secret, cfg.UpstreamTimeout))
 		case "mistral":
 			reg.Register(providers.NewMistral(c.Secret, cfg.UpstreamTimeout))
-		case "grid":
+		case "grid", "the_grid":
 			reg.Register(providers.NewGrid(c.Secret, cfg.UpstreamTimeout))
 		default:
 			// Dynamic OpenAI-compatible credential: any owner-supplied provider
@@ -540,6 +526,19 @@ func serve(wg *sync.WaitGroup, srv *http.Server, name, addr string, log *slog.Lo
 	}
 }
 
+// registerBuiltinCatalog registers every first-party adapter with an empty
+// operator key so /v1/models and model routing work under strict BYOK. Per-
+// request ResolveCredential injects each caller's stored secret at call time.
+func registerBuiltinCatalog(reg *gateway.Registry, cfg config.Config, log *slog.Logger) {
+	reg.Register(providers.NewOpenAI("", cfg.OpenAIBaseURL, cfg.UpstreamTimeout))
+	reg.Register(providers.NewAnthropic("", cfg.UpstreamTimeout))
+	reg.Register(providers.NewGemini("", cfg.UpstreamTimeout))
+	reg.Register(providers.NewGroq("", cfg.UpstreamTimeout))
+	reg.Register(providers.NewMistral("", cfg.UpstreamTimeout))
+	reg.Register(providers.NewGrid("", cfg.UpstreamTimeout))
+	log.Info("builtin provider catalogs registered for BYOK routing")
+}
+
 func registerProviders(reg *gateway.Registry, cfg config.Config, log *slog.Logger) {
 	// Env-configured providers are only useful when the operator has opted in
 	// to shared-key fallback (NEXUS_ALLOW_SHARED_KEYS=true) or when the
@@ -548,8 +547,12 @@ func registerProviders(reg *gateway.Registry, cfg config.Config, log *slog.Logge
 	// loaded into the struct for visibility but never reach the Registry.
 	// We log a single warn line so operators can see exactly which env keys
 	// are present but unused; setting NEXUS_ALLOW_SHARED_KEYS=true re-enables
-	// registration.
-	if cfg.KeyMode != "" && !cfg.AllowSharedKeys {
+	// registration. Catalog stubs (empty operator key) are still registered so
+	// BYOK users can call any built-in model once they store a personal key.
+	mode := gateway.ParseKeyMode(cfg.KeyMode)
+	strictBYOK := mode != gateway.KeyModeShared && !cfg.AllowSharedKeys
+
+	if strictBYOK {
 		for _, name := range []string{"openai", "anthropic", "gemini", "groq", "mistral", "grid"} {
 			if envKeySet(name, cfg) {
 				log.Warn("env provider key present but unused under strict-byok default",
@@ -557,8 +560,14 @@ func registerProviders(reg *gateway.Registry, cfg config.Config, log *slog.Logge
 					"opt_in", "set NEXUS_ALLOW_SHARED_KEYS=true to enable shared fallback")
 			}
 		}
+		registerBuiltinCatalog(reg, cfg, log)
 		return
 	}
+
+	// Shared-key / escape-hatch mode: register the full catalog first so BYOK
+	// users can still reach every built-in model, then overlay any operator env
+	// keys on top of the matching provider adapter.
+	registerBuiltinCatalog(reg, cfg, log)
 	if cfg.OpenAIAPIKey != "" {
 		reg.Register(providers.NewOpenAI(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, cfg.UpstreamTimeout))
 		log.Info("provider registered", "name", "openai")
