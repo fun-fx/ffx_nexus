@@ -3,6 +3,8 @@ package config
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"strconv"
 	"strings"
@@ -56,10 +58,16 @@ type Config struct {
 	// The built-in alias "auto" always routes across all registered models.
 	RouteGroups   string
 	RouteWQuality float64
-	RouteWCost    float64
-	RouteWLatency float64
-	RouteWindow   time.Duration
-	RouteRefresh  time.Duration
+
+	// --- V5 high-concurrency tuning -------------------------------------
+	// MaxConcurrentPerKey caps *concurrent* in-flight requests per virtual
+	// key, on a single replica. Use it to keep one noisy virtual key
+	// from starving others at the upstream provider queue. 0 = disable.
+	MaxConcurrentPerKey int
+	RouteWCost          float64
+	RouteWLatency       float64
+	RouteWindow         time.Duration
+	RouteRefresh        time.Duration
 
 	// Inline guardrails (hot path). Synchronous policy checks that can block a
 	// request before the upstream call or redact the response after it.
@@ -89,8 +97,49 @@ type Config struct {
 	EmbeddingsAPIKey        string
 	EmbeddingsTimeout       time.Duration
 
-	// Observability
+	// Observability: every Trace flows out through one or more
+	// adapters. Each adapter is independent, so a sink failure can
+	// never block the others. All three toggles are *opt-in* so the
+	// zero-dep fast path (no ClickHouse, no Prometheus, no OTLP) stays
+	// unchanged for plain `nexus` boots.
 	OTLPEnabled bool
+	// OTLPEndpoint is the full OTLP/HTTP URL the exporter POSTs each
+	// batch to (e.g. http://otel-collector:4318/v1/traces or
+	// https://api.honeycomb.io/v1/traces). An empty endpoint is a NO-OP
+	// even when OTLPEnabled is true — we never silently drop traces.
+	OTLPEndpoint string
+	// MetricsAddr exposes a Prometheus /metrics endpoint on the gateway
+	// (and console). Empty (default) means no scrape surface, keeping
+	// the zero-dep boot path free of goroutines.
+	MetricsAddr string
+
+	// Failover alert sinks (V4). Both are independently opt-in; an
+	// empty URL disables the corresponding sink entirely (no
+	// goroutines spun up, no DNS resolution attempted). Multiple sinks
+	// can be active simultaneously — both are fanned out from the
+	// gateway hot path via the same buffered async worker.
+	FailoverWebhookURL string // generic JSON POST
+	FailoverSlackURL   string // Slack-compatible incoming webhook
+	// FailoverAlertCooldown coalesces back-to-back alerts onto the
+	// same sink so a flapping primary doesn't melt an alert inbox.
+	// Zero disables (each failover produces exactly one alert).
+	FailoverAlertCooldown time.Duration
+
+	// Metabase BI adapter (mirror of the V3 OTLP toggle). When MetabaseURL
+	// is empty the adapter is fully off — NewMetabaseBootstrapper returns
+	// nil and main.go skips boot wiring (no DNS / goroutines). When set, a
+	// one-shot bootstrap on startup registers ClickHouse + Postgres as
+	// Metabase datasources and seeds any collection JSONs shipped under
+	// deploy/observability/metabase. Hot-path traces still go through the
+	// existing recorder sinks (CH/OTLP); Metabase is pull-only.
+	MetabaseURL            string
+	MetabaseUser           string
+	MetabasePassword       string
+	MetabaseClickHouseURL  string // e.g. http://clickhouse:8123?database=nexus
+	MetabasePostgresURL    string // e.g. postgres://nexus:nexus@postgres:5432/nexus
+	MetabaseSeedDir        string // optional directory of collection JSONs
+	MetabaseHealthTimeout  time.Duration
+	MetabaseRequestTimeout time.Duration
 
 	// Behavior
 	UpstreamTimeout time.Duration
@@ -128,6 +177,17 @@ type Config struct {
 	// the configured issuer (Keycloak, Authentik, ...). Password login and
 	// self-service signup stay available as fallbacks.
 	SSO SSOConfig
+
+	// Define the SSO + observability + identity knobs up here so the
+	// struct is easy to scan; fields are grouped (auth, observability,
+	// behavior, ...) in declaration order.
+
+	// ReplicaID is a per-process identifier attached to every Trace. In a
+	// multi-replica deployment set NEXUS_REPLICA_ID (or rely on the default
+	// which is "hostname-randhex") so traces can be grouped by replica in
+	// ClickHouse: `SELECT count() FROM gateway_traces GROUP BY replica_id`.
+	// Stable for the lifetime of the process; rolling pods get a new id.
+	ReplicaID string
 }
 
 // SSOConfig is the OIDC configuration. The Enabled() predicate returns
@@ -180,22 +240,35 @@ func Load() Config {
 		EvalSampleRate:  envFloat("NEXUS_EVAL_SAMPLE_RATE", 1.0),
 		EvalWorkers:     envInt("NEXUS_EVAL_WORKERS", 4),
 
-		EvalServiceURL:     env("NEXUS_EVAL_SERVICE_URL", ""),
-		EvalServiceMetrics: env("NEXUS_EVAL_SERVICE_METRICS", "answer_relevancy,toxicity,bias"),
-		EvalServiceTimeout: envDuration("NEXUS_EVAL_SERVICE_TIMEOUT", 30*time.Second),
-		RouteGroups:        env("NEXUS_ROUTE_GROUPS", ""),
-		RouteWQuality:      envFloat("NEXUS_ROUTE_W_QUALITY", 0.6),
-		RouteWCost:         envFloat("NEXUS_ROUTE_W_COST", 0.2),
-		RouteWLatency:      envFloat("NEXUS_ROUTE_W_LATENCY", 0.2),
-		RouteWindow:        envDuration("NEXUS_ROUTE_WINDOW", time.Hour),
-		RouteRefresh:       envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
-		OTLPEnabled:        envBool("NEXUS_OTLP_ENABLED", false),
-		UpstreamTimeout:    envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
-		KeyMode:            env("NEXUS_KEY_MODE", "strict_byok"),
-		AllowSharedKeys:    envBool("NEXUS_ALLOW_SHARED_KEYS", false),
-		AdminEmail:         env("NEXUS_ADMIN_EMAIL", ""),
-		AdminPassword:      env("NEXUS_ADMIN_PASSWORD", ""),
-		AllowSignup:        envBool("NEXUS_ALLOW_SIGNUP", false),
+		EvalServiceURL:         env("NEXUS_EVAL_SERVICE_URL", ""),
+		EvalServiceMetrics:     env("NEXUS_EVAL_SERVICE_METRICS", "answer_relevancy,toxicity,bias"),
+		EvalServiceTimeout:     envDuration("NEXUS_EVAL_SERVICE_TIMEOUT", 30*time.Second),
+		RouteGroups:            env("NEXUS_ROUTE_GROUPS", ""),
+		RouteWQuality:          envFloat("NEXUS_ROUTE_W_QUALITY", 0.6),
+		RouteWCost:             envFloat("NEXUS_ROUTE_W_COST", 0.2),
+		RouteWLatency:          envFloat("NEXUS_ROUTE_W_LATENCY", 0.2),
+		RouteWindow:            envDuration("NEXUS_ROUTE_WINDOW", time.Hour),
+		RouteRefresh:           envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
+		OTLPEnabled:            envBool("NEXUS_OTLP_ENABLED", false),
+		OTLPEndpoint:           env("NEXUS_OTLP_ENDPOINT", ""),
+		MetricsAddr:            env("NEXUS_METRICS_ADDR", ""),
+		FailoverWebhookURL:     env("NEXUS_FAILOVER_WEBHOOK", ""),
+		FailoverSlackURL:       env("NEXUS_FAILOVER_SLACK_WEBHOOK", ""),
+		FailoverAlertCooldown:  envDuration("NEXUS_FAILOVER_ALERT_COOLDOWN", 0),
+		MetabaseURL:            env("NEXUS_METABASE_URL", ""),
+		MetabaseUser:           env("NEXUS_METABASE_USER", ""),
+		MetabasePassword:       env("NEXUS_METABASE_PASSWORD", ""),
+		MetabaseClickHouseURL:  env("NEXUS_METABASE_CLICKHOUSE_URL", ""),
+		MetabasePostgresURL:    env("NEXUS_METABASE_POSTGRES_URL", ""),
+		MetabaseSeedDir:        env("NEXUS_METABASE_SEED_DIR", ""),
+		MetabaseHealthTimeout:  envDuration("NEXUS_METABASE_HEALTH_TIMEOUT", 90*time.Second),
+		MetabaseRequestTimeout: envDuration("NEXUS_METABASE_REQUEST_TIMEOUT", 10*time.Second),
+		UpstreamTimeout:        envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
+		KeyMode:                env("NEXUS_KEY_MODE", "strict_byok"),
+		AllowSharedKeys:        envBool("NEXUS_ALLOW_SHARED_KEYS", false),
+		AdminEmail:             env("NEXUS_ADMIN_EMAIL", ""),
+		AdminPassword:          env("NEXUS_ADMIN_PASSWORD", ""),
+		AllowSignup:            envBool("NEXUS_ALLOW_SIGNUP", false),
 
 		SSO: SSOConfig{
 			Issuer:       env("NEXUS_SSO_ISSUER", ""),
@@ -215,7 +288,8 @@ func Load() Config {
 		SelfCorrectionEnabled:    envBool("NEXUS_SELF_CORRECTION_ENABLED", false),
 		SelfCorrectionMaxRetries: envInt("NEXUS_SELF_CORRECTION_MAX_RETRIES", 1),
 
-		RouteLoadBalance: envBool("NEXUS_ROUTE_LOAD_BALANCE", false),
+		RouteLoadBalance:    envBool("NEXUS_ROUTE_LOAD_BALANCE", false),
+		MaxConcurrentPerKey: envInt("NEXUS_MAX_CONCURRENT_PER_KEY", 0),
 
 		SemanticCacheEnabled:    envBool("NEXUS_SEMANTIC_CACHE_ENABLED", false),
 		SemanticCacheTTL:        envDuration("NEXUS_SEMANTIC_CACHE_TTL", 24*time.Hour),
@@ -225,6 +299,8 @@ func Load() Config {
 		EmbeddingsModel:         env("NEXUS_EMBEDDINGS_MODEL", "text-embedding-3-small"),
 		EmbeddingsAPIKey:        env("NEXUS_EMBEDDINGS_API_KEY", ""),
 		EmbeddingsTimeout:       envDuration("NEXUS_EMBEDDINGS_TIMEOUT", 15*time.Second),
+
+		ReplicaID: defaultReplicaID(),
 	}
 }
 
@@ -303,4 +379,28 @@ func envDuration(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// defaultReplicaID builds a stable id for this process. Operators can pin it
+// via NEXUS_REPLICA_ID; otherwise we fall back to "<hostname>-<randid>" so
+// traces from a rolling deployment are still distinguishable in
+// ClickHouse. The hostname piece is informational; the randid guarantees
+// uniqueness across processes even on the same host.
+func defaultReplicaID() string {
+	if explicit := strings.TrimSpace(env("NEXUS_REPLICA_ID", "")); explicit != "" {
+		return explicit
+	}
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "nexus"
+	}
+	if idx := strings.IndexByte(host, '.'); idx > 0 {
+		host = host[:idx] // trim FQDN to bare pod host name in k8s
+	}
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// rand failure is vanishingly rare; degrade gracefully.
+		return host + "-node"
+	}
+	return host + "-" + hex.EncodeToString(buf[:])
 }

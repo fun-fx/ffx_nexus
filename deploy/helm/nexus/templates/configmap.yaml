@@ -103,4 +103,67 @@ data:
   NEXUS_EMBEDDINGS_TIMEOUT: {{ . | quote }}
   {{- end }}
 
-  NEXUS_OTLP_ENABLED: {{ .Values.config.otlpEnabled | quote }}
+  {{- /* Observability adapter toggle (V3): otlp exporter + Prometheus /metrics */}}
+  NEXUS_OTLP_ENABLED: {{ .Values.config.otlp.enabled | quote }}
+  {{- with .Values.config.otlp.endpoint }}
+  NEXUS_OTLP_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.metricsAddr }}
+  NEXUS_METRICS_ADDR: {{ . | quote }}
+  {{- end }}
+
+  {{- /* V4 failover alert sinks */}}
+  {{- with .Values.config.failoverWebhook }}
+  NEXUS_FAILOVER_WEBHOOK: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.failoverSlack }}
+  NEXUS_FAILOVER_SLACK_WEBHOOK: {{ . | quote }}
+  {{- end }}
+  {{- if ne .Values.config.failoverAlertCooldown "0s" }}
+  NEXUS_FAILOVER_ALERT_COOLDOWN: {{ .Values.config.failoverAlertCooldown | quote }}
+  {{- end }}
+
+  {{- /* Metabase BI adapter — empty url field means the adapter is off */}}
+  {{- with .Values.config.metabase.url }}
+  NEXUS_METABASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.metabase.user }}
+  NEXUS_METABASE_USER: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.metabase.password }}
+  NEXUS_METABASE_PASSWORD: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.metabase.clickhouseUrl }}
+  NEXUS_METABASE_CLICKHOUSE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.metabase.postgresUrl }}
+  NEXUS_METABASE_POSTGRES_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.metabase.seedDir }}
+  NEXUS_METABASE_SEED_DIR: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.metabase.healthTimeout }}
+  NEXUS_METABASE_HEALTH_TIMEOUT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.metabase.requestTimeout }}
+  NEXUS_METABASE_REQUEST_TIMEOUT: {{ . | quote }}
+  {{- end }}
+
+  {{- /* V5 high-concurrency tuning: GOMEMLIMIT soft memory cap + GOGC.
+       GOMEMLIMIT is *advisory* — Go's GC uses it to bias toward reclaiming
+       memory earlier under pressure instead of letting RSS balloon. We
+       express it as a fraction of the container memory limit so that
+       horizontal autoscaling doesn't require a configmap edit per pod.
+       Setting to "" (the default) leaves both values unset, which means
+       "no advisory". */}}
+  {{- with .Values.config.runtime.gomemlimit }}
+  GOMEMLIMIT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.runtime.gogc }}
+  GOGC: {{ . | quote }}
+  {{- end }}
+
+  {{- /* V5 per-vkey concurrency tuning */}}
+  {{- if gt (int .Values.config.maxConcurrentPerKey) 0 }}
+  NEXUS_MAX_CONCURRENT_PER_KEY: {{ .Values.config.maxConcurrentPerKey | quote }}
+  {{- end }}

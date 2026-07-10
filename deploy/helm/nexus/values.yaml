@@ -96,7 +96,60 @@ config:
     model: ""
     timeout: "5s"
 
-  otlpEnabled: false
+  # --- Observability adapter toggle (V3) -----------------------------------
+  # Each setting below independently opts nexus into one adapter; leaving
+  # any of them off keeps the zero-dep fast path. The adapters are
+  # independent: a ClickHouse outage doesn't disable the OTLP exporter, a
+  # Prometheus scrape misconfig doesn't disable CH trace persistence.
+  otlp:
+    # master toggle. Endpoint must be a full OTLP/HTTP URL the binary
+    # can POST to (e.g. http://otel-collector.observability.svc:4318/v1/traces
+    # or https://api.honeycomb.io/v1/traces).
+    enabled: false
+    endpoint: ""
+  # NEXUS_METRICS_ADDR exposes a Prometheus /metrics endpoint on the
+  # gateway and console. Empty (default) means no scrape surface.
+  metricsAddr: ""
+
+  # --- V4 failover alert sinks --------------------------------------------
+  # Both URLs are independently opt-in; empty means "no goroutine, no DNS".
+  # The literal noop notifier (`internal/router/notifier.go`) is wired so
+  # the gateway stays metric-only when these are blank. Set BOTH (or one)
+  # in production so a primary going bad lights up the channel you actually
+  # read on a Saturday morning.
+  failoverWebhook: ""           # NEXUS_FAILOVER_WEBHOOK — generic JSON POST
+  failoverSlack: ""             # NEXUS_FAILOVER_SLACK_WEBHOOK
+  failoverAlertCooldown: 0s     # NEXUS_FAILOVER_ALERT_COOLDOWN; 0 = off
+
+  # --- Metabase BI adapter (mirror of the V3 OTLP toggle) --------------------
+  # Empty url means the adapter is fully off — NewMetabaseBootstrapper returns
+  # nil, no goroutines, no DNS, no boot network calls. Set the URL to point at
+  # a Metabase instance (the `metabase` service in deploy/docker-compose.yml's
+  # `bi` profile fits; `http://metabase.observability.svc.cluster.local:3000`
+  # works in cluster). The bootstrap is one-shot and idempotent — credentials
+  # change by re-deploying Nexus, never a side-effect during request handling.
+  metabase:
+    url: ""                       # NEXUS_METABASE_URL
+    user: ""                      # NEXUS_METABASE_USER
+    password: ""                  # NEXUS_METABASE_PASSWORD
+    clickhouseUrl: ""             # NEXUS_METABASE_CLICKHOUSE_URL (http://host:8123?database=...)
+    postgresUrl: ""               # NEXUS_METABASE_POSTGRES_URL (postgres://...)
+    seedDir: ""                   # NEXUS_METABASE_SEED_DIR (optional)
+    healthTimeout: "90s"          # NEXUS_METABASE_HEALTH_TIMEOUT
+    requestTimeout: "10s"         # NEXUS_METABASE_REQUEST_TIMEOUT
+
+  # --- V5 high-concurrency tuning ---------------------------------------------
+  # These map directly to the Go runtime env vars GOMEMLIMIT and GOGC. Set
+  # `gomemlimit` to roughly `0.85 * container.limits.memory` to give the GC
+  # an advisory target; otherwise Go's default behaviour is unbounded.
+  # Leave empty to disable (zero-dep mode).
+  runtime:
+    gomemlimit: ""           # GOMEMLIMIT; e.g. 768MiB
+    gogc: ""                 # GOGC; e.g. 100
+  # NEXUS_MAX_CONCURRENT_PER_KEY caps in-flight requests per virtual key
+  # on a single replica. 0 = disabled (RPM-only enforcement). Recommended
+  # for production: 16–32 for shared pools, 4–8 for spotty model backends.
+  maxConcurrentPerKey: 0
 
 # --- Dependency wiring -------------------------------------------------------
 # This chart does NOT deploy databases; it connects to external/managed ones

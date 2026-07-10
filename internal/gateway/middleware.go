@@ -177,7 +177,43 @@ func Enforce(lim Limiter) func(http.Handler) http.Handler {
 	}
 }
 
-// bearerToken extracts the token from an Authorization: Bearer header.
+// Concurrency caps in-flight requests per virtual key on a single
+// replica. It is intentionally separate from Enforce() so capacity plan
+// and rate limit can be tuned independently — many deployments want
+// the RPM ceiling high but the concurrency ceiling low (most production
+// traffic is bursty with long-running prompts).
+//
+// The cap releases when the response writer completes (or panics). A
+// nil cap disables the middleware entirely.
+func Concurrency(cap CapIface) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			vkeyID, _ := r.Context().Value(ctxKeyVKeyID).(string)
+			if cap == nil || vkeyID == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !cap.Acquire(r.Context(), vkeyID) {
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusTooManyRequests, "concurrency_exceeded",
+					"too many concurrent requests for this virtual key; retry shortly")
+				return
+			}
+			defer cap.Release(r.Context(), vkeyID)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// CapIface is the V5 per-vkey in-flight limiter contract used by the
+// Concurrency() middleware. Kept local to the gateway package so
+// handler.go and middleware.go can reuse the same shape without
+// pulling limiter through the public surface.
+type CapIface interface {
+	Acquire(ctx context.Context, keyID string) bool
+	Release(ctx context.Context, keyID string)
+}
+
 func bearerToken(r *http.Request) string {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")

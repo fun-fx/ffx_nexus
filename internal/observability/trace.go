@@ -63,6 +63,12 @@ type Trace struct {
 	RetrievalContexts string `json:"nexus.eval.contexts,omitempty"`
 	EvalReference     string `json:"nexus.eval.reference,omitempty"`
 
+	// Capture origin info for multi-node deployments. ReplicaID is set once
+	// at gateway startup from NEXUS_REPLICA_ID (or the pod hostname / a random
+	// suffix) so traces can be bucketed by `gateway_traces GROUP BY replica_id`.
+	// It is the operator's debugging handle when scaling out behind an LB.
+	ReplicaID string `json:"replica_id,omitempty"`
+
 	// CacheHit marks a response served from the semantic cache (no upstream call).
 	CacheHit bool `json:"cache_hit,omitempty"`
 }

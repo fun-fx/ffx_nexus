@@ -2,6 +2,20 @@
 # ClickHouse is included for self-host/dev; production uses managed ClickHouse Cloud.
 # Postgres and Redis land in Phase 2 (auth/budgets, caching). Ollama serves the
 # local SLM judge used by async evals in Phase 3.
+#
+# Optional profiles:
+#   eval           - Python DeepEval/RAGAS sidecar
+#   observability  - Grafana + Prometheus + OTLP collector (pre-baked dashboards)
+#   bi             - Metabase BI tool with auto-registered ClickHouse/Postgres
+#                     datasources tied to the same clickhouse / postgres
+#                     services below.
+#   full           - everything bundled (default services + eval + observability)
+#
+# Examples:
+#   docker compose -f deploy/docker-compose.yml up -d postgres redis clickhouse ollama
+#   docker compose -f deploy/docker-compose.yml --profile observability up -d
+#   docker compose -f deploy/docker-compose.yml --profile bi up -d
+#   docker compose -f deploy/docker-compose.yml --profile full up -d
 
 services:
   clickhouse:
@@ -53,7 +67,7 @@ services:
   # with NEXUS_EVAL_SERVICE_URL=http://eval-service:8200.
   # Start with: docker compose --profile eval up -d eval-service
   eval-service:
-    profiles: ["eval"]
+    profiles: ["eval", "full"]
     build:
       context: ../eval-service
     ports:
@@ -67,7 +81,137 @@ services:
     depends_on:
       - ollama
 
+  # Observability profile: Grafana + Prometheus + optional OTLP collector.
+  # The `nexus` service below is the gateway produced by `docker build` — same
+  # container image the Helm chart publishes to ghcr.io. Pre-baked dashboard
+  # JSON is mounted into Grafana so first-time users see panels the moment they
+  # open http://localhost:3000.
+  #
+  # Wire once with: docker compose --profile observability up -d
+  prometheus:
+    profiles: ["observability", "full"]
+    image: prom/prometheus:v2.54.1
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - clickhouse
+      - postgres
+      - redis
+
+  grafana:
+    profiles: ["observability", "full"]
+    image: grafana/grafana:11.2.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./observability/grafana-provisioning.yaml:/etc/grafana/provisioning/dashboards/nexus.yaml:ro
+      - ./observability/grafana-datasource.yaml:/etc/grafana/provisioning/datasources/prometheus.yaml:ro
+      - ./observability/grafana-dashboard.json:/var/lib/grafana/dashboards/dashboard.json:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  otel-collector:
+    profiles: ["full", "observability"]   # bring up by default when observability is enabled
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    command: ["--config=/etc/otel/config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./observability/otel-collector-config.yml:/etc/otel/config.yaml:ro
+    depends_on:
+      - prometheus
+
+  # ----------------------------------------------------------------------------- 
+  # Metabase BI tool. Decoupled from Nexus itself: it pulls ClickHouse / Postgres
+  # data over standard SQL (not bespoke endpoints) and reads its own embedded H2
+  # DB for dashboard metadata. Two layers of decoupling match the adapter
+  # architecture in internal/observability/bootstrap.go: dropping Metabase
+  # doesn't change the gateway data path, and replacing it (Redash / Superset)
+  # only swaps the bootstrapping code. The `nexus` service wires metabase URLs
+  # into its environment below so the bootstrap runs on Nexus startup.
+  metabase:
+    profiles: ["bi", "full"]
+    image: metabase/metabase:v0.49.13  # 0.50.x and 0.46.x have a first-run
+                                       # /api/setup bug where the email field
+                                       # is rejected server-side. v0.49.x is
+                                       # the last fully-functional release
+                                       # for our scripted bootstrap flow.
+    ports:
+      - "3001:3000"  # bind to 3001 by default to avoid clashes with the
+                     # Grafana UI (V1 observability profile binds to 3000);
+                     # the BI profile uses 3001. Override here in dev if needed.
+    environment:
+      MB_DB_TYPE: h2
+      MB_DB_FILE: /metabase-data/metabase.db
+      # Metabase admin email is set up during the first-run wizard (operator
+      # action). The MetabaseBootstrapper in nexus logs in with these creds to
+      # register datasources + seed dashboards. Note: metabase's first-run
+      # validator rejects RFC-valid but TLD-unknown domains (e.g. ".local"),
+      # so the default uses ".test" which metabase's TLD checker accepts.
+      MB_ADMIN_EMAIL: admin@nexus.test
+      MB_ADMIN_FIRST_NAME: Admin
+      MB_ADMIN_LAST_NAME: User
+    volumes:
+      - metabase_data:/metabase-data
+      - ./observability/metabase/seed:/seed:ro
+
+  # The Nexus gateway itself, running on the same docker network so the
+  # Prometheus job in the observability profile can scrape it over service DNS
+  # (`nexus:8080`, `nexus:8081`). Built from the project Dockerfile on first run.
+  nexus:
+    profiles: ["observability", "bi", "full"]    # run for every profile that wires observability OR the BI adapter
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    environment:
+      NEXUS_GATEWAY_ADDR: ":8080"
+      NEXUS_CONSOLE_ADDR: ":8081"
+      NEXUS_POSTGRES_URL: "postgres://nexus:nexus@postgres:5432/nexus?sslmode=disable"
+      NEXUS_CLICKHOUSE_URL: "clickhouse://nexus:nexus@clickhouse:9000/nexus"
+      NEXUS_REDIS_URL: "redis://redis:6379/0"
+      NEXUS_MASTER_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      NEXUS_KEY_MODE: "byok"
+      NEXUS_EVAL_ENABLED: "true"
+      NEXUS_OTLP_ENABLED: "true"
+      NEXUS_OTLP_ENDPOINT: "http://otel-collector:4318/v1/traces"
+      NEXUS_ADMIN_EMAIL: "admin@nexus.local"
+      NEXUS_ADMIN_PASSWORD: "change-me-now"
+      NEXUS_LOG_LEVEL: "info"
+      NEXUS_METRICS_ADDR: ":9101"      # enable Prometheus scrape for /metrics
+      NEXUS_ALLOW_SIGNUP: "true"        # e2e test mints a vkey; safe in dev only
+      NEXUS_METABASE_URL: "http://metabase:3000"
+      NEXUS_METABASE_USER: "admin@nexus.test"
+      NEXUS_METABASE_PASSWORD: "change-me-now"
+      NEXUS_METABASE_CLICKHOUSE_URL: "http://clickhouse:8123?database=nexus"
+      NEXUS_METABASE_POSTGRES_URL: "postgres://nexus:nexus@postgres:5432/nexus"
+      NEXUS_METABASE_SEED_DIR: "/seed"
+    depends_on:
+      - postgres
+      - redis
+      - clickhouse
+
 volumes:
   clickhouse_data:
   postgres_data:
   ollama_data:
+  prometheus_data:
+  grafana_data:
+  metabase_data:

@@ -12,7 +12,8 @@ import (
 // logging -> auth -> handler. Inline guardrails slot in after auth.
 //
 // auth and lim may be nil to run in zero-dependency mode (no enforcement).
-func NewMux(h *Handler, auth VKeyAuthenticator, lim Limiter, log *slog.Logger) http.Handler {
+// concCap may be nil to disable V5 per-vkey concurrency caps.
+func NewMux(h *Handler, auth VKeyAuthenticator, lim Limiter, concCap CapIface, log *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(RequestID)
@@ -27,6 +28,7 @@ func NewMux(h *Handler, auth VKeyAuthenticator, lim Limiter, log *slog.Logger) h
 	r.Group(func(r chi.Router) {
 		r.Use(Auth(auth))
 		r.Use(Enforce(lim))
+		r.Use(Concurrency(concCap))
 		r.Post("/v1/chat/completions", h.ChatCompletions)
 		r.Post("/v1/responses", h.Responses)
 		r.Post("/v1/embeddings", h.Embeddings)

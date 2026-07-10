@@ -50,7 +50,7 @@ func NewOpenAI(apiKey, baseURL string, timeout time.Duration) *OpenAI {
 		imageModels: []string{
 			"dall-e-2", "dall-e-3", "gpt-image-1",
 		},
-		client: &http.Client{Timeout: timeout},
+		client: PooledHTTPClient(timeout),
 	}
 }
 
@@ -131,6 +131,7 @@ func NewOpenAICompat(name, apiKey, baseURL string, chatModels, embedModels, mode
 		baseURL: strings.TrimRight(baseURL, "/"),
 		client: &http.Client{
 			Timeout:       timeout,
+			Transport:     NewPooledTransport(DefaultPoolSize()),
 			CheckRedirect: stripAuthorizationOnCrossOriginRedirect,
 		},
 	}
@@ -312,9 +313,15 @@ func (o *OpenAI) GenerateImages(ctx context.Context, req gateway.ImageGeneration
 
 // parseOpenAISSE reads an OpenAI server-sent event stream and emits chunks.
 // Shared by any provider that speaks the OpenAI SSE wire format.
+//
+// The scanner buffer is recycled from a sync.Pool so concurrent
+// streams don't pound the allocator: each 64KiB scratch buffer
+// survives exactly one stream.
 func parseOpenAISSE(r io.Reader, out chan<- gateway.StreamEvent) {
+	buf := acquireBuffer()
+	defer releaseBuffer(buf)
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {

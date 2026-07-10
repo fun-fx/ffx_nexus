@@ -30,7 +30,7 @@ func NewGemini(apiKey string, timeout time.Duration) *Gemini {
 		models: []string{
 			"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash",
 		},
-		client: &http.Client{Timeout: timeout},
+		client: PooledHTTPClient(timeout),
 	}
 }
 
@@ -378,8 +378,10 @@ func (g *Gemini) ChatCompletionStream(ctx context.Context, req gateway.ChatCompl
 		// State used to fold streaming events into a single tool_call when
 		// Gemini streams function-call args across multiple events.
 		var pendingByName map[string]*gateway.ToolCall
+		buf := acquireBuffer()
+		defer releaseBuffer(buf)
 		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		scanner.Buffer(buf, 1024*1024)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if !strings.HasPrefix(line, "data:") {
