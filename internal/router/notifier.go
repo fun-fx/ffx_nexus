@@ -10,6 +10,11 @@
 // The notifier is deliberately behind a tiny interface so gateway
 // code can wire one or more sinks without a refactor when a new
 // target is added (PagerDuty, Microsoft Teams, Discord, OpsGenie…).
+//
+// ReplicaID is included so multi-replica deployments can attribute
+// failovers to a specific pod without a separate trace query — when
+// 20 failovers are seen from pod-A in 30 seconds, the operator wants
+// that label in the alert, not just "we had a bad primary".
 
 package router
 
@@ -54,6 +59,14 @@ type FailoverEvent struct {
 	// skip including this in their outgoing message; it's there for
 	// sinks that want grained ordering or correlation keys.
 	FailedAtUnix int64 `json:"failed_at_unix_ms,omitempty"`
+
+	// ReplicaID is the per-process id of the gateway instance that
+	// surfaced the failover. Mirrors `Trace.ReplicaID`; flows from the
+	// same `NEXUS_REPLICA_ID` env var (or the helm value of the same
+	// name) so an alert can attribute a flap to a specific pod. Empty
+	// is allowed — single-replica deployments, or before the operator
+	// sets the env.
+	ReplicaID string `json:"replica_id,omitempty"`
 }
 
 // Notifier is the abstract sink. Implementations must be safe for

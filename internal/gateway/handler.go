@@ -448,6 +448,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					Reason:       trace.ErrorType,
 					LatencyMs:    trace.LatencyMs,
 					FailedAtUnix: failedAt.UnixMilli(),
+					ReplicaID:    h.replicaID,
 				})
 			}
 			lastErr = err

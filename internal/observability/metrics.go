@@ -53,7 +53,7 @@ type MetricsRecorder struct {
 }
 
 type labelsKey struct {
-	L1, L2, L3 string
+	L1, L2, L3, L4 string
 }
 
 type latencyBuckets struct {
@@ -134,6 +134,19 @@ func (r *MetricsRecorder) Record(t Trace) {
 	if t.StatusCode >= 400 {
 		r.errorsTotal[labelsKey{L1: t.ProviderName, L2: errorBucket(t.ErrorType)}]++
 	}
+	// Failover is signalled by ErrorType="upstream_error_failover" as set by
+	// the gateway handler when a primary → secondary hop happened. We bucket
+	// the counter by (from, to, reason, replica) so a single replica's flap
+	// doesn't get lost in an aggregate; the dashboard `Failover events /
+	// hour · by replica` panel queries `sum by (replica)`.
+	if t.ErrorType == "upstream_error_failover" && t.ResponseModel != "" && t.RequestModel != "" {
+		r.failoverTotal[labelsKey{
+			L1: t.RequestModel,
+			L2: t.ResponseModel,
+			L3: t.ErrorType,
+			L4: t.ReplicaID,
+		}]++
+	}
 	if t.CostUSD > 0 {
 		r.costTotal[t.RequestModel] += uint64(t.CostUSD * 1_000_000)
 	}
@@ -144,12 +157,18 @@ func (r *MetricsRecorder) Record(t Trace) {
 // skipped because of an upstream error. The MultiRecorder dispatches to it
 // when the trace carries an off-hotpath flag; here we accept a direct update
 // for simplicity.
-func (r *MetricsRecorder) RecordFailover(fromModel, toModel, reason string) {
+//
+// replicaID is the per-process id of the gateway instance surfacing the
+// failover (mirrors Trace.ReplicaID / `NEXUS_REPLICA_ID`). Empty is allowed
+// for single-replica deploys — Prometheus label will be the empty string,
+// which is what most multi-replica operators filter on to find unhealthy
+// pods.
+func (r *MetricsRecorder) RecordFailover(fromModel, toModel, reason, replicaID string) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
-	r.failoverTotal[labelsKey{L1: fromModel, L2: toModel, L3: reason}]++
+	r.failoverTotal[labelsKey{L1: fromModel, L2: toModel, L3: reason, L4: replicaID}]++
 	r.mu.Unlock()
 }
 
@@ -263,7 +282,7 @@ func (r *MetricsRecorder) handleMetrics(w http.ResponseWriter, _ *http.Request) 
 			k.L1, k.L2, r.errorsTotal[k])
 	}
 
-	// nexus_router_failover_total{from, to, reason}
+	// nexus_router_failover_total{from, to, reason, replica}
 	fmt.Fprintf(&b, "# HELP nexus_router_failover_total Failover events emitted by the quality-aware router.\n")
 	fmt.Fprintf(&b, "# TYPE nexus_router_failover_total counter\n")
 	fkeys := make([]labelsKey, 0, len(r.failoverTotal))
@@ -272,8 +291,8 @@ func (r *MetricsRecorder) handleMetrics(w http.ResponseWriter, _ *http.Request) 
 	}
 	sort.Slice(fkeys, func(i, j int) bool { return labelKeyCmp(fkeys[i], fkeys[j]) < 0 })
 	for _, k := range fkeys {
-		fmt.Fprintf(&b, "nexus_router_failover_total{from=%q,to=%q,reason=%q} %d\n",
-			k.L1, k.L2, k.L3, r.failoverTotal[k])
+		fmt.Fprintf(&b, "nexus_router_failover_total{from=%q,to=%q,reason=%q,replica=%q} %d\n",
+			k.L1, k.L2, k.L3, k.L4, r.failoverTotal[k])
 	}
 
 	// nexus_gateway_cost_usd_total{model}
@@ -305,7 +324,10 @@ func labelKeyCmp(a, b labelsKey) int {
 	if c := strings.Compare(a.L2, b.L2); c != 0 {
 		return c
 	}
-	return strings.Compare(a.L3, b.L3)
+	if c := strings.Compare(a.L3, b.L3); c != 0 {
+		return c
+	}
+	return strings.Compare(a.L4, b.L4)
 }
 
 func sortedKeys[V any](m map[string]V) []string {
