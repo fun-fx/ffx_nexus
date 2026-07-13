@@ -38,7 +38,7 @@ func TestMetricsRecorderProducesValidExpositionFormat(t *testing.T) {
 		StatusCode:   200,
 		LatencyMs:    50,
 	})
-	rec.RecordFailover("model-a", "model-b", "upstream_error")
+	rec.RecordFailover("model-a", "model-b", "upstream_error", "pod-A")
 	rec.RecordQualityScore("model-a", 0.85)
 
 	srv := httptest.NewServer(http.HandlerFunc(rec.handleMetrics))

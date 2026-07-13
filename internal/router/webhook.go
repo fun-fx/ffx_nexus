@@ -199,8 +199,9 @@ func NewSlackNotifier(endpoint string, log *slog.Logger) Notifier {
 	bn := newBufferedNotifier(bufferedNotifierOptions{
 		endpoint: endpoint,
 		encode: func(ev FailoverEvent) ([]byte, string) {
-			text := fmt.Sprintf(":warning: nexus failover · %s → %s · reason=%s · virtual_key=%s · alias=%s",
-				ev.Primary, ev.Fallback, ev.Reason, ev.VirtualKeyID, ev.Alias)
+			text := fmt.Sprintf(":warning: nexus failover · %s → %s · reason=%s · virtual_key=%s · alias=%s%s",
+				ev.Primary, ev.Fallback, ev.Reason, ev.VirtualKeyID, ev.Alias,
+				replicaSuffix(ev.ReplicaID))
 			buf, _ := json.Marshal(slackPayload{Text: text})
 			return buf, "application/json"
 		},
@@ -209,4 +210,14 @@ func NewSlackNotifier(endpoint string, log *slog.Logger) Notifier {
 		return nil
 	}
 	return bn
+}
+
+// replicaSuffix returns the trailing ` · replica=<id>` fragment if a
+// replica id was supplied. Kept on one line so the Slack one-liner
+// doesn't wrap awkwardly on mobile notifications.
+func replicaSuffix(id string) string {
+	if id == "" {
+		return ""
+	}
+	return fmt.Sprintf(" · replica=%s", id)
 }
