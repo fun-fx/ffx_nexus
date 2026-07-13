@@ -45,7 +45,47 @@ A `curl` and a modern browser (Chrome / Safari / Edge) are assumed.
 
 ## 1. Install
 
-### One-line installer (recommended)
+### Dev container (recommended for contributors)
+
+The fastest path to a reproducible toolchain — Cursor / VS Code attach to
+the same container the rest of the contributors use, so the build never
+drifts across machines. Requires Docker Desktop (or Engine) plus
+`docker compose` v2; no Go toolchain install on the host.
+
+```bash
+# 1. Clone
+git clone https://github.com/fun-fx/ffx_nexus.git
+cd ffx_nexus
+
+# 2. Open in Cursor/VSCode; pick "Reopen in Container" when prompted.
+#    First build takes ~3 minutes (Go 1.26 + Docker-in-Docker).
+#    Subsequent attach is instant — Go mod / build caches live in named
+#    volumes so they survive container rebuilds.
+# 3. From the integrated terminal:
+docker compose -f deploy/docker-compose.yml --profile dev up -d
+```
+
+What the dev profile brings up under one command:
+
+| Service | URL | Notes |
+| --- | --- | --- |
+| **Nexus gateway** | <http://localhost:8080> | OpenAI-compatible API |
+| **Nexus console (UI)** | <http://localhost:8081> | React dashboard + WebSocket live feed |
+| **Grafana** | <http://localhost:3000> | Pre-baked Nexus dashboards (admin / admin) |
+| **Prometheus** | <http://localhost:9090> | Scrapes `nexus:9101/metrics` |
+| **OTel Collector (HTTP)** | <http://localhost:4318> | Receives OTLP from `NEXUS_OTLP_ENDPOINT` |
+| **Mock LLM upstream** | <http://localhost:9102> | `ttft`, `chunk-ms`, `workers` flags for realistic load |
+| **Metabase** (opt-in) | <http://localhost:3001> | `--profile bi` together with `dev` seeds dashboards |
+
+> **Why a mock upstream?** V5 stress scripts (1000 concurrent burst), V2
+> multi-node e2e, and the failover-alert smoke tests need a *realistic*
+> upstream with configurable TTFT, per-chunk delays, and bounded worker
+> pools. The mock lets you exercise the path without burning real
+> provider quota. The dev profile wires Nexus → mock-upstream by default;
+> switch to a real provider with `docker compose --profile dev up -d` +
+> `NEXUS_LLM_BASE_URL=https://api.openai.com/v1` in `deploy/docker-compose.yml`.
+
+### One-line installer (recommended for non-contributors)
 
 ```bash
 curl -fsSL https://install.nexus.ffx.ai | bash
@@ -250,7 +290,21 @@ Docker Desktop (or `systemctl start docker` on Linux) and run the
 installer again.
 
 **`scripts/install.sh` exits with code 40 / "go toolchain missing"** —
-Install Go 1.22+ (`brew install go` on macOS) and rerun.
+Install Go 1.22+ (`brew install go` on macOS) and rerun, or just use the
+dev container path (no host Go install required).
+
+**Dev container: "Docker-in-Docker" feature stalls** — the dev
+container's Docker daemon is provisioned by the devcontainers feature.
+On macOS it shares the host socket (Felix-friendly), so you don't need
+extra config. On Windows / older Linux kernels, ensure
+`/var/run/docker.sock` is bind-mountable; otherwise set
+`"docker-in-docker"` to `false` in `.devcontainer/devcontainer.json`.
+
+**Dev container first build is slow (>5 min)** — that's the Go 1.26 +
+Docker engine image pull. Subsequent attaches are instant because the
+Go caches live in named volumes `nexus-go-mod-cache` and
+`nexus-go-build-cache`. To force a clean rebuild: `docker volume rm
+nexus-go-mod-cache nexus-go-build-cache`.
 
 **Browser shows the UI but `/v1/models` returns 401** — your virtual key
 is wrong or was revoked. Mint a new one in **Account → My virtual

@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+# Builds the synthetic LLM upstream used in dev/e2e (`cmd/mock-upstream`).
+# Shares the Go build step with the main Dockerfile to avoid pinning two
+# independent toolchains.
+FROM golang:1.26-alpine AS build
+RUN apk add --no-cache ca-certificates git
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w" \
+    -o /out/mock-upstream \
+    ./cmd/mock-upstream
+
+# Runtime stage: tiny image, mock service only listens on a single port.
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata \
+    && update-ca-certificates \
+    && adduser -D -H -u 65533 mock
+COPY --from=build /out/mock-upstream /usr/local/bin/mock-upstream
+USER mock
+
+EXPOSE 9102
+# Defaults: TTFT 0, chunks 30 @ 30ms = 900ms total streamed latency,
+# worker pool size 8 — overridable via flags below.
+ENTRYPOINT ["mock-upstream"]
+CMD ["-addr", ":9102", "-workers", "8"]
