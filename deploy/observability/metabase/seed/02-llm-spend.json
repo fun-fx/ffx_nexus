@@ -1,0 +1,47 @@
+{
+  "name": "02 - LLM Spend",
+  "description": "Operator-facing spend dashboards: per-provider cost breakdown, monthly trend, and per-virtual-key top spenders.",
+  "cards": [
+    {
+      "name": "Spend by provider (last 30 days)",
+      "engine": "clickhouse",
+      "display": "pie",
+      "query": {
+        "native": {
+          "query": "SELECT gen_ai_provider_name AS provider, round(sum(cost_usd), 4) AS spend FROM gateway_traces WHERE timestamp >= now() - INTERVAL 30 DAY GROUP BY provider ORDER BY spend DESC",
+          "template-tags": {}
+        }
+      },
+      "visualization": {
+        "pie.show_legend": true,
+        "pie.show_labels": true
+      }
+    },
+    {
+      "name": "Daily spend by provider",
+      "engine": "clickhouse",
+      "display": "bar",
+      "query": {
+        "native": {
+          "query": "SELECT toDate(timestamp) AS day, gen_ai_provider_name AS provider, round(sum(cost_usd), 4) AS spend FROM gateway_traces WHERE timestamp >= now() - INTERVAL 30 DAY GROUP BY day, provider ORDER BY day",
+          "template-tags": {}
+        }
+      },
+      "visualization": {
+        "graph.y_axis.scale": "linear",
+        "stackable.stack_type": "stacked"
+      }
+    },
+    {
+      "name": "Top 20 virtual keys by spend (last 30 days)",
+      "engine": "clickhouse",
+      "display": "table",
+      "query": {
+        "native": {
+          "query": "SELECT virtual_key_id AS vkey, round(sum(cost_usd), 4) AS spend, count() AS requests FROM gateway_traces WHERE timestamp >= now() - INTERVAL 30 DAY AND virtual_key_id != '' GROUP BY vkey ORDER BY spend DESC LIMIT 20",
+          "template-tags": {}
+        }
+      }
+    }
+  ]
+}

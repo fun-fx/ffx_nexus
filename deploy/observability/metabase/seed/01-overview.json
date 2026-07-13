@@ -1,0 +1,47 @@
+{
+  "name": "01 - Overview",
+  "description": "Top-level Gateway health: requests, latency, error rate, and provider mix sampled over the last 24h.",
+  "cards": [
+    {
+      "name": "Daily requests",
+      "engine": "clickhouse",
+      "display": "line",
+      "query": {
+        "native": {
+          "query": "SELECT toDate(timestamp) AS day, count() AS requests FROM gateway_traces WHERE timestamp >= now() - INTERVAL 14 DAY GROUP BY day ORDER BY day",
+          "template-tags": {}
+        }
+      },
+      "visualization": {
+        "graph.line_marker": "dot",
+        "graph.y_axis.scale": "linear"
+      }
+    },
+    {
+      "name": "Daily spend (USD)",
+      "engine": "clickhouse",
+      "display": "bar",
+      "query": {
+        "native": {
+          "query": "SELECT toDate(timestamp) AS day, round(sum(cost_usd), 4) AS spend FROM gateway_traces WHERE timestamp >= now() - INTERVAL 14 DAY GROUP BY day ORDER BY day",
+          "template-tags": {}
+        }
+      },
+      "visualization": {
+        "graph.y_axis.scale": "linear",
+        "graph.show_values": true
+      }
+    },
+    {
+      "name": "Error rate by provider",
+      "engine": "clickhouse",
+      "display": "table",
+      "query": {
+        "native": {
+          "query": "SELECT gen_ai_provider_name AS provider, countIf(status_code >= 500) / count() AS error_rate FROM gateway_traces WHERE timestamp >= now() - INTERVAL 1 DAY GROUP BY provider ORDER BY error_rate DESC",
+          "template-tags": {}
+        }
+      }
+    }
+  ]
+}
