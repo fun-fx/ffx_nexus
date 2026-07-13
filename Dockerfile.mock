@@ -20,7 +20,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata \
     && update-ca-certificates \
-    && adduser -D -H -u 65533 mock
+    # Don't pin a numeric uid — alpine image / docker helper images
+    # already reserve UIDs 65532..65535 in the build graph, so picking
+    # any specific value risks "uid already in use". Let the kernel
+    # allocate the next free one.
+    && adduser -D -H -g mock mock
 COPY --from=build /out/mock-upstream /usr/local/bin/mock-upstream
 USER mock
 
