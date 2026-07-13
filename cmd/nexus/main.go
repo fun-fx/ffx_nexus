@@ -25,6 +25,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
+	"github.com/ffxnexus/nexus/internal/router"
 	"github.com/ffxnexus/nexus/internal/semcache"
 )
 
@@ -118,6 +119,7 @@ func main() {
 				"migrations/clickhouse/003_dashboard.sql",
 				"migrations/clickhouse/004_byok.sql",
 				"migrations/clickhouse/005_eval_user.sql",
+				"migrations/clickhouse/006_replica_id.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := rec.Migrate(ctx, string(schema)); err != nil {
@@ -139,6 +141,28 @@ func main() {
 
 	// Gateway server.
 	gwHandler := gateway.NewHandler(reg, recorder, lim, log)
+	gwHandler.SetReplicaID(cfg.ReplicaID)
+
+	// --- V4 failover alert sinks ----------------------------------------
+	// Wire a multi-sink notifier only when at least one URL is set so
+	// the gateway doesn't pay for the worker goroutine in the common,
+	// metrics-only case. Each URL is independently opt-in; both can
+	// coexist (one webhook for the in-house alerting pipeline plus a
+	// Slack channel for the team's awareness).
+	var failoverSinks []router.Notifier
+	if cfg.FailoverWebhookURL != "" {
+		failoverSinks = append(failoverSinks, router.NewWebhookNotifier(cfg.FailoverWebhookURL, log))
+	}
+	if cfg.FailoverSlackURL != "" {
+		failoverSinks = append(failoverSinks, router.NewSlackNotifier(cfg.FailoverSlackURL, log))
+	}
+	if mn := router.NewMultiNotifier(failoverSinks...); mn != nil {
+		gwHandler.SetFailoverNotifier(mn)
+		log.Info("failover alert sinks enabled",
+			"webhook", cfg.FailoverWebhookURL != "",
+			"slack", cfg.FailoverSlackURL != "",
+			"cooldown", cfg.FailoverAlertCooldown)
+	}
 
 	// Inline guardrails (hot path): block disallowed prompts before the upstream
 	// call and optionally redact PII from responses.
@@ -235,8 +259,9 @@ func main() {
 	}
 
 	gwSrv := &http.Server{
-		Addr:    cfg.GatewayAddr,
-		Handler: gateway.NewMux(gwHandler, auth, lim, log),
+		Addr: cfg.GatewayAddr,
+		// V5 per-vkey concurrency cap. nil -> disabled (zero-dep mode).
+		Handler: gateway.NewMux(gwHandler, auth, lim, limiter.NewConcurrencyCap(cfg.MaxConcurrentPerKey), log),
 	}
 
 	// Console server.
@@ -270,6 +295,33 @@ func main() {
 	wg.Add(2)
 	go serve(&wg, gwSrv, "gateway", cfg.GatewayAddr, log)
 	go serve(&wg, consoleSrv, "console", cfg.ConsoleAddr, log)
+
+	// --- Metabase BI adapter (one-shot, idempotent, never gating boot) -----
+	// Mirrors the V3 OTLP contract: empty URL => constructor returns nil =>
+	// MultiBootstrapper skips it. We register on a Multi so future BI tools
+	// (Redash, Superset) can share the same boot slot without touching
+	// main.go's command shape.
+	if mbBoot := observability.NewMetabaseBootstrapper(observability.MetabaseConfig{
+		URL:            cfg.MetabaseURL,
+		User:           cfg.MetabaseUser,
+		Password:       cfg.MetabasePassword,
+		ClickHouseHTTP: cfg.MetabaseClickHouseURL,
+		PostgresJDBC:   cfg.MetabasePostgresURL,
+		SeedDir:        cfg.MetabaseSeedDir,
+		HealthTimeout:  cfg.MetabaseHealthTimeout,
+		RequestTimeout: cfg.MetabaseRequestTimeout,
+	}, log); mbBoot != nil {
+		mbMulti := observability.NewMultiBootstrapper(mbBoot)
+		mbMulti.SetLogger(log)
+		bootCtx, bootCancel := context.WithTimeout(context.Background(),
+			cfg.MetabaseHealthTimeout+10*time.Second)
+		if err := mbMulti.Bootstrap(bootCtx); err != nil {
+			log.Warn("metabase bootstrap encountered issues (continuing)", "err", err)
+		} else {
+			log.Info("metabase bootstrap ok", "names", mbMulti.Names())
+		}
+		bootCancel()
+	}
 
 	<-ctx.Done()
 	log.Info("shutting down")

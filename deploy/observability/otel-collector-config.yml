@@ -1,0 +1,39 @@
+# OTLP receiver → Prometheus remote_write + debug exporter.
+#
+# This is the optional open-core path: every `gen_ai.*` trace Nexus emits
+# lands as an OpenTelemetry resource (via internal/observability.MultiRecorder
+# + the OTLP exporter), and the collector forwards them to Prometheus, Loki,
+# Tempo, Jaeger, Honeycomb, etc. — without Nexus caring which backend the
+# operator chose. See ../docker-compose.yml#observability profile.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+
+exporters:
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheusremotewrite]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

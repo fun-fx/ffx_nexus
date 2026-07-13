@@ -33,7 +33,7 @@ func NewAnthropic(apiKey string, timeout time.Duration) *Anthropic {
 			"claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-5",
 			"claude-3-7-sonnet-latest", "claude-3-5-haiku-latest",
 		},
-		client: &http.Client{Timeout: timeout},
+		client: PooledHTTPClient(timeout),
 	}
 }
 
@@ -347,8 +347,10 @@ func (a *Anthropic) do(ctx context.Context, ar anthropicRequest) (*http.Response
 
 // parseSSE translates Anthropic streaming events into OpenAI-style chunks.
 func (a *Anthropic) parseSSE(r io.ReadCloser, model string, out chan<- gateway.StreamEvent) {
+	buf := acquireBuffer()
+	defer releaseBuffer(buf)
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(buf, 1024*1024)
 	created := time.Now().Unix()
 	id := fmt.Sprintf("chatcmpl-%d", created)
 	var usage gateway.Usage

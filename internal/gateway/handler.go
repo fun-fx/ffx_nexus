@@ -14,6 +14,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/balancer"
 	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/observability"
+	"github.com/ffxnexus/nexus/internal/router"
 	"github.com/ffxnexus/nexus/internal/semcache"
 )
 
@@ -37,7 +38,48 @@ type Handler struct {
 	scache         *semcache.Service    // nil = semantic cache disabled
 	credResolver   *CredentialResolver  // nil = no per-request BYOK resolution
 	keyMode        KeyMode              // how to resolve upstream keys per request
+	replicaID      string               // per-process id stamped on every Trace (multi-node grouping)
+	failoverNotify router.Notifier      // optional webhook/Slack sink for router failover events (V4)
+	concurrency    ConcurrencyCapIface  // V5 per-vkey in-flight cap (nil = disabled)
 	log            *slog.Logger
+}
+
+// SetFailoverNotifier wires the V4 alert sinks. Nil disables — the
+// handler keeps working with metrics-only failover visibility.
+func (h *Handler) SetFailoverNotifier(n router.Notifier) {
+	h.failoverNotify = n
+}
+
+// aliasForModel returns the routing-group name `m` resolves through
+// (e.g. "fast", "auto"); empty if `m` is a concrete model id. Used only
+// for failover alert enrichment so operators can pattern-match alerts
+// against groups, not raw model ids.
+func aliasForModel(m string, groups map[string][]string) string {
+	for alias, members := range groups {
+		for _, member := range members {
+			if member == m {
+				if alias == "auto" {
+					continue // skip the synthetic default group
+				}
+				return alias
+			}
+		}
+	}
+	return ""
+}
+
+// notifyFailover is the V4 alert hook. It is a static-style helper so
+// each failover site (handleUnary, handleStream, the legacy
+// responses.go path) can call it without worrying about nil-safety or
+// request-scoped context plumbing — the notifier itself never blocks.
+func (h *Handler) notifyFailover(ev router.FailoverEvent) {
+	if h == nil || h.failoverNotify == nil {
+		return
+	}
+	// Use context.Background(): the request context may already be
+	// cancelled by the time we get here (we're in the middle of
+	// recovering from the failed primary's context deadline).
+	h.failoverNotify.Notify(context.Background(), ev)
 }
 
 // SetCredentialResolution enables per-request (BYOK) upstream key resolution.
@@ -47,9 +89,34 @@ func (h *Handler) SetCredentialResolution(cr *CredentialResolver, mode KeyMode) 
 	h.keyMode = mode
 }
 
+// ConcurrencyCapIface is the V5 per-vkey in-flight limiter contract.
+// We pass it through an interface so handler.go doesn't pin against
+// any single limiter implementation — handlers can be unit-tested
+// with mocks. SetConcurrencyCap wires the real limiter at boot.
+type ConcurrencyCapIface interface {
+	Acquire(ctx context.Context, keyID string) bool
+	Release(ctx context.Context, keyID string)
+	Inflight(keyID string) int
+}
+
+// SetConcurrencyCap installs the V5 per-vkey in-flight cap. Pass nil
+// to disable (default).
+func (h *Handler) SetConcurrencyCap(c ConcurrencyCapIface) {
+	h.concurrency = c
+}
+
 // NewHandler builds a gateway handler. lim may be nil.
 func NewHandler(reg *Registry, rec observability.Recorder, lim Limiter, log *slog.Logger) *Handler {
 	return &Handler{registry: reg, recorder: rec, limiter: lim, log: log}
+}
+
+// SetReplicaID stamps the per-process id on every Trace produced by this
+// handler. In a multi-replica deployment the operator sets NEXUS_REPLICA_ID on
+// each pod; the value flows through to gateway_traces.replica_id and makes
+// `GROUP BY replica_id` queries meaningful for "are both replicas healthy /
+// getting equal traffic?" investigations.
+func (h *Handler) SetReplicaID(id string) {
+	h.replicaID = id
 }
 
 // SetRouter enables quality-aware routing. groups maps an alias to candidate
@@ -355,14 +422,34 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 
 		resp, err := provider.ChatCompletion(callCtx, attempt)
 		if err != nil {
+			failedAt := time.Now()
 			trace.LatencyMs = time.Since(attemptStart).Milliseconds()
 			trace.StatusCode = http.StatusBadGateway
 			trace.ErrorType = "upstream_error"
+			failover := false
 			if i < len(chain)-1 {
 				trace.ErrorType = "upstream_error_failover" // another candidate remains
+				failover = true
 			}
 			trace.ErrorMsg = err.Error()
 			h.recorder.Record(trace)
+			// V4 alert: a primary → secondary hop happened, fan out to
+			// the configured webhook / Slack sinks. We notify only when
+			// we actually have a fallback (the last candidate's failure
+			// is a different story — total failure, not a failover).
+			if failover {
+				h.notifyFailover(router.FailoverEvent{
+					OrgID:        trace.OrgID,
+					VirtualKeyID: trace.VirtualKeyID,
+					Alias:        aliasForModel(req.Model, h.groups),
+					Tried:        append([]string(nil), chain[:i+1]...),
+					Primary:      chain[i],
+					Fallback:     chain[i+1],
+					Reason:       trace.ErrorType,
+					LatencyMs:    trace.LatencyMs,
+					FailedAtUnix: failedAt.UnixMilli(),
+				})
+			}
 			lastErr = err
 			continue // fall back to the next candidate
 		}
@@ -627,6 +714,7 @@ func (h *Handler) newTrace(r *http.Request, req ChatCompletionRequest, providerN
 		OperationName: "chat",
 		ProviderName:  providerName,
 		RequestModel:  req.Model,
+		ReplicaID:     h.replicaID,
 	}
 	if rid, ok := r.Context().Value(ctxKeyRequestID).(string); ok {
 		t.ParentID = rid

@@ -147,6 +147,7 @@ func (r *CHRecorder) insert(traces []Trace) error {
 			t.RetrievalContexts, t.EvalReference,
 			boolToUint8(t.CacheHit), t.GuardrailAction,
 			t.UserID, t.CredentialSource,
+			t.ReplicaID,
 		); err != nil {
 			return err
 		}

@@ -44,6 +44,30 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 		recorders = append(recorders, chRec)
 	}
 
+	// Prometheus /metrics scrape endpoint — opt-in via NEXUS_METRICS_ADDR. The
+	// exporter is wired into the MultiRecorder so every Trace appends counters
+	// and histograms alongside the existing sinks (ClickHouse, live hub). It
+	// stays nil when the env var is empty, leaving the zero-dep fast path
+	// unchanged.
+	metricsRec := observability.NewMetricsRecorder(cfg.MetricsAddr, log)
+	if metricsRec != nil {
+		recorders = append(recorders, metricsRec)
+	}
+	// OTLP exporter (observability adapter spec): opt-in. When
+	// NEXUS_OTLP_ENABLED=true AND NEXUS_OTLP_ENDPOINT is set, the same
+	// Trace stream is fanned out to a long-lived batch sender that POSTs
+	// nexus-native JSON envelopes to OTLP/HTTP. Runs on the same
+	// non-blocking hot path semantics as MetricsRecorder.
+	if cfg.OTLPEnabled && cfg.OTLPEndpoint != "" {
+		if otlpRec := observability.NewOTLPRecorder(observability.OTLPOptions{
+			Endpoint: cfg.OTLPEndpoint,
+			Timeout:  cfg.UpstreamTimeout,
+		}, log); otlpRec != nil {
+			recorders = append(recorders, otlpRec)
+			log.Info("otlp exporter enabled", "endpoint", cfg.OTLPEndpoint)
+		}
+	}
+
 	pgConnected := store != nil
 	stack.ScoreStore = evals.ScoreStoreKind(chRec != nil, pgConnected)
 	if cfg.EvalEnabled {

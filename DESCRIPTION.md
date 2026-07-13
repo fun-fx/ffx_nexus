@@ -167,6 +167,10 @@ Authentication: `Authorization: Bearer <virtual_key>` (when Postgres is configur
 
 ## Configuration
 
+| `NEXUS_FAILOVER_WEBHOOK` | _empty_ (`config.failoverWebhook: ""`) | POST the FailoverEvent envelope (see `internal/router/notifier.go`) to a generic alert sink — PagerDuty, OpsGenie, in-house alerting. Empty = no goroutine. |
+| `NEXUS_FAILOVER_SLACK_WEBHOOK` | _empty_ (`config.failoverSlack: ""`) | One-liner Slack incoming-webhook post. Same opt-in semantics. |
+| `NEXUS_FAILOVER_ALERT_COOLDOWN` | `0` (`config.failoverCool: 0`) | Coalesce back-to-back alerts onto the *same* sink so a flapping primary doesn't melt the alert inbox. Metric counter still increments. |
+
 All settings are environment variables. See [`.env.example`](.env.example) and the [README configuration table](README.md#configuration).
 
 Key variables:
@@ -182,6 +186,58 @@ Key variables:
 | `NEXUS_JUDGE_BASE_URL` / `NEXUS_JUDGE_MODEL` | Local SLM judge |
 | `NEXUS_ROUTE_GROUPS` | Named routing aliases |
 | `NEXUS_ROUTE_W_QUALITY` / `_W_COST` / `_W_LATENCY` | Routing weights |
+| `NEXUS_METRICS_ADDR` | Prometheus `/metrics` scrape endpoint (empty = disabled) |
+| `NEXUS_OTLP_ENABLED` / `NEXUS_OTLP_ENDPOINT` | OTLP export of `gen_ai.*` traces |
+
+### High-concurrency tuning (V5)
+
+Single-replica throughput is bounded by three knobs. None are required;
+every default keeps the zero-dependency path lean.
+
+| Knob | Env / value | Why it matters |
+| --- | --- | --- |
+| HTTP client pool | tuned at provider construction | Go's `DefaultMaxIdleConnsPerHost = 2` *melts* under a sustained burst. Nexus providers share a tuned `Transport` (`MaxIdleConnsPerHost = max(32, 2*GOMAXPROCS)`, `IdleConnTimeout = 90s`). |
+| Sync.Pool SSE buffer | always on | The 64 KiB scanner buffer is recycled across streams so a 24-stream burst doesn't allocate 1.5 MiB of scratch. |
+| Per-vkey in-flight cap | `NEXUS_MAX_CONCURRENT_PER_KEY` (`0` = disabled) | Caps one noisy virtual key's footprint in the upstream provider's queue. Independent of RPM. |
+| `GOMEMLIMIT` | Helm `config.runtime.gomemlimit` (~85 % of pod memory) | Soft GC target so the reclaim curve trades CPU for memory before OOMKill. Setting disables: leave empty. |
+| `GOGC` | Helm `config.runtime.gogc` (optional) | Lower = more aggressive GC at higher CPU; raise to relieve CPU-bound pods. |
+
+Streaming-buffer smoke test:
+
+```bash
+go test -race -count=1 ./internal/gateway/providers/ -run Streaming
+```
+
+### Observability adapter boundary
+
+Trace records carry OpenTelemetry GenAI semantic conventions (`gen_ai.*`),
+so they are exported to whichever backend the operator chooses without
+remapping. Sinks compose through `observability.MultiRecorder` — each
+adapter runs independently, so a sink failure never blocks the others:
+
+| Sink | Adapter | Opt-in |
+| --- | --- | --- |
+| ClickHouse `gateway_traces` | `observability.CHRecorder` | enabled when `NEXUS_CLICKHOUSE_URL` is set |
+| Live WebSocket hub (dashboard) | `console.Hub` | always on (UI subscribers, no rate cost when unused) |
+| Prometheus `/metrics` (text exposition) | `observability.MetricsRecorder` | `NEXUS_METRICS_ADDR=:NNNN` — empty keeps the zero-dep fast path |
+| OTLP/HTTP JSON envelopes (any collector, Honeycomb, Tempo, …) | `observability.OTLPRecorder` | `NEXUS_OTLP_ENABLED=true` + full URL in `NEXUS_OTLP_ENDPOINT` |
+| Metabase BI dashboards | `observability.MetabaseBootstrapper` | `NEXUS_METABASE_URL=http://metabase:3000` (one-shot boot, no hot-path traffic) |
+
+A pre-baked Grafana dashboard (`deploy/observability/grafana-dashboard.json`)
+ships with the dev container so the moment Prometheus starts scraping, the
+following panels have data to chart: p50/p95/p99 latency by model, requests
+per second by model, semantic-cache hit rate, cost per hour by model,
+failover events, BYOK adoption (per credential source), and rolling
+quality judge score. Bring it up locally with:
+
+```bash
+docker compose -f deploy/docker-compose.yml --profile observability up -d
+# Prometheus → http://localhost:9090
+# Grafana    → http://localhost:3000
+```
+
+Add `--profile full` to also bring up the OTLP collector so other backends
+can plug in without Nexus changes.
 
 ---
 

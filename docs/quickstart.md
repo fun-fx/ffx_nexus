@@ -197,6 +197,34 @@ Go back to <http://localhost:8091> and look at:
 | Run the same prompt in dev vs prod | Repeat at the prod ingress URL; same trace shape |
 | Onboard a teammate on shared prod | [`onboarding.md`](onboarding.md) — VPN, BYOK, virtual key, Cursor |
 
+### 6a. Add Prometheus + Grafana (one command)
+
+Bring up an end-to-end observability stack — Nexus gateway + Prometheus +
+Grafana with a pre-baked dashboard that auto-populates from live traces.
+Stay in this directory:
+
+```bash
+docker compose -f deploy/docker-compose.yml --profile observability up -d
+```
+
+Then open:
+
+- Grafana: <http://localhost:3000> (admin / admin)
+- Prometheus: <http://localhost:9090>
+- Nexus gateway: <http://localhost:8080>
+- Nexus console: <http://localhost:8081>
+
+The bundled dashboard (`Nexus · LLM Gateway Overview`) shows p50/p95/p99
+latency per model, requests/sec, semantic-cache hit rate, hourly cost,
+failover events, BYOK adoption, and rolling judge quality score. Each
+panel queries a `gen_ai.*`-labelled metric that Nexus exports in the
+Prometheus exposition format on `/metrics`. Add `--profile full` if you
+also want the OTLP collector exposed on `:4317` / `:4318`.
+
+Use `NEXUS_METRICS_ADDR` (or `config.metricsAddr:` in the Helm chart) to
+expose `/metrics` from the binary directly when you already run an
+external Prometheus — leave it empty to keep the zero-dep fast path.
+
 ---
 
 ## 7. Stop / restart / wipe
