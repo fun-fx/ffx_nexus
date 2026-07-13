@@ -1,0 +1,39 @@
+{
+  "name": "03 - Eval Quality",
+  "description": "Quality dashboards: eval-score distribution by model and provider over time. Reads from the eval_scores table (Postgres control plane) joined with gateway_traces (ClickHouse) via virtual_key / replica lookup where applicable.",
+  "cards": [
+    {
+      "name": "Model catalog",
+      "engine": "postgres",
+      "display": "table",
+      "query": {
+        "native": {
+          "query": "SELECT id, provider, created_at FROM model_catalog ORDER BY provider, id",
+          "template-tags": {}
+        }
+      }
+    },
+    {
+      "name": "Recent eval scores",
+      "engine": "postgres",
+      "display": "table",
+      "query": {
+        "native": {
+          "query": "SELECT s.metric, round(avg(s.score)::numeric, 3) AS avg_score, count() AS samples FROM eval_scores s WHERE s.scored_at >= now() - INTERVAL '7 days' GROUP BY s.metric ORDER BY s.metric",
+          "template-tags": {}
+        }
+      }
+    },
+    {
+      "name": "Users (control-plane)",
+      "engine": "postgres",
+      "display": "table",
+      "query": {
+        "native": {
+          "query": "SELECT u.email, u.role, u.created_at FROM users u ORDER BY u.created_at DESC LIMIT 50",
+          "template-tags": {}
+        }
+      }
+    }
+  ]
+}
