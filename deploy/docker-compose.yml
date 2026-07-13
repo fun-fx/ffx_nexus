@@ -206,6 +206,8 @@ services:
     ports:
       - "8080:8080"
       - "8081:8081"
+      - "9101:9101"   # Prometheus ;metrics scrap port; used by the
+                     # V5 ceiling script for in-container probes.
     environment:
       NEXUS_GATEWAY_ADDR: ":8080"
       NEXUS_CONSOLE_ADDR: ":8081"
@@ -222,6 +224,13 @@ services:
       NEXUS_LOG_LEVEL: "info"
       NEXUS_METRICS_ADDR: ":9101"      # enable Prometheus scrape for /metrics
       NEXUS_ALLOW_SIGNUP: "true"        # e2e test mints a vkey; safe in dev only
+      # V5 ceiling probe: enable Go runtime GC trace + GOMEMLIMIT so the
+      # ceiling-script can classify GC pauses / memory headroom. Same
+      # gateway binary; the runtime knobs are env-only so production
+      # stays untouched when the dev profile isn't selected.
+      GODEBUG: "gctrace=1"
+      GOMEMLIMIT: "768MiB"               # ~10 % of the local 8 GiB host memory
+      GOGC: "100"
       NEXUS_METABASE_URL: "http://metabase:3000"
       NEXUS_METABASE_USER: "admin@nexus.test"
       NEXUS_METABASE_PASSWORD: "change-me-now"
