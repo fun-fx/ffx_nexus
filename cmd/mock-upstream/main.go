@@ -62,6 +62,16 @@ func main() {
 	// only ever sends /v1/chat/completions but we want zero 404 foot-
 	// guns if upstream path resolution ever moves.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Health endpoint: cheap, returns 200 with the current pool
+		// capacity so docker-compose healthcheck (wget) can pass without
+		// consuming a worker slot or hitting the latency budget. This
+		// keeps wrk latency-only-on-POST semantics intact.
+		if r.URL.Path == "/healthz" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok\n"))
+			return
+		}
 		// Bounded worker pool: block on entry, release on exit. The
 		// gateway sees slow-to-respond connections instead of fatals
 		// — that matches a real provider whose GPU pool is saturated.
