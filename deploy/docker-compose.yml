@@ -9,12 +9,17 @@
 #   bi             - Metabase BI tool with auto-registered ClickHouse/Postgres
 #                     datasources tied to the same clickhouse / postgres
 #                     services below.
-#   full           - everything bundled (default services + eval + observability)
+#   dev            - everything needed by the dev container: backend services,
+#                     observability sidecars, the nexus gateway, and the
+#                     realistic mock LLM upstream. One command to bring the
+#                     whole surface up under a reproducible dev environment.
+#   full           - everything bundled (default services + eval + observability + dev)
 #
 # Examples:
 #   docker compose -f deploy/docker-compose.yml up -d postgres redis clickhouse ollama
 #   docker compose -f deploy/docker-compose.yml --profile observability up -d
 #   docker compose -f deploy/docker-compose.yml --profile bi up -d
+#   docker compose -f deploy/docker-compose.yml --profile dev up -d
 #   docker compose -f deploy/docker-compose.yml --profile full up -d
 
 services:
@@ -170,11 +175,31 @@ services:
       - metabase_data:/metabase-data
       - ./observability/metabase/seed:/seed:ro
 
+  # ----------------------------------------------------------------------------- 
+  # Realistic mock LLM upstream used by V5 stress scripts and the dev container.
+  # Stands up alongside the gateway so a single `docker compose --profile dev up`
+  # brings the whole surface up under one reproducible command. Built from the
+  # same root Dockerfile but with a different CMD, so it shares the Go toolchain
+  # and follows the same dependency updates as `nexus`.
+  mock-upstream:
+    profiles: ["dev", "full"]
+    build:
+      context: ..
+      dockerfile: Dockerfile.mock
+    ports:
+      - "9102:9102"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9102/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   # The Nexus gateway itself, running on the same docker network so the
   # Prometheus job in the observability profile can scrape it over service DNS
   # (`nexus:8080`, `nexus:8081`). Built from the project Dockerfile on first run.
   nexus:
-    profiles: ["observability", "bi", "full"]    # run for every profile that wires observability OR the BI adapter
+    profiles: ["observability", "bi", "dev", "full"]    # run for every profile that wires observability OR the BI adapter OR dev
     build:
       context: ..
       dockerfile: Dockerfile
@@ -203,10 +228,20 @@ services:
       NEXUS_METABASE_CLICKHOUSE_URL: "http://clickhouse:8123?database=nexus"
       NEXUS_METABASE_POSTGRES_URL: "postgres://nexus:nexus@postgres:5432/nexus"
       NEXUS_METABASE_SEED_DIR: "/seed"
+      # When dev profile is up, route LLM traffic to the local mock-upstream
+      # sidecar (so e2e tests don't need real provider creds). The default
+      # env below is overridable; e2e scripts can also override via
+      # NEXUS_LLM_BASE_URL.
+      NEXUS_LLM_BASE_URL: "http://mock-upstream:9102/v1"
     depends_on:
-      - postgres
-      - redis
-      - clickhouse
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      clickhouse:
+        condition: service_started
+      mock-upstream:
+        condition: service_healthy
 
 volumes:
   clickhouse_data:

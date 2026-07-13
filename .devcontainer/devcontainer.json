@@ -1,0 +1,87 @@
+{
+  "name": "ffx_nexus dev",
+  "dockerFile": "Dockerfile",
+  "context": "..",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=nexus-go-mod-cache,target=/root/go/pkg/mod,type=volume",
+    "source=nexus-go-build-cache,target=/root/.cache/go-build,type=volume"
+  ],
+  "containerUser": "root",
+  "remoteEnv": {
+    "GOROOT": "/usr/local/go",
+    "GOPATH": "/root/go",
+    "PATH": "/usr/local/go/bin:/root/go/bin:${containerEnv:PATH}"
+  },
+  "forwardPorts": [
+    8080,
+    8081,
+    8090,
+    8091,
+    3000,
+    9090,
+    4317,
+    4318,
+    9101,
+    9102
+  ],
+  "portsAttributes": {
+    "8080": { "label": "Nexus gateway", "protocol": "http" },
+    "8081": { "label": "Nexus console", "protocol": "http" },
+    "8090": { "label": "Nexus gateway (legacy)", "protocol": "http" },
+    "8091": { "label": "Nexus console (legacy)", "protocol": "http" },
+    "3000": { "label": "Grafana", "protocol": "http" },
+    "9090": { "label": "Prometheus", "protocol": "http" },
+    "4317": { "label": "OTel collector gRPC", "protocol": "tcp" },
+    "4318": { "label": "OTel collector HTTP", "protocol": "http" },
+    "9101": { "label": "Nexus /metrics", "protocol": "http" },
+    "9102": { "label": "Mock upstream", "protocol": "http" }
+  },
+  "otherPortsAttributes": {
+    "onAutoForward": "openBrowser"
+  },
+  "runServices": [
+    "nexus",
+    "prometheus",
+    "grafana",
+    "otel-collector",
+    "mock-upstream"
+  ],
+  "service": "nexus",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "onCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "go.goroot": "/usr/local/go",
+        "go.gopath": "/root/go",
+        "go.testFlags": ["-count=1"],
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "extensions.shouldInstallAfterReboot": [
+          "golang.go",
+          "ms-azuretools.vscode-docker",
+          "humao.rest-client",
+          "mtxr.sqltools"
+        ]
+      },
+      "extensions": [
+        "golang.go",
+        "ms-azuretools.vscode-docker",
+        "humao.rest-client",
+        "mtxr.sqltools"
+      ]
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "20.10",
+      "moby": true
+    },
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": false,
+      "installOhMyZsh": false,
+      "configureZshAsDefaultShell": false
+    }
+  }
+}
