@@ -223,31 +223,13 @@ func (s *Server) writeStoreErr(w http.ResponseWriter, err error, msg string) {
 // (the route is wrapped with requireAdmin in Mux). Supports ?limit=, ?action=,
 // ?user_id= (filters by actor), and ?since= (RFC3339 or duration like "24h").
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, _ core.User) {
-	if !s.requireStore(w) {
+	opts, err := parseAuditListOptions(r.URL.Query())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	q := r.URL.Query()
-	opts := core.AuditListOptions{
-		Action:  q.Get("action"),
-		ActorID: q.Get("user_id"),
-	}
-	if v := q.Get("limit"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "limit must be a non-negative integer"})
-			return
-		}
-		opts.Limit = n
-	}
-	if v := q.Get("since"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			opts.Since = t
-		} else if d, err := time.ParseDuration(v); err == nil {
-			opts.Since = time.Now().Add(-d)
-		} else {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "since must be RFC3339 or a duration like 24h"})
-			return
-		}
+	if !s.requireStore(w) {
+		return
 	}
 	entries, err := s.store.ListAudit(r.Context(), orgID(r), opts)
 	if err != nil {
@@ -259,4 +241,43 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, _ core.User) 
 		entries = []core.AuditEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+// parseAuditListOptions reads query parameters for /api/audit and returns
+// either a filled AuditListOptions, or a user-friendly validation error.
+// Pulled out of listAudit so it can be unit-tested without a real Postgres
+// store; the order (parse before store-guard) is what lets the test suite
+// assert "limit=foo yields 400, not 503".
+func parseAuditListOptions(q map[string][]string) (core.AuditListOptions, error) {
+	opts := core.AuditListOptions{
+		Action:  firstOrEmpty(q["action"]),
+		ActorID: firstOrEmpty(q["user_id"]),
+	}
+	if v := firstOrEmpty(q["limit"]); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return core.AuditListOptions{}, errors.New("limit must be a non-negative integer")
+		}
+		opts.Limit = n
+	}
+	if v := firstOrEmpty(q["since"]); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			opts.Since = t
+		} else if d, err := time.ParseDuration(v); err == nil {
+			opts.Since = time.Now().Add(-d)
+		} else {
+			return core.AuditListOptions{}, errors.New("since must be RFC3339 or a duration like 24h")
+		}
+	}
+	return opts, nil
+}
+
+// firstOrEmpty returns the first value of k, or "". net/url's Values.Get
+// inlines this; we re-implement to avoid https://pkg.go.dev/net/url import
+// noise in this file's tests.
+func firstOrEmpty(v []string) string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[0]
 }

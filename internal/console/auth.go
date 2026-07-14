@@ -262,7 +262,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 			if u, ok := currentUser(r); ok {
 				// Record the logout before deleting the session so the actor
 				// is still resolvable. Best-effort (audit wrapper swallows).
-				s.audit(r.Context(), u.ID, u.OrgID, "auth.logout", u.ID, "")
+				s.audit(r.Context(), u.ID, u.OrgID, core.AuditLogout, u.ID, "")
 			}
 			_ = s.store.Logout(r.Context(), token)
 		}
@@ -358,7 +358,7 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request, u core.User) {
 			s.writeStoreErr(w, err, "update failed")
 			return
 		}
-		s.audit(r.Context(), u.ID, u.OrgID, "me.update", u.ID,
+		s.audit(r.Context(), u.ID, u.OrgID, core.AuditMeUpdate, u.ID,
 			fmt.Sprintf("enforce_limits=%t", *req.EnforceLimits))
 		u.EnforceLimits = *req.EnforceLimits
 	}
