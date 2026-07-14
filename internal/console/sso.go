@@ -218,7 +218,7 @@ func (s *Server) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		s.renderSSOError(w, "SSO provisioning failed", err.Error())
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID, "sso.login", u.ID, email)
+	s.audit(r.Context(), u.ID, orgID, core.AuditSSOLogin, u.ID, email)
 
 	token, err := s.store.CreateSession(r.Context(), u.ID, sessionTTL)
 	if err != nil {

@@ -91,7 +91,7 @@ func (s *Store) CreateVirtualKey(ctx context.Context, orgID, actorID, userID, na
 	if err != nil {
 		return VirtualKey{}, "", err
 	}
-	s.Audit(ctx, actorID, orgID, "vkey.create", vk.ID, name)
+	s.Audit(ctx, actorID, orgID, AuditVKeyCreate, vk.ID, name)
 	return vk, plaintext, nil
 }
 
@@ -188,7 +188,7 @@ func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, actorID, id string)
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, actorID, orgID, "vkey.revoke", id, "")
+	s.Audit(ctx, actorID, orgID, AuditVKeyRevoke, id, "")
 	return nil
 }
 
@@ -236,7 +236,7 @@ func (s *Store) CreateCredential(ctx context.Context, orgID, actorID, userID, pr
 	if err != nil {
 		return ProviderCredential{}, err
 	}
-	s.Audit(ctx, actorID, orgID, "credential.create", cred.ID, fmt.Sprintf("%s/%s", provider, name))
+	s.Audit(ctx, actorID, orgID, AuditCredentialCreate, cred.ID, fmt.Sprintf("%s/%s", provider, name))
 	return cred, nil
 }
 
@@ -324,7 +324,7 @@ func (s *Store) RotateCredential(ctx context.Context, orgID, actorID, id, newSec
 	if err != nil {
 		return ProviderCredential{}, err
 	}
-	s.Audit(ctx, actorID, orgID, "credential.rotate", c.ID, fmt.Sprintf("%s/%s", c.Provider, c.Name))
+	s.Audit(ctx, actorID, orgID, AuditCredentialRotate, c.ID, fmt.Sprintf("%s/%s", c.Provider, c.Name))
 	return c, nil
 }
 
@@ -449,7 +449,7 @@ func (s *Store) DeleteCredential(ctx context.Context, orgID, actorID, id string)
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, actorID, orgID, "credential.delete", id, "")
+	s.Audit(ctx, actorID, orgID, AuditCredentialDelete, id, "")
 	return nil
 }
 
