@@ -74,10 +74,25 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if and .Values.config.metabase .Values.config.metabase.seedDir (not .Values.config.metabase.seedFromExisting) }}
+            - name: metabase-seed
+              mountPath: {{ .Values.config.metabase.seedDir | default "/etc/nexus/metabase/seed" }}
+              readOnly: true
+            {{- end }}
       volumes:
         # readOnlyRootFilesystem is on; give the process a writable scratch dir.
         - name: tmp
           emptyDir: {}
+        {{- if and .Values.config.metabase .Values.config.metabase.seedDir (not .Values.config.metabase.seedFromExisting) }}
+        # The seed ConfigMap contains 3 reference collections plus any
+        # operator-supplied extras (config.metabase.extraSeeds). Boot-time
+        # metabase bootstrap reads *.json here and registers each as a
+        # Metabase "Nexus - <name>" collection + cards. The volume is
+        # readOnly; the bootstrapper never writes here.
+        - name: metabase-seed
+          configMap:
+            name: {{ include "nexus.fullname" . }}-metabase-seed
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

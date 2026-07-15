@@ -167,7 +167,24 @@ metrics:
     password: ""                  # NEXUS_METABASE_PASSWORD
     clickhouseUrl: ""             # NEXUS_METABASE_CLICKHOUSE_URL (http://host:8123?database=...)
     postgresUrl: ""               # NEXUS_METABASE_POSTGRES_URL (postgres://...)
-    seedDir: ""                   # NEXUS_METABASE_SEED_DIR (optional)
+    seedDir: ""                   # NEXUS_METABASE_SEED_DIR (optional).
+                                  # When non-empty AND seedFromExisting is false,
+                                  # a ConfigMap "nexus-metabase-seed" is rendered
+                                  # containing the 3 bundled reference JSONs
+                                  # (01-overview, 02-llm-spend, 03-eval-quality)
+                                  # and mount-bound into the pod. Defaults the
+                                  # operator off (empty string) so unset
+                                  # environments don't accidentally clobber a
+                                  # Metabase instance with our dashboards.
+    seedFromExisting: ""          # Optional: name of an existing ConfigMap to
+                                  # mount at seedDir instead of rendering our
+                                  # own. Useful when an operator wants to
+                                  # preload dashboards owned by their team.
+    extraSeeds: {}                # Map of  filename -> JSON body  for seeds to
+                                  # add to the rendered ConfigMap alongside
+                                  # the bundled three. The bootstrapper iterates
+                                  # every *.json in the mounted dir, so each
+                                  # entry here becomes another collection.
     healthTimeout: "90s"          # NEXUS_METABASE_HEALTH_TIMEOUT
     requestTimeout: "10s"         # NEXUS_METABASE_REQUEST_TIMEOUT
 
