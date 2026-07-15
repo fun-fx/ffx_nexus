@@ -217,6 +217,10 @@ services:
       NEXUS_MASTER_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       NEXUS_KEY_MODE: "byok"
       NEXUS_EVAL_ENABLED: "true"
+      NEXUS_JUDGE_BASE_URL: "http://ollama:11434/v1"   # dev profile: wire eth0 of local ollama service; PR #89 propagates judge score into nexus_eval_quality_score
+      NEXUS_JUDGE_MODEL: "qwen2.5:7b"
+      NEXUS_JUDGE_API_KEY: ""
+      NEXUS_EVAL_SAMPLE_RATE: "1.0"
       NEXUS_OTLP_ENABLED: "true"
       NEXUS_OTLP_ENDPOINT: "http://otel-collector:4318/v1/traces"
       NEXUS_ADMIN_EMAIL: "admin@nexus.local"
