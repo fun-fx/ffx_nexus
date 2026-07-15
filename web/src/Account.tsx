@@ -6,6 +6,7 @@ import {
   deleteMyCredential,
   deleteUser,
   fetchAuthConfig,
+  fetchMe,
   fetchMyCredentials,
   fetchMyKeys,
   fetchMyStats,
@@ -52,8 +53,14 @@ export function Account({ user, onUser }: { user: User | null; onUser: (u: User 
 
       <EnforceToggle user={user} onUser={onUser} />
 
+      {/* v1.1 onboarding checklist: first-run banner + 3-step indicator.
+          Hidden once onboarded_at is stamped (the backend sets it on the
+          first successful /api/me/credentials create, PR #87). Hidden for
+          admins who already manage keys on behalf of others. */}
+      {!user.onboarded_at && user.role !== "admin" && <OnboardingChecklist />}
+
       <div className="grid-2">
-        <MyCredentials />
+        <MyCredentials onUser={onUser} />
         <MyKeys />
       </div>
 
@@ -61,6 +68,57 @@ export function Account({ user, onUser }: { user: User | null; onUser: (u: User 
       {user.role === "admin" && <Users />}
       <MyUsage user={user} />
     </div>
+  );
+}
+
+// ONBOARDING_V11_ENABLED is set at build time via the Vite env. We default
+// to ON — the banner is opt-out via NEXUS_ONBOARDING_V11=false in the env
+// the build sees. Defaulting ON matches the per-design behaviour: ship the
+// banner, decide based on click-through whether to keep it.
+const ONBOARDING_V11_ENABLED: boolean =
+  (import.meta.env.VITE_NEXUS_ONBOARDING_V11 ?? "true") !== "false";
+
+// OnboardingChecklist shows the first-run banner + step list for a user who
+// has not yet been onboarded (users.onboarded_at IS NULL, per PR #87).
+// Clicking "Set up your first provider key" scrolls the page to the BYOK
+// form so the user lands right on the input. After the first successful
+// /api/me/credentials create, the Account component re-renders because the
+// updated User (with onboarded_at) flows through the onUser callback, and
+// this component disappears — no extra state to manage here.
+function OnboardingChecklist() {
+  if (!ONBOARDING_V11_ENABLED) return null;
+  const goToCredentials = () => {
+    const el = document.getElementById("byok-form");
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    const secretInput = el.querySelector<HTMLInputElement>("input[type='password']");
+    secretInput?.focus();
+  };
+  return (
+    <section className="panel onboarding">
+      <h2>Welcome — finish setting up your gateway</h2>
+      <p className="sub">
+        Nexus needs <strong>one provider key</strong> on file before it can route
+        your first request. Three short steps:
+      </p>
+      <ol className="onb-steps">
+        <li className="done">
+          <strong>Create account</strong>
+          <small>You&apos;re here ✓</small>
+        </li>
+        <li>
+          <strong>Add a provider credential</strong>
+          <small>Paste an upstream API key (BYOK). Encrypted at rest; only last-4 shown.</small>
+        </li>
+        <li>
+          <strong>Create a virtual key &amp; make your first chat completion</strong>
+          <small>Use the SDK with the gateway URL + your virtual key.</small>
+        </li>
+      </ol>
+      <button className="btn" type="button" onClick={goToCredentials}>
+        Set up your first provider key
+      </button>
+    </section>
   );
 }
 
@@ -331,7 +389,7 @@ function EnforceToggle({ user, onUser }: { user: User; onUser: (u: User) => void
   );
 }
 
-function MyCredentials() {
+function MyCredentials({ onUser }: { onUser: (u: User) => void }) {
   const [creds, setCreds] = useState<Credential[]>([]);
   // Stock providers are registered out of the box; any value in
   // "BUILTIN_PROVIDERS" is a normal label. Anything else routes through the
@@ -387,6 +445,18 @@ function MyCredentials() {
       setChatModels("");
       setEmbedModels("");
       setCustomName("");
+      // Re-read /api/me so the freshly-stamped onboarded_at flows into the
+      // parent <Account /> and the first-run banner disappears. PR #87 sets
+      // users.onboarded_at on the server side; without this re-read the UI
+      // would still see the stale user object and keep showing the banner.
+      try {
+        const me = await fetchMe();
+        if (me) onUser(me);
+      } catch {
+        // Non-fatal: even if /api/me fails, the credential table below has
+        // already been refreshed by load(). The banner staying one render
+        // longer is a graceful-failure mode we can live with.
+      }
       load();
     } catch (e) {
       setErr((e as Error).message);
@@ -401,7 +471,7 @@ function MyCredentials() {
         key for the target provider — register at least one here before sending
         traffic.
       </p>
-      <form className="form" onSubmit={add}>
+      <form className="form" id="byok-form" onSubmit={add}>
         <div className="form row">
           <select
             value={provider}
