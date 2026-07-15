@@ -111,6 +111,16 @@ data:
   {{- with .Values.config.metricsAddr }}
   NEXUS_METRICS_ADDR: {{ . | quote }}
   {{- end }}
+  {{- /* Service-scoped metrics surface (V3). When `metrics.enabled` is true,
+       bind a Prometheus text-format export at `metrics.host:metrics.port` so
+       an in-cluster scraper (Prometheus, VictoriaMetrics, vmagent) can pull
+       /metrics. Independent of OTLP: setting `metrics.enabled: true` makes
+       the scrape surface available WITHOUT enabling OTLP forwarding. */}}
+  {{- if .Values.metrics.enabled }}
+  {{- $addr := "" }}
+  {{- if .Values.metrics.host }}{{ $addr = printf "%s:%d" .Values.metrics.host (int .Values.metrics.port) }}{{ else }}{{ $addr = printf ":%d" (int .Values.metrics.port) }}{{ end }}
+  NEXUS_METRICS_ADDR: {{ $addr | quote }}
+  {{- end }}
 
   {{- /* V4 failover alert sinks */}}
   {{- with .Values.config.failoverWebhook }}
@@ -123,30 +133,35 @@ data:
   NEXUS_FAILOVER_ALERT_COOLDOWN: {{ .Values.config.failoverAlertCooldown | quote }}
   {{- end }}
 
-  {{- /* Metabase BI adapter — empty url field means the adapter is off */}}
-  {{- with .Values.config.metabase.url }}
+  {{- /* Metabase BI adapter — empty url field means the adapter is off.
+       Wrap in `with .Values.config.metabase` so a nil map (sub-chart hidden
+       by values flag, or partial-overrides via `helm install -f …`) does
+       not blow up the template. */}}
+  {{- with .Values.config.metabase }}
+  {{- with .url }}
   NEXUS_METABASE_URL: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.metabase.user }}
+  {{- with .user }}
   NEXUS_METABASE_USER: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.metabase.password }}
+  {{- with .password }}
   NEXUS_METABASE_PASSWORD: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.metabase.clickhouseUrl }}
+  {{- with .clickhouseUrl }}
   NEXUS_METABASE_CLICKHOUSE_URL: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.metabase.postgresUrl }}
+  {{- with .postgresUrl }}
   NEXUS_METABASE_POSTGRES_URL: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.metabase.seedDir }}
+  {{- with .seedDir }}
   NEXUS_METABASE_SEED_DIR: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.metabase.healthTimeout }}
+  {{- with .healthTimeout }}
   NEXUS_METABASE_HEALTH_TIMEOUT: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.metabase.requestTimeout }}
+  {{- with .requestTimeout }}
   NEXUS_METABASE_REQUEST_TIMEOUT: {{ . | quote }}
+  {{- end }}
   {{- end }}
 
   {{- /* V5 high-concurrency tuning: GOMEMLIMIT soft memory cap + GOGC.
@@ -155,12 +170,15 @@ data:
        express it as a fraction of the container memory limit so that
        horizontal autoscaling doesn't require a configmap edit per pod.
        Setting to "" (the default) leaves both values unset, which means
-       "no advisory". */}}
-  {{- with .Values.config.runtime.gomemlimit }}
+       "no advisory". The `with .Values.config.runtime` wrapper protects
+       against partial-overrides that omit the runtime block. */}}
+  {{- with .Values.config.runtime }}
+  {{- with .gomemlimit }}
   GOMEMLIMIT: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.runtime.gogc }}
+  {{- with .gogc }}
   GOGC: {{ . | quote }}
+  {{- end }}
   {{- end }}
 
   {{- /* V5 per-vkey concurrency tuning */}}

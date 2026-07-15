@@ -107,9 +107,42 @@ config:
     # or https://api.honeycomb.io/v1/traces).
     enabled: false
     endpoint: ""
-  # NEXUS_METRICS_ADDR exposes a Prometheus /metrics endpoint on the
-  # gateway and console. Empty (default) means no scrape surface.
-  metricsAddr: ""
+# NEXUS_METRICS_ADDR exposes a Prometheus /metrics endpoint on the
+# gateway and console. Empty (default) means no scrape surface.
+metricsAddr: ""
+
+# Service-scoped metrics surface (V3 observability).
+# Toggling this on:
+#   1. sets `NEXUS_METRICS_ADDR=<host>:<port>` from `metrics.host:port` so
+#      the binary binds a Prometheus text-format export on :<port>.
+#   2. declares `<port name="metrics">` on the Deployment + Service so
+#      Prometheus / VictoriaMetrics / vmagent can scrape at `Service:port`.
+#   3. (optional, opt-in) creates a `ServiceMonitor` so the Prometheus
+#      Operator picks it up automatically — only matters if your cluster
+#      runs kube-prometheus-stack and you want operator-managed scrape
+#      rules + alerting.
+#
+# The OTLP collector (`config.otlp.*` above) and Prometheus scrape
+# (`metrics.*` here) are independent: a ClickHouse outage disables trace
+# persistence but leaves /metrics up; a Prometheus scrape misconfig
+# doesn't disable the OTLP path.
+metrics:
+  enabled: false
+  host: ""
+  port: 9101
+  path: "/metrics"
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    # Additional labels match the cluster's monitoring selector — e.g.
+    # `release: kube-prometheus-stack` for kube-prometheus-stack's built-in
+    # `Prometheus` CR's serviceMonitorSelector, or omit if using vmagent
+    # with PodMonitor-style discovery.
+    additionalLabels: {}
+    relabelings: []
+    metricRelabelings: []
+
 
   # --- V4 failover alert sinks --------------------------------------------
   # Both URLs are independently opt-in; empty means "no goroutine, no DNS".
