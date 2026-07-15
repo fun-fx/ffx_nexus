@@ -72,6 +72,10 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	stack.ScoreStore = evals.ScoreStoreKind(chRec != nil, pgConnected)
 	if cfg.EvalEnabled {
 		stack.EvalWorker = buildEvalWorker(cfg, chRec, store, stack.ScoreStore, stack.TraceStore, log)
+		// Wire the Prometheus recorder into the worker so judge scores also
+		// surface as nexus_eval_quality_score gauges in the Grafana panel.
+		// Safe no-op when metricsRec is nil (zero-dep fast path unchanged).
+		stack.EvalWorker.SetMetricsRecorder(metricsRec)
 		recorders = append(recorders, stack.EvalWorker)
 	} else {
 		log.Info("eval worker disabled (NEXUS_EVAL_ENABLED=false)")

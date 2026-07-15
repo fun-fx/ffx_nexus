@@ -22,6 +22,12 @@ type Worker struct {
 	judges              []Evaluator // LLM-as-judge; gated by judgeSampleRate (expensive)
 	sink                Sink
 	log                 *slog.Logger
+	// metricsRecorder is the gateway's Prometheus recorder. When non-nil,
+	// every successful eval score for metric="quality" is also propagated to
+	// nexus_eval_quality_score so the Grafana `Quality judge score (rolling
+	// 1h mean)` panel is fed even when the clickhouse sink is filtering at a
+	// different rate. Optional — keeps existing callers source-compatible.
+	metricsRecorder *observability.MetricsRecorder
 
 	judgeBaseURL    string
 	judgeModel      string
@@ -57,6 +63,10 @@ type Options struct {
 	Workers             int     // concurrent eval goroutines
 	BufferSize          int
 	EvalTimeout         time.Duration
+	// MetricsRecorder, if non-nil, receives RecordQualityScore calls so eval
+	// results feed the Prometheus nexus_eval_quality_score gauge as well as
+	// the clickhouse/pg sink. Optional; nil = no metric propagation.
+	MetricsRecorder *observability.MetricsRecorder
 }
 
 // NewWorker builds and starts an eval worker.
@@ -89,6 +99,7 @@ func NewWorker(opts Options, log *slog.Logger) *Worker {
 		judgeSampleRate:     opts.JudgeSampleRate,
 		workerCount:         opts.Workers,
 		evalTimeout:         opts.EvalTimeout,
+		metricsRecorder:     opts.MetricsRecorder,
 		ch:                  make(chan observability.Trace, opts.BufferSize),
 		done:                make(chan struct{}),
 		closed:              make(chan struct{}),
@@ -184,6 +195,20 @@ func (w *Worker) evaluate(t observability.Trace) {
 	if err := w.sink.WriteScores(ctx, scores); err != nil {
 		w.log.Error("write eval scores failed", "trace_id", t.TraceID, "err", err)
 	}
+	// Mirror successful quality scores into the in-process metrics recorder so
+	// Prometheus shows nexus_eval_quality_score{model="…"} alongside the
+	// clickhouse persist path. We do this after WriteScores (not before) so
+	// a sink outage never causes a fake metric spike. Only metric=="quality"
+	// is propagated — the heuristic panels are aggregated later and the
+	// per-model consult would just add noise.
+	if w.metricsRecorder != nil {
+		for _, s := range scores {
+			if s.Metric != "quality" {
+				continue
+			}
+			w.metricsRecorder.RecordQualityScore(s.RequestModel, s.Score)
+		}
+	}
 }
 
 func (w *Worker) sampleJudge(rate float64) bool {
@@ -211,4 +236,14 @@ func (w *Worker) Close(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	return nil
+}
+
+// SetMetricsRecorder wires an optional observability.MetricsRecorder so eval
+// quality scores flow into Prometheus's nexus_eval_quality_score gauge. Safe
+// to call once after construction (post-startup wire-up is the typical case).
+// nil releases the previous recorder.
+func (w *Worker) SetMetricsRecorder(r *observability.MetricsRecorder) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.metricsRecorder = r
 }
