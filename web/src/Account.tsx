@@ -122,6 +122,99 @@ function OnboardingChecklist() {
   );
 }
 
+// helpIcon renders a small "?" button that toggles a one-line tooltip. We
+// inline this rather than ship a tooltip library — the v1.1 onboarding
+// design is explicit about wanting lightweight hints, not a full tour.
+function HelpHint({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="help-hint">
+      <button
+        type="button"
+        aria-label="Help"
+        className="help-q"
+        onClick={() => setOpen((v) => !v)}
+      >
+        ?
+      </button>
+      {open && (
+        <span className="help-pop" role="tooltip" onClick={() => setOpen(false)}>
+          {children}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function ProviderHelp() {
+  return (
+    <HelpHint>
+      A provider key is the API token you already have with OpenAI /
+      Anthropic / etc. Nexus keeps it encrypted so it can route your
+      traffic. You&apos;re billed by your provider — Nexus never resells
+      tokens.
+    </HelpHint>
+  );
+}
+
+function VirtualKeyHelp() {
+  return (
+    <HelpHint>
+      A virtual key is the token your SDK sends to the Nexus gateway.
+      Each one can carry its own RPM cap and monthly budget, so you can
+      hand different keys to different apps.
+    </HelpHint>
+  );
+}
+
+// CodeSnippet shows the exact curl a developer can paste into a terminal
+// to verify the end-to-end flow after creating their first virtual key.
+// gatewayUrl defaults to window.location.origin so it works whether the
+// console is on Tailscale or public ingress (v1.1 §4).
+function CodeSnippet({
+  gatewayUrl,
+  virtualKey,
+}: {
+  gatewayUrl: string;
+  virtualKey: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const payload = JSON.stringify(
+    {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "hello from Nexus" }],
+    },
+    null,
+    2,
+  );
+  const snippet =
+    `curl -s ${gatewayUrl}/v1/chat/completions \\\n` +
+    `  -H "Authorization: Bearer ${virtualKey}" \\\n` +
+    `  -H "Content-Type: application/json" \\\n` +
+    `  -d '${payload}'`;
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Older browsers / insecure contexts: skip silently. The user can
+      // still select-and-copy manually because <pre> is selectable.
+    }
+  };
+  return (
+    <div className="code-snippet">
+      <div className="code-snippet-head">
+        <span className="sub">Try it from your terminal:</span>
+        <button type="button" className="btn small" onClick={onCopy}>
+          {copied ? "Copied ✓" : "Copy"}
+        </button>
+      </div>
+      <pre>{snippet}</pre>
+    </div>
+  );
+}
+
 // BUILTIN_PROVIDERS lists the provider names whose adapter is shipped in
 // the Go binary. Anything else routes through the dynamic OpenAI-compatible
 // path that PR #68 added: the user provides base_url + an optional model
@@ -464,7 +557,9 @@ function MyCredentials({ onUser }: { onUser: (u: User) => void }) {
   };
   return (
     <section className="panel">
-      <h2>My provider keys (BYOK)</h2>
+      <h2>
+        My provider keys (BYOK) <ProviderHelp />
+      </h2>
       <p className="sub">
         Nexus stores each provider key encrypted under its own KEK. Strict-byok
         (default) rejects gateway calls from anyone who hasn&apos;t registered a
@@ -592,7 +687,9 @@ function MyKeys() {
   };
   return (
     <section className="panel">
-      <h2>My virtual keys</h2>
+      <h2>
+        My virtual keys <VirtualKeyHelp />
+      </h2>
       <form className="form row" onSubmit={add}>
         <input placeholder="key name" value={name} onChange={(e) => setName(e.target.value)} />
         <button className="btn" type="submit">
@@ -601,8 +698,16 @@ function MyKeys() {
       </form>
       {created && (
         <div className="notice">
-          Copy your key now — it won't be shown again:
+          Copy your key now — it won&apos;t be shown again:
           <code>{created}</code>
+          <p className="sub">
+            Paste it into your SDK as <code>apiKey</code>, and point the SDK
+            base URL at the gateway. Sample:
+          </p>
+          <CodeSnippet
+            gatewayUrl={typeof window !== "undefined" ? window.location.origin : ""}
+            virtualKey={created}
+          />
         </div>
       )}
       <table>
