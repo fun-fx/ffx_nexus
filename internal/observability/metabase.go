@@ -9,8 +9,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -459,20 +461,81 @@ func (m *MetabaseBootstrapper) putOwnedDataSource(ctx context.Context, session s
 }
 
 // clickHouseDetails converts an HTTP SQL endpoint into the Metabase "details"
-// shape. Metabase accepts a "url" key like "...&username=...&password=..." for
-// ClickHouse HTTP engine. Database name is parsed from ?database=.
+// shape. Metabase's bundled clickhouse-jdbc driver accepts two shapes:
+//
+//   1. (verbose) keys: { "host": "...", "port": 9000, "dbname": "...",
+//      "user": "...", "password": "..." }, or
+//   2. (URL form)  keys: { "url": "clickhouse://...?user=...?password=..." }
+//
+// Pattern 1 is what the driver parses first; the URL form is a fallback
+// added in newer clickhouse-jdbc versions but Metabase 0.49.x's wrapping
+// of that URL parser rejects it server-side ("호스트 설정 확인" /
+// "host setting check") when the dialog isn't filled from the verbose
+// shape. So we always emit the verbose form. URL parsing is left as a
+// pure-compat fallback for genuinely vintage Metabase instances.
 func clickHouseDetails(endpoint string) map[string]any {
-	details := map[string]any{
-		"url": endpoint,
-	}
-	// Extract ?database= so Metabase knows the default DB.
-	if idx := strings.Index(endpoint, "database="); idx >= 0 {
-		rest := endpoint[idx+len("database="):]
-		// Trim at & or end.
-		if amp := strings.Index(rest, "&"); amp >= 0 {
-			rest = rest[:amp]
+	details := map[string]any{}
+	u, err := url.Parse(endpoint)
+	if err == nil && u.Scheme != "" && u.Host != "" {
+		host := u.Hostname()
+		port := u.Port()
+		if port == "" {
+			// Default to the native TCP port per clickhouse-jdbc's own
+			// defaults (port 9000). 8123 would round-trip to plain HTTP
+			// but Metabase's driver speaks the binary TCP protocol.
+			port = "9000"
 		}
-		details["dbname"] = rest
+		details["host"] = host
+		if port != "" {
+			if p, perr := strconv.Atoi(port); perr == nil {
+				details["port"] = p
+			}
+		}
+		// user/password: extract first (before stripping u.User), then
+		// zero it out so we don't leave credentials dangling on the URL
+		// string if the driver decides to round-trip it.
+		var urlUser *url.Userinfo
+		if u.User != nil {
+			urlUser = u.User
+			details["user"] = u.User.Username()
+			if pw, ok := u.User.Password(); ok {
+				details["password"] = pw
+			}
+		}
+		u.User = nil
+		dbName := strings.TrimPrefix(u.Path, "/")
+		if u.RawQuery != "" && dbName == "" {
+			// `?database=nexus` style — pull out the database param first.
+			q, _ := url.ParseQuery(u.RawQuery)
+			if v := q.Get("database"); v != "" {
+				dbName = v
+			}
+		}
+		if dbName != "" {
+			details["dbname"] = dbName
+		}
+		// soft default: empty user → "default" (matches the cluster's
+		// local 01-clickhouse.yaml setup). We do NOT force the password
+		// — Metabase's driver accepts an empty-password field as "use
+		// the bundled default" without breaking.
+		if urlUser == nil && u.User == nil {
+			if _, has := details["user"]; !has {
+				details["user"] = "default"
+			}
+		}
+		// surface the original `database=` query param if no path part was
+		// present (covers clickhouse://host:9000/?database=nexus)
+		if dbName == "" && u.RawQuery != "" {
+			q, _ := url.ParseQuery(u.RawQuery)
+			if v := q.Get("database"); v != "" {
+				details["dbname"] = v
+			}
+		}
+	} else {
+		// URL could not be parsed — fall back to the bare URL form so
+		// operators with very legacy Metabase (where the verbose keys
+		// don't exist) still get *something* usable.
+		details["url"] = endpoint
 	}
 	return details
 }
