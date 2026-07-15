@@ -21,3 +21,9 @@ spec:
       port: {{ .Values.ports.console }}
       targetPort: console
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
