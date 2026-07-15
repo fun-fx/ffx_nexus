@@ -497,8 +497,19 @@ func clickHouseDetails(endpoint string) map[string]any {
 		var urlUser *url.Userinfo
 		if u.User != nil {
 			urlUser = u.User
-			details["user"] = u.User.Username()
-			if pw, ok := u.User.Password(); ok {
+			name := u.User.Username()
+			pw, hasPw := u.User.Password()
+			if name != "" {
+				details["user"] = name
+			}
+			// clickhouse-jdbc treats an explicit empty password as
+			// "non-empty credentials, but invalid pw". The cluster runs
+			// the `default` user with allow_no_password, so we
+			// intentionally omit the password field for empty-pw URLs
+			// (e.g. `default:@host:8123`). Result: the driver sends
+			// no Authorization header and ClickHouse accepts it as
+			// "anonymous default" which is what's configured.
+			if hasPw && pw != "" {
 				details["password"] = pw
 			}
 		}
