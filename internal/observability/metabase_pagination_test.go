@@ -173,6 +173,20 @@ func TestClickHouseDetailsVerboseShape(t *testing.T) {
 				"password": "s3cret",
 			},
 		},
+		{
+			name: "empty password omits the field, not as empty string",
+			in:   "http://chendpoint-clickhouse-nexus.tenant-nexus.svc.cluster.local:8123?database=nexus",
+			want: map[string]any{
+				"host":   "chendpoint-clickhouse-nexus.tenant-nexus.svc.cluster.local",
+				"port":   8123,
+				"dbname": "nexus",
+				"user":   "default",
+				// NOTE: no "password" key — clickhouse-jdbc interprets
+				// an empty-string password as "wrong credentials".
+				// Omitting the field lets it fall through to
+				// anonymous/default auth which matches the cluster.
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,6 +197,14 @@ func TestClickHouseDetailsVerboseShape(t *testing.T) {
 				} else if v != wantV {
 					t.Errorf("key %q: got %v (%T), want %v (%T)", k, v, v, wantV, wantV)
 				}
+			}
+			// only the empty-pw case must NOT have a password;
+			// the others deliberately include it.
+			if tc.name != "empty password omits the field, not as empty string" {
+				return
+			}
+			if _, hasPw := got["password"]; hasPw {
+				t.Errorf("password field must be omitted for empty-pw URLs, got %+v", got)
 			}
 		})
 	}
