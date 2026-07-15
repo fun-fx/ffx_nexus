@@ -711,6 +711,12 @@ func (m *MetabaseBootstrapper) seedOne(ctx context.Context, session string, dbs 
 				dbID = int(v)
 			}
 		}
+		// seedOne is called on every Nexus boot. ensureCard first POSTS a new
+		// card, and if a card with the same name already exists in this
+		// collection it recovers via PUT /api/card/:id so the seed exports are
+		// idempotent across releases (an operator upgrading the bundled JSONs
+		// expects the new queries to land in the existing cards, not to spawn
+		// duplicate columns).
 		if err := m.ensureCard(ctx, session, id, dbID, c.Name, c.Display, c.Query.Native, c.Visualization); err != nil {
 			m.log.Warn("seed card failed", "collection", col.Name, "card", c.Name, "err", err)
 			continue
@@ -847,6 +853,28 @@ func (m *MetabaseBootstrapper) findCollectionWithDescription(ctx context.Context
 
 // ensureCard creates a card under the given collection. Display defaults to
 // "table" when empty; visualization is a free-form object passed through.
+//
+// The Metabase POST /api/card payload shape (0.46 + 0.50) is:
+//
+//   {
+//     "name":               "...",
+//     "display":            "line",
+//     "collection_id":       42,
+//     "database_id":         7,
+//     "dataset_query": {
+//                            "type":    "native",
+//                            "database": 7,
+//                            "native":  { "query": "...", "template-tags": {} }
+//                          },
+//     "visualization_settings": { … }
+//   }
+//
+// Earlier versions of this code used the field name "query" instead of
+// "dataset_query", which Metabase 0.50 silently strips on round-trip —
+// we end up hitting the response `{"dataset_query":"값은 지도이어야 합니다."}`
+// (`value should be a map`) on every card. Confirmed by the prod-cluster
+// smoke logs after PR #97 was deployed: collection seeded, but each card
+// posted with the old field name came back with "missing required key".
 func (m *MetabaseBootstrapper) ensureCard(ctx context.Context, session string, collectionID, dbID int, name, display string, nativeQuery map[string]any, viz map[string]any) error {
 	if dbID == 0 {
 		return errors.New("no database id resolvable for card " + name)
@@ -854,15 +882,29 @@ func (m *MetabaseBootstrapper) ensureCard(ctx context.Context, session string, c
 	if display == "" {
 		display = "table"
 	}
+	// Make sure template-tags is a real map even when the export JSON
+	// has an empty {} — Metabase's written-payload validator rejects
+	// missing/nil subkeys. Cheap to just always include it.
+	if nativeQuery == nil {
+		nativeQuery = map[string]any{}
+	}
+	if _, hasTT := nativeQuery["template-tags"]; !hasTT {
+		nativeQuery["template-tags"] = map[string]any{}
+	}
 	payload := map[string]any{
-		"name":          name,
-		"display":       display,
-		"collection_id": collectionID,
-		"database_id":   dbID,
-		"query": map[string]any{
-			"native": nativeQuery,
+		"name":                   name,
+		"display":                display,
+		"collection_id":          collectionID,
+		"database_id":            dbID,
+		"dataset_query": map[string]any{
+			"type":     "native",
+			"database": dbID,
+			"native":   nativeQuery,
 		},
-		"visualization_settings": viz,
+		// Pass-through; the dashboards authored by humans usually
+		// include a non-empty map. An operator setting `{}` here
+		// gets `{}` shipped (no nil-pointer).
+		"visualization_settings": nonNilMap(viz),
 	}
 	body, _ := json.Marshal(payload)
 	url := strings.TrimRight(m.cfg.URL, "/") + "/api/card"
@@ -875,10 +917,92 @@ func (m *MetabaseBootstrapper) ensureCard(ctx context.Context, session string, c
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		// Capture the original POST body once — Metabase may have closed
+		// it before we can re-read on the recovery branch.
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		// 4xx on create is recoverable: a card with same name already exists,
-		// and the operator can re-run the seed safely. We just log + skip.
+		// On 400/422 (collision), recover — Metabase rejects POST /api/card
+		// if a card with the same name already exists in the same collection.
+		// Look it up via /api/card?collection_id=X and PUT the new fields back
+		// over the same id so an upgrade round-trips cleanly without leaving
+		// duplicate "Daily requests"... cards behind.
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity {
+			if existingID, ok := m.findCardByNameInCollection(ctx, session, collectionID, name); ok {
+				if perr := m.putCard(ctx, session, existingID, payload); perr != nil {
+					return fmt.Errorf("create card status %d: %s; put fallback failed: %v", resp.StatusCode, string(raw), perr)
+				}
+				m.log.Info("metabase seed card updated via PUT", "card", name, "id", existingID, "collection_id", collectionID)
+				return nil
+			}
+			return fmt.Errorf("create card status %d: %s", resp.StatusCode, string(raw))
+		}
+		raw, _ = io.ReadAll(io.LimitReader(resp.Body, 512))
 		return fmt.Errorf("create card status %d: %s", resp.StatusCode, string(raw))
 	}
 	return nil
+}
+
+// findCardByNameInCollection queries /api/card?collection_id=X and looks
+// for a card whose name matches the seed JSON. Same dual-shape id
+// rationale as elsewhere: Metabase 0.46 returns int; 0.49+ returns string.
+func (m *MetabaseBootstrapper) findCardByNameInCollection(ctx context.Context, session string, collectionID int, name string) (int, bool) {
+	url := fmt.Sprintf("%s/api/card?collection_id=%d", strings.TrimRight(m.cfg.URL, "/"), collectionID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set("X-Metabase-Session", session)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return 0, false
+	}
+	var rows []struct {
+		ID   any    `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return 0, false
+	}
+	for _, r := range rows {
+		if r.Name == name {
+			id, err := normalizeMetabaseID(r.ID)
+			if err != nil {
+				return 0, false
+			}
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+// putCard updates fields on an existing card. We use the same payload
+// shape as POST /api/card, dropping `dataset_query` because the PUT
+// handler interprets that field as the whole query replacement which
+// is exactly what we want here — and dropping `display`
+// re-confirmation is implicit when `display` is unchanged.
+func (m *MetabaseBootstrapper) putCard(ctx context.Context, session string, id int, payload map[string]any) error {
+	body, _ := json.Marshal(payload)
+	url := fmt.Sprintf("%s/api/card/%d", strings.TrimRight(m.cfg.URL, "/"), id)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Metabase-Session", session)
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("put card status %d: %s", resp.StatusCode, string(raw))
+	}
+	return nil
+}
+
+// nonNilMap guarantees that we always serialize a JSON object
+// (instead of null) when the operator passes an empty visualization map.
+func nonNilMap(m map[string]any) map[string]any {
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
 }
