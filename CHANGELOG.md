@@ -71,6 +71,109 @@ us shipping a per-vendor Go adapter.
   built-in default catalog", so existing 1st-party credentials behave
   identically.
 
+## [v0.5.0] — Audit log + Onboarding + V1 observability + dev container
+
+Closes the v1.1 design workstream (audit log WS-A, onboarding WS-B) and
+ships the V1 observability stack introduced in `docs/scalability-plan.md`
+(dev container, OTLP, Prometheus, replica_id). Plus the housekeeping
+gaps that were blocking a "fresh clone → reproducible dev setup" path.
+
+### Highlights
+
+- **Audit log coverage** (WS-A of v1.1 design). Every state-changing
+  admin/member action now writes to `audit_log` with a canonical action
+  enum (`internal/core/audit.go`). The owner-deduped `target_id`,
+  detail, and `actor_id` flow through `GET /api/audit` (admin-only)
+  with `?action=`, `?user_id=`, `?limit=`, `?since=` filters and an
+  RFC3339+duration-flexible parser.
+- **Onboarding flow** (WS-B of v1.1 design). A new `users.onboarded_at`
+  column (`migrations/postgres/008_onboarded_at.sql`) is stamped the
+  first time a member successfully creates a provider credential. The
+  React `Account.tsx` surfaces a 3-step `OnboardingChecklist` banner for
+  members with `onboarded_at IS NULL`, auto-hiding on first credential
+  create. Inline `?` tooltips on credential / virtual-key sections, and
+  a copy-pasteable curl snippet rendered after virtual-key creation.
+- **V1 observability stack** (scalability V1). `docker compose
+  --profile dev` now brings up Grafana, Prometheus, OpenTelemetry
+  collector, and (optionally) Metabase in one command. Grafana is
+  pre-loaded with eight panels matching the published Prometheus
+  queries (latency p50/p95/p99, RPS by model, semantic cache hit rate,
+  cost/hour, failover events, BYOK adoption, quality judge score, error
+  rate). OTLP collector is wired but **silent** — it requires
+  `NEXUS_OTLP_ENABLED=true` and `NEXUS_OTLP_ENDPOINT=...` to forward.
+- **ReplicaID on failover alerts** (V4). The router now stamps a
+  per-pod `replica_id` (env `NEXUS_REPLICA_ID`, default
+  `<hostname>-<randid>`) on every failover event. The Grafana
+  `Failover events / hour` panel still sums across all replicas, but a
+  px-quick drill-down filter by `replica` now makes flaps attributable.
+- **Eval judge → Prometheus gauge** (PR #89). After this PR closing
+  the wiring, `nexus_eval_quality_score{model="…"}` is now fed whenever
+  the SLM judge (Qwen2.5:7b via Ollama, or any OpenAI-compatible
+  endpoint) fires — see Grafana panel 7. The dev compose file ships
+  the 4 judge env vars (`NEXUS_JUDGE_BASE_URL`, `MODEL`, `API_KEY`,
+  `EVAL_SAMPLE_RATE`) so a fresh `docker compose --profile dev up -d`
+  immediately lights up the metric.
+- **Metabase Pattern B takeover** (Pattern B production scenario). The
+  Metabase BI adapter leaves pre-existing customer-registered
+  datasources and collections alone unless it sees a `nexus-managed`
+  ownership marker. The `scripts/takeover_metabase.sh`-style
+  operator
+  workflow updated to stamp the marker idempotently, so adopting a
+  customer's existing Metabase instance in production is a one-shot
+  PR that does not destroy their dashboards.
+- **V5 single-pod ceiling measurement** (PRs #84, #85). The
+  `scripts/test_v5_ceiling.sh` script quantifies single-pod capacity
+  via `wrk + GOMEMLIMIT=768MiB + GODEBUG=gctrace=1`. Results written
+  up in `docs/v5_stress_ceiling_results.md` (p99 80–115 ms at 1000
+  concurrent; 23–29 k req/s throughput plateau; linear RSS; no STW
+  cycle observed). Deployment-version tuning knobs (`GOMEMLIMIT`,
+  `GOGC`, per-vkey concurrency cap) are exposed in `values.yaml`
+  under `config.runtime.*` and `config.maxConcurrentPerKey`.
+- **Dev container one-command setup** (PR #82). `.devcontainer/`
+  brings the `docker compose --profile dev up -d` stack at the
+  root of any clone plus a matching Vite dev server for the React SPA.
+  Replaces the "zip a tunnel of scripts and README pointers" pattern
+  with a single VS Code "Reopen in Container" flow.
+- **Repo hygiene cleanup** (PR #90). 9 orphan scripts and
+  `cmd/loadgen` removed (no caller anywhere in the tree, no doc
+  references, not in CI). The CI integration suite
+  (`scripts/test_all.sh` + 13 sub-scripts) is intact and remains the
+  authoritative E2E.
+- **Helper charts** (`deploy/helm/nexus/Chart.yaml`) bumped to
+  `version: 0.5.0` / `appVersion: "0.5.0"` so a default `helm
+  install` pulls a current image in lock-step with what the dev container
+  runs (previously chart's default was `0.3.3`, more than a major's
+  worth behind the binary).
+
+### Backward compatibility
+
+- Audit log: `users.audit_log` table unchanged; new columns are nullable
+  so older rows render in `/api/audit` with empty actor_id.
+- Onboarding: a fresh `onboarded_at` column added at boot via the
+  008 migration — idempotent and nullable for legacy users.
+- Observability: existing /metrics surface alias kept; OTLP collector
+  stays silent until opted in.
+- Helm: chart version `0.3.3 → 0.5.0`. values.yaml keys and structure
+  are unchanged — only the *default image tag* moves forward, so an
+  existing `helm template | kubectl apply` followed by image pinning
+  continues to work.
+
+### Commits & PRs in this release
+
+- PR #79  feat(observability): V1 dev container + OTLP + Prometheus + replica_id
+- PR #80  feat(test-tools): loadgen + bound mock upstream + multi-node/stress bench
+- PR #81  feat(metabase): Pattern B takeover script + e2e harness + seed dashboards
+- PR #82  feat(devcontainer): one-command dev environment
+- PR #83  feat(router): stamp ReplicaID on failover alerts
+- PR #84  feat(stress): V5 single-pod ceiling measurement + first-pass results
+- PR #85  feat(stress): extend V5 ceiling script with RSS + GC sampling
+- PR #86  Audit log constants + filter parse + tests
+- PR #87  feat(onboarding): mark onboarded_at after first credential create
+- PR #88  feat(onboarding): first-run banner + help tooltips + curl code-snippet
+- PR #89  feat(evals): propagate quality scores into Prometheus nexus_eval_quality_score
+- PR #90  chore(cleanup): drop orphaned scripts and cmd/loadgen
+- PR #91  chore(dev): wire SLM judge env by default in dev profile
+
 ## [v0.1.0] — initial strict-byok pilot release
 
 First publicly consumable release. Grid team pilot.
