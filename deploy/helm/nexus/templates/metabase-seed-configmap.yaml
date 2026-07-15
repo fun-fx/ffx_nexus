@@ -1,0 +1,47 @@
+{{- if and .Values.config.metabase (and .Values.config.metabase.seedDir (not .Values.config.metabase.seedFromExisting)) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nexus.fullname" . }}-metabase-seed
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+data:
+  # The repository ships 3 reference seed collections under
+  # deploy/observability/metabase/seed/. The bootstrapper reads every
+  # *.json file in this directory and registers each one as a Metabase
+  # collection with prefix "Nexus - <name>" plus an ownership marker on
+  # the description (see isNexusManagedCollection in
+  # internal/observability/metabase.go).
+  #
+  # Operators are *discouraged* from editing these because the
+  # bootstrapper refuses to overwrite a foreign collection. Instead:
+  # extend the set by overriding `config.metabase.extraSeeds` below.
+  #
+  # WHY ship these from a HELM ConfigMap (not a runtime bind-mount):
+  # 1. cluster pods run with readOnlyRootFilesystem=true and no
+  #    admin-equivalent sidecar hooks; baked configmaps keep them
+  #    reproducible across cluster rebuilds.
+  # 2. the bootstrapper's seed loop re-processes the JSON on every
+  #    deploy, so changes to a JSON here propagate without an image
+  #    rebuild.
+  # 3. operators can suppress this ConfigMap entirely and pass their
+  #    own via `existingConfigMap: my-secret-seed`.
+  01-overview.json: |-
+{{- range $line := splitList "\n" (.Files.Get "files/metabase-seed/01-overview.json") }}
+    {{ $line }}
+{{- end }}
+  02-llm-spend.json: |-
+{{- range $line := splitList "\n" (.Files.Get "files/metabase-seed/02-llm-spend.json") }}
+    {{ $line }}
+{{- end }}
+  03-eval-quality.json: |-
+{{- range $line := splitList "\n" (.Files.Get "files/metabase-seed/03-eval-quality.json") }}
+    {{ $line }}
+{{- end }}
+  {{- range $name, $body := .Values.config.metabase.extraSeeds }}
+  {{ $name }}: |-
+{{- range $line := splitList "\n" $body }}
+    {{ $line }}
+{{- end }}
+  {{- end }}
+{{- end }}
