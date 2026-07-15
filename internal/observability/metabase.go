@@ -280,7 +280,11 @@ func (m *MetabaseBootstrapper) ensureOneDataSource(ctx context.Context, session,
 					"id", db.ID,
 					"hint", "the existing datasource is not owned by Nexus. To take it over, add `nexus_managed_by: \"metabase-bootstrapper\"` to its details.",
 				)
-				return databaseID(db.ID), nil
+				id, err := normalizeMetabaseID(db.ID)
+				if err != nil {
+					return 0, err
+				}
+				return databaseID(id), nil
 			}
 		}
 	}
@@ -288,7 +292,11 @@ func (m *MetabaseBootstrapper) ensureOneDataSource(ctx context.Context, session,
 		if db.Name == "nexus-"+engine && db.Engine == engine {
 			// Owned by us: PUT to /api/database/:id to refresh credentials/host
 			// without breaking the data model the operator built in the UI.
-			return m.putOwnedDataSource(ctx, session, db.ID, engine, details)
+			id, err := normalizeMetabaseID(db.ID)
+			if err != nil {
+				return 0, err
+			}
+			return m.putOwnedDataSource(ctx, session, id, engine, details)
 		}
 	}
 	// Stamping `details.nexus_managed_by` so future runs recognise ownership
@@ -306,7 +314,9 @@ func (m *MetabaseBootstrapper) ensureOneDataSource(ctx context.Context, session,
 // decode what Bootstrap consumes; server-returned fields outside this struct
 // are silently dropped.
 type metabaseDatabase struct {
-	ID      int            `json:"id"`
+	// Same dual-shape rationale as the collection path: int (0.46.x) vs.
+	// string (0.49.x+). normalizeMetabaseID below bridges both.
+	ID      any            `json:"id"`
 	Name    string         `json:"name"`
 	Engine  string         `json:"engine"`
 	Details map[string]any `json:"details,omitempty"`
@@ -415,12 +425,19 @@ func (m *MetabaseBootstrapper) postDataSource(ctx context.Context, session strin
 		return 0, fmt.Errorf("create database status %d: %s", resp.StatusCode, string(raw))
 	}
 	var out struct {
-		ID int `json:"id"`
+		ID any `json:"id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return 0, err
 	}
-	return databaseID(out.ID), nil
+	id, err := normalizeMetabaseID(out.ID)
+	if err != nil {
+		return 0, fmt.Errorf("create database: %w", err)
+	}
+	if id == 0 {
+		return 0, errors.New("create database returned no id")
+	}
+	return databaseID(id), nil
 }
 
 func (m *MetabaseBootstrapper) putDataSource(ctx context.Context, session string, id int, payload map[string]any) (databaseID, error) {
@@ -558,6 +575,61 @@ func postgresDetails(jdbcURL string) map[string]any {
 	// to override via env if a non-URL scheme is preferred.
 	out["db"] = jdbcURL
 	return out
+}
+
+// normalizeMetabaseID converts a Metabase `id` field into int regardless of
+// whether Metabase served it as a number (0.46.x) or as a string
+// (0.49.x+). Some upstream fields (database.id, card.id) are also string-
+// encoded; the same helper is reused for them.
+//
+// Empty/zero strings are returned as 0 with a nil error so callers can
+// keep their post-return `id == 0` short-circuits without extra handling.
+func normalizeMetabaseID(raw any) (int, error) {
+	switch v := raw.(type) {
+	case nil:
+		return 0, nil
+	case float64:
+		// json.Unmarshal into `any` produces float64 for numeric tokens.
+		return int(v), nil
+	case int:
+		return v, nil
+	case int64:
+		return int(v), nil
+	case string:
+		trimmed := v
+		for len(trimmed) > 0 && trimmed[0] == '"' {
+			trimmed = trimmed[1:]
+		}
+		for len(trimmed) > 0 && trimmed[len(trimmed)-1] == '"' {
+			trimmed = trimmed[:len(trimmed)-1]
+		}
+		if trimmed == "" {
+			return 0, nil
+		}
+		n, err := strconv.Atoi(trimmed)
+		if err != nil {
+			if realID, ferr := parseHexUUIDLikeInt(trimmed); ferr == nil {
+				return realID, nil
+			}
+			return 0, fmt.Errorf("id is not numeric: %q", trimmed)
+		}
+		return n, nil
+	default:
+		return 0, fmt.Errorf("unsupported id type %T", raw)
+	}
+}
+
+// parseHexUUIDLikeInt accepts the unusual case where a string id carries
+// hex characters (very new Metabase ships uuid-only ids). We don't try to
+// make sense of the value (callers use it as-is in their payload), just
+// decode a hex string into a stable int so the loop in ensureCollection
+// finishes its `id != 0` check.
+func parseHexUUIDLikeInt(s string) (int, error) {
+	n, err := strconv.ParseUint(s, 16, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
 }
 
 // seedCollections reads every *.json file under SeedDir; each file is expected
@@ -701,15 +773,25 @@ func (m *MetabaseBootstrapper) ensureCollection(ctx context.Context, session, na
 		return 0, false, fmt.Errorf("create collection status %d: %s", resp.StatusCode, string(raw))
 	}
 	var out struct {
-		ID int `json:"id"`
+		// Metabase 0.46.x returns `id` as int; 0.49.x+ wraps it into
+		// a string ("id":"abc-…"). Decode into any and normalize so
+		// downstream callers always see an int.
+		ID any `json:"id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return 0, false, err
 	}
-	if out.ID == 0 {
+	if out.ID == nil {
 		return 0, false, errors.New("collection create returned no id")
 	}
-	return out.ID, true, nil
+	id, err := normalizeMetabaseID(out.ID)
+	if err != nil {
+		return 0, false, fmt.Errorf("collection create: %w", err)
+	}
+	if id == 0 {
+		return 0, false, errors.New("collection create returned no id")
+	}
+	return id, true, nil
 }
 
 // findCollection lists /api/collection and returns the id of the named one.
@@ -741,7 +823,9 @@ func (m *MetabaseBootstrapper) findCollectionWithDescription(ctx context.Context
 		return 0, "", false, fmt.Errorf("list collections status %d: %s", resp.StatusCode, string(raw))
 	}
 	var rows []struct {
-		ID          int    `json:"id"`
+		// Same dual-shape rationale as the create path above:
+		// Metabase 0.46.x → int, 0.49.x+ → string.
+		ID          any    `json:"id"`
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
@@ -749,9 +833,14 @@ func (m *MetabaseBootstrapper) findCollectionWithDescription(ctx context.Context
 		return 0, "", false, err
 	}
 	for _, r := range rows {
-		if r.Name == name {
-			return r.ID, r.Description, true, nil
+		if r.Name != name {
+			continue
 		}
+		id, err := normalizeMetabaseID(r.ID)
+		if err != nil {
+			return 0, r.Description, false, err
+		}
+		return id, r.Description, true, nil
 	}
 	return 0, "", false, nil
 }
