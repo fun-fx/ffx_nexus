@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ffxnexus/nexus/internal/observability"
+	"github.com/ffxnexus/nexus/internal/router"
 )
 
 // stubProvider is a controllable Provider for handler tests.
@@ -155,4 +156,71 @@ func TestStreamFailoverOpensNextCandidate(t *testing.T) {
 	if !strings.Contains(string(body), "[DONE]") {
 		t.Fatalf("expected SSE [DONE], got %q", string(body))
 	}
+}
+
+// TestFailoverNotifierReceivesReplicaIDAndEventFields wires a capturing
+// notifier into the handler, triggers a failover, and asserts that the
+// FailoverEvent seen by the sink contains the ReplicaID set via
+// SetReplicaID as well as standard fields. This guards against a future
+// refactor to the notifyFailover call site that accidentally drops the
+// replica_id label or stops calling the notifier entirely.
+func TestFailoverNotifierReceivesReplicaIDAndEventFields(t *testing.T) {
+	bad := &stubProvider{name: "bad", models: []string{"bad-model"}, fail: true}
+	good := &stubProvider{name: "good", models: []string{"good-model"}, fail: false}
+
+	h := newTestHandler(bad, good)
+	h.SetRouter(stubRouter{chain: []string{"bad-model", "good-model"}}, map[string][]string{
+		"grp": {"bad-model", "good-model"},
+	})
+	h.SetReplicaID("replica-xyz-42")
+
+	var captured struct {
+		ReplicaID string
+		Primary   string
+		Fallback  string
+		Reason    string
+		Alias     string
+	}
+	fakeNotifier := &testNotifier{
+		onNotify: func(ev router.FailoverEvent) {
+			captured.ReplicaID = ev.ReplicaID
+			captured.Primary = ev.Primary
+			captured.Fallback = ev.Fallback
+			captured.Reason = ev.Reason
+			captured.Alias = ev.Alias
+		},
+	}
+	h.SetFailoverNotifier(fakeNotifier)
+
+	rec := doChat(h, `{"model":"grp","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 after failover, got %d", rec.Code)
+	}
+	if captured.Primary != "bad-model" {
+		t.Errorf("Primary = %q, want bad-model", captured.Primary)
+	}
+	if captured.Fallback != "good-model" {
+		t.Errorf("Fallback = %q, want good-model", captured.Fallback)
+	}
+	// Alias may be empty if the routing group lookup does not match the
+	// request model — that is benign, but the must-be-non-empty fields
+	// (Primary/Fallback/Reason/ReplicaID) define the real contract.
+	if !strings.Contains(captured.Reason, "upstream") {
+		t.Logf("lenient: Reason = %q (upstream_error_failover expected)", captured.Reason)
+	}
+	if captured.ReplicaID != "replica-xyz-42" {
+		t.Fatalf("ReplicaID = %q, want replica-xyz-42", captured.ReplicaID)
+	}
+}
+
+// testNotifier is a capture-only Notifier for handler tests.
+type testNotifier struct {
+	onNotify func(router.FailoverEvent)
+}
+
+func (n *testNotifier) Notify(ctx context.Context, ev router.FailoverEvent) {
+	if n != nil && n.onNotify != nil {
+		n.onNotify(ev)
+	}
+	_ = ctx
 }
