@@ -59,6 +59,7 @@ func main() {
 				"migrations/postgres/005_credential_models.sql",
 				"migrations/postgres/006_eval_scores.sql",
 				"migrations/postgres/007_eval_scores_model.sql",
+				"migrations/postgres/008_onboarded_at.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {

@@ -569,6 +569,12 @@ func (s *Server) createMyCredential(w http.ResponseWriter, r *http.Request, u co
 		return
 	}
 	s.reloadCredentials(r.Context())
+	// Onboarding v1.1: first successful provider-credential create marks the
+	// lightweight "onboarded" flag, so the front-end banner disappears on the
+	// next /api/me fetch. Idempotent at the Store layer (no-op if already set).
+	if err := s.store.MarkOnboarded(r.Context(), u.ID); err != nil && !errors.Is(err, core.ErrNotFound) {
+		s.log.Warn("mark onboarded failed (non-fatal)", "err", err)
+	}
 	writeJSON(w, http.StatusCreated, cred)
 }
 

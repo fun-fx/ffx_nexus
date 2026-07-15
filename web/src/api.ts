@@ -39,6 +39,7 @@ export interface User {
   role: string;
   enforce_limits: boolean;
   created_at: string;
+  onboarded_at?: string; // v1.1 — set after first successful /api/me/credentials create
 }
 
 export interface CredentialModels {

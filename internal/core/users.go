@@ -62,9 +62,9 @@ func (s *Store) CreateUser(ctx context.Context, orgID, actorID, email, password,
 func (s *Store) GetUser(ctx context.Context, id string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, email, role, enforce_limits, created_at
+		SELECT id, org_id, email, role, enforce_limits, created_at, onboarded_at
 		FROM users WHERE id = $1`, id).Scan(
-		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt)
+		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt, &u.OnboardedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -77,7 +77,7 @@ func (s *Store) ListUsers(ctx context.Context, orgID string) ([]User, error) {
 		orgID = "default"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, org_id, email, role, enforce_limits, created_at
+		SELECT id, org_id, email, role, enforce_limits, created_at, onboarded_at
 		FROM users WHERE org_id = $1 ORDER BY created_at`, orgID)
 	if err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ func (s *Store) ListUsers(ctx context.Context, orgID string) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt, &u.OnboardedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -103,9 +103,9 @@ func (s *Store) GetUserByEmail(ctx context.Context, orgID, email string) (User, 
 	}
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, email, role, enforce_limits, created_at
+		SELECT id, org_id, email, role, enforce_limits, created_at, onboarded_at
 		FROM users WHERE org_id = $1 AND email = $2`, orgID, email).Scan(
-		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt)
+		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt, &u.OnboardedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}
@@ -164,6 +164,23 @@ func (s *Store) SetEnforceLimits(ctx context.Context, userID string, enforce boo
 	return nil
 }
 
+// MarkOnboarded stamps users.onboarded_at = now() the first time the
+// lightweight onboarding checklist is satisfied (first successful provider
+// credential create). Idempotent — re-running on a user who already has
+// onboarded_at set is a no-op (the WHERE filter refuses to overwrite).
+func (s *Store) MarkOnboarded(ctx context.Context, userID string) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE users SET onboarded_at = NOW()
+		WHERE id = $1 AND onboarded_at IS NULL`, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteUser removes a user (cascades to their keys, credentials, sessions).
 // actorID is the user_id of the caller (empty for system); recorded in the
 // audit log.
@@ -202,9 +219,9 @@ func (s *Store) Authenticate(ctx context.Context, orgID, email, password string,
 	var u User
 	var hash string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, email, role, enforce_limits, created_at, password_hash
+		SELECT id, org_id, email, role, enforce_limits, created_at, onboarded_at, password_hash
 		FROM users WHERE org_id = $1 AND email = $2`, orgID, email).Scan(
-		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt, &hash)
+		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt, &u.OnboardedAt, &hash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", User{}, ErrInvalidCredentials
 	}
@@ -230,11 +247,11 @@ func (s *Store) Authenticate(ctx context.Context, orgID, email, password string,
 func (s *Store) UserBySession(ctx context.Context, token string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.org_id, u.email, u.role, u.enforce_limits, u.created_at
+		SELECT u.id, u.org_id, u.email, u.role, u.enforce_limits, u.created_at, u.onboarded_at
 		FROM user_sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.expires_at > now()`,
 		crypto.HashKey(token)).Scan(
-		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt)
+		&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt, &u.OnboardedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrNotFound
 	}

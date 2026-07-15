@@ -60,12 +60,13 @@ type ProviderCredential struct {
 // credentials may be owned by a user. Passwords are bcrypt-hashed; the hash is
 // never serialized to API responses.
 type User struct {
-	ID            string    `json:"id"`
-	OrgID         string    `json:"org_id"`
-	Email         string    `json:"email"`
-	Role          string    `json:"role"` // "admin" | "member"
-	EnforceLimits bool      `json:"enforce_limits"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            string     `json:"id"`
+	OrgID         string     `json:"org_id"`
+	Email         string     `json:"email"`
+	Role          string     `json:"role"` // "admin" | "member"
+	EnforceLimits bool       `json:"enforce_limits"`
+	CreatedAt     time.Time  `json:"created_at"`
+	OnboardedAt   *time.Time `json:"onboarded_at,omitempty"` // set on first successful credential create
 }
 
 // Roles for users.
