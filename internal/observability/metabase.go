@@ -370,9 +370,29 @@ func (m *MetabaseBootstrapper) listDataSources(ctx context.Context, session stri
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("list databases status %d: %s", resp.StatusCode, string(raw))
 	}
-	var out []metabaseDatabase
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+	// Metabase 0.50+ wraps the list in {data:[...], total:N, limit:N, offset:N}.
+	// Older versions returned a bare array. Try the wrapped shape first;
+	// fall back to bare-array decode so we keep working against vintage
+	// 0.49.x instances that don't paginate. Both shapes are documented in
+	// the Metabase REST API reference (2024-05 onwards).
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("list databases read: %w", err)
+	}
+	trimmed := bytes.TrimLeft(raw, " \t\r\n")
+	out := []metabaseDatabase{}
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var wrapped struct {
+			Data []metabaseDatabase `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &wrapped); err != nil {
+			return nil, fmt.Errorf("list databases wrapped decode: %w", err)
+		}
+		out = wrapped.Data
+	} else {
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return nil, fmt.Errorf("list databases bare decode: %w", err)
+		}
 	}
 	return out, nil
 }
