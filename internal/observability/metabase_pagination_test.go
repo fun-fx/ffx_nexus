@@ -122,3 +122,89 @@ func TestMetabaseDatabaseWrapperRoundtrip(t *testing.T) {
 
 // sanity guard for common strings.NewReader usage in tests
 var _ = http.MethodGet
+
+// TestClickHouseDetailsVerboseShape covers the clickHouseDetails refactor.
+// The driver-driven "verbose" form (host/port/dbname/user) bypasses the
+// URL-form reaction that has caused the prod cluster to refuse every
+// datasource registration.
+func TestClickHouseDetailsVerboseShape(t *testing.T) {
+	cases := []struct {
+		name, in string
+		want     map[string]any
+	}{
+		{
+			name: "native-driver URL with user, no password",
+			in:   "clickhouse://default:@chendpoint-clickhouse-nexus:9000/nexus",
+			want: map[string]any{
+				"host":   "chendpoint-clickhouse-nexus",
+				"port":   9000,
+				"dbname": "nexus",
+				"user":   "default",
+			},
+		},
+		{
+			name: "native-driver URL with ?database= when path is empty",
+			in:   "clickhouse://default:@chendpoint-clickhouse-nexus:9000/?database=nexus",
+			want: map[string]any{
+				"host":   "chendpoint-clickhouse-nexus",
+				"port":   9000,
+				"dbname": "nexus",
+				"user":   "default",
+			},
+		},
+		{
+			name: "default port 9000 inferred when omitted",
+			in:   "clickhouse://default:@chendpoint-clickhouse-nexus/nexus",
+			want: map[string]any{
+				"host":   "chendpoint-clickhouse-nexus",
+				"port":   9000,
+				"dbname": "nexus",
+				"user":   "default",
+			},
+		},
+		{
+			name: "user and password preserved when present",
+			in:   "clickhouse://alice:s3cret@chendpoint-clickhouse-nexus:9000/db",
+			want: map[string]any{
+				"host":     "chendpoint-clickhouse-nexus",
+				"port":     9000,
+				"dbname":   "db",
+				"user":     "alice",
+				"password": "s3cret",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := clickHouseDetails(tc.in)
+			for k, wantV := range tc.want {
+				if v, ok := got[k]; !ok {
+					t.Errorf("missing key %q in details: %+v", k, got)
+				} else if v != wantV {
+					t.Errorf("key %q: got %v (%T), want %v (%T)", k, v, v, wantV, wantV)
+				}
+			}
+		})
+	}
+}
+
+// TestClickHouseDetailsLegacyBareURL — when the URL is unparseable we
+// fall back to the bare-url form so operators on a strange host scheme
+// (e.g. legacy HTTP-driver URL) still get *something* that's registered.
+func TestClickHouseDetailsLegacyBareURL(t *testing.T) {
+	in := "http://chendpoint-clickhouse-nexus:8123?database=nexus"
+	got := clickHouseDetails(in)
+	// Either verbose form (acceptable) or url fallback (also acceptable).
+	if v, hasURL := got["url"]; hasURL {
+		if v != in {
+			t.Errorf("url fallback divergent: got %v", v)
+		}
+		return
+	}
+	// verbose form: must contain host + dbname at minimum
+	for _, k := range []string{"host", "dbname"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("verbose detail missing %q: %+v", k, got)
+		}
+	}
+}
