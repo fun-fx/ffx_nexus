@@ -253,8 +253,13 @@ func otlpEnvelopeFromTraces(traces []Trace) map[string]any {
 		}
 		// Parent linkage: OTLP shape is parent_span_id on the child
 		// span, not a SpanLink — emit one only when ParentID is present.
+		// OTLP rejects `parent_span_id` that isn't exactly 16 hex
+		// chars, so we run it through hexSpanID (strip dashes, pad if
+		// short, take the first 16 hex digits). Without this, opening
+		// a UX-side parent link to a request UUID would cause the
+		// whole batch to fail with HTTP 400 from the OTLP receiver.
 		if t.ParentID != "" {
-			span["parent_span_id"] = t.ParentID
+			span["parent_span_id"] = hexSpanID(stripDashes(t.ParentID))
 		}
 		// Resource attributes: bucket-by replica; the receiver fans
 		// out metrics+traces into per-replica groups downstream.
@@ -405,13 +410,37 @@ func int64ToString(n int64) string {
 // hexSpanID returns the first 16 hex chars of a (potentially long)
 // trace id; OTLP span_id MUST be exactly 16 hex characters. We use the
 // first half of the trace id so a parent/child pair stay correlated.
+// Strings with non-hex characters (e.g. UUID dashes, base16 with
+// stray chars) get stripped via stripDashes so the resulting id is
+// guaranteed-hex where possible.
 func hexSpanID(traceID string) string {
-	if len(traceID) >= 16 {
-		return traceID[:16]
+	clean := stripDashes(traceID)
+	if len(clean) >= 16 {
+		return clean[:16]
 	}
 	// pad with zeros if trace id is unexpectedly short
 	const padding = "0000000000000000"
-	return traceID + padding[:16-len(traceID)]
+	return clean + padding[:16-len(clean)]
+}
+
+// stripDashes removes hex-disruptors from a span/trace id before we
+// truncate it. OTLP's parent_span_id validator is strict: the bytes
+// must be hex *and* exactly 16 chars long; passing a UUID like
+// `f4b86a08-bbe4-497c-b73e-2c8e1ee86a44` (32 hex + 4 dashes = 36
+// bytes) fails with `invalid length for ID`. Stripping hyphens
+// shrinks it to 32 hex; hexSpanID then takes the first 16. Unknown
+// non-hex characters are left in place — the receiver still rejects
+// them, but in that case the operator gets the original ParseError,
+// not a length error compounded.
+func stripDashes(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '-' && c != ' ' {
+			out = append(out, c)
+		}
+	}
+	return string(out)
 }
 
 // Close drains the buffer and stops the background flusher.

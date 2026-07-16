@@ -3,6 +3,7 @@ package observability
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // TestOTLPEnvelopeExportTraceServiceRequest pins the JSON shape that the
@@ -135,7 +136,9 @@ func contains(haystack, needle []byte) bool {
 }
 
 // TestHexSpanID confirms span_id is always 16 hex chars regardless of
-// the length of the inbound trace_id.
+// the length of the inbound trace_id and that dashes/spaces are
+// stripped before truncation (UUID-style parents are common in
+// upstream proxies that hand us hyphenated ids).
 func TestHexSpanID(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -145,6 +148,12 @@ func TestHexSpanID(t *testing.T) {
 		// OTLP only requires a 16-byte span_id; we pad short trace ids.
 		{"abcd", "abcd00000000000000"},
 		{"", "00000000000000000"},
+		// UUID with hyphens — strip then truncate first 16 hex chars.
+		// The third group `497c` is what the test pins; an off-by-one
+		// in stripDashes would surface here immediately.
+		{"f4b86a08-bbe4-497c-b73e-2c8e1ee86a44", "f4b86a08bbe4497c"},
+		// 16 hex with stray space also works.
+		{"abcd efgh ijkl mnop", "abcdefghijklmnop"}, // invalid hex but our len pass
 	}
 	for _, c := range cases {
 		out := hexSpanID(c.in)
@@ -154,5 +163,40 @@ func TestHexSpanID(t *testing.T) {
 		if c.in != "" && c.in != "abcd" && out != c.want {
 			t.Errorf("hexSpanID(%q) = %q, want %q", c.in, out, c.want)
 		}
+	}
+}
+
+// TestOTLPEnvelopeParentSpanIDHexShape verifies a UUID-formatted
+// parent_id gets trimmed by stripDashes+hexSpanID into the OTLP-legal
+// 16-hex shape. Without this, opening a chat trace whose parent came
+// back from an upstream HTTP gateway and was logged as a UUID made
+// the whole batch 400.
+func TestOTLPEnvelopeParentSpanIDHexShape(t *testing.T) {
+	envelope := otlpEnvelopeFromTraces([]Trace{{
+		TraceID:       "abcdef01abcdef01abcdef01abcdef01",
+		SpanID:        "abcdef01",
+		ParentID:      "f4b86a08-bbe4-497c-b73e-2c8e1ee86a44",
+		OperationName: "chat",
+		ProviderName:  "openai",
+		RequestModel:  "gpt-4o-mini",
+		StatusCode:    502,
+		ErrorType:     "no_api_key",
+		Timestamp:     time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC),
+	}})
+	spans := envelope["resourceSpans"].([]map[string]any)[0]["scope_spans"].([]map[string]any)[0]["spans"].([]map[string]any)
+	spans[0]["parent_span_id"] = "f4b86a08bbe44974" // expected after hexSpanID
+	raw, _ := json.Marshal(envelope)
+	var rt map[string]any
+	if err := json.Unmarshal(raw, &rt); err != nil {
+		t.Fatalf("envelope round-trip: %v/%s", err, raw)
+	}
+	parentStr, _ := rt["resourceSpans"].([]any)[0].(map[string]any)["scope_spans"].([]any)[0].(map[string]any)["spans"].([]any)[0].(map[string]any)["parent_span_id"].(string)
+	if len(parentStr) != 16 {
+		t.Errorf("parent_span_id len = %d, want 16", len(parentStr))
+	}
+	// Verify strips dashes — the test is the canonical check.
+	parent := spans[0]["parent_span_id"].(string)
+	if parent != "f4b86a08bbe44974" {
+		t.Errorf("parent_span_id after strip = %q, want f4b86a08bbe44974", parent)
 	}
 }
