@@ -58,13 +58,24 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	// Trace stream is fanned out to a long-lived batch sender that POSTs
 	// nexus-native JSON envelopes to OTLP/HTTP. Runs on the same
 	// non-blocking hot path semantics as MetricsRecorder.
+	//
+	// When a metrics recorder is also enabled we wire OTLP success/
+	// failure counters into it so `nexus_otlp_export_failures_total{reason}`
+	// / `nexus_otlp_export_traces_total` show up in `/metrics` and can
+	// drive a Grafana alert. Hooks are nil-safe so the OTLP path stays
+	// functional with the zero-dep fast path (no MetricsRecorder).
 	if cfg.OTLPEnabled && cfg.OTLPEndpoint != "" {
-		if otlpRec := observability.NewOTLPRecorder(observability.OTLPOptions{
+		opts := observability.OTLPOptions{
 			Endpoint: cfg.OTLPEndpoint,
 			Timeout:  cfg.UpstreamTimeout,
-		}, log); otlpRec != nil {
+		}
+		if metricsRec != nil {
+			opts.FailureHook = metricsRec.RecordOTLPExportFailure
+			opts.SuccessHook = metricsRec.RecordOTLPExportSuccess
+		}
+		if otlpRec := observability.NewOTLPRecorder(opts, log); otlpRec != nil {
 			recorders = append(recorders, otlpRec)
-			log.Info("otlp exporter enabled", "endpoint", cfg.OTLPEndpoint)
+			log.Info("otlp exporter enabled", "endpoint", cfg.OTLPEndpoint, "metrics_hook", metricsRec != nil)
 		}
 	}
 

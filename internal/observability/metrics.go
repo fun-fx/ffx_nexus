@@ -46,6 +46,13 @@ type MetricsRecorder struct {
 	// qualityScoreSum / qualityScoreCount: model → sum, count (for avg)
 	qualityScoreSum   map[string]float64
 	qualityScoreCount map[string]uint64
+	// otlpExportFailures: reason → count. reason values:
+	//   "http_4xx", "http_5xx", "network", "other".
+	otlpExportFailures map[string]uint64
+	// otlpExportSuccess count: traces successfully POSTed to OTLP.
+	otlpExportSuccess uint64
+	// otlpExportBytes: total payload bytes successfully POSTed.
+	otlpExportBytes uint64
 
 	logger *slog.Logger
 	srv    *http.Server
@@ -71,16 +78,17 @@ func NewMetricsRecorder(addr string, logger *slog.Logger) *MetricsRecorder {
 		return nil
 	}
 	r := &MetricsRecorder{
-		requestCount:      map[labelsKey]uint64{},
-		latencyHist:       map[string]*latencyBuckets{},
-		cacheHitCount:     map[string]uint64{},
-		errorsTotal:       map[labelsKey]uint64{},
-		failoverTotal:     map[labelsKey]uint64{},
-		costTotal:         map[string]uint64{},
-		qualityScoreSum:   map[string]float64{},
-		qualityScoreCount: map[string]uint64{},
-		logger:            logger,
-		addr:              addr,
+		requestCount:       map[labelsKey]uint64{},
+		latencyHist:        map[string]*latencyBuckets{},
+		cacheHitCount:      map[string]uint64{},
+		errorsTotal:        map[labelsKey]uint64{},
+		failoverTotal:      map[labelsKey]uint64{},
+		costTotal:          map[string]uint64{},
+		qualityScoreSum:    map[string]float64{},
+		qualityScoreCount:  map[string]uint64{},
+		otlpExportFailures: map[string]uint64{},
+		logger:             logger,
+		addr:               addr,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", r.handleMetrics)
@@ -181,6 +189,47 @@ func (r *MetricsRecorder) RecordQualityScore(model string, score float64) {
 	r.mu.Lock()
 	r.qualityScoreSum[model] += score
 	r.qualityScoreCount[model]++
+	r.mu.Unlock()
+}
+
+// RecordOTLPExportFailure increments the OTLP-failure counter for the given
+// reason bucket. Reasons are callers' choice — the OTLPRecorder wires:
+//
+//   - "http_4xx"  : collector rejected the envelope (e.g. malformed)
+//   - "http_5xx"  : collector/forwarder-side errors
+//   - "network"   : dns/tcp/tls dial failures
+//   - "other"     : catch-all (marshalling, context cancel)
+//
+// Surface is exposed as `nexus_otlp_export_failures_total{reason}` so an
+// Alertmanager / Grafana rule can page the operator when the failure rate
+// stays above zero for several minutes. We deliberately bucket by reason
+// (not by HTTP status code alone) so non-HTTP failures — DNS, hard reset
+// — stay observable separately from "collector says 400".
+func (r *MetricsRecorder) RecordOTLPExportFailure(reason string) {
+	if r == nil {
+		return
+	}
+	if reason == "" {
+		reason = "other"
+	}
+	r.mu.Lock()
+	r.otlpExportFailures[reason]++
+	r.mu.Unlock()
+}
+
+// RecordOTLPExportSuccess increments the success counter and adds the
+// payload byte size. Mirrors RecordOTLPExportFailure so a Grafana panel
+// can show success-vs-failure ratio over time. bytes is the size of the
+// successfully POSTed envelope; 0 is fine (caller didn't measure).
+func (r *MetricsRecorder) RecordOTLPExportSuccess(bytes int) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.otlpExportSuccess++
+	if bytes > 0 {
+		r.otlpExportBytes += uint64(bytes)
+	}
 	r.mu.Unlock()
 }
 
@@ -313,6 +362,31 @@ func (r *MetricsRecorder) handleMetrics(w http.ResponseWriter, _ *http.Request) 
 		fmt.Fprintf(&b, "nexus_eval_quality_score{gen_ai_request_model=%q} %f\n",
 			m, r.qualityScoreSum[m]/float64(r.qualityScoreCount[m]))
 	}
+
+	// nexus_otlp_export_failures_total{reason}: counter — incremented by
+	// OTLPRecorder.send() on any non-2xx response. Drives the
+	// NexusOTLPExportsFailing alert (5m rate > 0 ⇒ page).
+	fmt.Fprintf(&b, "# HELP nexus_otlp_export_failures_total OTLP exporter failures, bucketed by reason (http_4xx / http_5xx / network / other).\n")
+	fmt.Fprintf(&b, "# TYPE nexus_otlp_export_failures_total counter\n")
+	for _, reason := range sortedKeys(r.otlpExportFailures) {
+		fmt.Fprintf(&b, "nexus_otlp_export_failures_total{reason=%q} %d\n",
+			reason, r.otlpExportFailures[reason])
+	}
+
+	// nexus_otlp_export_traces_total: counter — successful envelope POSTs.
+	// Success/failure ratio is what dashboards graph long-term; a sudden
+	// drop to 0 alongside rising failures_total is the "OTLP went dark"
+	// signature.
+	fmt.Fprintf(&b, "# HELP nexus_otlp_export_traces_total OTLP exporter successful envelope POSTs.\n")
+	fmt.Fprintf(&b, "# TYPE nexus_otlp_export_traces_total counter\n")
+	fmt.Fprintf(&b, "nexus_otlp_export_traces_total %d\n", r.otlpExportSuccess)
+
+	// nexus_otlp_export_bytes_total: counter — bytes successfully POSTed.
+	// Useful when capacity-planning the collector (rate > N MB/s means
+	// we're near the exporter back-pressure threshold).
+	fmt.Fprintf(&b, "# HELP nexus_otlp_export_bytes_total OTLP exporter payload bytes successfully POSTed.\n")
+	fmt.Fprintf(&b, "# TYPE nexus_otlp_export_bytes_total counter\n")
+	fmt.Fprintf(&b, "nexus_otlp_export_bytes_total %d\n", r.otlpExportBytes)
 
 	_, _ = w.Write([]byte(b.String()))
 }
