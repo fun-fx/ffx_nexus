@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -170,9 +171,32 @@ func (r *OTLPRecorder) send(traces []Trace) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		// Surface the response body's first 200 bytes so operators
+		// can spot the receiver's `ReadObjectCB: expect { or n,
+		// but found [,…` reason without reading source. Stdlib
+		// http.Client response body is capped to MaxBytesReader but
+		// collector errors are < 1 KB, so this is safe.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		if r.log != nil {
+			r.log.Warn("otlp export failed",
+				"err", errUnexpectedStatus(resp.StatusCode),
+				"count", len(traces),
+				"status", resp.Status,
+				"body_prefix", string(body),
+				"payload_bytes", len(payload),
+				"payload_head", string(payload[:min(200, len(payload))]),
+			)
+		}
 		return errUnexpectedStatus(resp.StatusCode)
 	}
 	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // otlpEnvelopeFromTraces returns a minimal ExportTraceServiceRequest
