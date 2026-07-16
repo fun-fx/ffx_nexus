@@ -1,25 +1,25 @@
 {
   "name": "03 - Eval Quality",
-  "description": "Quality dashboards: eval-score distribution by model and provider over time. Reads from the eval_scores table (Postgres control plane) joined with gateway_traces (ClickHouse) via virtual_key / replica lookup where applicable.",
+  "description": "Quality dashboards: gatekeeper signals for the gateway. Reads only from the Postgres control plane (eval_scores, provider_credentials, users, virtual_keys). ClickHouse-native joins are simulated here by aggregating the eval_scores table that the eval_worker writes back to Postgres after each run.",
   "cards": [
     {
-      "name": "Model catalog",
+      "name": "Provider catalog",
       "engine": "postgres",
       "display": "table",
       "query": {
         "native": {
-          "query": "SELECT id, provider, created_at FROM model_catalog ORDER BY provider, id",
+          "query": "SELECT provider, name, base_url, enabled, created_at FROM provider_credentials ORDER BY created_at DESC LIMIT 100",
           "template-tags": {}
         }
       }
     },
     {
-      "name": "Recent eval scores",
+      "name": "Recent eval scores (avg by metric, last 7d)",
       "engine": "postgres",
-      "display": "table",
+      "display": "line",
       "query": {
         "native": {
-          "query": "SELECT s.metric, round(avg(s.score)::numeric, 3) AS avg_score, count() AS samples FROM eval_scores s WHERE s.scored_at >= now() - INTERVAL '7 days' GROUP BY s.metric ORDER BY s.metric",
+          "query": "SELECT metric, round(avg(score)::numeric, 3) AS avg_score, count(*) AS samples FROM eval_scores WHERE timestamp >= now() - INTERVAL '7 days' GROUP BY metric ORDER BY metric",
           "template-tags": {}
         }
       }
@@ -31,6 +31,28 @@
       "query": {
         "native": {
           "query": "SELECT u.email, u.role, u.created_at FROM users u ORDER BY u.created_at DESC LIMIT 50",
+          "template-tags": {}
+        }
+      }
+    },
+    {
+      "name": "Virtual keys by vkey",
+      "engine": "postgres",
+      "display": "table",
+      "query": {
+        "native": {
+          "query": "SELECT id, name, key_prefix, rpm_limit, monthly_budget_usd, revoked, created_at FROM virtual_keys ORDER BY created_at DESC LIMIT 100",
+          "template-tags": {}
+        }
+      }
+    },
+    {
+      "name": "Audit log tails",
+      "engine": "postgres",
+      "display": "table",
+      "query": {
+        "native": {
+          "query": "SELECT actor, action, target_id, created_at FROM audit_log ORDER BY created_at DESC LIMIT 100",
           "template-tags": {}
         }
       }
