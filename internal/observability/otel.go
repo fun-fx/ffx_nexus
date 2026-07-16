@@ -16,6 +16,15 @@ import (
 // adapter: the collector does the heavy lifting of turning the envelope
 // into Prometheus remote-write, Tempo, Honeycomb, Jaeger, etc.
 //
+// Envelope shape: OTLP/HTTP+JSON Protobuf wire format (`ExportTraceServiceRequest`):
+//
+//	{
+//	  "resourceSpans": [
+//	    { "resource": {"attributes":[...]}, "scope_spans":[ { "scope": ..., "spans":[ ... ] } ] },
+//	    ...
+//	  ]
+//	}
+//
 // Failures are loud (logged) but never block the gateway — observability
 // adapters run in the hot path asynchronously, same as the CHRecorder and
 // MetricsRecorder. Disable by leaving NEXUS_OTLP_ENDPOINT empty.
@@ -130,14 +139,21 @@ func (r *OTLPRecorder) loop(batchSize int, flushEvery time.Duration) {
 	}
 }
 
-// send batches the traces into a single HTTP POST. We send a slim envelope
-// (just the per-trace key/value tuples) so the collector can map it into
-// OTLP resources/spans without needing the protobuf types in-process.
-// Operators who need strict OTLP/protobuf can run our collector alongside
-// a transformation pipeline (otel-collector-config defined in
-// deploy/observability/otel-collector-config.yml does exactly that).
+// send batches the traces into a single HTTP POST. We wrap each batch
+// of Nexus traces in the OTLP/HTTP+JSON envelope (`ExportTraceServiceRequest`)
+// so the collector's `otlp` receiver can ingest it directly. The bare
+// Trace-array shape that we used to send (a JSON `[{"trace_id": ...}]`)
+// fails with a 400 because the OTLP receiver expects a single
+// ExportTraceServiceRequest object (`{"resourceSpans":[...]}`).
+//
+// `internal/observability/otel` only ships a JSON adapter — operators
+// who need protobuf can run our collector alongside a transformation
+// pipeline reusing the same envelope (deploy/observability/otel-collector-config.yml
+// matches both). The JSON shape follows the OTLP spec
+// (https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding).
 func (r *OTLPRecorder) send(traces []Trace) error {
-	payload, err := json.Marshal(traces)
+	envelope := otlpEnvelopeFromTraces(traces)
+	payload, err := json.Marshal(envelope)
 	if err != nil {
 		return err
 	}
@@ -157,6 +173,221 @@ func (r *OTLPRecorder) send(traces []Trace) error {
 		return errUnexpectedStatus(resp.StatusCode)
 	}
 	return nil
+}
+
+// otlpEnvelopeFromTraces returns a minimal ExportTraceServiceRequest
+// carrying the given Nexus traces. Each trace maps to a single OTLP
+// span under one ResourceSpans bucket, keyed by `replica_id`. Field
+// names follow the OTLP/JSON spec directly (`trace_id`, `span_id`,
+// `attributes`/`key`/`value`/`string_value`, etc.); the collector
+// unmarshals them as Protobuf JSON and treats them as ordinary spans.
+func otlpEnvelopeFromTraces(traces []Trace) map[string]any {
+	resourceSpans := []map[string]any{}
+	for _, t := range traces {
+		attrs := filterNil([]map[string]any{
+			kv("gen_ai.operation.name", stringOr(t.OperationName, "chat")),
+			kv("gen_ai.provider.name", t.ProviderName),
+			kv("gen_ai.request.model", t.RequestModel),
+			kv("gen_ai.response.model", t.ResponseModel),
+			kv("gen_ai.response.finish_reasons", t.FinishReason),
+			kv("nexus.org_id", t.OrgID),
+			kv("nexus.user_id", t.UserID),
+			kv("nexus.virtual_key_id", t.VirtualKeyID),
+			kv("nexus.credential_source", t.CredentialSource),
+			kv("nexus.status_code", intToString(t.StatusCode)),
+			kv("nexus.error_type", t.ErrorType),
+			kv("nexus.error_message", t.ErrorMsg),
+			kv("nexus.replica_id", t.ReplicaID),
+			// sentinel markers so the collector can attach them as
+			// numeric filterable fields; these match the Nexus-side
+			// Prometheus labels used in the
+			// `nexus_gateway_*` & `nexus_eval_*` dashboards.
+			kv("nexus.cost_usd_micros", intToString(int(t.CostUSD*1_000_000))),
+			kv("nexus.input_tokens", intToString(t.InputTokens)),
+			kv("nexus.output_tokens", intToString(t.OutputTokens)),
+			kv("nexus.ttft_ms", int64ToString(t.TTFTMillis)),
+			kv("nexus.latency_ms", int64ToString(t.LatencyMs)),
+			kv("nexus.streamed", boolToString(t.Streamed)),
+			kv("nexus.cache_hit", boolToString(t.CacheHit)),
+			kv("nexus.guardrail_action", t.GuardrailAction),
+			kv("nexus.temperature", floatToString(t.Temperature)),
+			kv("nexus.top_p", floatToString(t.TopP)),
+			kv("nexus.max_tokens", intToString(t.MaxTokens)),
+		})
+		// OTLP requires trace_id + span_id to be hex-encoded strings.
+		spanID := t.SpanID
+		if spanID == "" {
+			spanID = hexSpanID(t.TraceID)
+		}
+		span := map[string]any{
+			"trace_id":             t.TraceID,
+			"span_id":              spanID,
+			"name":                 "gen_ai." + stringOr(t.OperationName, "chat"),
+			"start_time_unix_nano": int64Or(t.Timestamp.UnixNano(), 0),
+			"end_time_unix_nano":   int64Or(t.Timestamp.Add(time.Duration(t.LatencyMs)*time.Millisecond).UnixNano(), 0),
+			"attributes":           attrs,
+		}
+		// Parent linkage: OTLP shape is parent_span_id on the child
+		// span, not a SpanLink — emit one only when ParentID is present.
+		if t.ParentID != "" {
+			span["parent_span_id"] = t.ParentID
+		}
+		// Resource attributes: bucket-by replica; the receiver fans
+		// out metrics+traces into per-replica groups downstream.
+		resourceAttrs := []map[string]any{
+			kv("service.name", "nexus"),
+			kv("service.namespace", "gateway"),
+		}
+		if t.ReplicaID != "" {
+			resourceAttrs = append(resourceAttrs, kv("service.instance.id", t.ReplicaID))
+		}
+		resourceSpans = append(resourceSpans, map[string]any{
+			"resource": map[string]any{
+				"attributes": resourceAttrs,
+			},
+			"scope_spans": []map[string]any{
+				{
+					"scope": map[string]any{
+						"name":    "ffx_nexus",
+						"version": "0.5.0",
+					},
+					"spans": []map[string]any{span},
+				},
+			},
+		})
+	}
+	return map[string]any{"resourceSpans": resourceSpans}
+}
+
+// filterNil returns the input slice with nil entries removed; keeps
+// the OTLP attribute array free of `null` placeholders that the
+// receiver would reject.
+func filterNil(xs []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(xs))
+	for _, x := range xs {
+		if x != nil {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func floatToString(f float64) string {
+	if f == 0 {
+		return "0"
+	}
+	// OTLP attribute values are strings; emit a decimal form. We
+	// avoid strconv.FormatFloat because we want stable output for
+	// dashboards.
+	return fmtFloat(f)
+}
+
+func fmtFloat(f float64) string {
+	// simple, stable decimal formatter (rounded to 4 dp)
+	if f < 0 {
+		return "-" + fmtFloat(-f)
+	}
+	intPart := int64(f)
+	frac := f - float64(intPart)
+	fracStr := ""
+	if frac != 0 {
+		fracInt := int64(frac * 10000.0)
+		fracStr = "." + fmtInts(fracInt)
+	}
+	return fmtInts(intPart) + fracStr
+}
+
+func fmtInts(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+// kv returns an OTLP attribute key/value pair as a map[string]any,
+// shaped as a proto JSON {"key":"...", "value":{"string_value":"..."}}.
+// Kept package-local so it composes with kafka/grpc.json round-trips.
+func kv(k, v string) map[string]any {
+	if v == "" {
+		// Filter empty values so the rendered attribute list stays
+		// compact; the collector would happily accept "" but operators
+		// reading the raw json find it noisy.
+		return nil
+	}
+	return map[string]any{
+		"key":   k,
+		"value": map[string]any{"string_value": v},
+	}
+}
+
+func stringOr(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+func boolToString(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+func int64Or(v, fallback int64) int64 {
+	if v == 0 {
+		return fallback
+	}
+	return v
+}
+
+func int64ToString(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [21]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+// hexSpanID returns the first 16 hex chars of a (potentially long)
+// trace id; OTLP span_id MUST be exactly 16 hex characters. We use the
+// first half of the trace id so a parent/child pair stay correlated.
+func hexSpanID(traceID string) string {
+	if len(traceID) >= 16 {
+		return traceID[:16]
+	}
+	// pad with zeros if trace id is unexpectedly short
+	const padding = "0000000000000000"
+	return traceID + padding[:16-len(traceID)]
 }
 
 // Close drains the buffer and stops the background flusher.

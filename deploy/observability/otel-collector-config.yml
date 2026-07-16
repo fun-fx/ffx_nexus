@@ -5,6 +5,13 @@
 # + the OTLP exporter), and the collector forwards them to Prometheus, Loki,
 # Tempo, Jaeger, Honeycomb, etc. — without Nexus caring which backend the
 # operator chose. See ../docker-compose.yml#observability profile.
+#
+# Wire format: Nexus emits an OTLP/HTTP+JSON `ExportTraceServiceRequest`
+# envelope (`{"resourceSpans":[ { "resource":..., "scope_spans":[ { "scope":..., "spans":[...] } ] } ]}`).
+# The receiver on :4318 unmarshals it as Protobuf JSON; this is what
+# the OTLP spec designates for cross-process trace ingestion, and what
+# the `otlptracehttp` exporter emits at any other site (libraries,
+# agents, gateway proxies). Operators do not need to do anything here.
 receivers:
   otlp:
     protocols:

@@ -480,9 +480,9 @@ func (m *MetabaseBootstrapper) putOwnedDataSource(ctx context.Context, session s
 // clickHouseDetails converts an HTTP SQL endpoint into the Metabase "details"
 // shape. Metabase's bundled clickhouse-jdbc driver accepts two shapes:
 //
-//   1. (verbose) keys: { "host": "...", "port": 9000, "dbname": "...",
-//      "user": "...", "password": "..." }, or
-//   2. (URL form)  keys: { "url": "clickhouse://...?user=...?password=..." }
+//  1. (verbose) keys: { "host": "...", "port": 9000, "dbname": "...",
+//     "user": "...", "password": "..." }, or
+//  2. (URL form)  keys: { "url": "clickhouse://...?user=...?password=..." }
 //
 // Pattern 1 is what the driver parses first; the URL form is a fallback
 // added in newer clickhouse-jdbc versions but Metabase 0.49.x's wrapping
@@ -573,20 +573,20 @@ func clickHouseDetails(endpoint string) map[string]any {
 // Metabase's postgres-jdbc driver accepts two forms when registering a
 // data source:
 //
-//   1. (verbose) keys: { "host": "...", "port": 5432, "dbname": "...",
-//                         "user": "...", "password": "...", "ssl": false }
-//   2. (URL shortcut) { "connection-string": "jdbc:postgresql://..." }
+//  1. (verbose) keys: { "host": "...", "port": 5432, "dbname": "...",
+//     "user": "...", "password": "...", "ssl": false }
+//  2. (URL shortcut) { "connection-string": "jdbc:postgresql://..." }
 //
 // We always emit the verbose form: when the operator passes the entire
 // URL, Metabase pre-pends `jdbc:postgresql://localhost:5432/` and
 // appends the user-supplied URL as a path segment, producing a string
 // like
 //
-//     jdbc:postgresql://localhost:5432/postgresql://nexus:pw@host:5432/db
+//	jdbc:postgresql://localhost:5432/postgresql://nexus:pw@host:5432/db
 //
 // which Metabase rejects with
 //
-//     "Unable to parse URL jdbc:postgresql://localhost:5432/postgresql:..."
+//	"Unable to parse URL jdbc:postgresql://localhost:5432/postgresql:..."
 //
 // The verbose form avoids the entire URL round-trip. `sslmode=disable`
 // in the URL is converted into the boolean `ssl=false` field because
@@ -930,18 +930,18 @@ func (m *MetabaseBootstrapper) findCollectionWithDescription(ctx context.Context
 //
 // The Metabase POST /api/card payload shape (0.46 + 0.50) is:
 //
-//   {
-//     "name":               "...",
-//     "display":            "line",
-//     "collection_id":       42,
-//     "database_id":         7,
-//     "dataset_query": {
-//                            "type":    "native",
-//                            "database": 7,
-//                            "native":  { "query": "...", "template-tags": {} }
-//                          },
-//     "visualization_settings": { … }
-//   }
+//	{
+//	  "name":               "...",
+//	  "display":            "line",
+//	  "collection_id":       42,
+//	  "database_id":         7,
+//	  "dataset_query": {
+//	                         "type":    "native",
+//	                         "database": 7,
+//	                         "native":  { "query": "...", "template-tags": {} }
+//	                       },
+//	  "visualization_settings": { … }
+//	}
 //
 // Earlier versions of this code used the field name "query" instead of
 // "dataset_query", which Metabase 0.50 silently strips on round-trip —
@@ -966,10 +966,10 @@ func (m *MetabaseBootstrapper) ensureCard(ctx context.Context, session string, c
 		nativeQuery["template-tags"] = map[string]any{}
 	}
 	payload := map[string]any{
-		"name":                   name,
-		"display":                display,
-		"collection_id":          collectionID,
-		"database_id":            dbID,
+		"name":          name,
+		"display":       display,
+		"collection_id": collectionID,
+		"database_id":   dbID,
 		"dataset_query": map[string]any{
 			"type":     "native",
 			"database": dbID,

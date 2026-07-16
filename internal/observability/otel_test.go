@@ -73,14 +73,52 @@ func TestOTLPRecorderRoundTrip(t *testing.T) {
 		t.Fatal("server received no bodies")
 	}
 
-	// Decode at least one body and confirm it's a valid JSON envelope of
-	// our Trace type — i.e. the adapter preserved the data shape.
-	var rows []Trace
-	if err := json.Unmarshal(lastBodies[len(lastBodies)-1], &rows); err != nil {
-		t.Fatalf("last body is not our JSON envelope: %v (%q)", err, lastBodies[len(lastBodies)-1])
+	// Decode at least one body and confirm it's the OTLP envelope
+	// shape (`resourceSpans` array, not a bare JSON array of Trace).
+	// This is the exact fix for the V3 `otlp unexpected status code 400`
+	// reported from production.
+	//
+	// Note: with BatchSize=1, each Record call flushes individually, so
+	// `lastBodies` has 2 envelopes. We scan them all and assert both
+	// trace ids made it into the envelope in some order.
+	//
+	// OTLP uses snake_case JSON keys (`scope_spans`, `resource_spans`,
+	// `trace_id`, …) so we decode into a `map[string]any` instead of a
+	// Go struct to avoid a json tag schema duplicate.
+	seenTraceIDs := map[string]bool{}
+	scopeNames := map[string]int{}
+	for _, body := range lastBodies {
+		var env map[string]any
+		if err := json.Unmarshal(body, &env); err != nil {
+			t.Fatalf("body is not OTLP envelope: %v (%q)", err, body)
+		}
+		rsAny, _ := env["resourceSpans"].([]any)
+		if len(rsAny) == 0 {
+			continue
+		}
+		rs, _ := rsAny[0].(map[string]any)
+		ssAny, _ := rs["scope_spans"].([]any)
+		if len(ssAny) == 0 {
+			t.Fatalf("scope_spans empty; body=%s", body)
+		}
+		ss, _ := ssAny[0].(map[string]any)
+		scope := ss["scope"].(map[string]any)
+		scopeNames[scope["name"].(string)]++
+		spans, _ := ss["spans"].([]any)
+		for _, sAny := range spans {
+			s, _ := sAny.(map[string]any)
+			if id, ok := s["trace_id"].(string); ok {
+				seenTraceIDs[id] = true
+			}
+		}
 	}
-	if len(rows) == 0 {
-		t.Fatal("envelope was empty")
+	if scopeNames["ffx_nexus"] == 0 {
+		t.Errorf("expected scope name ffx_nexus in some envelope, got %v", scopeNames)
+	}
+	for _, want := range []string{"trace-1", "trace-2"} {
+		if !seenTraceIDs[want] {
+			t.Errorf("trace id %q did not appear in any envelope", want)
+		}
 	}
 }
 
