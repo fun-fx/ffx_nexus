@@ -154,6 +154,22 @@ metrics:
   failoverSlack: ""             # NEXUS_FAILOVER_SLACK_WEBHOOK
   failoverAlertCooldown: 0s     # NEXUS_FAILOVER_ALERT_COOLDOWN; 0 = off
 
+  # --- SSO (Keycloak or any standard OIDC IdP, V5+) -------------------------
+  # Independent of any other knob. Empty issuer ⇒ SSOConfig.Enabled()=false
+  # ⇒ /api/auth/sso/* routes are not registered, the UI hides the button.
+  # Set issuer + clientId + redirectUrl here; put the client secret under
+  # secrets.ssoClientSecret below. Keycloak example:
+  #   issuer:      "https://keycloak.example/realms/cozy"
+  #   clientId:    "nexus-console"
+  #   redirectUrl: "https://console.example/api/auth/sso/callback"
+  # The redirectUrl MUST be registered in your IdP as a valid redirect URI;
+  # mismatches cause OIDC state-mismatch errors on /api/auth/sso/callback.
+  sso:
+    issuer: ""                  # NEXUS_SSO_ISSUER
+    clientId: ""                # NEXUS_SSO_CLIENT_ID
+    redirectUrl: ""             # NEXUS_SSO_REDIRECT_URL
+    label: ""                   # NEXUS_SSO_LABEL  (defaults to "SSO" in code)
+
   # --- Metabase BI adapter (mirror of the V3 OTLP toggle) --------------------
   # Empty url means the adapter is fully off — NewMetabaseBootstrapper returns
   # nil, no goroutines, no DNS, no boot network calls. Set the URL to point at
@@ -239,6 +255,9 @@ secrets:
   # org has no users yet; safe to leave set afterward. Provide both to enable.
   adminEmail: ""
   adminPassword: ""
+  # OIDC client secret for SSO. Issuer/ClientID/RedirectURL live under config.sso;
+  # only the secret stays here.
+  ssoClientSecret: ""
 
 # Escape hatch for arbitrary extra env (non-secret).
 extraEnv: []
