@@ -569,11 +569,85 @@ func clickHouseDetails(endpoint string) map[string]any {
 }
 
 // postgresDetails converts a Postgres URL into the Metabase details shape.
+//
+// Metabase's postgres-jdbc driver accepts two forms when registering a
+// data source:
+//
+//   1. (verbose) keys: { "host": "...", "port": 5432, "dbname": "...",
+//                         "user": "...", "password": "...", "ssl": false }
+//   2. (URL shortcut) { "connection-string": "jdbc:postgresql://..." }
+//
+// We always emit the verbose form: when the operator passes the entire
+// URL, Metabase pre-pends `jdbc:postgresql://localhost:5432/` and
+// appends the user-supplied URL as a path segment, producing a string
+// like
+//
+//     jdbc:postgresql://localhost:5432/postgresql://nexus:pw@host:5432/db
+//
+// which Metabase rejects with
+//
+//     "Unable to parse URL jdbc:postgresql://localhost:5432/postgresql:..."
+//
+// The verbose form avoids the entire URL round-trip. `sslmode=disable`
+// in the URL is converted into the boolean `ssl=false` field because
+// Metabase expects a tristate boolean, not a libpq string.
+//
+// If the input isn't a parseable URL (i.e. the operator has hard-coded
+// `host`, `port` strings), we leave the `connection-string` field alone
+// so the operator's chosen shape round-trips untouched.
 func postgresDetails(jdbcURL string) map[string]any {
 	out := map[string]any{}
-	// Metabase accepts jdbc:postgresql://... — leave as-is for the operator
-	// to override via env if a non-URL scheme is preferred.
-	out["db"] = jdbcURL
+	u, err := url.Parse(jdbcURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		// Fallback: bare URL mode. Metabase will accept
+		// "jdbc:postgresql://host:port/db" without further keying.
+		if jdbcURL != "" {
+			out["connection-string"] = jdbcURL
+		}
+		return out
+	}
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" {
+		port = "5432"
+	}
+	out["host"] = host
+	if p, perr := strconv.Atoi(port); perr == nil {
+		out["port"] = p
+	}
+	if u.User != nil {
+		name := u.User.Username()
+		pw, hasPw := u.User.Password()
+		if name != "" {
+			out["user"] = name
+		}
+		// Same caveat as clickHouseDetails: explicit empty password is
+		// interpreted by postgres-jdbc as "non-empty creds, invalid pw".
+		// When the operator passes `nexus:@host:5432/nexus` (a user
+		// without a password), we omit the field so the driver sends
+		// no Authorization header. See internal/observability/metabase.go
+		// commit history for the clickhouse parallel.
+		if hasPw && pw != "" {
+			out["password"] = pw
+		}
+	}
+	dbName := strings.TrimPrefix(u.Path, "/")
+	if dbName != "" {
+		out["dbname"] = dbName
+	}
+	// sslmode=disable → ssl=false; sslmode=require / verify-full → ssl=true.
+	// Default (no sslmode) → ssl=false matches the cluster's CNPG setup.
+	if u.RawQuery != "" {
+		q, _ := url.ParseQuery(u.RawQuery)
+		if v := q.Get("sslmode"); v != "" {
+			switch strings.ToLower(v) {
+			case "disable", "allow", "prefer":
+				out["ssl"] = false
+			default:
+				out["ssl"] = true
+			}
+		}
+	}
 	return out
 }
 
