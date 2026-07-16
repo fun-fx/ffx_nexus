@@ -37,17 +37,30 @@ type OTLPRecorder struct {
 	done     chan struct{}
 	wg       sync.WaitGroup
 	closed   chan struct{}
+
+	// failureHook is invoked synchronously from the flusher goroutine
+	// whenever send() returns a non-nil error. Callers wire it from
+	// compose.go (typically to MetricsRecorder.RecordOTLPExportFailure)
+	// so the OTLP-failure rate shows up as a Prometheus series and can
+	// drive an alert. Nil → no-op; we don't log every flush noise.
+	failureHook func(reason string)
+	// successHook fires after a successful 2xx POST. Used by the same
+	// metrics recorder to track successes and byte volume; same nil
+	// semantics as failureHook.
+	successHook func(bytes int)
 }
 
 // OTLPOptions configures the OTLP adapter (HTTP only — gRPC is out of
 // scope for V3; OTel operators typically expose proxy.otlptracegrpc on a
 // different port not worth opening here).
 type OTLPOptions struct {
-	Endpoint   string        // full URL like http://otel-collector:4318/v1/traces
-	BatchSize  int           // default 200
-	FlushEvery time.Duration // default 2s
-	BufferSize int           // default 10000
-	Timeout    time.Duration // default 5s per batch send
+	Endpoint    string        // full URL like http://otel-collector:4318/v1/traces
+	BatchSize   int           // default 200
+	FlushEvery  time.Duration // default 2s
+	BufferSize  int           // default 10000
+	Timeout     time.Duration // default 5s per batch send
+	FailureHook func(reason string)
+	SuccessHook func(bytes int)
 }
 
 // NewOTLPRecorder returns nil if Endpoint is empty (callers should treat
@@ -70,8 +83,10 @@ func NewOTLPRecorder(opts OTLPOptions, log *slog.Logger) *OTLPRecorder {
 		opts.Timeout = 5 * time.Second
 	}
 	rec := &OTLPRecorder{
-		log:      log,
-		endpoint: opts.Endpoint,
+		log:         log,
+		endpoint:    opts.Endpoint,
+		failureHook: opts.FailureHook,
+		successHook: opts.SuccessHook,
 		client: &http.Client{
 			Timeout: opts.Timeout,
 		},
@@ -152,31 +167,40 @@ func (r *OTLPRecorder) loop(batchSize int, flushEvery time.Duration) {
 // pipeline reusing the same envelope (deploy/observability/otel-collector-config.yml
 // matches both). The JSON shape follows the OTLP spec
 // (https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding).
+//
+// On any non-2xx response we classify the failure (`http_4xx`, `http_5xx`)
+// and invoke `failureHook` so the metrics surface (`nexus_otlp_export_failures_total{reason}`)
+// records it. Network errors (DNS / dial / TLS) are bucketed as `network`;
+// transport-layer messaging failures (Json marshal / context cancel)
+// fall under `other`. Reason-specific buckets let Grafana alerts
+// distinguish "collector rejected envelope" from "collector unreachable".
 func (r *OTLPRecorder) send(traces []Trace) error {
 	envelope := otlpEnvelopeFromTraces(traces)
 	payload, err := json.Marshal(envelope)
 	if err != nil {
+		r.invokeFailureHook("other", err)
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.client.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint, bytes.NewReader(payload))
 	if err != nil {
+		r.invokeFailureHook("other", err)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := r.client.Do(req)
 	if err != nil {
+		// Treat any client.Do() error (DNS, dial, TLS, conn-reset) as a
+		// network-side failure; this is the bucket alerts page on when
+		// the collector pod disappears.
+		r.invokeFailureHook("network", err)
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		// Surface the response body's first 200 bytes so operators
-		// can spot the receiver's `ReadObjectCB: expect { or n,
-		// but found [,…` reason without reading source. Stdlib
-		// http.Client response body is capped to MaxBytesReader but
-		// collector errors are < 1 KB, so this is safe.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		reason := otlpStatusReason(resp.StatusCode)
 		if r.log != nil {
 			r.log.Warn("otlp export failed",
 				"err", errUnexpectedStatus(resp.StatusCode),
@@ -185,11 +209,49 @@ func (r *OTLPRecorder) send(traces []Trace) error {
 				"body_prefix", string(body),
 				"payload_bytes", len(payload),
 				"payload_head", string(payload[:min(200, len(payload))]),
+				"reason", reason,
 			)
 		}
+		r.invokeFailureHook(reason, errUnexpectedStatus(resp.StatusCode))
 		return errUnexpectedStatus(resp.StatusCode)
 	}
+	if r.successHook != nil {
+		r.successHook(len(payload))
+	}
 	return nil
+}
+
+// invokeFailureHook fires the optional metrics hook without panicking
+// if the caller wired a nil hook — keeps the send() flow non-blocking
+// and consistent regardless of OTLPOptions.FailureHook being set.
+func (r *OTLPRecorder) invokeFailureHook(reason string, cause error) {
+	if r.failureHook == nil {
+		return
+	}
+	defer func() {
+		// Never let a hook panic kill the flusher goroutine; we'd
+		// rather lose one metric increment than the whole OTLP
+		// export pipeline. Note: a metrics-recorder hook should not
+		// panic in practice, but defensive recovery here means an
+		// operator bug never converts into a fleet-wide outage.
+		_ = recover()
+	}()
+	r.failureHook(reason)
+}
+
+// otlpStatusReason maps an HTTP status code to the bucket name we
+// surface in metrics + logs. 4xx split from 5xx so an alert can
+// distinguish "envelope rejected" (likely our fix needed) from
+// "collector overloaded" (likely capacity / fleet issue).
+func otlpStatusReason(code int) string {
+	switch {
+	case code >= 400 && code < 500:
+		return "http_4xx"
+	case code >= 500:
+		return "http_5xx"
+	default:
+		return "other"
+	}
 }
 
 func min(a, b int) int {
