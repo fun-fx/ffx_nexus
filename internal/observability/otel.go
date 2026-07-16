@@ -238,13 +238,28 @@ func otlpEnvelopeFromTraces(traces []Trace) map[string]any {
 			kv("nexus.top_p", floatToString(t.TopP)),
 			kv("nexus.max_tokens", intToString(t.MaxTokens)),
 		})
-		// OTLP requires trace_id + span_id to be hex-encoded strings.
-		spanID := t.SpanID
-		if spanID == "" {
-			spanID = hexSpanID(t.TraceID)
+		// OTLP requires trace_id (32 hex chars) + span_id (16 hex chars)
+		// to be hex-encoded strings with no separators. Nexus upstream
+		// IDs are usually UUIDs (`xxxxxxxx-xxxx-...`) when they come
+		// from request_id, and 32-hex when they come from our own
+		// tracing layer. We normalize both via stripDashes+hexSpanID
+		// so the receiver's `parse trace_id:invalid length for ID`
+		// never fires regardless of where the ID originated.
+		spanID := hexSpanID(stripDashes(t.SpanID))
+		if spanID == "" || spanID == "0000000000000000" {
+			// SpanID was empty or got reduced to zeros; fall back to
+			// the trimmed trace_id so parent/child still correlate.
+			spanID = hexSpanID(stripDashes(t.TraceID))
+		}
+		traceID32 := stripDashes(t.TraceID)
+		if len(traceID32) >= 32 {
+			traceID32 = traceID32[:32]
+		} else if len(traceID32) < 32 {
+			const padding = "00000000000000000000000000000000"
+			traceID32 = traceID32 + padding[:32-len(traceID32)]
 		}
 		span := map[string]any{
-			"trace_id":             t.TraceID,
+			"trace_id":             traceID32,
 			"span_id":              spanID,
 			"name":                 "gen_ai." + stringOr(t.OperationName, "chat"),
 			"start_time_unix_nano": int64Or(t.Timestamp.UnixNano(), 0),

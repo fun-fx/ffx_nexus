@@ -48,8 +48,8 @@ func TestOTLPRecorderRoundTrip(t *testing.T) {
 	t.Cleanup(func() { _ = rec.Close(context.Background()) })
 
 	rec.Record(Trace{
-		TraceID:       "trace-1",
-		SpanID:        "span-1",
+		TraceID:       "abcdef01abcdef01abcdef01abcdef01",
+		SpanID:        "abcdef01",
 		OperationName: "chat",
 		RequestModel:  "gemini-2.5-flash",
 		ReplicaID:     "test-replica",
@@ -57,8 +57,8 @@ func TestOTLPRecorderRoundTrip(t *testing.T) {
 		StatusCode:    200,
 	})
 	rec.Record(Trace{
-		TraceID:    "trace-2",
-		SpanID:     "span-2",
+		TraceID:    "cafef00dcafef00dcafef00dcafef00d",
+		SpanID:     "cafef00d",
 		StatusCode: 502,
 		ErrorType:  "upstream_error",
 	})
@@ -115,7 +115,7 @@ func TestOTLPRecorderRoundTrip(t *testing.T) {
 	if scopeNames["ffx_nexus"] == 0 {
 		t.Errorf("expected scope name ffx_nexus in some envelope, got %v", scopeNames)
 	}
-	for _, want := range []string{"trace-1", "trace-2"} {
+	for _, want := range []string{"abcdef01abcdef01abcdef01abcdef01", "cafef00dcafef00dcafef00dcafef00d"} {
 		if !seenTraceIDs[want] {
 			t.Errorf("trace id %q did not appear in any envelope", want)
 		}
