@@ -1,6 +1,85 @@
 package gateway
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// parseMessageContent accepts OpenAI Chat Completions content shapes:
+//   - string
+//   - array of {type,text} parts (Cursor Agent / multimodal clients)
+//
+// Non-text parts (e.g. image_url) are skipped; text parts are joined with newlines.
+func parseMessageContent(raw json.RawMessage) (string, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return "", err
+		}
+		return s, nil
+	}
+	if trimmed[0] != '[' {
+		return "", fmt.Errorf("content must be a string or an array of parts")
+	}
+	var parts []struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		InputText string `json:"input_text"` // Responses-style alias
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		text := p.Text
+		if text == "" {
+			text = p.InputText
+		}
+		if text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(text)
+	}
+	return b.String(), nil
+}
+
+// UnmarshalJSON accepts both string content and multimodal part arrays so
+// Cursor Agent and other OpenAI-compatible clients can POST to /v1/chat/completions.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type messageFields struct {
+		Role       string     `json:"role"`
+		Name       string     `json:"name,omitempty"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
+	}
+	var raw struct {
+		messageFields
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Role = raw.Role
+	m.Name = raw.Name
+	m.ToolCalls = raw.ToolCalls
+	m.ToolCallID = raw.ToolCallID
+	if raw.Content != nil {
+		text, err := parseMessageContent(raw.Content)
+		if err != nil {
+			return err
+		}
+		m.Content = text
+	}
+	return nil
+}
 
 // This file defines the OpenAI-compatible wire schema used as the canonical
 // internal representation. Provider adapters translate between this schema and
