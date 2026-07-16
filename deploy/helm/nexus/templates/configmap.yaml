@@ -133,6 +133,27 @@ data:
   NEXUS_FAILOVER_ALERT_COOLDOWN: {{ .Values.config.failoverAlertCooldown | quote }}
   {{- end }}
 
+  {{- /* OIDC / SSO (Keycloak or any compliant IdP). Four env vars:
+        NEXUS_SSO_ISSUER, NEXUS_SSO_CLIENT_ID, NEXUS_SSO_REDIRECT_URL,
+        NEXUS_SSO_LABEL. The client secret lives in Secrets (not ConfigMap).
+        Empty issuer disables the flow (SSOConfig.Enabled() returns false and
+        /api/auth/sso/* routes are absent). Wrap in `with .Values.config.sso`
+        to stay safe against partial overrides that omit the block. */}}
+  {{- with .Values.config.sso }}
+  {{- with .issuer }}
+  NEXUS_SSO_ISSUER: {{ . | quote }}
+  {{- end }}
+  {{- with .clientId }}
+  NEXUS_SSO_CLIENT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .redirectUrl }}
+  NEXUS_SSO_REDIRECT_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .label }}
+  NEXUS_SSO_LABEL: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+
   {{- /* Metabase BI adapter — empty url field means the adapter is off.
        Wrap in `with .Values.config.metabase` so a nil map (sub-chart hidden
        by values flag, or partial-overrides via `helm install -f …`) does
