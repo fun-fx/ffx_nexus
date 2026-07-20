@@ -97,6 +97,11 @@ type ChatCompletionRequest struct {
 	Tools       []Tool    `json:"tools,omitempty"`
 	User        string    `json:"user,omitempty"`
 
+	// ReasoningEffort is the Chat Completions representation of the Responses
+	// API reasoning.effort field used by Cursor's hybrid Agent requests.
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	StreamOptions   json.RawMessage `json:"stream_options,omitempty"`
+
 	// ToolChoice follows the OpenAI v1 spec:
 	//   "none"                       — model must not call any tool
 	//   "auto"                       — model decides (default)
@@ -121,8 +126,37 @@ type ChatCompletionRequest struct {
 	// forwarded to upstream providers — strip with ForProvider() before calling
 	// OpenAI-compatible adapters that marshal the full struct.
 	NexusEval *NexusEvalContext `json:"nexus_eval,omitempty"`
-	// Extra preserves unknown fields so we can forward provider-specific params.
+	// Extra preserves unknown fields so we can forward provider-specific
+	// params (e.g. Responses-only "store", "include", "prompt_cache_key"
+	// that the Cursor Agent hybrid path collects from the original body).
+	// MarshalJSON splices Extra into the wire JSON so provider adapters
+	// that marshal req for the upstream see every originally supplied key.
 	Extra map[string]json.RawMessage `json:"-"`
+}
+
+// MarshalJSON ensures Extra keys are spliced into the wire payload alongside
+// the canonical Chat Completions fields. Adapter code only needs to marshal
+// req once; the helper handles the splice.
+func (r ChatCompletionRequest) MarshalJSON() ([]byte, error) {
+	type alias ChatCompletionRequest
+	base, err := json.Marshal(alias(r))
+	if err != nil {
+		return nil, err
+	}
+	if len(r.Extra) == 0 {
+		return base, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(base, &m); err != nil {
+		return base, nil
+	}
+	for k, v := range r.Extra {
+		if _, exists := m[k]; exists {
+			continue
+		}
+		m[k] = v
+	}
+	return json.Marshal(m)
 }
 
 // NexusEvalContext holds retrieval data for RAG metrics (hallucination,
@@ -175,20 +209,107 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
-// Tool describes a function the model may call.
+// Tool describes a function or custom tool the model may call.
 type Tool struct {
 	Type     string          `json:"type"`
-	Function json.RawMessage `json:"function"`
+	Function json.RawMessage `json:"function,omitempty"`
+	Custom   json.RawMessage `json:"custom,omitempty"`
 }
 
-// ToolCall is a model-requested function invocation.
+// UnmarshalJSON accepts standard Chat Completions nested tools as well as the
+// flat Responses definitions that Cursor can send to /chat/completions.
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	var kind struct {
+		Type     string          `json:"type"`
+		Function json.RawMessage `json:"function"`
+	}
+	if err := json.Unmarshal(data, &kind); err != nil {
+		return err
+	}
+	// If the body has either a nested function OR nested custom block, we
+	// pass through verbatim so callers that need the original shape (e.g.
+	// upstream providers serialising exactly what we received) see no
+	// surprises.  Flat Responses-style definitions go through normaliseTool
+	// so we always store {type, function} with the original function payload
+	// preserved.
+	if kind.Type == "custom" {
+		var c struct {
+			Custom json.RawMessage `json:"custom"`
+		}
+		if err := json.Unmarshal(data, &c); err == nil && len(c.Custom) > 0 {
+			t.Type = "custom"
+			t.Custom = c.Custom
+			return nil
+		}
+	}
+	if len(kind.Function) > 0 {
+		t.Type = kind.Type
+		t.Function = kind.Function
+		return nil
+	}
+	normalized, err := normaliseTool(data)
+	if err != nil {
+		return err
+	}
+	if normalized == nil {
+		return fmt.Errorf("empty tool definition")
+	}
+	*t = *normalized
+	return nil
+}
+
+// ToolCall is a model-requested function or custom-tool invocation.
 type ToolCall struct {
+	Index    *int   `json:"index,omitempty"`
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
-	} `json:"function"`
+	} `json:"-"`
+	Custom struct {
+		Name  string `json:"name"`
+		Input string `json:"input"`
+	} `json:"-"`
+}
+
+func (t ToolCall) MarshalJSON() ([]byte, error) {
+	base := struct {
+		Index    *int   `json:"index,omitempty"`
+		ID       string `json:"id,omitempty"`
+		Type     string `json:"type"`
+		Function any    `json:"function,omitempty"`
+		Custom   any    `json:"custom,omitempty"`
+	}{Index: t.Index, ID: t.ID, Type: t.Type}
+	if t.Type == "custom" {
+		base.Custom = t.Custom
+	} else {
+		base.Function = t.Function
+	}
+	return json.Marshal(base)
+}
+
+func (t *ToolCall) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Index    *int   `json:"index,omitempty"`
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+		Custom struct {
+			Name  string `json:"name"`
+			Input string `json:"input"`
+		} `json:"custom"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	t.Index, t.ID, t.Type = raw.Index, raw.ID, raw.Type
+	t.Function.Name, t.Function.Arguments = raw.Function.Name, raw.Function.Arguments
+	t.Custom.Name, t.Custom.Input = raw.Custom.Name, raw.Custom.Input
+	return nil
 }
 
 // ChatCompletionResponse is the OpenAI-compatible non-streaming response.
@@ -314,13 +435,37 @@ type EmbeddingTokenUsage struct {
 // See https://platform.openai.com/docs/api-reference/responses/create
 type InputItem struct {
 	Type      string                     `json:"type,omitempty"` // "message" | "function_call" | "function_call_output" | ...
+	ID        string                     `json:"id,omitempty"`
 	Role      string                     `json:"role,omitempty"` // "user" | "assistant" | "system" | "developer"
 	Content   json.RawMessage            `json:"content,omitempty"`
-	Name      string                     `json:"name,omitempty"` // for function_call_output
+	Name      string                     `json:"name,omitempty"`
 	CallID    string                     `json:"call_id,omitempty"`
+	ToolUseID string                     `json:"tool_use_id,omitempty"`
+	Input     json.RawMessage            `json:"input,omitempty"`
 	Arguments string                     `json:"arguments,omitempty"` // for function_call
-	Output    string                     `json:"output,omitempty"`    // for function_call_output
+	Output    json.RawMessage            `json:"output,omitempty"`    // for function_call_output
 	Extra     map[string]json.RawMessage `json:"-"`
+}
+
+// OutputString returns the tool result output as a string, regardless of
+// whether the upstream sent it as a string, an array of blocks, or a JSON
+// object.  This keeps the chat-completions tool message deterministic when
+// Cursor posts Responses-shaped payloads with structured results.
+func (it InputItem) OutputString() string {
+	if len(it.Output) == 0 {
+		return ""
+	}
+	trim := strings.TrimSpace(string(it.Output))
+	if trim == "" || trim == "null" {
+		return ""
+	}
+	if trim[0] == '"' {
+		var s string
+		if err := json.Unmarshal(it.Output, &s); err == nil {
+			return s
+		}
+	}
+	return strings.TrimSpace(string(it.Output))
 }
 
 // ResponsesRequest is the OpenAI Responses API request body. It is intentionally
@@ -328,18 +473,19 @@ type InputItem struct {
 // into a normal /v1/chat/completions request internally (which every backend
 // understands), then unwrap the response back into the Responses shape.
 type ResponsesRequest struct {
-	Model           string          `json:"model"`
-	Input           json.RawMessage `json:"input"` // string | []InputItem
-	Instructions    string          `json:"instructions,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
-	Stream          bool            `json:"stream,omitempty"`
-	Tools           []Tool          `json:"tools,omitempty"`
-	// ToolChoice is forwarded to the chat-completions backend without
-	// translation. See ChatCompletionRequest.ToolChoice for the contract.
+	Model             string                     `json:"model"`
+	Input             json.RawMessage            `json:"input"` // string | []InputItem
+	Instructions      string                     `json:"instructions,omitempty"`
+	Temperature       *float64                   `json:"temperature,omitempty"`
+	TopP              *float64                   `json:"top_p,omitempty"`
+	MaxOutputTokens   *int                       `json:"max_output_tokens,omitempty"`
+	Stream            bool                       `json:"stream,omitempty"`
+	Tools             []Tool                     `json:"tools,omitempty"`
 	ToolChoice        json.RawMessage            `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                      `json:"parallel_tool_calls,omitempty"`
+	Reasoning         json.RawMessage            `json:"reasoning,omitempty"`
+	Text              json.RawMessage            `json:"text,omitempty"`
+	StreamOptions     json.RawMessage            `json:"stream_options,omitempty"`
 	User              string                     `json:"user,omitempty"`
 	NexusEval         *NexusEvalContext          `json:"nexus_eval,omitempty"`
 	Extra             map[string]json.RawMessage `json:"-"`
@@ -361,11 +507,15 @@ type ResponsesResponse struct {
 // file_citation, etc.) can be added as new types without breaking clients that
 // only read Content.
 type ResponsesOutput struct {
-	Type    string             `json:"type"` // "message"
-	ID      string             `json:"id,omitempty"`
-	Role    string             `json:"role"` // "assistant"
-	Status  string             `json:"status,omitempty"`
-	Content []ResponsesContent `json:"content"`
+	Type      string             `json:"type"`
+	ID        string             `json:"id,omitempty"`
+	CallID    string             `json:"call_id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Arguments string             `json:"arguments,omitempty"`
+	Input     string             `json:"input,omitempty"`
+	Role      string             `json:"role,omitempty"`
+	Status    string             `json:"status,omitempty"`
+	Content   []ResponsesContent `json:"content,omitempty"`
 }
 
 // ResponsesContent is one content part inside a Responses output message.

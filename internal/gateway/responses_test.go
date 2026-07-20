@@ -125,11 +125,71 @@ func TestChatToResponsesToolAndText(t *testing.T) {
 	if resp.Output[0].Type != "function_call" {
 		t.Fatalf("first output should be function_call, got %s", resp.Output[0].Type)
 	}
+	if resp.Output[0].CallID != "call_1" || resp.Output[0].Name != "lookup" {
+		t.Fatalf("function call payload lost: %+v", resp.Output[0])
+	}
 	if resp.Output[1].Type != "message" || resp.Output[1].Role != "assistant" {
 		t.Fatalf("second output should be message, got %+v", resp.Output[1])
 	}
 	if got := resp.Output[1].Content[0].Text; got != "the weather is sunny" {
 		t.Fatalf("message text lost: %q", got)
+	}
+}
+
+// TestChatToResponsesCustomToolCall verifies that custom tool calls survive
+// the Responses API round-trip and reach the client as a custom_tool_call
+// output item (required for Cursor's ApplyPatch tool).
+func TestChatToResponsesCustomToolCall(t *testing.T) {
+	tc := ToolCall{ID: "ctc_x", Type: "custom"}
+	tc.Custom.Name = "ApplyPatch"
+	tc.Custom.Input = "@@ -1 +1 @@\n-a\n+b"
+	in := &ChatCompletionResponse{
+		ID:    "chatcmpl-p",
+		Model: "gpt-4o-mini",
+		Choices: []Choice{{
+			Message: Message{
+				Role:      "assistant",
+				ToolCalls: []ToolCall{tc},
+			},
+		}},
+	}
+	resp := chatToResponses(in, ResponsesRequest{Model: "gpt-4o-mini"})
+	if len(resp.Output) != 1 || resp.Output[0].Type != "custom_tool_call" {
+		t.Fatalf("expected custom_tool_call output, got %+v", resp.Output)
+	}
+	if resp.Output[0].Name != "ApplyPatch" || resp.Output[0].Input != "@@ -1 +1 @@\n-a\n+b" {
+		t.Fatalf("custom tool call payload lost: %+v", resp.Output[0])
+	}
+}
+
+// TestToolCallStreamAccumulation verifies the Anthropic StreamEvent delta
+// path correctly accumulates arguments across multiple chunks with `index`
+// pointer preservation.
+func TestToolCallStreamAccumulation(t *testing.T) {
+	in := &ChatCompletionResponse{
+		ID:    "chatcmpl-xyz",
+		Model: "gpt-4o-mini",
+		Choices: []Choice{{
+			Message: Message{
+				Role: "assistant",
+				ToolCalls: []ToolCall{{
+					ID:   "call_a",
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{Name: "search", Arguments: `{"q":"hello","tag":"final"}`},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+	}
+	out := chatToResponses(in, ResponsesRequest{Model: "gpt-4o-mini"})
+	if len(out.Output) != 1 || out.Output[0].Arguments != `{"q":"hello","tag":"final"}` {
+		t.Fatalf("accumulated arguments lost: %+v", out.Output)
+	}
+	if out.Output[0].CallID != "call_a" || out.Output[0].Name != "search" {
+		t.Fatalf("tool metadata lost: %+v", out.Output[0])
 	}
 }
 
