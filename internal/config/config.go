@@ -188,6 +188,18 @@ type Config struct {
 	// ClickHouse: `SELECT count() FROM gateway_traces GROUP BY replica_id`.
 	// Stable for the lifetime of the process; rolling pods get a new id.
 	ReplicaID string
+
+	// DynamicModelSync periodically refreshes each provider's live model
+	// list from its upstream /v1/models endpoint so /v1/models stays in
+	// sync when providers add or sunset models without a Nexus redeploy.
+	// Disabled by default — operators toggle it on with
+	// NEXUS_DYNAMIC_MODEL_SYNC=true. Fetchers are skipped when a
+	// provider's API key is absent, so leaving the flag on while only
+	// some providers are configured is safe (those providers just don't
+	// refresh).
+	DynamicModelSync     bool
+	DynamicModelInterval time.Duration // 0 → 30m default
+	DynamicModelMaxRetry int           // 0 → 3 default
 }
 
 // SSOConfig is the OIDC configuration. The Enabled() predicate returns
@@ -301,6 +313,10 @@ func Load() Config {
 		EmbeddingsTimeout:       envDuration("NEXUS_EMBEDDINGS_TIMEOUT", 15*time.Second),
 
 		ReplicaID: defaultReplicaID(),
+
+		DynamicModelSync:     envBool("NEXUS_DYNAMIC_MODEL_SYNC", false),
+		DynamicModelInterval: envDuration("NEXUS_DYNAMIC_MODEL_INTERVAL", 30*time.Minute),
+		DynamicModelMaxRetry: envInt("NEXUS_DYNAMIC_MODEL_MAX_RETRY", 3),
 	}
 }
 
