@@ -18,8 +18,8 @@ import (
 // multi slicing stub that emits two parallel tool calls before a stop.
 type parallelToolProvider struct{}
 
-func (parallelToolProvider) Name() string                                          { return "parallel-tools" }
-func (parallelToolProvider) Models() []string                                      { return []string{"p"} }
+func (parallelToolProvider) Name() string     { return "parallel-tools" }
+func (parallelToolProvider) Models() []string { return []string{"p"} }
 func (parallelToolProvider) ChatCompletion(_ context.Context, _ ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	return nil, errors.New("n/a")
 }
@@ -74,7 +74,7 @@ func (parallelToolProvider) ChatCompletionStream(_ context.Context, _ ChatComple
 		}}
 		ch <- StreamEvent{Chunk: &ChatCompletionChunk{
 			Choices: []ChunkChoice{{Index: 0, FinishReason: "tool_calls"}},
-			Usage: &Usage{PromptTokens: 11, CompletionTokens: 22, TotalTokens: 33},
+			Usage:   &Usage{PromptTokens: 11, CompletionTokens: 22, TotalTokens: 33},
 		}}
 		ch <- StreamEvent{Done: true}
 	}()
@@ -123,8 +123,8 @@ func TestResponsesSSE_ParallelToolsAccumulateCallIDs(t *testing.T) {
 // truncatedStreamProvider emits text then closes without finish_reason.
 type truncatedStreamProvider struct{}
 
-func (truncatedStreamProvider) Name() string                                          { return "truncated" }
-func (truncatedStreamProvider) Models() []string                                      { return []string{"t"} }
+func (truncatedStreamProvider) Name() string     { return "truncated" }
+func (truncatedStreamProvider) Models() []string { return []string{"t"} }
 func (truncatedStreamProvider) ChatCompletion(_ context.Context, _ ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	return nil, errors.New("n/a")
 }
@@ -159,8 +159,8 @@ func TestResponsesSSE_TruncatedStreamEmitsIncomplete(t *testing.T) {
 // failedStreamProvider closes with an error mid-text.
 type failedStreamProvider struct{}
 
-func (failedStreamProvider) Name() string                                          { return "errs" }
-func (failedStreamProvider) Models() []string                                      { return []string{"e"} }
+func (failedStreamProvider) Name() string     { return "errs" }
+func (failedStreamProvider) Models() []string { return []string{"e"} }
 func (failedStreamProvider) ChatCompletion(_ context.Context, _ ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	return nil, errors.New("n/a")
 }
@@ -228,12 +228,12 @@ func TestResponsesSSE_CompletedPayloadShape(t *testing.T) {
 	}
 	var decoded struct {
 		Response struct {
-			ID         string `json:"id"`
-			Object     string `json:"object"`
-			Status     string `json:"status"`
-			Model      string `json:"model"`
-			Output     []map[string]any `json:"output"`
-			Usage      struct {
+			ID     string           `json:"id"`
+			Object string           `json:"object"`
+			Status string           `json:"status"`
+			Model  string           `json:"model"`
+			Output []map[string]any `json:"output"`
+			Usage  struct {
 				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
 				TotalTokens  int `json:"total_tokens"`
@@ -271,8 +271,8 @@ func TestResponsesSSE_CompletedPayloadShape(t *testing.T) {
 // textOnlyProvider emits a single text delta with usage and a finish reason.
 type textOnlyProvider struct{ t string }
 
-func (textOnlyProvider) Name() string                                          { return "txt" }
-func (textOnlyProvider) Models() []string                                      { return []string{"txt"} }
+func (textOnlyProvider) Name() string     { return "txt" }
+func (textOnlyProvider) Models() []string { return []string{"txt"} }
 func (textOnlyProvider) ChatCompletion(_ context.Context, _ ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	return nil, errors.New("n/a")
 }
@@ -285,7 +285,7 @@ func (textOnlyProvider) ChatCompletionStream(_ context.Context, _ ChatCompletion
 		}}
 		ch <- StreamEvent{Chunk: &ChatCompletionChunk{
 			Choices: []ChunkChoice{{Index: 0, FinishReason: "stop"}},
-			Usage:    &Usage{PromptTokens: 7, CompletionTokens: 13, TotalTokens: 20},
+			Usage:   &Usage{PromptTokens: 7, CompletionTokens: 13, TotalTokens: 20},
 		}}
 		ch <- StreamEvent{Done: true}
 	}()

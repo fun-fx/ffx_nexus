@@ -100,7 +100,7 @@ type ChatCompletionRequest struct {
 	// ReasoningEffort is the Chat Completions representation of the Responses
 	// API reasoning.effort field used by Cursor's hybrid Agent requests.
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-	StreamOptions  json.RawMessage `json:"stream_options,omitempty"`
+	StreamOptions   json.RawMessage `json:"stream_options,omitempty"`
 
 	// ToolChoice follows the OpenAI v1 spec:
 	//   "none"                       — model must not call any tool
@@ -275,11 +275,11 @@ type ToolCall struct {
 
 func (t ToolCall) MarshalJSON() ([]byte, error) {
 	base := struct {
-		Index    *int `json:"index,omitempty"`
+		Index    *int   `json:"index,omitempty"`
 		ID       string `json:"id,omitempty"`
 		Type     string `json:"type"`
-		Function any `json:"function,omitempty"`
-		Custom   any `json:"custom,omitempty"`
+		Function any    `json:"function,omitempty"`
+		Custom   any    `json:"custom,omitempty"`
 	}{Index: t.Index, ID: t.ID, Type: t.Type}
 	if t.Type == "custom" {
 		base.Custom = t.Custom
@@ -291,7 +291,7 @@ func (t ToolCall) MarshalJSON() ([]byte, error) {
 
 func (t *ToolCall) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Index    *int `json:"index,omitempty"`
+		Index    *int   `json:"index,omitempty"`
 		ID       string `json:"id"`
 		Type     string `json:"type"`
 		Function struct {
@@ -473,22 +473,22 @@ func (it InputItem) OutputString() string {
 // into a normal /v1/chat/completions request internally (which every backend
 // understands), then unwrap the response back into the Responses shape.
 type ResponsesRequest struct {
-	Model           string          `json:"model"`
-	Input           json.RawMessage `json:"input"` // string | []InputItem
-	Instructions    string          `json:"instructions,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
-	Stream          bool            `json:"stream,omitempty"`
-	Tools           []Tool          `json:"tools,omitempty"`
+	Model             string                     `json:"model"`
+	Input             json.RawMessage            `json:"input"` // string | []InputItem
+	Instructions      string                     `json:"instructions,omitempty"`
+	Temperature       *float64                   `json:"temperature,omitempty"`
+	TopP              *float64                   `json:"top_p,omitempty"`
+	MaxOutputTokens   *int                       `json:"max_output_tokens,omitempty"`
+	Stream            bool                       `json:"stream,omitempty"`
+	Tools             []Tool                     `json:"tools,omitempty"`
 	ToolChoice        json.RawMessage            `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                      `json:"parallel_tool_calls,omitempty"`
-	Reasoning          json.RawMessage            `json:"reasoning,omitempty"`
-	Text               json.RawMessage            `json:"text,omitempty"`
-	StreamOptions      json.RawMessage            `json:"stream_options,omitempty"`
-	User               string                     `json:"user,omitempty"`
-	NexusEval          *NexusEvalContext          `json:"nexus_eval,omitempty"`
-	Extra              map[string]json.RawMessage `json:"-"`
+	Reasoning         json.RawMessage            `json:"reasoning,omitempty"`
+	Text              json.RawMessage            `json:"text,omitempty"`
+	StreamOptions     json.RawMessage            `json:"stream_options,omitempty"`
+	User              string                     `json:"user,omitempty"`
+	NexusEval         *NexusEvalContext          `json:"nexus_eval,omitempty"`
+	Extra             map[string]json.RawMessage `json:"-"`
 }
 
 // ResponsesResponse is the OpenAI Responses API response body.

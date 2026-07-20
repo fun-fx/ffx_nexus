@@ -80,10 +80,10 @@ func TestPickResponsesExtras_OmitsPromotedKeys(t *testing.T) {
 
 func TestChatCompletionRequestMarshalSplicesExtra(t *testing.T) {
 	req := ChatCompletionRequest{
-		Model: "fx-gpt-5.5",
+		Model:    "fx-gpt-5.5",
 		Messages: []Message{{Role: "user", Content: "hi"}},
 		Extra: map[string]json.RawMessage{
-			"store":           json.RawMessage(`true`),
+			"store":            json.RawMessage(`true`),
 			"prompt_cache_key": json.RawMessage(`"abc"`),
 		},
 	}

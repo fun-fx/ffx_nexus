@@ -48,21 +48,21 @@ func IsCursorHybridRequest(body json.RawMessage) bool {
 // It accepts both Chat Completions and Responses API fields so we can
 // normalise either one into a canonical ChatCompletionRequest.
 type CursorHybridReq struct {
-	Model       string          `json:"model"`
-	Messages    []Message       `json:"messages,omitempty"`
-	Input       json.RawMessage `json:"input,omitempty"` // string or []InputItem
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	MaxOutputTokens *int        `json:"max_output_tokens,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Stop        []string        `json:"stop,omitempty"`
-	Tools       []json.RawMessage `json:"tools,omitempty"` // raw to preserve nested vs flat shape
-	User        string          `json:"user,omitempty"`
-	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool   `json:"parallel_tool_calls,omitempty"`
-	Reasoning   json.RawMessage `json:"reasoning,omitempty"`      // Cursor Agent reasoning dict
-	StreamOptions json.RawMessage `json:"stream_options,omitempty"`
+	Model             string            `json:"model"`
+	Messages          []Message         `json:"messages,omitempty"`
+	Input             json.RawMessage   `json:"input,omitempty"` // string or []InputItem
+	Temperature       *float64          `json:"temperature,omitempty"`
+	TopP              *float64          `json:"top_p,omitempty"`
+	MaxTokens         *int              `json:"max_tokens,omitempty"`
+	MaxOutputTokens   *int              `json:"max_output_tokens,omitempty"`
+	Stream            bool              `json:"stream,omitempty"`
+	Stop              []string          `json:"stop,omitempty"`
+	Tools             []json.RawMessage `json:"tools,omitempty"` // raw to preserve nested vs flat shape
+	User              string            `json:"user,omitempty"`
+	ToolChoice        json.RawMessage   `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool             `json:"parallel_tool_calls,omitempty"`
+	Reasoning         json.RawMessage   `json:"reasoning,omitempty"` // Cursor Agent reasoning dict
+	StreamOptions     json.RawMessage   `json:"stream_options,omitempty"`
 	// otros campos Responses-only que simplemente ignoramos por ahora
 }
 
@@ -80,13 +80,13 @@ func TransformCursorHybrid(body json.RawMessage) (ChatCompletionRequest, error) 
 	}
 
 	chat := ChatCompletionRequest{
-		Model:       h.Model,
-		Temperature: h.Temperature,
-		TopP:        h.TopP,
-		Stream:      h.Stream,
-		Stop:        h.Stop,
-		User:        h.User,
-		ToolChoice:  h.ToolChoice,
+		Model:             h.Model,
+		Temperature:       h.Temperature,
+		TopP:              h.TopP,
+		Stream:            h.Stream,
+		Stop:              h.Stop,
+		User:              h.User,
+		ToolChoice:        h.ToolChoice,
 		ParallelToolCalls: h.ParallelToolCalls,
 	}
 
@@ -203,7 +203,7 @@ func parseInputToMessages(raw json.RawMessage) ([]Message, error) {
 		case it.Type == "tool_use":
 			// Parse extra fields that are not in InputItem
 			var extra struct {
-				Name string `json:"name"`
+				Name  string          `json:"name"`
 				Input json.RawMessage `json:"input"`
 			}
 			_ = json.Unmarshal(it.Content, &extra)
@@ -409,4 +409,3 @@ func pickResponsesExtras(raw json.RawMessage) map[string]json.RawMessage {
 	}
 	return out
 }
-

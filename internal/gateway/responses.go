@@ -223,23 +223,23 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	writeCompleted := func(status string) {
 		// Assemble full Responses shell for response.completed
 		completed := map[string]any{
-			"id":         respID,
-			"object":     "response",
-			"created_at": createdAt,
-			"model":      chatReq.Model,
-			"status":     status,
-			"instructions": respReq.Instructions,
+			"id":                  respID,
+			"object":              "response",
+			"created_at":          createdAt,
+			"model":               chatReq.Model,
+			"status":              status,
+			"instructions":        respReq.Instructions,
 			"parallel_tool_calls": true,
-			"tools":     json.RawMessage("[]"),
-			"output":    []map[string]any{},
-			"usage":     ResponsesUsage{},
-			"error":     nil,
+			"tools":               json.RawMessage("[]"),
+			"output":              []map[string]any{},
+			"usage":               ResponsesUsage{},
+			"error":               nil,
 		}
-if !isStreaming && respReq.ParallelToolCalls != nil {
-		completed["parallel_tool_calls"] = *respReq.ParallelToolCalls
-	} else if !isStreaming {
-		completed["parallel_tool_calls"] = true
-	}
+		if !isStreaming && respReq.ParallelToolCalls != nil {
+			completed["parallel_tool_calls"] = *respReq.ParallelToolCalls
+		} else if !isStreaming {
+			completed["parallel_tool_calls"] = true
+		}
 		if len(respReq.Tools) > 0 {
 			// Marshal the original Tool array so clients see exactly what
 			// was advertised on the wire.
@@ -256,10 +256,10 @@ if !isStreaming && respReq.ParallelToolCalls != nil {
 		if state.text != nil && state.text.buf.Len() > 0 {
 			text := state.text.buf.String()
 			output = append(output, map[string]any{
-				"type":         "message",
-				"id":           state.text.itemID,
-				"role":         "assistant",
-				"status":       status,
+				"type":   "message",
+				"id":     state.text.itemID,
+				"role":   "assistant",
+				"status": status,
 				"content": []map[string]any{{
 					"type": "output_text",
 					"text": text,
@@ -326,12 +326,12 @@ if !isStreaming && respReq.ParallelToolCalls != nil {
 				}
 				emit("response.failed", map[string]any{
 					"response": map[string]any{
-						"id":      respID,
-						"object":  "response",
-						"status":  "failed",
+						"id":         respID,
+						"object":     "response",
+						"status":     "failed",
 						"created_at": createdAt,
-						"model":   chatReq.Model,
-						"output":  []map[string]any{},
+						"model":      chatReq.Model,
+						"output":     []map[string]any{},
 						"error": map[string]any{
 							"message": evt.Err.Error(),
 							"type":    "stream_error",
@@ -625,13 +625,13 @@ func responsesToChat(req ResponsesRequest) (ChatCompletionRequest, error) {
 				Role:      "assistant",
 				ToolCalls: []ToolCall{tc},
 			})
-case it.Type == "function_call_output":
-		chat.Messages = append(chat.Messages, Message{
-			Role:       "tool",
-			Content:    it.OutputString(),
-			ToolCallID: it.CallID,
-			Name:       it.Name,
-		})
+		case it.Type == "function_call_output":
+			chat.Messages = append(chat.Messages, Message{
+				Role:       "tool",
+				Content:    it.OutputString(),
+				ToolCallID: it.CallID,
+				Name:       it.Name,
+			})
 		}
 	}
 	return chat, nil
