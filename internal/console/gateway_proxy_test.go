@@ -50,7 +50,7 @@ func TestConsoleGatewayProxy(t *testing.T) {
 
 func TestAuthConfigGatewayURL(t *testing.T) {
 	srv := newTestServer()
-	srv.SetPublicGatewayURL("https://api.nexus.ffx.ai")
+	srv.SetPublicGatewayURL("https://api.ffx.ai")
 	mux := srv.Mux()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/config", nil)
@@ -60,7 +60,7 @@ func TestAuthConfigGatewayURL(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), `"gateway_url"`) || !strings.Contains(rec.Body.String(), `"https://api.nexus.ffx.ai"`) {
+	if !strings.Contains(rec.Body.String(), `"gateway_url"`) || !strings.Contains(rec.Body.String(), `"https://api.ffx.ai"`) {
 		t.Fatalf("unexpected body: %s", rec.Body.String())
 	}
 }

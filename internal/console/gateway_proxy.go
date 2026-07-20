@@ -49,7 +49,7 @@ func (s *Server) SetGatewayProxy(listenAddr string) {
 }
 
 // SetPublicGatewayURL is the user-facing gateway base URL shown in the console
-// (curl snippets, onboarding copy). Example: https://api.nexus.ffx.ai
+// (curl snippets, onboarding copy). Example: https://api.ffx.ai
 func (s *Server) SetPublicGatewayURL(raw string) {
 	s.publicGatewayURL = strings.TrimRight(strings.TrimSpace(raw), "/")
 }
