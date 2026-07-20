@@ -620,6 +620,27 @@ strict-byok default` warning per provider at startup so operators can see exactl
 which keys are present but inert, and route statistics are kept free of shadow
 env-key traffic.
 
+### Dynamic model catalog sync (`NEXUS_DYNAMIC_MODEL_SYNC`)
+
+Off by default. When enabled, a per-provider background worker periodically calls
+that provider's upstream `/v1/models` endpoint (`OPENAI_BASE_URL/models`,
+`ANTHROPIC_BASE_URL/models`, `https://generativelanguage.googleapis.com/v1beta/models?key=…`)
+and rewrites the registry's `byModel` index with the response. The mock experiment
+at the start of this README (`/v1/models`) keeps reflecting new OpenAI / Gemini /
+Anthropic releases without a NexUS redeploy.
+
+- **Latency impact**: zero on the hot path. The worker is a single goroutine per
+  provider that takes the registry lock only for a slice-swap, while requests
+  take the read lock and copy the slice.
+- **Failure handling**: failures use exponential backoff with jitter (max 60s)
+  and keep the previously cached catalog so a flaky upstream never blanks
+  `/v1/models`. Counters are exposed via `internal/gateway/DynamicSyncRegistry`
+  for future Prometheus integration.
+- **Toggles**:
+  - `NEXUS_DYNAMIC_MODEL_SYNC=true` — opt-in.
+  - `NEXUS_DYNAMIC_MODEL_INTERVAL=30m` — refresh cadence (Go duration string).
+  - `NEXUS_DYNAMIC_MODEL_MAX_RETRY=3` — retry budget per refresh.
+
 ### Console identity & sessions
 
 - **Email + password login** (passwords are bcrypt-hashed). A login issues an

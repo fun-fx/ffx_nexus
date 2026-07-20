@@ -105,6 +105,16 @@ func main() {
 		log.Warn("no providers configured; set OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY or add credentials via the console")
 	}
 
+	// Optional background sync: keep /v1/models in lock-step with each
+	// provider's live catalog so day-zero model launches do not require
+	// a redeploy. The worker is per-provider and runs outside the hot
+	// path; Registry.UpdateModels is the only lock taken on the request
+	// goroutine side, and it holds the write lock only for the duration
+	// of a slice copy.
+	if cfg.DynamicModelSync {
+		startDynamicSyncWorkers(ctx, reg, cfg, log)
+	}
+
 	// Observability: ClickHouse persistence (optional) + live dashboard hub.
 	hub := console.NewHub()
 	var chRec *observability.CHRecorder
@@ -607,5 +617,52 @@ func envKeySet(name string, cfg config.Config) bool {
 		return cfg.GridAPIKey != ""
 	default:
 		return false
+	}
+}
+
+// dynamicSyncRegistry owns the per-provider counters so /metrics (when
+// enabled) can fold them into the existing Prometheus scrape. Defined as
+// a package-level var so the binary LinkName keeps it out of the hot path
+// entirely: when DynamicModelSync=false the registry is never allocated.
+var dynamicSyncRegistry = gateway.NewDynamicSyncRegistry()
+
+// dynamicSyncSpec binds a provider name to its fetcher, ordered for the
+// boot log. Order matches the priority list operators see in the docs so a
+// misconfigured provider shows up in a familiar position.
+func startDynamicSyncWorkers(ctx context.Context, reg *gateway.Registry, cfg config.Config, log *slog.Logger) {
+	type spec struct {
+		name    string
+		fetcher gateway.ModelFetcher
+	}
+	specs := []spec{
+		{
+			name:    "openai",
+			fetcher: gateway.NewOpenAIModelFetcher(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, cfg.UpstreamTimeout),
+		},
+		{
+			name:    "anthropic",
+			fetcher: gateway.NewAnthropicModelFetcher(cfg.AnthropicAPIKey, "https://api.anthropic.com/v1", cfg.UpstreamTimeout),
+		},
+		{
+			name:    "gemini",
+			fetcher: gateway.NewGeminiModelFetcher(cfg.GeminiAPIKey, "https://generativelanguage.googleapis.com/v1beta", cfg.UpstreamTimeout),
+		},
+	}
+	for _, s := range specs {
+		if _, ok := reg.ProviderFor(s.name); !ok {
+			// Only enabled providers (env key present and key mode allows
+			// shared fallback) get a worker; silent skip on others keeps
+			// the boot log quiet for the common case where one provider
+			// is configured.
+			continue
+		}
+		dp := gateway.NewDynamicProvider(s.name)
+		counters := &gateway.DynamicSyncCounters{}
+		dynamicSyncRegistry.Register(s.name, dp, counters)
+		gateway.StartDynamicSync(ctx, reg, dp, s.fetcher, cfg.DynamicModelInterval, cfg.DynamicModelMaxRetry, counters, log)
+		log.Info("dynamic model sync enabled",
+			"provider", s.name,
+			"interval", cfg.DynamicModelInterval,
+			"max_retry", cfg.DynamicModelMaxRetry)
 	}
 }
