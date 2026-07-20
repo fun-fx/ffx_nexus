@@ -124,8 +124,18 @@ func (h *Handler) executeResponsesUnary(r *http.Request, req ChatCompletionReque
 }
 
 // handleResponsesStream pipes a streaming chat completion through SSE events
-// shaped like the Responses API: response.created, response.output_text.delta,
-// response.function_call, response.completed.
+// shaped like the OpenAI Responses API:
+//
+//	response.created
+//	response.output_item.added        (×N: text + tool calls)
+//	response.output_text.delta / response.function_call_arguments.delta
+//	response.output_text.done / response.function_call_arguments.done
+//	response.output_item.done
+//	response.completed
+//
+// We accumulate per-index state so arguments split across chunks are joined
+// in a single …done event. Custom tool calls (type:"custom") emit identical
+// delta/done events with the custom_tool_call item type.
 func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, chatReq ChatCompletionRequest) {
 	ctx := r.Context()
 	providers, ok := h.pickResponsesChain(ctx, chatReq.Model)
@@ -163,13 +173,34 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		"status":     "in_progress",
 	})
 
+	type toolPartial struct {
+		itemType  string // "function_call" | "custom_tool_call"
+		itemID    string
+		callID    string
+		name      string
+		arguments strings.Builder
+	}
+
+	type textPartial struct {
+		itemID string
+		index  int
+		buf    strings.Builder
+		opened bool
+	}
+
+	state := struct {
+		text    *textPartial
+		tools   map[int]*toolPartial // keyed by tool index
+		order   []int                // tool indexes in first-seen order
+	}{tools: map[int]*toolPartial{}}
+
 	streamStart := time.Now()
 	trace := h.newTrace(r, chatReq, providers[0].Provider.Name())
 	trace.Streamed = true
 
-	var (
-		textBuf strings.Builder
-	)
+	msgID := "msg_" + respID[len("resp_"):]
+	textIdxPlaceholder := 0 // text always gets the lowest still-unused index
+
 	for _, p := range providers {
 		attempt := chatReq
 		attempt.Model = p.ForwardModel
@@ -208,20 +239,94 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 				firstChunk = true
 			}
 			for _, dc := range evt.Chunk.Choices {
+				// ---- Text content deltas ------------------------------------
+				if dc.Delta.Content != "" {
+					if state.text == nil {
+						state.text = &textPartial{itemID: msgID, index: textIdxPlaceholder}
+						emit("response.output_item.added", map[string]any{
+							"type":         "message",
+							"output_index": textIdxPlaceholder,
+							"id":           msgID,
+							"role":         "assistant",
+							"status":       "in_progress",
+							"content":      []map[string]any{},
+						})
+					}
+					state.text.buf.WriteString(dc.Delta.Content)
+					emit("response.output_text.delta", map[string]any{
+						"item_id":      state.text.itemID,
+						"output_index": state.text.index,
+						"delta":        dc.Delta.Content,
+					})
+				}
+
+				// ---- Tool call deltas --------------------------------------
 				for _, tc := range dc.Delta.ToolCalls {
-					if tc.Function.Name != "" {
-						emit("response.function_call", map[string]any{
-							"id":        firstNonEmpty(tc.ID, "fc_"+uuid.NewString()),
-							"call_id":   tc.ID,
-							"name":      tc.Function.Name,
-							"arguments": tc.Function.Arguments,
+					idx := 0
+					if tc.Index != nil {
+						idx = *tc.Index
+					}
+					// Shift the index by 1 if a text item was opened at 0 so
+					// tool indexes never collide with the text item.
+					if state.text != nil {
+						idx++
+					}
+					partial, seen := state.tools[idx]
+					itemType := "function_call"
+					if tc.Type == "custom" {
+						itemType = "custom_tool_call"
+					}
+					if !seen {
+						idPrefix := "fc_"
+						if itemType == "custom_tool_call" {
+							idPrefix = "ctc_"
+						}
+						partial = &toolPartial{
+							itemType: itemType,
+							itemID:   idPrefix + respID[len("resp_"):] + "_" + fmt.Sprintf("%d", idx),
+							callID:   tc.ID,
+						}
+						if tc.Type == "custom" {
+							partial.name = tc.Custom.Name
+						} else {
+							partial.name = tc.Function.Name
+						}
+						state.tools[idx] = partial
+						state.order = append(state.order, idx)
+						addedObj := map[string]any{
+							"type":         itemType,
+							"output_index": idx,
+							"id":           partial.itemID,
+							"call_id":      partial.callID,
+							"name":         partial.name,
+							"arguments":    "",
+							"input":        "",
+							"status":       "in_progress",
+						}
+						emit("response.output_item.added", addedObj)
+					} else if tc.Type == "custom" && tc.Custom.Name != "" {
+						partial.name = tc.Custom.Name
+					} else if tc.Type != "custom" && tc.Function.Name != "" {
+						partial.name = tc.Function.Name
+					}
+					if tc.Function.Arguments != "" {
+						partial.arguments.WriteString(tc.Function.Arguments)
+						emit("response.function_call_arguments.delta", map[string]any{
+							"item_id":      partial.itemID,
+							"output_index": idx,
+							"delta":        tc.Function.Arguments,
+						})
+					}
+					if tc.Type == "custom" && tc.Custom.Input != "" {
+						partial.arguments.WriteString(tc.Custom.Input)
+						emit("response.function_call_arguments.delta", map[string]any{
+							"item_id":      partial.itemID,
+							"output_index": idx,
+							"delta":        tc.Custom.Input,
 						})
 					}
 				}
-				if dc.Delta.Content != "" {
-					textBuf.WriteString(dc.Delta.Content)
-					emit("response.output_text.delta", map[string]any{"id": respID, "delta": dc.Delta.Content})
-				}
+
 				if dc.FinishReason != "" {
 					emit("response.done", map[string]any{"id": respID, "finish_reason": dc.FinishReason})
 				}
@@ -233,14 +338,47 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		}
 		trace.LatencyMs = time.Since(streamStart).Milliseconds()
 		trace.StatusCode = http.StatusOK
-		trace.OutputMessages = textBuf.String()
+		if state.text != nil {
+			trace.OutputMessages = state.text.buf.String()
+		}
 		break
 	}
 	h.recorder.Record(trace)
 
-	if textBuf.Len() > 0 {
-		emit("response.output_text.done", map[string]any{"id": respID, "text": textBuf.String()})
+	// ---- Close text item if any ----------------------------------------
+	if state.text != nil && state.text.buf.Len() > 0 {
+		emit("response.output_text.done", map[string]any{
+			"item_id":      state.text.itemID,
+			"output_index": state.text.index,
+			"text":         state.text.buf.String(),
+		})
+		emit("response.output_item.done", map[string]any{
+			"type":         "message",
+			"output_index": state.text.index,
+			"id":           state.text.itemID,
+			"role":         "assistant",
+			"status":       "completed",
+		})
 	}
+
+	// ---- Close all function/custom calls in order -----------------------
+	for _, idx := range state.order {
+		p := state.tools[idx]
+		arguments := p.arguments.String()
+		payload := map[string]any{
+			"type":         p.itemType,
+			"output_index": idx,
+			"id":           p.itemID,
+			"call_id":      p.callID,
+			"arguments":    arguments,
+			"input":        arguments,
+			"name":         p.name,
+			"status":       "completed",
+		}
+		emit("response.function_call_arguments.done", payload)
+		emit("response.output_item.done", payload)
+	}
+
 	emit("response.completed", map[string]any{"id": respID, "status": "completed"})
 }
 
@@ -326,13 +464,13 @@ func responsesToChat(req ResponsesRequest) (ChatCompletionRequest, error) {
 				Role:      "assistant",
 				ToolCalls: []ToolCall{tc},
 			})
-		case it.Type == "function_call_output":
-			chat.Messages = append(chat.Messages, Message{
-				Role:       "tool",
-				Content:    it.Output,
-				ToolCallID: it.CallID,
-				Name:       it.Name,
-			})
+case it.Type == "function_call_output":
+		chat.Messages = append(chat.Messages, Message{
+			Role:       "tool",
+			Content:    it.OutputString(),
+			ToolCallID: it.CallID,
+			Name:       it.Name,
+		})
 		}
 	}
 	return chat, nil
@@ -372,7 +510,8 @@ func extractInputText(raw json.RawMessage) string {
 }
 
 // chatToResponses unpacks a ChatCompletionResponse into the Responses shape.
-// Tool calls become "function_call" output items before any final "message".
+// Function and custom tool calls each become an output_item that Cursor can
+// re-render; the trailing message preserves any assistant text.
 func chatToResponses(c *ChatCompletionResponse, req ResponsesRequest) ResponsesResponse {
 	out := ResponsesResponse{
 		ID:        firstNonEmpty(c.ID, "resp_"+uuid.NewString()),
@@ -391,21 +530,39 @@ func chatToResponses(c *ChatCompletionResponse, req ResponsesRequest) ResponsesR
 	}
 	ch := c.Choices[0]
 	for _, tc := range ch.Message.ToolCalls {
+		switch tc.Type {
+		case "custom":
+			out.Output = append(out.Output, ResponsesOutput{
+				Type:   "custom_tool_call",
+				ID:     "ctc_" + firstNonEmpty(tc.ID, uuid.NewString()),
+				CallID: tc.ID,
+				Name:   tc.Custom.Name,
+				Input:  tc.Custom.Input,
+				Status: "completed",
+			})
+		default:
+			out.Output = append(out.Output, ResponsesOutput{
+				Type:      "function_call",
+				ID:        "fc_" + firstNonEmpty(tc.ID, uuid.NewString()),
+				CallID:    tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+				Status:    "completed",
+			})
+		}
+	}
+	if text := ch.Message.Content; text != "" {
 		out.Output = append(out.Output, ResponsesOutput{
-			Type: "function_call",
-			ID:   "fc_" + firstNonEmpty(tc.ID, uuid.NewString()),
+			Type:   "message",
+			ID:     "msg_" + uuid.NewString(),
+			Role:   "assistant",
+			Status: "completed",
+			Content: []ResponsesContent{{
+				Type: "output_text",
+				Text: text,
+			}},
 		})
 	}
-	out.Output = append(out.Output, ResponsesOutput{
-		Type:   "message",
-		ID:     "msg_" + uuid.NewString(),
-		Role:   "assistant",
-		Status: "completed",
-		Content: []ResponsesContent{{
-			Type: "output_text",
-			Text: ch.Message.Content,
-		}},
-	})
 	return out
 }
 

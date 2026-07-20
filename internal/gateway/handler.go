@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -197,13 +198,31 @@ func (h *Handler) recordSpend(ctx context.Context, costUSD float64) {
 }
 
 // ChatCompletions handles POST /v1/chat/completions for both streaming and
-// non-streaming requests.
+// non-streaming requests.  It also transparently accepts Cursor Agent hybrid
+// bodies that look like Responses API payloads but are posted to this path.
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var req ChatCompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "cannot read body: "+err.Error())
 		return
 	}
+	// Restore body so any later middleware can re-read it.
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	var req ChatCompletionRequest
+	if IsCursorHybridRequest(body) {
+		req, err = TransformCursorHybrid(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "hybrid decode: "+err.Error())
+			return
+		}
+	} else {
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
+			return
+		}
+	}
+
 	if req.Model == "" || len(req.Messages) == 0 {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "model and messages are required")
 		return
