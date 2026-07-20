@@ -178,28 +178,28 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		itemID    string
 		callID    string
 		name      string
+		offset    int // output_index used on the wire
 		arguments strings.Builder
 	}
-
 	type textPartial struct {
 		itemID string
 		index  int
 		buf    strings.Builder
 		opened bool
 	}
-
-	state := struct {
-		text    *textPartial
-		tools   map[int]*toolPartial // keyed by tool index
-		order   []int                // tool indexes in first-seen order
-	}{tools: map[int]*toolPartial{}}
+	type streamState struct {
+		text      *textPartial
+		tools     map[int]*toolPartial
+		order     []int
+		textTaken bool // true once a text item exists so tool offsets can shift
+	}
+	state := streamState{tools: map[int]*toolPartial{}}
 
 	streamStart := time.Now()
 	trace := h.newTrace(r, chatReq, providers[0].Provider.Name())
 	trace.Streamed = true
 
 	msgID := "msg_" + respID[len("resp_"):]
-	textIdxPlaceholder := 0 // text always gets the lowest still-unused index
 
 	for _, p := range providers {
 		attempt := chatReq
@@ -242,15 +242,16 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 				// ---- Text content deltas ------------------------------------
 				if dc.Delta.Content != "" {
 					if state.text == nil {
-						state.text = &textPartial{itemID: msgID, index: textIdxPlaceholder}
+						state.text = &textPartial{itemID: msgID, index: 0}
 						emit("response.output_item.added", map[string]any{
 							"type":         "message",
-							"output_index": textIdxPlaceholder,
+							"output_index": 0,
 							"id":           msgID,
 							"role":         "assistant",
 							"status":       "in_progress",
 							"content":      []map[string]any{},
 						})
+						state.textTaken = true
 					}
 					state.text.buf.WriteString(dc.Delta.Content)
 					emit("response.output_text.delta", map[string]any{
@@ -266,10 +267,9 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 					if tc.Index != nil {
 						idx = *tc.Index
 					}
-					// Shift the index by 1 if a text item was opened at 0 so
-					// tool indexes never collide with the text item.
-					if state.text != nil {
-						idx++
+					offset := idx
+					if state.textTaken {
+						offset = idx + 1
 					}
 					partial, seen := state.tools[idx]
 					itemType := "function_call"
@@ -285,6 +285,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 							itemType: itemType,
 							itemID:   idPrefix + respID[len("resp_"):] + "_" + fmt.Sprintf("%d", idx),
 							callID:   tc.ID,
+							offset:   offset,
 						}
 						if tc.Type == "custom" {
 							partial.name = tc.Custom.Name
@@ -293,17 +294,16 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 						}
 						state.tools[idx] = partial
 						state.order = append(state.order, idx)
-						addedObj := map[string]any{
+						emit("response.output_item.added", map[string]any{
 							"type":         itemType,
-							"output_index": idx,
+							"output_index": offset,
 							"id":           partial.itemID,
 							"call_id":      partial.callID,
 							"name":         partial.name,
 							"arguments":    "",
 							"input":        "",
 							"status":       "in_progress",
-						}
-						emit("response.output_item.added", addedObj)
+						})
 					} else if tc.Type == "custom" && tc.Custom.Name != "" {
 						partial.name = tc.Custom.Name
 					} else if tc.Type != "custom" && tc.Function.Name != "" {
@@ -313,7 +313,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 						partial.arguments.WriteString(tc.Function.Arguments)
 						emit("response.function_call_arguments.delta", map[string]any{
 							"item_id":      partial.itemID,
-							"output_index": idx,
+							"output_index": partial.offset,
 							"delta":        tc.Function.Arguments,
 						})
 					}
@@ -321,7 +321,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 						partial.arguments.WriteString(tc.Custom.Input)
 						emit("response.function_call_arguments.delta", map[string]any{
 							"item_id":      partial.itemID,
-							"output_index": idx,
+							"output_index": partial.offset,
 							"delta":        tc.Custom.Input,
 						})
 					}
@@ -367,7 +367,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		arguments := p.arguments.String()
 		payload := map[string]any{
 			"type":         p.itemType,
-			"output_index": idx,
+			"output_index": p.offset,
 			"id":           p.itemID,
 			"call_id":      p.callID,
 			"arguments":    arguments,
