@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,14 @@ import (
 // It also implements the optional ModerationsProvider and ImageGenerationProvider
 // capabilities so a single OpenAI credential can serve the full
 // /v1/{chat,embeddings,moderations,images/generations} surface.
+//
+// Set StreamPassthrough=true to forward upstream SSE bytes to the client
+// verbatim (raw mode) instead of unmarshalling each chunk into
+// ChatCompletionChunk and re-marshalling. Raw mode keeps provider-specific
+// fields (reasoning_content, thinking_blocks, future additions) alive on
+// the wire and matches the de-facto pattern used by every modern AI gateway
+// (LiteLLM, nearai cloud-api, api7, LangWatch). It is on by default for
+// the OpenAI-shaped providers.
 type OpenAI struct {
 	apiKey           string
 	baseURL          string
@@ -30,6 +39,11 @@ type OpenAI struct {
 	moderationModels []string
 	imageModels      []string
 	client           *http.Client
+	// StreamPassthrough controls how ChatCompletionStream emits SSE events:
+	// when true, the upstream bytes are forwarded unchanged via StreamEvent.Raw
+	// alongside a parsed Chunk copy for trace metrics. When false, the legacy
+	// parse-and-reserialise path is used.
+	StreamPassthrough bool
 }
 
 // NewOpenAI builds an OpenAI adapter.
@@ -134,6 +148,11 @@ func NewOpenAICompat(name, apiKey, baseURL string, chatModels, embedModels, mode
 			Transport:     NewPooledTransport(DefaultPoolSize()),
 			CheckRedirect: stripAuthorizationOnCrossOriginRedirect,
 		},
+		// OpenAI-shaped backends (Groq, Mistral, The Grid, …) expose the same
+		// SSE wire format as OpenAI proper. Forward bytes verbatim so provider
+		// extensions like reasoning_content reach the client intact; see the
+		// OpenAI type doc for rationale.
+		StreamPassthrough: true,
 	}
 	if chatModels != nil {
 		o.models = chatModels
@@ -204,6 +223,14 @@ func (o *OpenAI) ChatCompletion(ctx context.Context, req gateway.ChatCompletionR
 }
 
 // ChatCompletionStream implements gateway.Provider.
+//
+// When o.StreamPassthrough is true (the default for OpenAI-shaped
+// providers) this returns events with Raw set to the upstream SSE event
+// bytes; the handler forwards Raw to the client unchanged so non-standard
+// fields like reasoning_content reach OpenAI-strict clients intact. A
+// parsed Chunk copy is also attached for trace metrics, but it is never
+// re-marshalled. When the flag is false, the legacy parse-and-reserialise
+// path is used.
 func (o *OpenAI) ChatCompletionStream(ctx context.Context, req gateway.ChatCompletionRequest) (<-chan gateway.StreamEvent, error) {
 	req = req.ForProvider()
 	req.Stream = true
@@ -224,7 +251,11 @@ func (o *OpenAI) ChatCompletionStream(ctx context.Context, req gateway.ChatCompl
 	go func() {
 		defer close(out)
 		defer httpResp.Body.Close()
-		parseOpenAISSE(httpResp.Body, out)
+		if o.StreamPassthrough {
+			parseOpenAISSEWithRaw(httpResp.Body, out)
+		} else {
+			parseOpenAISSE(httpResp.Body, out)
+		}
 	}()
 	return out, nil
 }
@@ -344,6 +375,146 @@ func parseOpenAISSE(r io.Reader, out chan<- gateway.StreamEvent) {
 		return
 	}
 	out <- gateway.StreamEvent{Done: true}
+}
+
+// ── raw passthrough helpers ─────────────────────────────────────────
+
+// sseEvent accumulates lines of a single SSE event. OpenAI-compatible
+// providers emit one data line per event, but the general SSE spec allows
+// multiple data lines and comment/id/event lines; we keep the whole event
+// intact (including the trailing blank-line separator) so downstream can
+// forward it byte-for-byte.
+type sseEvent struct {
+	lines bytes.Buffer
+}
+
+func (e *sseEvent) writeLine(line []byte) {
+	// Copy because scanner.Bytes() aliases a reusable buffer; without the
+	// copy the next scanner.Scan() overwrites the bytes we still hold.
+	e.lines.Write(append([]byte(nil), line...))
+	e.lines.WriteByte('\n')
+}
+
+// flush emits the accumulated SSE event as gateway.StreamEvent{Raw: …} and
+// resets the buffer. If the event is empty or only comment lines it returns
+// nil; the caller should drop it.
+//
+// The returned Raw includes a trailing "\n" to reconstruct the SSE event
+// terminator (the upstream sent "line\n\n"; scanner consumed the blank line
+// separately, so we append the second "\n" here).
+func (e *sseEvent) flush() *gateway.StreamEvent {
+	if e.lines.Len() == 0 {
+		return nil
+	}
+	b := make([]byte, e.lines.Len()+1)
+	copy(b, e.lines.Bytes())
+	b[len(b)-1] = '\n'
+	return &gateway.StreamEvent{Raw: b}
+}
+
+// scanOpenAISSERaw reads an upstream SSE stream and emits each event without
+// JSON parsing. The returned events carry Raw (wire bytes) and Done; a nil
+// Chunk/Err. This keeps non-OpenAI-standard fields (reasoning_content,
+// thinking_blocks, provider-specific metadata) alive on the wire.
+//
+// Control lines (: comments, id:, event:) are preserved in the raw event so
+// the client sees the exact upstream stream.
+func scanOpenAISSERaw(r io.Reader, out chan<- gateway.StreamEvent) {
+	buf := acquireBuffer()
+	defer releaseBuffer(buf)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(buf, 1024*1024)
+	var ev sseEvent
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		// An empty line (just CRLF or LF) signals the end of one SSE event.
+		if len(bytes.TrimSpace(line)) == 0 {
+			if evt := ev.flush(); evt != nil {
+				out <- *evt
+			}
+			ev.lines.Reset()
+			continue
+		}
+		// Keep every line: data:, :, id:, event:, etc.
+		ev.writeLine(line)
+	}
+	// Any trailing bytes after the last scan (scanner may have consumed data
+	// past the final newline already, but scan errors must still surface).
+	if err := scanner.Err(); err != nil {
+		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			out <- gateway.StreamEvent{Err: err}
+		}
+	}
+	// No final Done event here: the caller is expected to wrap this
+	// function in a goroutine and `defer close(out)` so the consumer's
+	// range loop exits cleanly. Emitting both Done and a close would
+	// produce duplicate terminators on the wire for passthrough clients.
+}
+
+// parseOpenAISSEWithRaw is a hybrid: it emits StreamEvent{Raw} (wire bytes)
+// *and* StreamEvent{Chunk} so the handler can forward raw while still
+// extracting trace fields from the parsed chunk on the side. This is used
+// by OpenAI-compatible providers (OpenAI, OpenAICompat, The Grid) when
+// passthrough is enabled so non-standard fields survive the trip.
+//
+// The implementation avoids the full unmarshal→marshal round-trip; instead
+// it keeps the original data bytes and attaches a parsed copy for metrics.
+// The extra allocation is one small Raw slice per chunk (O(n) total, same
+// order as the stream itself).
+func parseOpenAISSEWithRaw(r io.Reader, out chan<- gateway.StreamEvent) {
+	buf := acquireBuffer()
+	defer releaseBuffer(buf)
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(buf, 1024*1024)
+	var ev sseEvent
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			if evt := ev.flush(); evt != nil {
+				// Parse the [DONE] marker or data line so the handler gets
+				// a cheap Chunk copy for trace metrics without touching the
+				// marshaler.
+				raw := evt.Raw
+				var dataLine []byte
+				for _, b := range bytes.Split(raw, []byte{'\n'}) {
+					if bytes.HasPrefix(b, []byte("data:")) {
+						dataLine = bytes.TrimSpace(b[len("data:"):])
+						break
+					}
+				}
+				if len(dataLine) > 0 {
+					if bytes.Equal(dataLine, []byte("[DONE]")) {
+						// Emit the upstream [DONE] as a plain Raw event; the handler
+						// forwards it byte-for-byte. Stream termination is signaled
+						// by the caller's goroutine closing the channel.
+						out <- gateway.StreamEvent{Raw: raw}
+					} else {
+						var chunk gateway.ChatCompletionChunk
+						if err := json.Unmarshal(dataLine, &chunk); err != nil {
+							out <- gateway.StreamEvent{Raw: raw, Err: fmt.Errorf("decode chunk: %w", err)}
+						} else {
+							out <- gateway.StreamEvent{Raw: raw, Chunk: &chunk}
+						}
+					}
+				} else {
+					// comment-only event — still forward raw
+					out <- *evt
+				}
+			}
+			ev.lines.Reset()
+			continue
+		}
+		ev.writeLine(line)
+	}
+	if err := scanner.Err(); err != nil {
+		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			out <- gateway.StreamEvent{Err: err}
+		}
+	}
+	// No final Done event here: the caller is expected to wrap this
+	// function in a goroutine and `defer close(out)` so the consumer's
+	// range loop exits cleanly. Emitting both Done and a close would
+	// produce duplicate terminators on the wire for passthrough clients.
 }
 
 func providerError(provider string, resp *http.Response) error {

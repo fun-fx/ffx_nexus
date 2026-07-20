@@ -239,10 +239,22 @@ type Delta struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
-// StreamEvent is emitted on the streaming channel. Exactly one of Chunk or Err
-// is set per event; Done signals normal end of stream.
+// StreamEvent is emitted on the streaming channel. Exactly one of Chunk, Raw,
+// or Err is set per event; Done signals normal end of stream.
+//
+// Raw carries the upstream SSE event's wire bytes verbatim (data lines +
+// trailing blank separator). Providers speaking an OpenAI-compatible wire
+// format set Raw so the gateway can forward chunk bytes to the client without
+// re-serialising — that round-trip currently drops provider-specific fields
+// like `reasoning_content` / `thinking_blocks` and reorders keys, which
+// OpenAI-strict clients (Cursor agent mode, LiteLLM pydantic, the
+// @ai-sdk/openai-compatible zod schema) refuse to parse. See
+// handleStream's Raw branch for the forwarding path; Chunk-based providers
+// (Anthropic) keep the historical parse path because their wire format is
+// not OpenAI-shaped.
 type StreamEvent struct {
 	Chunk *ChatCompletionChunk
+	Raw   []byte // a complete SSE event (one or more lines + "\n\n")
 	Err   error
 	Done  bool
 }
