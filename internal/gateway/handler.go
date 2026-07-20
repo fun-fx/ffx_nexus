@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -621,8 +622,40 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 			_, _ = w.Write([]byte(": stream error\n\n"))
 			flusher.Flush()
 		case evt.Done:
-			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			// Only emit the gateway-minted [DONE] when the upstream has not
+			// already sent it (passthrough providers emit Raw for the real
+			// [DONE] line). This avoids a duplicate terminator.
+			if evt.Raw == nil {
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				flusher.Flush()
+			}
+		case evt.Raw != nil:
+			_, _ = w.Write(evt.Raw)
+			// Defensive blank separator: upstream should have ended the event
+			// with "\n\n", but be tolerant with imperfect providers.
+			if len(evt.Raw) > 0 && !bytes.HasSuffix(evt.Raw, []byte("\n\n")) {
+				_, _ = w.Write([]byte("\n"))
+			}
 			flusher.Flush()
+
+			// Side-channel metrics from the already-parsed Chunk (when the
+			// provider attaches one) without ever touching a marshaler.
+			if evt.Chunk != nil {
+				if firstToken {
+					trace.TTFTMillis = time.Since(start).Milliseconds()
+					firstToken = false
+				}
+				if len(evt.Chunk.Choices) > 0 {
+					out.WriteString(evt.Chunk.Choices[0].Delta.Content)
+					if fr := evt.Chunk.Choices[0].FinishReason; fr != "" {
+						trace.FinishReason = fr
+					}
+				}
+				if evt.Chunk.Usage != nil {
+					trace.InputTokens = evt.Chunk.Usage.PromptTokens
+					trace.OutputTokens = evt.Chunk.Usage.CompletionTokens
+				}
+			}
 		case evt.Chunk != nil:
 			if firstToken {
 				trace.TTFTMillis = time.Since(start).Milliseconds()

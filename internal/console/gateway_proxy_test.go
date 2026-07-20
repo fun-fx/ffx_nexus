@@ -10,8 +10,8 @@ import (
 
 func TestLoopbackGatewayURL(t *testing.T) {
 	tests := map[string]string{
-		":8080":       "http://127.0.0.1:8080",
-		"0.0.0.0:9090": "http://127.0.0.1:9090",
+		":8080":          "http://127.0.0.1:8080",
+		"0.0.0.0:9090":   "http://127.0.0.1:9090",
 		"127.0.0.1:8080": "http://127.0.0.1:8080",
 	}
 	for in, want := range tests {
