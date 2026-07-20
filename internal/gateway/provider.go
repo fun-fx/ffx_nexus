@@ -87,6 +87,32 @@ func (r *Registry) Register(p Provider) {
 	}
 }
 
+// UpdateModels replaces the catalog of model ids indexed under the given
+// provider name. The provider instance itself stays the same; only the
+// byModel index is rewritten. Use this from the dynamic sync worker so a
+// refresh does not need to re-register (which would lock the registry and
+// race with the hot path).
+//
+// If name does not refer to a registered provider the call is a no-op and
+// returns false so the caller can log a stale refresh.
+func (r *Registry) UpdateModels(name string, models []string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.providers[name]
+	if !ok {
+		return false
+	}
+	for id, existing := range r.byModel {
+		if existing == p {
+			delete(r.byModel, id)
+		}
+	}
+	for _, m := range models {
+		r.byModel[m] = p
+	}
+	return true
+}
+
 // Resolve picks a provider for the requested model. It supports an explicit
 // "provider/model" prefix and falls back to exact model-id lookup. It returns
 // the resolved provider and the de-prefixed model id to forward.

@@ -189,10 +189,17 @@ type Config struct {
 	// Stable for the lifetime of the process; rolling pods get a new id.
 	ReplicaID string
 
-	// PublicGatewayURL is the user-facing HTTPS base for the OpenAI-compatible
-	// gateway (no trailing slash). Shown in console onboarding/curl snippets;
-	// Cursor BYOK should use <PublicGatewayURL>/v1.
-	PublicGatewayURL string
+	// DynamicModelSync periodically refreshes each provider's live model
+	// list from its upstream /v1/models endpoint so /v1/models stays in
+	// sync when providers add or sunset models without a Nexus redeploy.
+	// Disabled by default — operators toggle it on with
+	// NEXUS_DYNAMIC_MODEL_SYNC=true. Fetchers are skipped when a
+	// provider's API key is absent, so leaving the flag on while only
+	// some providers are configured is safe (those providers just don't
+	// refresh).
+	DynamicModelSync     bool
+	DynamicModelInterval time.Duration // 0 → 30m default
+	DynamicModelMaxRetry int           // 0 → 3 default
 }
 
 // SSOConfig is the OIDC configuration. The Enabled() predicate returns
@@ -305,8 +312,11 @@ func Load() Config {
 		EmbeddingsAPIKey:        env("NEXUS_EMBEDDINGS_API_KEY", ""),
 		EmbeddingsTimeout:       envDuration("NEXUS_EMBEDDINGS_TIMEOUT", 15*time.Second),
 
-		ReplicaID:          defaultReplicaID(),
-		PublicGatewayURL:   env("NEXUS_PUBLIC_GATEWAY_URL", ""),
+		ReplicaID: defaultReplicaID(),
+
+		DynamicModelSync:     envBool("NEXUS_DYNAMIC_MODEL_SYNC", false),
+		DynamicModelInterval: envDuration("NEXUS_DYNAMIC_MODEL_INTERVAL", 30*time.Minute),
+		DynamicModelMaxRetry: envInt("NEXUS_DYNAMIC_MODEL_MAX_RETRY", 3),
 	}
 }
 

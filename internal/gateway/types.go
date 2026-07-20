@@ -27,8 +27,8 @@ func parseMessageContent(raw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("content must be a string or an array of parts")
 	}
 	var parts []struct {
-		Type     string `json:"type"`
-		Text     string `json:"text"`
+		Type      string `json:"type"`
+		Text      string `json:"text"`
 		InputText string `json:"input_text"` // Responses-style alias
 	}
 	if err := json.Unmarshal(raw, &parts); err != nil {
