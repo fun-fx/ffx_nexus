@@ -188,6 +188,11 @@ type Config struct {
 	// ClickHouse: `SELECT count() FROM gateway_traces GROUP BY replica_id`.
 	// Stable for the lifetime of the process; rolling pods get a new id.
 	ReplicaID string
+
+	// PublicGatewayURL is the user-facing HTTPS base for the OpenAI-compatible
+	// gateway (no trailing slash). Shown in console onboarding/curl snippets;
+	// Cursor BYOK should use <PublicGatewayURL>/v1.
+	PublicGatewayURL string
 }
 
 // SSOConfig is the OIDC configuration. The Enabled() predicate returns
@@ -300,7 +305,8 @@ func Load() Config {
 		EmbeddingsAPIKey:        env("NEXUS_EMBEDDINGS_API_KEY", ""),
 		EmbeddingsTimeout:       envDuration("NEXUS_EMBEDDINGS_TIMEOUT", 15*time.Second),
 
-		ReplicaID: defaultReplicaID(),
+		ReplicaID:          defaultReplicaID(),
+		PublicGatewayURL:   env("NEXUS_PUBLIC_GATEWAY_URL", ""),
 	}
 }
 

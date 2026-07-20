@@ -32,7 +32,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		// icons and font fallbacks.
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; "+
-				"connect-src 'self' https://nexus.ffx.ai https://app.nexus.ffx.ai wss://app.nexus.ffx.ai; "+
+				"connect-src 'self' https://api.nexus.ffx.ai https://nexus.ffx.ai wss://nexus.ffx.ai; "+
 				"style-src 'self' 'unsafe-inline'; "+
 				"script-src 'self'; "+
 				"img-src 'self' data:; "+

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +45,8 @@ type Server struct {
 	loginLim        *limiter.IPLimiter    // per-IP rate limit for /api/auth/login
 	registerLim     *limiter.IPLimiter    // per-IP rate limit for /api/auth/register
 	ssoLim          *limiter.IPLimiter    // per-IP rate limit for /api/auth/sso/*
+	gatewayProxy    *httputil.ReverseProxy // optional /v1/* → co-located gateway
+	publicGatewayURL string               // optional public gateway base for UI copy
 	log             *slog.Logger
 	up              websocket.Upgrader
 }
@@ -184,6 +187,13 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/credentials/{id}/rotate", s.requireAdmin(s.rotateCredential))
 		r.Delete("/credentials/{id}", s.requireAdmin(s.deleteCredential))
 	})
+
+	// Same-origin /v1 for Playground + model discovery when the console is on
+	// a public hostname separate from the dedicated gateway hostname.
+	if s.gatewayProxy != nil {
+		r.Handle("/v1", s.gatewayProxy)
+		r.Handle("/v1/*", s.gatewayProxy)
+	}
 
 	// Serve the embedded dashboard SPA for everything else, with a fallback to
 	// index.html so client-side routes resolve.
