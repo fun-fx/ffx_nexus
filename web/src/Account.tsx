@@ -674,9 +674,17 @@ function MyKeys() {
   const [keys, setKeys] = useState<VirtualKey[]>([]);
   const [name, setName] = useState("");
   const [created, setCreated] = useState<string>("");
+  const [gatewayUrl, setGatewayUrl] = useState(
+    typeof window !== "undefined" ? window.location.origin : "",
+  );
   const load = () => fetchMyKeys().then(setKeys).catch(() => {});
   useEffect(() => {
     load();
+    fetchAuthConfig()
+      .then((c) => {
+        if (c.gateway_url) setGatewayUrl(c.gateway_url);
+      })
+      .catch(() => {});
   }, []);
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -705,7 +713,7 @@ function MyKeys() {
             base URL at the gateway. Sample:
           </p>
           <CodeSnippet
-            gatewayUrl={typeof window !== "undefined" ? window.location.origin : ""}
+            gatewayUrl={gatewayUrl}
             virtualKey={created}
           />
         </div>

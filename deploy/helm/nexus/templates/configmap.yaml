@@ -11,6 +11,9 @@ data:
   {{- with .Values.config.consoleAddr }}
   NEXUS_CONSOLE_ADDR: {{ . | quote }}
   {{- end }}
+  {{- with .Values.config.publicGatewayUrl }}
+  NEXUS_PUBLIC_GATEWAY_URL: {{ . | quote }}
+  {{- end }}
   {{- with .Values.config.upstreamTimeout }}
   NEXUS_UPSTREAM_TIMEOUT: {{ . | quote }}
   {{- end }}

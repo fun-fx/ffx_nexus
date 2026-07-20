@@ -24,7 +24,7 @@ config:
     enabled: true
     blockPiiInput: true
     redactPiiOutput: true
-    maxInputChars: 20000
+    maxInputChars: 200000
     validateJsonOutput: true
 
   selfCorrection:

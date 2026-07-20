@@ -37,6 +37,8 @@ service:
 config:
   gatewayAddr: ":8080"
   consoleAddr: ":8081"
+  # Public HTTPS base for the OpenAI-compatible gateway (shown in console UI).
+  publicGatewayUrl: ""
   upstreamTimeout: "120s"
   openaiBaseUrl: ""
 

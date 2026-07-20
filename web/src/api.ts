@@ -249,6 +249,7 @@ export interface AuthConfig {
   signup_enabled: boolean;
   sso_enabled: boolean;
   sso_label: string;
+  gateway_url?: string;
 }
 
 export async function fetchAuthConfig(): Promise<AuthConfig> {
@@ -259,6 +260,7 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
     signup_enabled: !!data.signup_enabled,
     sso_enabled: !!data.sso_enabled,
     sso_label: data.sso_label || "",
+    gateway_url: data.gateway_url || "",
   };
 }
 
