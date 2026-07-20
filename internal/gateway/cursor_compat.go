@@ -130,6 +130,17 @@ func TransformCursorHybrid(body json.RawMessage) (ChatCompletionRequest, error) 
 		}
 	}
 
+	// ---- tool_choice -------------------------------------------------------
+	if len(h.ToolChoice) > 0 {
+		chat.ToolChoice = normaliseHybridToolChoice(h.ToolChoice)
+	}
+
+	// ---- parallel_tool_calls ---------------------------------------------
+	chat.ParallelToolCalls = h.ParallelToolCalls
+
+	// ---- Extras (Responses-only knobs preserved as wire passthrough) -----
+	chat.Extra = pickResponsesExtras(body)
+
 	// ---- stream_options ---------------------------------------------------
 	// Cursor sends stream_options: {"include_usage": true} which is a Chat
 	// Completions field.  Preserve it verbatim.
@@ -268,12 +279,18 @@ func normaliseTool(raw json.RawMessage) (*Tool, error) {
 		return &Tool{Type: "function", Function: nested.Function}, nil
 
 	case "custom":
+		// ApplyPatch / grammar tools. The Responses `format` block (lark
+		// grammar, regex, or plain text) is preserved under
+		// function.parameters.format so providers that recognise Responses
+		// grammars can still re-validate the model output.
 		if len(nested.Custom) == 0 {
 			return nil, fmt.Errorf("custom tool missing custom object")
 		}
-		return &Tool{Type: "custom", Function: nested.Custom}, nil
+		preserved, _ := wrapApplyPatchGrammar(nested.Custom)
+		return &Tool{Type: "custom", Function: preserved}, nil
 
 	default:
+		// flat probe handled earlier; this catches "" root.
 		var flat struct {
 			Type        string          `json:"type"`
 			Name        string          `json:"name"`
@@ -294,3 +311,102 @@ func normaliseTool(raw json.RawMessage) (*Tool, error) {
 		return &Tool{Type: flat.Type, Function: fn}, nil
 	}
 }
+
+// wrapApplyPatchGrammar mirrors the Responses `custom` block into a Chat
+// Completions `function` payload with the original grammar preserved under
+// parameters.format. Cursor Agent validates the grammar on the response
+// path, so providers that respect the Responses grammar contract can still
+// see the original byte sequence end-to-end.  Providers that ignore the
+// extra `format` key are unaffected.
+func wrapApplyPatchGrammar(custom json.RawMessage) (json.RawMessage, bool) {
+	var probe struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Format      json.RawMessage `json:"format,omitempty"`
+	}
+	if err := json.Unmarshal(custom, &probe); err != nil || probe.Name == "" {
+		return custom, false
+	}
+	var params map[string]any
+	if len(probe.Format) > 0 {
+		params = map[string]any{"format": json.RawMessage(probe.Format)}
+	} else {
+		params = map[string]any{}
+	}
+	fn := map[string]any{
+		"name":        probe.Name,
+		"description": probe.Description,
+		"parameters":  params,
+	}
+	b, err := json.Marshal(fn)
+	if err != nil {
+		return custom, false
+	}
+	return b, true
+}
+
+// normaliseHybridToolChoice converts Responses-style flat tool_choice
+// ({"type":"function","name":"X"}) into the Chat Completions nested form
+// ({"type":"function","function":{"name":"X"}}). String forms ("auto",
+// "required", "none") and already-nested payloads pass through unchanged.
+func normaliseHybridToolChoice(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	if trimmed[0] != '{' {
+		return raw
+	}
+	var probe struct {
+		Type     string          `json:"type"`
+		Function json.RawMessage `json:"function"`
+		Name     string          `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return raw
+	}
+	if len(probe.Function) > 0 {
+		return raw
+	}
+	if probe.Type != "" && probe.Name != "" {
+		nested, _ := json.Marshal(map[string]any{
+			"type":     probe.Type,
+			"function": map[string]any{"name": probe.Name},
+		})
+		return nested
+	}
+	return raw
+}
+
+// pickResponsesExtras returns Responses-only fields that some
+// Chat-completions providers still respect (store, include, prompt cache
+// knobs, metadata). Keys already promoted onto the canonical struct are
+// excluded so we never double-publish a value with a different shape.
+func pickResponsesExtras(raw json.RawMessage) map[string]json.RawMessage {
+	promoted := map[string]struct{}{
+		"model": {}, "messages": {}, "input": {}, "tools": {},
+		"temperature": {}, "top_p": {}, "max_output_tokens": {},
+		"stream": {}, "user": {}, "nexus_eval": {}, "instructions": {},
+		"reasoning": {}, "text": {}, "tool_choice": {},
+		"parallel_tool_calls": {},
+	}
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawMap); err != nil {
+		return nil
+	}
+	out := map[string]json.RawMessage{}
+	for k, v := range rawMap {
+		if _, ok := promoted[k]; ok {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+

@@ -126,8 +126,37 @@ type ChatCompletionRequest struct {
 	// forwarded to upstream providers — strip with ForProvider() before calling
 	// OpenAI-compatible adapters that marshal the full struct.
 	NexusEval *NexusEvalContext `json:"nexus_eval,omitempty"`
-	// Extra preserves unknown fields so we can forward provider-specific params.
+	// Extra preserves unknown fields so we can forward provider-specific
+	// params (e.g. Responses-only "store", "include", "prompt_cache_key"
+	// that the Cursor Agent hybrid path collects from the original body).
+	// MarshalJSON splices Extra into the wire JSON so provider adapters
+	// that marshal req for the upstream see every originally supplied key.
 	Extra map[string]json.RawMessage `json:"-"`
+}
+
+// MarshalJSON ensures Extra keys are spliced into the wire payload alongside
+// the canonical Chat Completions fields. Adapter code only needs to marshal
+// req once; the helper handles the splice.
+func (r ChatCompletionRequest) MarshalJSON() ([]byte, error) {
+	type alias ChatCompletionRequest
+	base, err := json.Marshal(alias(r))
+	if err != nil {
+		return nil, err
+	}
+	if len(r.Extra) == 0 {
+		return base, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(base, &m); err != nil {
+		return base, nil
+	}
+	for k, v := range r.Extra {
+		if _, exists := m[k]; exists {
+			continue
+		}
+		m[k] = v
+	}
+	return json.Marshal(m)
 }
 
 // NexusEvalContext holds retrieval data for RAG metrics (hallucination,
