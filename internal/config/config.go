@@ -14,8 +14,9 @@ import (
 // Config holds all runtime configuration for the Nexus gateway.
 type Config struct {
 	// HTTP
-	GatewayAddr string // gateway proxy listen address
-	ConsoleAddr string // console API / dashboard listen address
+	GatewayAddr      string // gateway proxy listen address
+	ConsoleAddr      string // console API / dashboard listen address
+	PublicGatewayURL string // user-facing base URL shown in the console (optional)
 
 	// Datastores. Empty values disable the corresponding integration so the
 	// core gateway can boot with zero dependencies (Bifrost-style).
@@ -232,25 +233,26 @@ func (c SSOConfig) LabelOrDefault() string {
 func Load() Config {
 	loadDotEnv(".env")
 	return Config{
-		GatewayAddr:     env("NEXUS_GATEWAY_ADDR", ":8080"),
-		ConsoleAddr:     env("NEXUS_CONSOLE_ADDR", ":8081"),
-		PostgresURL:     env("NEXUS_POSTGRES_URL", ""),
-		ClickHouseURL:   env("NEXUS_CLICKHOUSE_URL", ""),
-		RedisURL:        env("NEXUS_REDIS_URL", ""),
-		OpenAIAPIKey:    env("OPENAI_API_KEY", ""),
-		OpenAIBaseURL:   env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-		AnthropicAPIKey: env("ANTHROPIC_API_KEY", ""),
-		GeminiAPIKey:    env("GEMINI_API_KEY", ""),
-		GroqAPIKey:      env("GROQ_API_KEY", ""),
-		MistralAPIKey:   env("MISTRAL_API_KEY", ""),
-		GridAPIKey:      env("GRID_API_KEY", ""),
-		MasterKey:       env("NEXUS_MASTER_KEY", ""),
-		EvalEnabled:     envBool("NEXUS_EVAL_ENABLED", true),
-		JudgeBaseURL:    env("NEXUS_JUDGE_BASE_URL", ""),
-		JudgeModel:      env("NEXUS_JUDGE_MODEL", "qwen2.5:7b"),
-		JudgeAPIKey:     env("NEXUS_JUDGE_API_KEY", ""),
-		EvalSampleRate:  envFloat("NEXUS_EVAL_SAMPLE_RATE", 1.0),
-		EvalWorkers:     envInt("NEXUS_EVAL_WORKERS", 4),
+		GatewayAddr:      env("NEXUS_GATEWAY_ADDR", ":8080"),
+		ConsoleAddr:      env("NEXUS_CONSOLE_ADDR", ":8081"),
+		PublicGatewayURL: env("NEXUS_PUBLIC_GATEWAY_URL", ""),
+		PostgresURL:      env("NEXUS_POSTGRES_URL", ""),
+		ClickHouseURL:    env("NEXUS_CLICKHOUSE_URL", ""),
+		RedisURL:         env("NEXUS_REDIS_URL", ""),
+		OpenAIAPIKey:     env("OPENAI_API_KEY", ""),
+		OpenAIBaseURL:    env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		AnthropicAPIKey:  env("ANTHROPIC_API_KEY", ""),
+		GeminiAPIKey:     env("GEMINI_API_KEY", ""),
+		GroqAPIKey:       env("GROQ_API_KEY", ""),
+		MistralAPIKey:    env("MISTRAL_API_KEY", ""),
+		GridAPIKey:       env("GRID_API_KEY", ""),
+		MasterKey:        env("NEXUS_MASTER_KEY", ""),
+		EvalEnabled:      envBool("NEXUS_EVAL_ENABLED", true),
+		JudgeBaseURL:     env("NEXUS_JUDGE_BASE_URL", ""),
+		JudgeModel:       env("NEXUS_JUDGE_MODEL", "qwen2.5:7b"),
+		JudgeAPIKey:      env("NEXUS_JUDGE_API_KEY", ""),
+		EvalSampleRate:   envFloat("NEXUS_EVAL_SAMPLE_RATE", 1.0),
+		EvalWorkers:      envInt("NEXUS_EVAL_WORKERS", 4),
 
 		EvalServiceURL:         env("NEXUS_EVAL_SERVICE_URL", ""),
 		EvalServiceMetrics:     env("NEXUS_EVAL_SERVICE_METRICS", "answer_relevancy,toxicity,bias"),
