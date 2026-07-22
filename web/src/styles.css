@@ -255,7 +255,7 @@ a:hover {
   }
 }
 
-/* Reset legacy classes for legacy surfaces (kept minimal until replaced). */
+/* Field row used by all forms (login / keys / credentials / playwright). */
 .field-row {
   display: flex;
   flex-direction: column;
@@ -1523,7 +1523,6 @@ a:hover {
 /* -- Routing -------------------------------------------------------- */
 .routing-page,
 .routing-detail-page,
-.placeholder-page,
 .traces-page {
   display: flex;
   flex-direction: column;
@@ -1585,18 +1584,6 @@ a:hover {
   color: var(--muted-2);
   text-align: center;
   background: var(--panel);
-}
-
-.placeholder-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-@media (max-width: 960px) {
-  .placeholder-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 .eyebrow-link {
@@ -2030,7 +2017,6 @@ a:hover {
 }
 
 /* -- Page transition ------------------------------------------------ */
-.placeholder-page,
 .keys-page,
 .users-page,
 .credentials-page,
