@@ -1309,6 +1309,19 @@ a:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.dt-th-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
   padding: 10px 12px;
   background: transparent;
   border: none;
@@ -1319,11 +1332,14 @@ a:hover {
   transition: color 140ms ease;
 }
 
-.dt-th:hover {
+.dt-th-btn:hover,
+.dt-th-btn:focus-visible {
   color: var(--text);
+  outline: none;
 }
 
-.dt-th.is-sorted {
+.dt-th.is-sorted > .dt-th-btn,
+.dt-th.is-sorted .dt-th-btn {
   color: var(--accent-2);
 }
 

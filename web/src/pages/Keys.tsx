@@ -23,6 +23,7 @@ export function Keys() {
   const qc = useQuery({ queryKey: ["keys"], queryFn: fetchBundle });
   const [createOpen, setCreateOpen] = useState(false);
   const [created, setCreated] = useState<{ key: VirtualKey; secret: string } | null>(null);
+  const [nameValid, setNameValid] = useState(false);
 
   const user = qc.data?.me ?? null;
   const keys = qc.data?.keys ?? [];
@@ -190,10 +191,10 @@ export function Keys() {
               Cancel
             </button>
             <button
-              type="button"
-              className="btn-neon"
+              type="submit"
               form="create-key-form"
-              disabled={createMut.isPending}
+              className="btn-neon"
+              disabled={createMut.isPending || !nameValid}
             >
               {createMut.isPending ? "Creating…" : "Create"}
             </button>
@@ -203,6 +204,7 @@ export function Keys() {
         <CreateKeyForm
           onSubmit={(name) => createMut.mutate(name)}
           error={createMut.error ? String((createMut.error as Error).message) : ""}
+          onValidityChange={setNameValid}
         />
       </Drawer>
 
@@ -229,9 +231,11 @@ export function Keys() {
 function CreateKeyForm({
   onSubmit,
   error,
+  onValidityChange,
 }: {
   onSubmit: (name: string) => void;
   error: string;
+  onValidityChange: (valid: boolean) => void;
 }) {
   const [name, setName] = useState("");
   return (
@@ -250,7 +254,11 @@ function CreateKeyForm({
           type="text"
           placeholder="e.g. cb-playground"
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => {
+            const v = e.target.value;
+            setName(v);
+            onValidityChange(v.trim().length > 0);
+          }}
           autoFocus
           required
         />
