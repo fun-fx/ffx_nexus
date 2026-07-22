@@ -57,24 +57,9 @@ export function DataTable<T>({
         <div className="dt-grid" role="grid" style={{ gridTemplateColumns: columns.map((c) => c.width ?? "minmax(0, 1fr)").join(" ") }}>
           <div className="dt-row is-head" role="row">
             {columns.map((c) => (
-              <button
+              <div
                 key={c.id}
-                type="button"
-                className={
-                  "dt-th" +
-                  (c.align ? ` align-${c.align}` : "") +
-                  (sort?.id === c.id ? " is-sorted" : "")
-                }
-                onClick={() => {
-                  if (!c.sortValue) return;
-                  setSort((prev) => {
-                    if (prev?.id === c.id) {
-                      return { id: c.id, dir: prev.dir === "asc" ? "desc" : "asc" };
-                    }
-                    return { id: c.id, dir: "asc" };
-                  });
-                  setPage(0);
-                }}
+                role="columnheader"
                 aria-sort={
                   sort?.id === c.id
                     ? sort.dir === "asc"
@@ -82,18 +67,40 @@ export function DataTable<T>({
                       : "descending"
                     : "none"
                 }
+                className={
+                  "dt-th" +
+                  (c.align ? ` align-${c.align}` : "") +
+                  (sort?.id === c.id ? " is-sorted" : "")
+                }
               >
-                {c.header}
-                {c.sortValue && (
-                  <span className="dt-sort-ind" aria-hidden="true">
-                    {sort?.id === c.id
-                      ? sort.dir === "asc"
-                        ? "▲"
-                        : "▼"
-                      : "↕"}
-                  </span>
-                )}
-              </button>
+                <button
+                  type="button"
+                  className="dt-th-btn"
+                  onClick={() => {
+                    if (!c.sortValue) return;
+                    setSort((prev) => {
+                      if (prev?.id === c.id) {
+                        return { id: c.id, dir: prev.dir === "asc" ? "desc" : "asc" };
+                      }
+                      return { id: c.id, dir: "asc" };
+                    });
+                    setPage(0);
+                  }}
+                  tabIndex={c.sortValue ? 0 : -1}
+                  aria-label={typeof c.header === "string" ? `Sort by ${c.header}` : undefined}
+                >
+                  {c.header}
+                  {c.sortValue && (
+                    <span className="dt-sort-ind" aria-hidden="true">
+                      {sort?.id === c.id
+                        ? sort.dir === "asc"
+                          ? "▲"
+                          : "▼"
+                        : "↕"}
+                    </span>
+                  )}
+                </button>
+              </div>
             ))}
           </div>
           {slice.length === 0 && (

@@ -18,10 +18,14 @@ import { LegacyRedirect } from "./legacy/LegacyRedirect";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 30_000,
+      // Keep stat-style feeds cached briefly but always refetch on mount
+      // so a fresh navigation into a gated page (Eval, Users, Audit) does
+      // not inherit a stale role-less `me` from the previous page.
+      staleTime: 5_000,
       gcTime: 5 * 60_000,
       retry: 1,
       refetchOnWindowFocus: true,
+      refetchOnMount: "always",
     },
   },
 });
