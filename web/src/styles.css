@@ -566,6 +566,11 @@ a:hover {
   color: var(--muted);
 }
 
+.logout-btn {
+  font-size: var(--fs-13);
+  letter-spacing: 0.04em;
+}
+
 .live-pill .dot {
   width: 8px;
   height: 8px;
