@@ -174,6 +174,142 @@ gaps that were blocking a "fresh clone → reproducible dev setup" path.
 - PR #90  chore(cleanup): drop orphaned scripts and cmd/loadgen
 - PR #91  chore(dev): wire SLM judge env by default in dev profile
 
+## [v0.5.1] — Cursor Agent compatibility, raw SSE passthrough, Responses SSE shell
+
+Targets the **Cursor Agent / Cursor Composer** traffic shape that drove the
+v0.5.0 pilot. The pilot handoff letter
+([`docs/release-notes/v0.1.0.md`](docs/release-notes/v0.1.0.md)) already flagged
+that "the gateway must look like a first-class OpenAI + Responses endpoint from
+both the public hostname and the API hostname" — this release closes the gap.
+
+### Highlights
+
+- **Cursor Agent "hybrid" bodies.** `POST /v1/chat/completions` now accepts
+  Responses-shaped payloads out of the box: top-level `input` (string or
+  array), flat Responses function tools, custom-type tools (e.g. `ApplyPatch`),
+  `reasoning.effort`, `max_output_tokens`, Responses-only `tool_choice`
+  shapes, and the full Responses extras (`store`, `include`,
+  `prompt_cache_key`, `metadata`, …). `IsCursorHybridRequest` detects the
+  shape by a cheap top-level key scan (no full decode on the hot path), and
+  `TransformCursorHybrid` rewrites it to governance-aware
+  `ChatCompletionRequest` so virtual-key limits, BYOK, guardrails,
+  routing, eval, and quality routing all keep working.
+- **Raw SSE passthrough for OpenAI-compatible providers.** OpenAI,
+  the OpenAI-compat wrapper, and The Grid now stream the upstream
+  Server-Sent Events byte-for-byte when the call is a passthrough-eligible
+  model, instead of unmarshal-then-remarshal. Non-OpenAI-standard fields
+  (`reasoning_content`, `thinking_blocks`, vendor-specific metadata) survive
+  the trip end-to-end. The handler still parses one cheap copy per chunk
+  locally for trace metrics, so the dashboard / cost / latency record is
+  unaffected.
+- **Responses SSE `response.completed` event.** `POST /v1/responses`
+  streaming now emits a complete `response.completed` envelope per the
+  OpenAI spec — `{id, object:"response", status, model, output[],
+  usage, parallel_tool_calls, instructions, tools}` — closes open items
+  as `status:incomplete` on truncated streams and emits `response.failed`
+  with `trace.error_type=stream_error` when the upstream errors before the
+  first chunk. Tool delta `call_id`s round-trip; a stable `call_<uuid>` is
+  minted when the upstream never sets one, so parallel tool calls never
+  collide on the cumulative `output[]`.
+- **Public console vs API hostnames.** When `NEXUS_PUBLIC_GATEWAY_URL` is
+  set (e.g. `https://api.nexus.ffx.ai`), the console renders that URL in
+  the onboarding curl snippets and PlayGround SDK panel instead of the
+  in-process listen address. The console also reverse-proxies `/v1/*` to
+  the co-located gateway so the Playground and `/v1/models` discovery stay
+  same-origin on the public console hostname; Cursor — which only trusts
+  the API hostname — connects to that `NEXUS_PUBLIC_GATEWAY_URL` directly.
+- **`/v1/chat/completions` array message content.** Cursor Agent arrays
+  its `messages[].content` (text + file parts); the gateway now accepts
+  both string and array content shapes per OpenAI's Chat Completions spec.
+- **Inline guardrails: `maxInputChars` default raised.** The full-profile
+  default was lifted from `20_000` to `200_000` bytes (≈ 50k tokens) so a
+  single non-ASCII (Korean/emoji) or long-context request from Cursor
+  Agent passes the inline guardrail without `403 guardrail_blocked`. The
+  MaxInput in `.env.example` now mirrors the full-profile default.
+
+### Added
+
+- `internal/gateway/cursor_compat.go` — `IsCursorHybridRequest` +
+  `TransformCursorHybrid` + `parseInputToMessages` + `normaliseTool` +
+  `normaliseHybridToolChoice` + `wrapApplyPatchGrammar` +
+  `pickResponsesExtras`. Preserves the Responses `tool_choice` hybrid
+  shape, keeps `format`/`grammar` keys on `function.parameters.format`
+  so ApplyPatch round-trips, and lets promoted Chat keys
+  (`parallel_tool_calls`, `tool_choice`, …) not double-publish.
+- `internal/gateway/providers/openai.go` — `scanOpenAISSERaw`,
+  `parseOpenAISSEWithRaw`, and `sseEvent` buffer that emits `Raw`
+  bytes; the handler selects between `parseOpenAISSE` (strict OpenAI)
+  and the raw line when the Provider advertises a passthrough-eligible
+  model set.
+- `internal/console/gateway_proxy.go: SetGatewayProxy` + `loopbackGatewayURL`
+  — the console listens for `/v1/*` and proxies to the in-process gateway
+  on `127.0.0.1`, so the public console URL can serve `/v1/models` and the
+  Playground without an extra hop.
+- `internal/console/gateway_proxy.go: SetPublicGatewayURL` —
+  env-driven `NEXUS_PUBLIC_GATEWAY_URL` plumbed to the React onboarding
+  curl snippet, CSP `connect-src` allowlist, and PlayGround SDK panel.
+- `internal/config/config.go: PublicGatewayURL` — new field wired through
+  Helm chart's `configMap` via `deploy/helm/nexus/templates/configmap.yaml`.
+- `internal/gateway/handler.go` — Cursor-hybrid detection path on
+  `/v1/chat/completions`; array message-content shapes on
+  `/v1/chat/completions`; Responses streaming `response.completed`
+  shape with `instructions`, `tools`, `parallel_tool_calls`,
+  `usage`, and OpenAI-spec output items.
+
+### Changed
+
+- `deploy/helm/nexus/Chart.yaml`: `version` bumped to `0.5.1`,
+  `appVersion` to `"0.5.1"` so a default `helm install` pulls a current
+  image in lock-step with what the dev container runs.
+- `deploy/helm/nexus/values-full.yaml`:
+  `NEXUS_GUARDRAILS_MAX_INPUT_CHARS` raised from `20000` to `200000`.
+- `.env.example`: `NEXUS_GUARDRAILS_MAX_INPUT_CHARS` example value
+  switched to `200000`.
+- `internal/console/security.go` — CSP `connect-src` allowlists
+  `api.<nexus-domain>` so the frontend can fetch the public gateway.
+- `web/src/api.ts` — `api.nexus.ffx.ai` is the public-facing gateway
+  base for the onboarding curl snippet.
+
+### Fixed
+
+- `internal/gateway/handler.go` — `/v1/chat/completions` no longer 400s
+  on Responses-style bodies; Cursor Agent "hybrid" requests succeed.
+- `internal/gateway/handler.go` — array message content (`[{"type":"text",…}]`)
+  is parsed correctly (was 400'ing from Cursor Composer's file parts).
+- `internal/gateway/responses.go` — streaming `response.completed` no
+  longer drops `instructions` / `tools` / `parallel_tool_calls`
+  fields; truncated streams close items as `incomplete` instead of
+  pretending success; tool delta IDs round-trip through the cumulative
+  output list.
+- `cmd/nexus/main.go` — `PublicGatewayURL` is now sourced from config so
+  the Helm chart ConfigMap key is honoured at boot.
+
+### Security / boundary
+
+- Cursor-hybrid detection runs **before** auth, so a malformed body still
+  gets the standard 401-vs-400 split the rest of the API surface uses;
+  Note: regression-tested against the existing
+  `scripts/test_phase2.sh` and `test_phase234.sh` chains — no new tests
+  are required to keep them green.
+- The raw-SSE passthrough preserves comment / `id:` / `event:` lines
+  verbatim so security headers (e.g. `:x-trace-id` style comments) on the
+  upstream still surface to the client; no codepath actively forbids them.
+
+### Upgrade notes
+
+None. v0.5.1 is additive — existing clients that already speak
+chat-completions or Responses keep working unchanged, and the Cursor
+Agent compat is gated on detection (a true Chat body never enters the
+hybrid path).
+
+### Commits & PRs in this release
+
+- PR #109 fix(gateway): accept array message content from Cursor Agent
+- PR #110 chore(guardrails): raise maxInputChars to 200000 in full profile
+- PR #112 feat(streaming, gateway): raw- SSE passthrough agent mode
+- PR #113 fix(cursor): bridge Responses-shaped payloads onto Chat Completions
+- PR #114 chore(release): bump chart to 0.5.1 for PR #113 gateway fix
+
 ## [v0.1.0] — initial strict-byok pilot release
 
 First publicly consumable release. Grid team pilot.

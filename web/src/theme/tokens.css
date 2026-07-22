@@ -1,0 +1,125 @@
+/* Nexus design tokens — dark-first (Grid-inspired neon/gradient accents)
+ * ---------------------------------------------------------
+ * 운영콘솔이지만 The Grid 같은 사적인 네온 액센트를 차용.
+ * 네온 halo는 hover/active/focus 시에만 진해지며, 정적 상태에선
+ * 8% 미만 opacity로 절제한다.
+ */
+
+:root[data-theme="dark"] {
+  --bg: #0a0b14;
+  --bg-2: #0f1220;
+  --panel: #131628;
+  --panel-2: #181c33;
+  --border: #232847;
+  --border-strong: #2d3260;
+  --text: #e9ecff;
+  --muted: #8b94c0;
+  --muted-2: #5b648a;
+  --accent: #ec4899;
+  --accent-2: #22d3ee;
+  --accent-3: #a855f7;
+  --accent-grad: linear-gradient(120deg, #ec4899 0%, #a855f7 48%, #22d3ee 100%);
+  --accent-grad-soft: linear-gradient(
+    120deg,
+    rgba(236, 72, 153, 0.18) 0%,
+    rgba(168, 85, 247, 0.16) 50%,
+    rgba(34, 211, 238, 0.18) 100%
+  );
+  --ok: #4ade80;
+  --warn: #facc15;
+  --err: #fb7185;
+  --info: #60a5fa;
+  /* halo 레이어 */
+  --glow-pink: 0 0 0 1px rgba(236, 72, 153, 0.35),
+    0 0 24px -4px rgba(236, 72, 153, 0.55);
+  --glow-cyan: 0 0 0 1px rgba(34, 211, 238, 0.35),
+    0 0 24px -4px rgba(34, 211, 238, 0.55);
+  --glow-violet: 0 0 0 1px rgba(168, 85, 247, 0.4),
+    0 0 22px -4px rgba(168, 85, 247, 0.55);
+  --glow-soft: 0 0 28px -10px rgba(168, 85, 247, 0.55);
+  /* spacing */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+  --s-9: 56px;
+  /* radius */
+  --r-sm: 4px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-pill: 999px;
+  /* shadow */
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-2: var(--shadow-1), 0 12px 32px rgba(0, 0, 0, 0.55);
+  --shadow-3: 0 24px 60px rgba(0, 0, 0, 0.6);
+  /* typography */
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Noto Sans KR", sans-serif;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-16: 16px;
+  --fs-18: 18px;
+  --fs-20: 20px;
+  --fs-24: 24px;
+  --fs-32: 32px;
+  --fs-40: 40px;
+  --fs-56: 56px;
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f7fb;
+  --bg-2: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f1f2f8;
+  --border: #e2e5ee;
+  --border-strong: #cfd4e0;
+  --text: #14162b;
+  --muted: #67708b;
+  --muted-2: #8a93ab;
+  --accent: #d03688;
+  --accent-2: #0891b2;
+  --accent-3: #7c3aed;
+  --accent-grad: linear-gradient(120deg, #d03688 0%, #7c3aed 48%, #0891b2 100%);
+  --accent-grad-soft: linear-gradient(
+    120deg,
+    rgba(208, 54, 136, 0.12) 0%,
+    rgba(124, 58, 237, 0.1) 50%,
+    rgba(8, 145, 178, 0.12) 100%
+  );
+  --ok: #16a34a;
+  --warn: #ca8a04;
+  --err: #e11d48;
+  --info: #2563eb;
+  --glow-pink: 0 0 0 1px rgba(208, 54, 136, 0.2), 0 0 14px -2px rgba(208, 54, 136, 0.2);
+  --glow-cyan: 0 0 0 1px rgba(8, 145, 178, 0.2), 0 0 14px -2px rgba(8, 145, 178, 0.2);
+  --glow-violet: 0 0 0 1px rgba(124, 58, 237, 0.25),
+    0 0 14px -2px rgba(124, 58, 237, 0.2);
+  --glow-soft: 0 0 14px -6px rgba(124, 58, 237, 0.35);
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 1px 2px rgba(20, 22, 43, 0.08);
+  --shadow-2: var(--shadow-1), 0 12px 32px rgba(20, 22, 43, 0.08);
+  --shadow-3: 0 24px 60px rgba(20, 22, 43, 0.12);
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Noto Sans KR", sans-serif;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-16: 16px;
+  --fs-18: 18px;
+  --fs-20: 20px;
+  --fs-24: 24px;
+  --fs-32: 32px;
+  --fs-40: 40px;
+  --fs-56: 56px;
+}
