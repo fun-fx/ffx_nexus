@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Ticker } from "./Ticker";
 import { ThemeToggle } from "../theme/ThemeToggle";
+import { fetchMe, logout } from "../api";
 
 interface LiveSummary {
   requestsPerMin: number;
@@ -10,8 +12,11 @@ interface LiveSummary {
 }
 
 export function Topbar() {
+  const navigate = useNavigate();
   const [live, setLive] = useState(false);
   const [sum, setSum] = useState<LiveSummary | null>(null);
+  const [email, setEmail] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
 
   // Lightweight stats polling for the ticker; honors reduced motion.
   useEffect(() => {
@@ -46,6 +51,35 @@ export function Topbar() {
     };
   }, []);
 
+  // Pull the current user once on mount so the logout control can show the
+  // signed-in email without diverting through the Sidebar's effect.
+  useEffect(() => {
+    let cancelled = false;
+    fetchMe()
+      .then((u) => {
+        if (!cancelled) setEmail(u?.email ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setEmail(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onSignOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await logout();
+    } catch {
+      // Even on network failure we still bounce to /login — the session cookie
+      // is the source of truth; if it's gone the gateway will reject the next
+      // request.
+    }
+    navigate("/login", { replace: true });
+  };
+
   const tickerItems = sum
     ? [
         `${sum.requestsPerMin} req/min`,
@@ -73,6 +107,18 @@ export function Topbar() {
           <span className="dot" aria-hidden="true" />
           {live ? "LIVE" : "OFFLINE"}
         </span>
+        {email && (
+          <button
+            type="button"
+            className="btn-ghost logout-btn"
+            onClick={onSignOut}
+            disabled={signingOut}
+            title={email}
+            aria-label={`Sign out (${email})`}
+          >
+            {signingOut ? "Signing out…" : "Sign out"}
+          </button>
+        )}
       </div>
     </header>
   );
