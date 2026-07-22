@@ -6,10 +6,15 @@ API, OpenTelemetry GenAI-aligned tracing, and a live dashboard.
 
 > **Full project description**: [DESCRIPTION.md](DESCRIPTION.md)
 
-> Status: Phases 1–4 implemented — gateway + observability + dashboard,
+> Status: Phases 1–5 implemented — gateway + observability + dashboard,
 > control plane (keys/credentials), rate limits & budgets, async evals, and
-> quality-aware routing. See
-> [`.cursor/plans/llm_gateway_nexus_*.plan.md`](.cursor/plans) for the full roadmap.
+> quality-aware routing. The current release (**v0.5.1**) adds Cursor Agent /
+> Composer compatibility (Responses-shaped bodies accepted at
+> `/v1/chat/completions`), raw-SSE passthrough so non-standard fields survive
+> the trip, and split public console vs API hostnames via
+> `NEXUS_PUBLIC_GATEWAY_URL`. See
+> [`.cursor/plans/llm_gateway_nexus_*.plan.md`](.cursor/plans) for the
+> full roadmap.
 
 ## Architecture
 
@@ -280,8 +285,8 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 
 | Endpoint | Notes |
 | --- | --- |
-| `POST /v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming, tools with `tool_choice` + `parallel_tool_calls`, structured output) |
-| `POST /v1/responses` | OpenAI Responses API (string or array `input`, tool calls surfaced as `function_call` items). Implemented as a thin shim over `/v1/chat/completions`. |
+| `POST /v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming, tools with `tool_choice` + `parallel_tool_calls`, structured output). Also accepts the **Cursor Agent "hybrid" body** (Responses-shaped `input`, flat functions, custom tools, `reasoning.effort`) and rewrites it to canonical chat shape — see [Cursor Agent compatibility](#cursor-agent-compatibility). |
+| `POST /v1/responses` | OpenAI Responses API (string or array `input`, tool calls surfaced as `function_call` items). Streaming emits a full **OpenAI-spec `response.completed`** envelope (with `instructions`, `tools`, `parallel_tool_calls`, `usage`), a `response.failed` event on stream errors, and an `incomplete` close when the upstream truncates; `ApplyPatch` tool grammar is preserved end-to-end. Implemented as a shim over `/v1/chat/completions`. |
 | `POST /v1/embeddings` | OpenAI-compatible embeddings for providers that implement the `EmbeddingsProvider` interface (OpenAI / Mistral today; Anthropic / Gemini / Groq to follow). Supports string and string-array `input`. |
 | `POST /v1/moderations` | OpenAI-compatible content moderation. Omitted `model` defaults to `omni-moderation-latest`. Same `Auth`+`Enforce`+`BYOK` chain as chat. |
 | `POST /v1/images/generations` | OpenAI-compatible image generation (`dall-e-3` and friends). Omitted `model` defaults to `dall-e-3`. |
@@ -289,6 +294,42 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 
 All six endpoints go through the same `Auth` + `Enforce` middleware chain, so
 virtual-key RPM/budget limits and BYOK credential resolution apply uniformly.
+
+### Cursor Agent compatibility
+
+[Cursor Agent](https://cursor.com) and Cursor Composer sometimes send
+**Responses-shaped payloads to `/v1/chat/completions`** — top-level
+`input`, flat function tools, custom-type tools (notably
+`type:"custom"` with an `ApplyPatch` grammar), `reasoning.effort`,
+`max_output_tokens`, and Responses-only extras like `store`,
+`include`, `prompt_cache_key`, `metadata`. Rather than 400 the call, the
+gateway detects the hybrid shape and rewrites it to a canonical
+`ChatCompletionRequest` so the rest of the pipeline (auth, BYOK,
+guardrails, quality-aware routing, evals, semantic cache, **all** of
+it) keeps working exactly as it does for plain Chat traffic:
+
+| Cursor field | How Nexus handles it |
+| --- | --- |
+| top-level `input` (string or array) | translated to Chat `messages[]` |
+| Responses flat function tools (`{type:"function", name:…, parameters:…}`) | nested to Chat `{type:"function", function:{name:…, parameters:…}}` |
+| `type:"custom"` tools (ApplyPatch et al.) | preserved; `format` / `grammar` keys are kept on `function.parameters.format` so ApplyPatch survives round-trip |
+| `tool_choice` hybrid shape (`{type:"function", name:X}` vs nested) | flattened / unnested to the Chat wire shape |
+| `reasoning.effort` | promoted to `reasoning_effort` |
+| `max_output_tokens` | promoted to `max_tokens` |
+| Responses-only extras (`store`, `include`, `prompt_cache_key`, `metadata`, …) | forwarded as wire `extra` on the Chat request, then stripped so promoted keys never double-publish |
+| array `messages[].content` (text + file parts) | parsed as a content-part list per OpenAI's Chat spec |
+
+Detection runs **before** full JSON decode on the hot path so the
+gateway doesn't allocate a `CursorHybridReq` for normal Chat traffic.
+A true Chat body never enters the rewrite path.
+
+A separate `/v1/responses` endpoint is also exposed for clients that
+already speak Responses natively (and so that Cursor Agent's "hybrid"
+traffic — when it eventually targets `/v1/responses` directly — works
+without a bridge layer). Streaming on `/v1/responses` emits a
+fully-formed `response.completed` envelope per the OpenAI spec, so
+non-Cursor SDKs that already implement the Responses surface get the
+same semantics for free.
 
 ```bash
 # Embeddings
@@ -311,6 +352,18 @@ curl http://localhost:8080/v1/responses \
     ]
   }'
 
+# Responses API streaming — wire ends with response.completed carrying
+# {id, object:"response", status, model, output[], usage,
+#  parallel_tool_calls, instructions, tools}. Pass "stream": true.
+curl -N http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer nxs_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "stream": true,
+    "input": [{"role":"user","content":"Three short bullet points about SLIs."}]
+  }'
+
 # Moderation
 curl http://localhost:8080/v1/moderations \
   -H "Authorization: Bearer nxs_live_..." \
@@ -330,6 +383,7 @@ curl http://localhost:8080/v1/images/generations \
 | --- | --- | --- |
 | `NEXUS_GATEWAY_ADDR` | `:8080` | Gateway proxy listen address (override when `:8080` clashes; e.g. `install.sh` uses `:8090` via `NEXUS_GATEWAY_PORT`) |
 | `NEXUS_CONSOLE_ADDR` | `:8081` | Console API / dashboard listen address (override similarly; e.g. `install.sh` uses `:8091` via `NEXUS_CONSOLE_PORT`) |
+| `NEXUS_PUBLIC_GATEWAY_URL` | _(empty)_ | User-facing gateway base URL shown in the console onboarding curl snippet and the Playground SDK panel (e.g. `https://api.nexus.ffx.ai`). See [Public console vs API hostname](#public-console-vs-api-hostname-v051). |
 | `NEXUS_CLICKHOUSE_URL` | _(empty)_ | Native DSN; empty disables persistence |
 | `NEXUS_POSTGRES_URL` | _(empty)_ | Control plane DSN; empty disables key auth & credential store |
 | `NEXUS_REDIS_URL` | _(empty)_ | Shared rate limits + budgets across replicas; empty = in-memory |
@@ -345,6 +399,9 @@ curl http://localhost:8080/v1/images/generations \
 | `GROQ_API_KEY` | — | Groq OpenAI-compatible endpoint (Llama 3.x, Mixtral, Gemma, Whisper, llama-guard; chat model ids auto-listed) |
 | `MISTRAL_API_KEY` | — | Mistral OpenAI-compatible endpoint (mistral-large/small, codestral, mixtral, pixtral) |
 | `GRID_API_KEY` | — | The Grid (thegrid.ai) OpenAI-compatible endpoint — instruments: text-{standard,prime,max}, code-{standard,prime,max}, agent-{standard,prime,max}. On 307 supplier redirect, `Authorization` is auto-stripped when the new host is not `api.thegrid.ai` (security). See [Provider catalog opt-in](#provider-catalog-opt-in). |
+| `NEXUS_DYNAMIC_MODEL_SYNC` | `false` | Background refresh of `/v1/models` from each provider's upstream (so new OpenAI / Gemini / Anthropic releases appear without a Nexus redeploy). See [Dynamic model catalog sync](#dynamic-model-catalog-sync-nexus_dynamic_model_sync). |
+| `NEXUS_DYNAMIC_MODEL_INTERVAL` | `30m` | Refresh cadence (Go duration string; e.g. `10m`, `1h`). |
+| `NEXUS_DYNAMIC_MODEL_MAX_RETRY` | `3` | Retry budget per refresh on transient upstream errors (max 60s backoff with jitter). |
 | `NEXUS_JUDGE_BASE_URL` / `NEXUS_JUDGE_MODEL` | — / `qwen2.5:7b` | Local SLM judge (Phase 3) |
 | `NEXUS_EVAL_ENABLED` | `true` | Async eval worker (heuristics + optional judges) |
 | `NEXUS_JUDGE_API_KEY` / `NEXUS_EVAL_SAMPLE_RATE` | — / `1.0` | Judge auth + judge sampling fraction |
@@ -353,11 +410,95 @@ curl http://localhost:8080/v1/images/generations \
 | `NEXUS_ROUTE_GROUPS` | _(empty)_ | Routing aliases, `alias=m1,m2;...` (Phase 4) |
 | `NEXUS_ROUTE_W_QUALITY` / `_W_COST` / `_W_LATENCY` | `0.6` / `0.2` / `0.2` | Routing weights |
 | `NEXUS_ROUTE_WINDOW` / `NEXUS_ROUTE_REFRESH` | `1h` / `30s` | Routing stats window & refresh |
+| `NEXUS_ROUTE_LOAD_BALANCE` | `false` | Rank-weighted round-robin of the primary model among quality-qualified candidates in a routing alias. See [Load balancing within routing tiers](#load-balancing-within-routing-tiers). |
+| `NEXUS_SELF_CORRECTION_ENABLED` / `_MAX_RETRIES` | `false` / `1` | Paid retry of the same model after a schema-guardrail rejection. See [Structured-output self-correction](#structured-output-self-correction). |
 | `NEXUS_UPSTREAM_TIMEOUT` | `120s` | Upstream provider timeout |
+| `NEXUS_MAX_CONCURRENT_PER_KEY` | `0` (off) | Per-vkey in-flight cap on a single replica (V5). Excess returns `429 concurrency_exceeded` with `Retry-After: 1`. See [High-concurrency tuning (V5)](#high-concurrency-tuning-v5). |
+| `NEXUS_FAILOVER_WEBHOOK` / `_SLACK_WEBHOOK` | _(empty)_ | Optional alert sinks on router primary→fallover hops. See [Failover alert sinks (V4)](#failover-alert-sinks-v4). |
+| `NEXUS_FAILOVER_ALERT_COOLDOWN` | `0` (off) | Cooldown that coalesces back-to-back alerts onto the same sink. |
 | `NEXUS_METABASE_URL` | _(empty)_ | Metabase URL; empty disables the BI adapter. |
 | `NEXUS_METABASE_USER` / `_PASSWORD` | _(empty)_ | Admin login for the bootstrap session. |
 | `NEXUS_METABASE_CLICKHOUSE_URL` / `_POSTGRES_URL` | _(empty)_ | Data sources to register; both are independently opt-in. |
 | `NEXUS_METABASE_SEED_DIR` | _(empty)_ | Directory of `*.json` Metabase collection exports seeded on boot. |
+
+## Public console vs API hostname (v0.5.1)
+
+When the gateway runs behind a public hostname split — e.g. a public
+`nexus.<domain>` for the dashboard and a separate `api.<domain>` for
+programmatic SDK traffic — point the console at the API hostname with:
+
+```yaml
+# deploy/helm/nexus/values.yaml
+config:
+  publicGatewayUrl: https://api.nexus.ffx.ai
+```
+
+```bash
+# or directly via env
+NEXUS_PUBLIC_GATEWAY_URL=https://api.nexus.ffx.ai go run ./cmd/nexus
+```
+
+When set, three things change:
+
+1. **Onboarding curl snippet.** The React Account tab's "copy this curl"
+   panel shows `https://api.<domain>` instead of the in-process listen
+   address, so a freshly-minted virtual key is immediately usable from
+   the public host.
+2. **Playground SDK panel.** The Playground's "SDK URL" hint uses the
+   same public base so the snippet it pastes into `/v1` calls works
+   without rewriting.
+3. **Console `/v1/*` reverse proxy.** Because the console and gateway
+   share a pod, the console reverse-proxies its in-mux `/v1/*` to the
+   co-located gateway on `127.0.0.1` so `/v1/models` discovery and the
+   in-browser Playground stay same-origin on the public console host
+   (no CORS dance). Cursor-style clients that only trust the API
+   hostname connect to `NEXUS_PUBLIC_GATEWAY_URL` directly.
+
+CSP is tightened on `api.<domain>` automatically so the frontend can
+cross-origin call it; deploy a TLS cert / Ingress for both hostnames
+(the chart does not provision certs itself — use your existing ingress
+controller or cert-manager).
+
+## Raw SSE passthrough
+
+OpenAI-compatible providers increasingly carry non-OpenAI-standard
+fields on their SSE event payloads — `reasoning_content`,
+`thinking_blocks`, vendor-specific metadata — that the strict
+unmarshal-then-remarshal path would silently drop. When the provider
+advertises a passthrough-eligible model set (OpenAI itself, the
+OpenAI-compat wrapper behind `OPENAI_BASE_URL`, The Grid behind
+`GRID_API_KEY`), the gateway streams the upstream SSE byte-for-byte
+instead of round-tripping through `ChatCompletionChunk`. The handler
+still parses one cheap copy per chunk locally for trace metrics, so the
+dashboard / per-model cost / latency / failover trace record is
+unchanged.
+
+What this buys you:
+
+| Field on the wire | Stricter path (≤ v0.5.0) | Raw passthrough (v0.5.1+) |
+| --- | --- | --- |
+| `delta.content` | forwarded | forwarded |
+| `delta.reasoning_content` (OpenAI o-series, Cursor-style) | dropped | forwarded |
+| `delta.tool_calls[*]` (including `index` / `id`) | forwarded | forwarded byte-for-byte |
+| `delta.thinking_blocks` (vendor-specific) | dropped | forwarded |
+| Custom SSE `:comment`, `id:`, `event:` lines | kept if recognised | preserved verbatim |
+| Trace metrics (per-chunk cost, model, latency) | yes | yes |
+| First-byte latency tax | unmarshal+remarshal | \(\approx 0\) |
+
+A failure to parse a chunk (malformed JSON, mid-stream truncation) is
+recorded on the trace and falls back to the strict path; the connection
+is not dropped. For Responses streaming (`POST /v1/responses`), the
+gateway still emits a final OpenAI-spec `response.completed` envelope
+- raw passthrough is data-plane only; the public Responses shape is
+  emitted by the gateway, not the upstream.
+
+## Inline guardrails
+
+The inline guardrails, semantic-cache, schema guardrail, and
+self-correction / failover-routes-by-model sections that follow sit
+**below** this Configuration record. v0.5.1 doesn't change any of those
+defaults; the only behavior shift is the Responses-streaming wire shape
+and the Cursor Agent hybrid-body pathway documented above.
 
 ## Metabase BI adapter — quickstart
 
@@ -1071,6 +1212,13 @@ NEXUS_EMBEDDINGS_MODEL=nomic-embed-text \
 
 ## Inline guardrails
 
+While `NEXUS_PUBLIC_GATEWAY_URL` (above) wires the public-facing entry
+points and the **raw SSE passthrough** keeps non-OpenAI-standard fields
+alive on the wire, the actual content-policy enforcement lives in the
+inline guardrails below. These run synchronously on the request hot path:
+cheaper than async eval, and able to block or redact before bytes hit
+the upstream or the client.
+
 Unlike the async eval workers (which observe completed traces out-of-band),
 **guardrails run synchronously on the request hot path** and can block a request
 or redact a response. They are intentionally cheap — regex and length checks
@@ -1187,8 +1335,14 @@ chart at your own cluster, datastores, and provider policy — see the chart
 ```bash
 helm upgrade --install nexus deploy/helm/nexus \
   --namespace nexus --create-namespace \
-  --set image.tag=v0.1.0
+  --set image.tag=v0.5.1
 ```
+
+The chart's `version` and `appVersion` are kept in lock-step with the
+gateway binary — bumping a gateway release is a single chart bump in
+`deploy/helm/nexus/Chart.yaml` (currently `0.5.1` / `"0.5.1"`). Existing
+deployments get the new gateway on the next `helm upgrade --reuse-values`
+without touching Secrets.
 
 > The specific on-prem production pipeline for the maintainers' cluster
 > (Talos + Cozystack, in-cluster image build, prod values) lives in a separate
