@@ -85,14 +85,6 @@ export interface RoutingModel {
   eff_quality: number;
 }
 
-export interface EvalMetric {
-  evaluator: string;
-  metric: string;
-  avg_score: number;
-  pass_rate: number;
-  samples: number;
-}
-
 export async function fetchStats(window = "1h"): Promise<Stats> {
   const res = await fetch(`/api/stats?window=${window}`);
   return res.json();
@@ -106,12 +98,6 @@ export async function fetchTraces(limit = 100): Promise<TraceSummary[]> {
 
 export async function fetchRouting(): Promise<RoutingModel[]> {
   const res = await fetch(`/api/routing`);
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
-}
-
-export async function fetchEvals(window = "24h"): Promise<EvalMetric[]> {
-  const res = await fetch(`/api/evals?window=${window}`);
   const data = await res.json();
   return Array.isArray(data) ? data : [];
 }
@@ -379,91 +365,6 @@ export async function createUser(input: {
 
 export async function deleteUser(id: string): Promise<void> {
   await jsonOrThrow(await fetch(`/api/users/${id}`, { method: "DELETE" }));
-}
-
-export interface UserQuality {
-  user_id: string;
-  email: string;
-  avg_quality: number;
-  pass_rate: number;
-  samples: number;
-  cost_usd: number;
-  requests: number;
-}
-
-export interface MyUsageStats {
-  total_requests: number;
-  error_rate: number;
-  avg_latency_ms: number;
-  p95_latency_ms: number;
-  total_tokens: number;
-  total_cost_usd: number;
-  cache_hits: number;
-  cache_hit_rate: number;
-  guardrail_events: number;
-}
-
-export interface MyUsageQuality {
-  user_id: string;
-  avg_quality: number;
-  pass_rate: number;
-  samples: number;
-  cost_usd: number;
-  requests: number;
-}
-
-export async function fetchMyStats(window = "1h"): Promise<MyUsageStats> {
-  const data = await jsonOrThrow(
-    await fetch(`/api/me/stats?window=${window}`)
-  ).catch(() => ({}));
-  // Normalize to the documented shape so a stale session / 401 cannot crash
-  // downstream code that dereferences fields (e.g. requests, cost_usd).
-  return {
-    total_requests: data.total_requests ?? 0,
-    error_rate: data.error_rate ?? 0,
-    avg_latency_ms: data.avg_latency_ms ?? 0,
-    p95_latency_ms: data.p95_latency_ms ?? 0,
-    total_tokens: data.total_tokens ?? 0,
-    total_cost_usd: data.total_cost_usd ?? 0,
-    cache_hits: data.cache_hits ?? 0,
-    cache_hit_rate: data.cache_hit_rate ?? 0,
-    guardrail_events: data.guardrail_events ?? 0,
-  };
-}
-
-export async function fetchMyTraces(limit = 20): Promise<TraceSummary[]> {
-  const res = await fetch(`/api/me/traces?limit=${limit}`);
-  if (!res.ok) return [];
-  const text = await res.text();
-  if (!text) return [];
-  try {
-    const data = JSON.parse(text);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-export async function fetchMyQuality(window = "24h"): Promise<MyUsageQuality[]> {
-  const res = await fetch(`/api/me/quality?window=${window}`);
-  if (!res.ok) return [];
-  const text = await res.text();
-  if (!text) return [];
-  try {
-    const data = JSON.parse(text);
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
-}
-
-// fetchUserQuality returns per-user rolling quality + spend (admin only). This
-// is the eval differentiator: quality per user, not just spend per key.
-export async function fetchUserQuality(window = "24h"): Promise<UserQuality[]> {
-  const res = await fetch(`/api/users/quality?window=${window}`);
-  if (!res.ok) return [];
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
 }
 
 // --- Admin: audit log (v1.1) ---

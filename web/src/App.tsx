@@ -13,7 +13,6 @@ import { Credentials } from "./pages/Credentials";
 import { Eval } from "./pages/Eval";
 import { Audit } from "./pages/Audit";
 import { Playground } from "./pages/Playground";
-import { LegacyRedirect } from "./legacy/LegacyRedirect";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -48,7 +47,6 @@ export function App() {
               <Route path="credentials" element={<Credentials />} />
               <Route path="audit" element={<Audit />} />
               <Route path="playground" element={<Playground />} />
-              <Route path="legacy/*" element={<LegacyRedirect />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>
