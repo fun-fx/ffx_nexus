@@ -18,6 +18,7 @@ import (
 
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/core"
+	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
@@ -29,6 +30,18 @@ type RouteStatsSource interface {
 	Snapshot() map[string]router.ModelStats
 }
 
+// CatalogSource exposes the gateway registry's merged model catalog so the
+// console's Playground page can populate its model picker without having to
+// call gateway /v1/models (which requires a virtual-key Authorization header
+// that the console does not own). The interface is satisfied directly by the
+// gateway's console adapter — see gateway.Handler.Catalog() — so we don't
+// need to import the gateway package here.
+type CatalogSource interface {
+	ChatModels() []string
+	EmbeddingModels() []string
+	UserProviders() []gateway.ConsoleUserProvider
+}
+
 // Server exposes the dashboard API: recent traces, window stats, a live
 // WebSocket feed, routing stats, and (when a store is configured)
 // key/credential management.
@@ -37,6 +50,7 @@ type Server struct {
 	reader           *observability.Reader  // may be nil when ClickHouse is not configured
 	store            *core.Store            // may be nil when Postgres is not configured
 	routes           RouteStatsSource       // may be nil when routing is disabled
+	catalog          CatalogSource          // may be nil when the gateway is not co-located
 	reload           func(context.Context)  // may be nil when no hot-reload hook is wired
 	allowSignup      bool                   // public POST /api/auth/register
 	sso              *ssoClient             // OIDC client; nil when SSO is not configured
@@ -85,6 +99,11 @@ func (s *Server) SSOLabel() string {
 
 // SetRouteStats attaches a routing stats source for the /api/routing endpoint.
 func (s *Server) SetRouteStats(src RouteStatsSource) { s.routes = src }
+
+// SetCatalog attaches a catalog source for the /api/me/playground/catalog
+// endpoint. The Playground page consumes this so it can list stock + user
+// providers without needing a virtual-key Authorization header.
+func (s *Server) SetCatalog(src CatalogSource) { s.catalog = src }
 
 // SetCredentialReloader registers a callback invoked after credential changes
 // (rotate/delete) so the gateway can refresh its in-memory providers without a
@@ -166,6 +185,11 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/me/credentials", s.requireUser(s.createMyCredential))
 		r.Post("/me/credentials/{id}/rotate", s.requireUser(s.rotateMyCredential))
 		r.Delete("/me/credentials/{id}", s.requireUser(s.deleteMyCredential))
+		// Playground helper: session-authenticated browse of the gateway catalog.
+		// /v1/models itself requires a virtual-key Authorization header, which
+		// the console session has no view of; this endpoint lets the reader
+		// enumerate stock + user-defined providers using their Nexus cookie.
+		r.Get("/me/playground/catalog", s.requireUser(s.playgroundCatalog))
 
 		// User management (admin only).
 		r.Get("/users", s.requireAdmin(s.listUsers))
@@ -374,6 +398,33 @@ func (s *Server) audit(ctx context.Context, actorID, orgID, action, targetID, de
 		return
 	}
 	s.store.Audit(ctx, actorID, orgID, action, targetID, detail)
+}
+
+// playgroundCatalog exposes the merged model catalog for any
+// session-authenticated user (member or admin). Returned shape mirrors the
+// shape GatewayModelCatalog expects on the client.
+func (s *Server) playgroundCatalog(w http.ResponseWriter, _ *http.Request, _ core.User) {
+	if s.catalog == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"chat":  []string{},
+			"embed": []string{},
+			"user":  []any{},
+		})
+		return
+	}
+	users := s.catalog.UserProviders()
+	userOut := make([]map[string]any, 0, len(users))
+	for _, u := range users {
+		userOut = append(userOut, map[string]any{
+			"provider": u.Provider,
+			"models":   u.Models,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat":  s.catalog.ChatModels(),
+		"embed": s.catalog.EmbeddingModels(),
+		"user":  userOut,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

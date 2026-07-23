@@ -312,17 +312,57 @@ export interface GatewayModelCatalog {
 // empty catalog so the UI renders the small set of stock options instead of
 // crashing.
 export async function fetchGatewayModels(): Promise<GatewayModelCatalog> {
+  // The console's Playground reads the same catalog the gateway exposes at
+  // /v1/models, but /v1/models requires a virtual-key Authorization header
+  // that the Nexus session cookie does not satisfy. The console therefore
+  // fronts the request with /api/me/playground/catalog, which is gated on
+  // the user's Nexus session instead. Falls back to /v1/models when that
+  // endpoint is not available (e.g. older builds, single-host debug mode),
+  // and finally returns an empty catalog so the page still renders.
   try {
-    const res = await fetch(`/v1/models`);
+    const session = await fetch(`/api/me/playground/catalog`);
+    if (session.ok) {
+      const data = await session.json();
+      return normalizeCatalog(data);
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const res = await fetch(`/v1/models`, { credentials: "include" });
     if (!res.ok) return { chat: [], embed: [], user: [] };
     const data = await res.json();
-    const chat = Array.isArray(data?.data) ? data.data.map((m: { id: string }) => m.id) : [];
-    const embed = Array.isArray(data?.embeddings?.data) ? data.embeddings.data.map((m: { id: string }) => m.id) : [];
-    const user = collectUserModels(chat);
-    return { chat, embed, user };
+    return normalizeCatalog(data);
   } catch {
     return { chat: [], embed: [], user: [] };
   }
+}
+
+function normalizeCatalog(data: any): GatewayModelCatalog {
+  const chat = Array.isArray(data?.data)
+    ? data.data
+        .map((m: { id: string }) => m.id)
+        .filter((id: unknown): id is string => typeof id === "string")
+    : [];
+  const embed = Array.isArray(data?.embeddings?.data)
+    ? data.embeddings.data
+        .map((m: { id: string }) => m.id)
+        .filter((id: unknown): id is string => typeof id === "string")
+    : [];
+  const userRaw = Array.isArray(data?.user) ? data.user : [];
+  const user = collectUserModels(
+    Array.isArray(data?.chat)
+      ? data.chat.filter((s: unknown): s is string => typeof s === "string")
+      : chat,
+  );
+  // /api/me/playground/catalog already splits providers; /v1/models does not,
+  // so we still re-group anything we received via the latter path.
+  if (userRaw.length > 0 && user.length === 0) {
+    for (const u of userRaw) {
+      if (!u || typeof u.provider !== "string" || !Array.isArray(u.models)) continue;
+    }
+  }
+  return { chat, embed, user };
 }
 
 // collectUserModels groups the catalog by the "user/<provider>/" schema

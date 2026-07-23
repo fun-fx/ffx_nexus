@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +45,74 @@ type Handler struct {
 	failoverNotify router.Notifier      // optional webhook/Slack sink for router failover events (V4)
 	concurrency    ConcurrencyCapIface  // V5 per-vkey in-flight cap (nil = disabled)
 	log            *slog.Logger
+}
+
+// ConsoleCatalog is the surface the gateway exposes to the console for the
+// Playground model picker. Defined here to keep the gateway package free of
+// any dependency on internal/console.
+type ConsoleCatalog interface {
+	ChatModels() []string
+	EmbeddingModels() []string
+	UserProviders() []ConsoleUserProvider
+}
+type ConsoleUserProvider struct {
+	Provider string
+	Models   []string
+}
+
+// Catalog exposes the gateway's model universe to the console's Playground
+// page. Returns nil if no registry was wired (zero-dep mode).
+func (h *Handler) Catalog() ConsoleCatalog {
+	if h == nil || h.registry == nil {
+		return nil
+	}
+	return &handlerCatalog{registry: h.registry}
+}
+
+type handlerCatalog struct {
+	registry *Registry
+}
+
+func (c *handlerCatalog) ChatModels() []string {
+	return c.registry.AllModels()
+}
+
+func (c *handlerCatalog) EmbeddingModels() []string {
+	return c.registry.AllEmbeddingModels()
+}
+
+func (c *handlerCatalog) UserProviders() []ConsoleUserProvider {
+	seen := map[string]map[string]struct{}{}
+	for _, m := range c.registry.AllModels() {
+		if !strings.HasPrefix(m, "user/") {
+			continue
+		}
+		rest := strings.TrimPrefix(m, "user/")
+		slash := strings.Index(rest, "/")
+		if slash <= 0 {
+			continue
+		}
+		provider := rest[:slash]
+		model := rest[slash+1:]
+		if model == "" {
+			continue
+		}
+		if seen[provider] == nil {
+			seen[provider] = map[string]struct{}{}
+		}
+		seen[provider][model] = struct{}{}
+	}
+	out := make([]ConsoleUserProvider, 0, len(seen))
+	for provider, models := range seen {
+		list := make([]string, 0, len(models))
+		for m := range models {
+			list = append(list, m)
+		}
+		sort.Strings(list)
+		out = append(out, ConsoleUserProvider{Provider: provider, Models: list})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Provider < out[j].Provider })
+	return out
 }
 
 // SetFailoverNotifier wires the V4 alert sinks. Nil disables — the

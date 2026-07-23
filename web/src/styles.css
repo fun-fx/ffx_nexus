@@ -2032,6 +2032,33 @@ a:hover {
   align-items: center;
 }
 
+/* "Remember in this session" row inside the secret drawer. Keeps the
+ * checkbox + label on one line so the user can opt in or out without
+ * skimming the helper copy. */
+.pg-remember-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: var(--fs-13);
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.pg-remember-row input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.pg-remember-row .muted.small {
+  font-size: var(--fs-12);
+  display: block;
+  margin-top: 2px;
+}
+
 .pg-output {
   display: flex;
   flex-direction: column;

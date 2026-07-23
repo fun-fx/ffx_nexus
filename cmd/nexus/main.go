@@ -287,6 +287,7 @@ func main() {
 	if modelRouter != nil {
 		consoleSrvHandler.SetRouteStats(modelRouter)
 	}
+	consoleSrvHandler.SetCatalog(gwHandler.Catalog())
 	if evalWorker != nil {
 		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore)
 		consoleSrvHandler.SetEvalConfig(erc, erc)
