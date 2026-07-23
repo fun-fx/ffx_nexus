@@ -26,8 +26,12 @@
     "axe-core": "^4.10.2",
     "jsdom": "^25.0.1",
     "typescript": "^5.6.3",
-    "vite": "^5.4.11",
-    "vitest": "^2.1.2"
+    "vite": "^6.0.0",
+    "vitest": "^3.2.6"
+  },
+  "//": "Pinning the rollup native binary for the CI runner (ubuntu x64-gnu) avoids the intermittent npm optional-dependency bug (npm/cli#4828) where `npm ci` on Linux drops the linux-x64 chunk even though it is required to load rollup. The full set of optional binaries is still resolved from rollup; this entry just guarantees the linux-x64 gnu one is present on lockfile so vite build works in CI.",
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.61.0"
   }
 }
 
