@@ -11,7 +11,8 @@ interface Props {
 
 /**
  * Right-edge sliding drawer. Uses a focus-trap shell that focuses the first
- * focusable child on mount and returns focus to the previously-focused
+ * text input in the body on mount (so close buttons in the header do not
+ * steal the caret on open) and returns focus to the previously-focused
  * element on close.
  */
 export function Drawer({ open, title, onClose, footer, children }: Props) {
@@ -32,10 +33,26 @@ export function Drawer({ open, title, onClose, footer, children }: Props) {
     queueMicrotask(() => {
       const node = ref.current;
       if (!node) return;
-      const focusable = node.querySelector<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      // Prefer the first text input/textarea in the body so typing can start
+      // immediately. Fall back to the first focusable child only when the
+      // drawer has nothing to type into (e.g. confirm dialogs). The header
+      // close button shows the focus halo if it wins the querySelector race,
+      // which made dialogs feel like the caret escaped on every keypress.
+      const textField = node.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        ".drawer-body input:not([type=hidden]):not([type=button]):not([type=submit]), .drawer-body textarea, .drawer-body [autofocus]",
       );
-      focusable?.focus();
+      if (textField) {
+        textField.focus();
+        return;
+      }
+      // No text field in the body (e.g. confirm/result dialogs) — focus the
+      // first interactive element inside the body. Scoping to .drawer-body
+      // is deliberate: the header close button should never win this race
+      // because doing so makes the caret appear to "escape" the input.
+      const fallback = node.querySelector<HTMLElement>(
+        '.drawer-foot button:enabled, .drawer-body button:enabled, .drawer-foot [tabindex]:not([tabindex="-1"]):not([disabled]), .drawer-body [tabindex]:not([tabindex="-1"]):not([disabled])',
+      );
+      fallback?.focus();
     });
     return () => {
       document.removeEventListener("keydown", onKey);
