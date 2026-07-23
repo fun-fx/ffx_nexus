@@ -1959,6 +1959,25 @@ a:hover {
   margin-top: 6px;
 }
 
+.weight-hint {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(127, 90, 240, 0.10);
+  border: 1px solid var(--bd-color);
+  color: var(--text-muted);
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.weight-hint .btn-tiny {
+  padding: 4px 8px;
+  font-size: 11px;
+  margin-left: auto;
+}
+
 .groups-card {
   padding: 18px;
   display: flex;

@@ -215,18 +215,34 @@ function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
   }, []); // Run only once after first hydration.
 
   const mut = useMutation({
-    mutationFn: () =>
+    mutationFn: (next: { quality: number; cost: number; latency: number }) =>
       patchEvalConfig({
-        routing: {
-          weights: {
-            quality,
-            cost,
-            latency,
-          },
-        },
+        routing: { weights: next },
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["eval-config"] }),
   });
+
+  // Toast-style hint shown after Save: lets the admin see what we changed
+  // before they scrolled away. Stays until the next interaction.
+  const [hint, setHint] = useState<string | null>(null);
+
+  function onSave() {
+    const before = { quality, cost, latency };
+    const after = finalizeForSimplex(before);
+    // Only mention a rebalance if it actually moved something the user
+    // didn't ask for.
+    const moved =
+      after.quality !== before.quality ||
+      after.cost !== before.cost ||
+      after.latency !== before.latency;
+    setHint(
+      moved
+        ? `Sum was rebalanced to 100%: ${describeChange(before, after)}.`
+        : "Saved — totals stay at 100%.",
+    );
+    mut.mutate(after);
+  }
+
   if (!cfg) {
     return null;
   }
@@ -238,52 +254,49 @@ function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
           label="Quality"
           tone="accent"
           value={quality}
-          onChange={(v) => {
-            const next = clampNonNeg(v);
-            setQuality(next);
-            const [newLat, newCost] = redistribute(next, latency, cost);
-            setLatency(newLat);
-            setCost(newCost);
-          }}
+          onChange={(v) => setQuality(clamp(v))}
         />
         <WeightSlider
           label="Cost"
           tone="info"
           value={cost}
-          onChange={(v) => {
-            const next = clampNonNeg(v);
-            setCost(next);
-            const [newQual, newLat] = redistribute(next, quality, latency);
-            setQuality(newQual);
-            setLatency(newLat);
-          }}
+          onChange={(v) => setCost(clamp(v))}
         />
         <WeightSlider
           label="Latency"
           tone="warn"
           value={latency}
-          onChange={(v) => {
-            const next = clampNonNeg(v);
-            setLatency(next);
-            const [newQual, newCost] = redistribute(next, quality, cost);
-            setQuality(newQual);
-            setCost(newCost);
-          }}
+          onChange={(v) => setLatency(clamp(v))}
         />
         <div className="weight-actions">
           <span className="muted small">
-            Sum is auto-balanced to 1.00 on save.
+            Drag freely — any axis that hits 0 shares its portion between
+            the other two on save so the row always sums to 100%.
           </span>
           <button
             type="button"
             className="btn-neon"
             disabled={mut.isPending}
-            onClick={() => mut.mutate()}
+            onClick={onSave}
           >
-            <Icon.check size={14} /> Save weights
+            <Icon.check size={14} />{" "}
+            {mut.isPending ? "Saving…" : "Save weights"}
           </button>
         </div>
       </div>
+      {hint && (
+        <div className="weight-hint" role="status">
+          {hint}
+          <button
+            type="button"
+            className="btn-ghost btn-tiny"
+            onClick={() => setHint(null)}
+            aria-label="Dismiss hint"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -329,23 +342,81 @@ export function clampNonNeg(v: number): number {
   return v > 1 ? 1 : v;
 }
 
+// Display-level clamp. Keeps the slider thumb tied to the visible range
+// ([0,1]) but does NOT touch sibling axes — the user wants to be able to
+// drag any one slider in isolation. Backend #128 already guarantees the
+// server never stores a negative value.
+function clamp(v: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return 0;
+  if (v < 0) return 0;
+  if (v > 1) return 1;
+  return v;
+}
+
+// Normalise the user's three weights into a probability simplex (sums to
+// 1) right before PATCH. If an axis is exactly 0 we honour that — that is
+// the whole point of the slider — so the two remaining axes still take the
+// full weight. If the row is degenerate (all zero) we fall back to the
+// historical default instead of sending a useless all-zero save.
+function finalizeForSimplex(state: {
+  quality: number;
+  cost: number;
+  latency: number;
+}): { quality: number; cost: number; latency: number } {
+  const clamp = (v: number) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+  const q = clamp(state.quality);
+  const c = clamp(state.cost);
+  const l = clamp(state.latency);
+  if (q + c + l <= 0.0001) {
+    return { quality: 0.6, cost: 0.2, latency: 0.2 };
+  }
+  // Normalise so the absolute amounts the user dragged become the share.
+  // Zero stays zero; the others absorb the residual.
+  const sum = q + c + l;
+  return {
+    quality: round2(q / sum),
+    cost: round2(c / sum),
+    latency: round2(l / sum),
+  };
+}
+
+function round2(v: number): number {
+  return Math.round(v * 1000) / 1000;
+}
+
+function describeChange(
+  before: { quality: number; cost: number; latency: number },
+  after: { quality: number; cost: number; latency: number },
+): string {
+  const parts: string[] = [];
+  const names: Array<[string, number, number]> = [
+    ["Quality", before.quality * 100, after.quality * 100],
+    ["Cost", before.cost * 100, after.cost * 100],
+    ["Latency", before.latency * 100, after.latency * 100],
+  ];
+  for (const [n, b, a] of names) {
+    if (Math.abs(a - b) < 0.5) continue;
+    parts.push(`${n} ${a.toFixed(0)}% (was ${b.toFixed(0)}%)`);
+  }
+  return parts.length === 0 ? "no change" : parts.join(", ");
+}
+
 // redistribute keeps the simplex invariant `quality + cost + latency = 1`
 // after one axis is set to a new value. The other two axes are scaled to
 // fill the remaining budget in proportion to their current share. If both
 // were zero, we keep the axis that the user was just editing dominant and
 // leave the trailing axis at the rounded remainder.
-function redistribute(
+// (Exported so tests can unit-test the math directly.)
+export function redistribute(
   primary: number,
   secondary: number,
   tertiary: number,
 ): [number, number] {
-  const p = clampNonNeg(primary);
+  const p = primary; // kept for downstream callers; clamping happens on read.
   const remaining = Math.max(0, +(1 - p).toFixed(3));
-  const s = clampNonNeg(secondary);
-  const t = clampNonNeg(tertiary);
-  // Avoid dividing by zero / rolling both to the same value when an axis
-  // mirror was already at 0. Fall back to equal split so the row doesn't
-  // visually collapse.
+  const s = secondary;
+  const t = tertiary;
   const total = s + t;
   if (total <= 0) {
     return [+(remaining / 2).toFixed(3), +(remaining / 2).toFixed(3)];

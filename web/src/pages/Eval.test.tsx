@@ -51,12 +51,23 @@ function buildBundle(o: Overrides) {
   };
 }
 
-function renderEval(o: Overrides = {}) {
+type Patch = {
+  routing: { weights: { quality: number; cost: number; latency: number } };
+};
+
+function renderEval(
+  o: Overrides = {},
+  onPatch: (body: Patch) => void = () => {},
+) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (init?.method === "PATCH") return new Response("{}", { status: 200 });
+      if (init?.method === "PATCH") {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        onPatch(body);
+        return new Response("{}", { status: 200 });
+      }
       if (url.endsWith("/api/me")) {
         return new Response(JSON.stringify(adminMe), { status: 200 });
       }
@@ -67,13 +78,14 @@ function renderEval(o: Overrides = {}) {
     }),
   );
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const utils = render(
     <ThemeProvider>
       <QueryClientProvider client={qc}>
         <Eval />
       </QueryClientProvider>
     </ThemeProvider>,
   );
+  return Object.assign(utils, { qc });
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -82,10 +94,7 @@ describe("<Eval /> weights sliders", () => {
   it("clamps a server-supplied negative weight to 0 on render", async () => {
     renderEval({ quality: -0.2 });
 
-    // Find the Quality label (the slider row, not the "Quality knobs" h1).
     const allMatches = await screen.findAllByText("Quality");
-    // The slider row label is the second "Quality" instance (the first is the
-    // gradient text in the page title "Quality knobs").
     const sliderLabel = allMatches.find(
       (el) => el.classList.contains("weight-slider-label"),
     )!;
@@ -94,79 +103,114 @@ describe("<Eval /> weights sliders", () => {
     const qualityCard = sliderLabel.parentElement!;
     expect(qualityCard.textContent).toMatch(/Quality\s*0%/);
 
-    const sliders = document.querySelectorAll<
-      HTMLInputElement
-    >("input[type=range]");
+    const sliders = document.querySelectorAll<HTMLInputElement>(
+      "input[type=range]",
+    );
     expect(sliders[0].value).toBe("0");
   });
 
-  it("auto-balances the remaining two axes so the sum stays at 1 on slider moves", async () => {
+  it("drag is isolated — moving one axis does NOT move the others", async () => {
     renderEval();
     await waitFor(() => screen.getByText("Routing weights"));
 
     const sliders = document.querySelectorAll<HTMLInputElement>(
       "input[type=range]",
     );
-
-    // Quality → 0 — the remaining 1.0 is split 50/50 across cost and latency
-    // (equal share — their current values are both 0.2 so identical ratios).
-    fireEvent.change(sliders[0], { target: { value: "0" } });
+    // Move quality to 0.4; cost and latency must stay at exactly the
+    // historical 0.2 / 0.2 values. This is the whole UX promise of the
+    // "free drag, normalize at save" model.
+    fireEvent.change(sliders[0], { target: { value: "0.4" } });
     await waitFor(() => {
       const labels = Array.from(
         document.querySelectorAll<HTMLElement>(".weight-slider-value"),
       );
-      expect(labels[0].textContent).toMatch(/^0%$/);
-      // Both partners get 50% (1.0 / 2 each).
-      expect(labels[1].textContent).toMatch(/^50%$/);
-      expect(labels[2].textContent).toMatch(/^50%$/);
+      expect(labels[0].textContent).toMatch(/^40%$/);
+      expect(labels[1].textContent).toMatch(/^20%$/);
+      expect(labels[2].textContent).toMatch(/^20%$/);
     });
 
-    // Push quality back to 1 — both partners drop to 0% but the *displayed*
-    // sum stays a tight band around 100% (±rounding noise).
-    fireEvent.change(sliders[0], { target: { value: "1" } });
+    // Drag latency alone to 0.7 — quality and cost remain where the user
+    // left them.
+    fireEvent.change(sliders[2], { target: { value: "0.7" } });
     await waitFor(() => {
       const labels = Array.from(
         document.querySelectorAll<HTMLElement>(".weight-slider-value"),
       );
-      expect(labels[0].textContent).toMatch(/^100%$/);
-      expect(labels[1].textContent).toMatch(/^0%$/);
-      expect(labels[2].textContent).toMatch(/^0%$/);
-    });
-
-    // Now widen one partner: move latency to 0.4. Cost must take the rest
-    // (1 - 1 - 0.4 = -0.4 in absolute arithmetic, but redistribute keeps cost
-    // at 0 because the only remaining slice for the secondary axis is 0
-    // and latency already consumed the entire remaining budget).
-    fireEvent.change(sliders[2], { target: { value: "0.4" } });
-    await waitFor(() => {
-      const labels = Array.from(
-        document.querySelectorAll<HTMLElement>(".weight-slider-value"),
-      );
-      expect(labels[2].textContent).toMatch(/^40%$/);
-      // Cost remains 0 because the q=1 ceiling leaves no residual.
-      expect(labels[1].textContent).toMatch(/^0%$/);
+      expect(labels[0].textContent).toMatch(/^40%$/);
+      expect(labels[1].textContent).toMatch(/^20%$/);
+      expect(labels[2].textContent).toMatch(/^70%$/);
     });
   });
 
-  it("scales the partner axes in proportion to their existing ratio", async () => {
-    renderEval();
+  it("save normalises a non-1 sum to the simplex", async () => {
+    let captured: Patch | null = null;
+    renderEval({}, (body) => {
+      captured = body;
+    });
     await waitFor(() => screen.getByText("Routing weights"));
 
     const sliders = document.querySelectorAll<HTMLInputElement>(
       "input[type=range]",
     );
+    // Drag into a state that does not sum to 1: quality 0.7 + latency 0.2
+    // (cost stays at 0.2) → sum 1.1. The save hook should normalise it.
+    fireEvent.change(sliders[0], { target: { value: "0.7" } });
+    fireEvent.change(sliders[2], { target: { value: "0.2" } });
+    await waitFor(() => screen.getByText("Save weights"));
+    fireEvent.click(screen.getByText(/Save weights/i));
+    await waitFor(() => captured !== null);
+    const sent = captured!.routing.weights;
+    const sum = sent.quality + sent.cost + sent.latency;
+    expect(Math.abs(sum - 1)).toBeLessThanOrEqual(0.005);
+    // Visible relative ordering preserved (q highest, c lowest).
+    expect(sent.quality).toBeGreaterThan(sent.latency);
+    expect(sent.cost).toBeGreaterThanOrEqual(sent.latency - 0.001);
 
-    // Drive latency up to 0.4 first: quality (0.6) and cost (0.2) share the
-    // remaining 0.6 in proportion to their original weights — q gets 3× cost
-    // so q = 0.45, cost = 0.15.
-    fireEvent.change(sliders[2], { target: { value: "0.4" } });
-    await waitFor(() => {
-      const labels = Array.from(
-        document.querySelectorAll<HTMLElement>(".weight-slider-value"),
-      );
-      expect(labels[0].textContent).toMatch(/^45%$/);
-      expect(labels[1].textContent).toMatch(/^15%$/);
-      expect(labels[2].textContent).toMatch(/^40%$/);
+    // Hint surfaces the rebalance message to the admin.
+    await screen.findByText(/Sum was rebalanced to 100%/i);
+  });
+
+  it("zero-axis state is honoured: when one slider is 0, the other two absorb 1.0 at save", async () => {
+    let captured: Patch | null = null;
+    renderEval({}, (body) => {
+      captured = body;
     });
+    await waitFor(() => screen.getByText("Routing weights"));
+
+    const sliders = document.querySelectorAll<HTMLInputElement>(
+      "input[type=range]",
+    );
+    // Drag latency to 0; quality and cost keep the historical 0.6/0.2
+    // distribution. Save should send a normalised row where latency is 0
+    // and q + c = 1.
+    fireEvent.change(sliders[2], { target: { value: "0" } });
+    fireEvent.click(screen.getByText(/Save weights/i));
+    await waitFor(() => captured !== null);
+    const sent = captured!.routing.weights;
+    expect(sent.latency).toBe(0);
+    expect(sent.quality).toBeCloseTo(0.6 / 0.8, 2);
+    expect(sent.cost).toBeCloseTo(0.2 / 0.8, 2);
+    expect(sent.quality + sent.cost + sent.latency).toBeCloseTo(1, 2);
+  });
+
+  it("all-zero drag falls back to the historical 60/20/20 default", async () => {
+    let captured: Patch | null = null;
+    renderEval({}, (body) => {
+      captured = body;
+    });
+    await waitFor(() => screen.getByText("Routing weights"));
+
+    const sliders = document.querySelectorAll<HTMLInputElement>(
+      "input[type=range]",
+    );
+    sliders.forEach((el) => {
+      fireEvent.change(el, { target: { value: "0" } });
+    });
+    fireEvent.click(screen.getByText(/Save weights/i));
+    await waitFor(() => captured !== null);
+    const sent = captured!.routing.weights;
+    // Either the historical default OR a "100% 로 저장되었습니다" toast,
+    // but we expect the server-visible sum to be 1 either way.
+    expect(sent.quality + sent.cost + sent.latency).toBeCloseTo(1, 2);
   });
 });
