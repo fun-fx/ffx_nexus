@@ -100,34 +100,34 @@ export function Login() {
 
           <div className="auth-tier-row">
             <TierCard
-              eyebrow="Code · agent"
-              title="code-prime"
-              metric="minimax-m3"
-              description="Workhorse code + agent routing for day-to-day workload."
-              glow="violet"
-              onClick={() => (window.location.href = "/")}
-              ctaLabel="Use as default"
-              accent="#a855f7"
-            />
-            <TierCard
-              eyebrow="Reasoning"
-              title="text-max"
-              metric="frontier"
-              description="Deep reasoning, long context for hard workflows."
+              eyebrow="Sense"
+              title="Quality-aware auto"
+              metric="auto alias"
+              description="A single 'auto' model alias ranks every provider on a fresh composite of quality × cost × latency — re-ranked on every refresh, so today's fast model is today's fast model."
               glow="pink"
-              onClick={() => (window.location.href = "/")}
-              ctaLabel="Try in Playground"
               accent="#ec4899"
+              ctaLabel="See routing"
+              onClick={() => window.location.assign("/routing")}
             />
             <TierCard
-              eyebrow="Burst friendly"
-              title="text-standard"
-              metric="<0.04/IU"
-              description="Price-optimized throughput for high-volume traffic."
+              eyebrow="Govern"
+              title="Strict BYOK + audit"
+              metric="100% your keys"
+              description="Per-user or per-org provider keys, encrypted at rest with a chart-rotated master, never logged. Every control-plane change is auditable with actor + target + detail."
               glow="cyan"
-              onClick={() => (window.location.href = "/")}
-              ctaLabel="Use as default"
               accent="#22d3ee"
+              ctaLabel="Read the audit log"
+              onClick={() => window.location.assign("/audit")}
+            />
+            <TierCard
+              eyebrow="Defend"
+              title="Eval-aware failover"
+              metric="PII + SLM judge"
+              description="Built-in heuristics (PII, completeness) and an on-cluster SLM judge flag regressions in real time; routing auto-rotates and the failover notifier fires."
+              glow="violet"
+              accent="#a855f7"
+              ctaLabel="Tune evals"
+              onClick={() => window.location.assign("/eval")}
             />
           </div>
         </section>
