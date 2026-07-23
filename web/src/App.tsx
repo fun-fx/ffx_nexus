@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { AppShell } from "./components/AppShell";
+import { RequireAuth } from "./components/RequireAuth";
 import { Overview } from "./pages/Overview";
 import { Login } from "./pages/Login";
 import { Traces } from "./pages/Traces";
@@ -36,18 +37,20 @@ export function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route element={<AppShell />}>
-              <Route index element={<Overview />} />
-              <Route path="traces" element={<Traces />} />
-              <Route path="routing" element={<Routing />} />
-              <Route path="routing/:alias" element={<RoutingDetail />} />
-              <Route path="eval" element={<Eval />} />
-              <Route path="users" element={<Users />} />
-              <Route path="keys" element={<Keys />} />
-              <Route path="credentials" element={<Credentials />} />
-              <Route path="audit" element={<Audit />} />
-              <Route path="playground" element={<Playground />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
+            <Route element={<RequireAuth />}>
+              <Route element={<AppShell />}>
+                <Route index element={<Overview />} />
+                <Route path="traces" element={<Traces />} />
+                <Route path="routing" element={<Routing />} />
+                <Route path="routing/:alias" element={<RoutingDetail />} />
+                <Route path="eval" element={<Eval />} />
+                <Route path="users" element={<Users />} />
+                <Route path="keys" element={<Keys />} />
+                <Route path="credentials" element={<Credentials />} />
+                <Route path="audit" element={<Audit />} />
+                <Route path="playground" element={<Playground />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Route>
             </Route>
           </Routes>
         </BrowserRouter>

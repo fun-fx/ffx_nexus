@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { fetchAuthConfig, fetchMe, login, register, type AuthConfig, type User } from "../api";
 import { GradientText } from "../components/GradientText";
 import { TierCard } from "../components/TierCard";
@@ -14,15 +14,38 @@ export function Login() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const nav = useNavigate();
+  const [searchParams] = useSearchParams();
+  // If the user clicked a deep link while signed-out, RequireAuth redirected
+  // us here with ?next=<original-path>. Honor it after a successful login so
+  // the operator lands back where they intended.
+  const nextTarget = (() => {
+    const raw = searchParams.get("next");
+    if (!raw) return null;
+    // Only allow same-origin relative paths to avoid open-redirect issues.
+    if (!raw.startsWith("/") || raw.startsWith("//")) return null;
+    return raw;
+  })();
 
   useEffect(() => {
     fetchAuthConfig().then(setCfg).catch(() => setCfg(null));
-    fetchMe()
-      .then((u) => {
-        if (u) nav("/", { replace: true });
-      })
-      .catch(() => {});
-  }, [nav]);
+    refetchMe();
+    // Refetch `me` whenever a new login flow finishes (other tabs log in,
+    // session expires, etc.) so the auto-redirect kicks in without a manual
+    // page reload.
+    const onFocus = () => refetchMe();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function refetchMe() {
+    try {
+      const u = await fetchMe();
+      if (u) nav(nextTarget ?? "/", { replace: true });
+    } catch {
+      /* server unreachable while offline — leave the form visible */
+    }
+  }
 
   const submit: React.FormEventHandler = async (e) => {
     e.preventDefault();
@@ -37,7 +60,7 @@ export function Login() {
         const u = await login(email, password);
         setUser(u);
       }
-      nav("/", { replace: true });
+      nav(nextTarget ?? "/", { replace: true });
     } catch (e2) {
       setErr(String((e2 as Error).message ?? e2));
     } finally {
