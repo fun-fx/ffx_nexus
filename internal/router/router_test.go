@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"log/slog"
+	"math"
 	"testing"
 	"time"
 )
@@ -62,6 +63,38 @@ func TestSelectExplorationForUnknown(t *testing.T) {
 	got, _ := r.Select([]string{"known", "unknown"}, 0)
 	if got != "unknown" {
 		t.Fatalf("unknown model should get exploratory traffic, got %q", got)
+	}
+}
+
+func TestNormalizeClampsNegativeAndFallsBackOnZero(t *testing.T) {
+	// All negative -> degenerate, must fall back to DefaultWeights().
+	allNeg := normalize(Weights{Quality: -1, Cost: -1, Latency: -1})
+	if allNeg != DefaultWeights() {
+		t.Fatalf("all-negative should fall back to default, got %+v", allNeg)
+	}
+
+	// Mixed sign -> negative axes clamp to zero, the rest re-normalize.
+	clamped := normalize(Weights{Quality: 1, Cost: -0.5, Latency: 0})
+	if clamped.Quality != 1 || clamped.Cost != 0 || clamped.Latency != 0 {
+		t.Fatalf("mixed-sign should clamp negatives to zero, got %+v", clamped)
+	}
+
+	// Already summing to 1 with a tiny negative offset: clamp the negative,
+	// then re-normalize so weights still sum to 1.
+	closeToOne := normalize(Weights{Quality: 0.6, Cost: 0.2, Latency: -0.05})
+	sum := closeToOne.Quality + closeToOne.Cost + closeToOne.Latency
+	if sum < 1-1e-9 || sum > 1+1e-9 {
+		t.Fatalf("close-to-one should re-normalize to ~1, got sum=%f (%+v)", sum, closeToOne)
+	}
+	if closeToOne.Latency != 0 {
+		t.Fatalf("latency must clamp to zero, got %+v", closeToOne)
+	}
+
+	// Sanity: legitimate non-negative input with sum != 1 keeps the relative
+	// proportions intact and ends on a simplex. 3:2:1 → sum=6 → (0.5, 1/3, 1/6).
+	r := normalize(Weights{Quality: 3, Cost: 2, Latency: 1})
+	if math.Abs(0.5-r.Quality) > 1e-9 || math.Abs(1.0/3-r.Cost) > 1e-9 || math.Abs(1.0/6-r.Latency) > 1e-9 {
+		t.Fatalf("3:2:1 should normalize to (0.5, 1/3, 1/6), got %+v", r)
 	}
 }
 

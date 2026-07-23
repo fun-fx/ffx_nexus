@@ -286,12 +286,30 @@ func minMax[T any](items []T, f func(T) float64) (min, max float64) {
 	return min, max
 }
 
+// normalize brings Weights to a probability simplex. Negative inputs are
+// clamped to zero before summing so a typo (e.g. "-0.2") cannot invert the
+// routing signal silently — it just becomes "ignore that axis". If every
+// axis is zero or the resulting sum is non-positive, we fall back to
+// DefaultWeights() so the router never lands in a degenerate state where
+// the composite score is identically zero.
 func normalize(w Weights) Weights {
+	w.Quality = maxFloat64(0, w.Quality)
+	w.Cost = maxFloat64(0, w.Cost)
+	w.Latency = maxFloat64(0, w.Latency)
 	sum := w.Quality + w.Cost + w.Latency
 	if sum <= 0 {
 		return DefaultWeights()
 	}
 	return Weights{Quality: w.Quality / sum, Cost: w.Cost / sum, Latency: w.Latency / sum}
+}
+
+// maxFloat64 avoids a math.Max dependency on older Go toolchains and keeps
+// the helper local to this file.
+func maxFloat64(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // SetWeights updates routing quality/cost/latency trade-offs at runtime.
