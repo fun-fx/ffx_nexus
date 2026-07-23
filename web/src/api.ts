@@ -86,9 +86,48 @@ export interface RoutingModel {
 }
 
 export async function fetchStats(window = "1h"): Promise<Stats> {
+  // fetchStats is read by Overview before RequireAuth resolves. When the
+  // caller is unauthenticated the server returns 401 with a JSON error body
+  // that does NOT match the Stats shape; if we hand that to the dashboard it
+  // will call `.toLocaleString()` on undefined fields and crash the SPA.
+  // Return an all-zero Stats stub instead so the UI renders the "no data"
+  // aesthetic rather than unmounting.
   const res = await fetch(`/api/stats?window=${window}`);
-  return res.json();
+  if (!res.ok) {
+    return ZERO_STATS;
+  }
+  const data = await res.json();
+  return sanitizeStats(data);
 }
+
+function sanitizeStats(data: Partial<Stats> | undefined | null): Stats {
+  if (!data || typeof data !== "object") return ZERO_STATS;
+  const safe = (v: unknown, fallback: number) =>
+    typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  return {
+    total_requests: safe(data.total_requests, 0),
+    error_rate: safe(data.error_rate, 0),
+    avg_latency_ms: safe(data.avg_latency_ms, 0),
+    p95_latency_ms: safe(data.p95_latency_ms, 0),
+    total_tokens: safe(data.total_tokens, 0),
+    total_cost_usd: safe(data.total_cost_usd, 0),
+    cache_hits: safe(data.cache_hits, 0),
+    cache_hit_rate: safe(data.cache_hit_rate, 0),
+    guardrail_events: safe(data.guardrail_events, 0),
+  };
+}
+
+const ZERO_STATS: Stats = {
+  total_requests: 0,
+  error_rate: 0,
+  avg_latency_ms: 0,
+  p95_latency_ms: 0,
+  total_tokens: 0,
+  total_cost_usd: 0,
+  cache_hits: 0,
+  cache_hit_rate: 0,
+  guardrail_events: 0,
+};
 
 export async function fetchTraces(limit = 100): Promise<TraceSummary[]> {
   const res = await fetch(`/api/traces?limit=${limit}`);

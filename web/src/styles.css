@@ -678,6 +678,34 @@ a:hover {
   }
 }
 
+/* Loading shell briefly shown while RequireAuth resolves `/api/me`. Keeps
+ * the user from seeing a half-rendered Overview crash for one frame when the
+ * SPA cold-starts in incognito. */
+.auth-loading-card {
+  position: relative;
+  z-index: 1;
+  margin: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 22px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong);
+  background: color-mix(in oklab, var(--panel) 92%, transparent);
+  color: var(--muted);
+  font-size: var(--fs-13);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  box-shadow: var(--shadow-2);
+  animation: live-pulse 2.4s ease-in-out infinite;
+}
+
+.auth-loading-card .logo-mark {
+  color: var(--accent);
+  text-shadow: var(--glow-violet);
+  font-size: 18px;
+}
+
 .auth-hero .eyebrow {
   display: inline-flex;
   align-items: center;
