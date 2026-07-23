@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchEvalConfig, patchEvalConfig, type EvalConfigSnapshot } from "../api";
 import { DataTable, type Column } from "../components/DataTable";
@@ -190,9 +190,29 @@ function EvalRules({ rules }: { rules: EvalRule[] }) {
 
 function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
   const qc = useQueryClient();
-  const [quality, setQuality] = useState(cfg.routing.weights.quality ?? 0.6);
-  const [latency, setLatency] = useState(cfg.routing.weights.latency ?? 0.2);
-  const [cost, setCost] = useState(cfg.routing.weights.cost ?? 0.2);
+  // Server-supplied weights may have been written before the backend started
+  // clamping negatives (#128), or by an admin via raw API. Snap anything
+  // < 0 to 0 so the slider thumb and value label display "0%" instead of
+  // "-20%". The "0" floor is intentional — showing the historical default
+  // (0.6 / 0.2 / 0.2) for a malformed row would silently introduce a 60/40
+  // skew the user never intended; clamping to 0 surfaces the bad state and
+  // lets the on-screen redistribute pass pick a sane replacement.
+  const safe = (v: number | undefined) =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+  const [quality, setQuality] = useState(safe(cfg.routing.weights.quality));
+  const [latency, setLatency] = useState(safe(cfg.routing.weights.latency));
+  const [cost, setCost] = useState(safe(cfg.routing.weights.cost));
+
+  // Heal degenerate "all zero" rows that came out of the safe() pass. Without
+  // this, a server response like {0, -0.1, -0.1} would render as three 0%
+  // sliders — the redistribute helpers won't have a non-zero base to scale
+  // against until the first user interaction.
+  useEffect(() => {
+    if (quality > 0 || latency > 0 || cost > 0) return;
+    setQuality(0.6);
+    setLatency(0.2);
+    setCost(0.2);
+  }, []); // Run only once after first hydration.
 
   const mut = useMutation({
     mutationFn: () =>
@@ -219,8 +239,11 @@ function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
           tone="accent"
           value={quality}
           onChange={(v) => {
-            setQuality(v);
-            setLatency(+(1 - v - cost).toFixed(3));
+            const next = clampNonNeg(v);
+            setQuality(next);
+            const [newLat, newCost] = redistribute(next, latency, cost);
+            setLatency(newLat);
+            setCost(newCost);
           }}
         />
         <WeightSlider
@@ -228,8 +251,11 @@ function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
           tone="info"
           value={cost}
           onChange={(v) => {
-            setCost(v);
-            setLatency(+(1 - quality - v).toFixed(3));
+            const next = clampNonNeg(v);
+            setCost(next);
+            const [newQual, newLat] = redistribute(next, quality, latency);
+            setQuality(newQual);
+            setLatency(newLat);
           }}
         />
         <WeightSlider
@@ -237,8 +263,11 @@ function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
           tone="warn"
           value={latency}
           onChange={(v) => {
-            setLatency(v);
-            setCost(+(1 - quality - v).toFixed(3));
+            const next = clampNonNeg(v);
+            setLatency(next);
+            const [newQual, newCost] = redistribute(next, quality, cost);
+            setQuality(newQual);
+            setCost(newCost);
           }}
         />
         <div className="weight-actions">
@@ -273,23 +302,58 @@ function WeightSlider({
   const cssVars: React.CSSProperties = {
     ["--tone" as string]: `var(--${tone === "accent" ? "accent-3" : tone})`,
   };
+  const safe = clampNonNeg(value);
   return (
     <label className="weight-slider">
       <span className="weight-slider-head">
         <span className="weight-slider-label">{label}</span>
-        <span className="weight-slider-value mono">{(value * 100).toFixed(0)}%</span>
+        <span className="weight-slider-value mono">{(safe * 100).toFixed(0)}%</span>
       </span>
       <input
         type="range"
         min={0}
         max={1}
         step={0.05}
-        value={value}
+        value={safe}
         onChange={(e) => onChange(Number(e.target.value))}
         style={cssVars}
       />
     </label>
   );
+}
+
+// Snap any value into the [0, 1] simplex. Centralised so render and
+// onChange paths agree on what a "valid" weight looks like.
+export function clampNonNeg(v: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return 0;
+  return v > 1 ? 1 : v;
+}
+
+// redistribute keeps the simplex invariant `quality + cost + latency = 1`
+// after one axis is set to a new value. The other two axes are scaled to
+// fill the remaining budget in proportion to their current share. If both
+// were zero, we keep the axis that the user was just editing dominant and
+// leave the trailing axis at the rounded remainder.
+function redistribute(
+  primary: number,
+  secondary: number,
+  tertiary: number,
+): [number, number] {
+  const p = clampNonNeg(primary);
+  const remaining = Math.max(0, +(1 - p).toFixed(3));
+  const s = clampNonNeg(secondary);
+  const t = clampNonNeg(tertiary);
+  // Avoid dividing by zero / rolling both to the same value when an axis
+  // mirror was already at 0. Fall back to equal split so the row doesn't
+  // visually collapse.
+  const total = s + t;
+  if (total <= 0) {
+    return [+(remaining / 2).toFixed(3), +(remaining / 2).toFixed(3)];
+  }
+  return [
+    +(remaining * (s / total)).toFixed(3),
+    +(remaining * (t / total)).toFixed(3),
+  ];
 }
 
 function GroupsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
