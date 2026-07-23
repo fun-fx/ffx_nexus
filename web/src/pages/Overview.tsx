@@ -127,7 +127,46 @@ export function Overview() {
         <Stat label="Cost" value={`$${stats.total_cost_usd.toFixed(4)}`} />
       </section>
 
-      <section className="tier-row">
+      <section className="why-row" aria-label="Why FFX Nexus">
+        <header className="panel-head section-heading">
+          <h2>Why FFX Nexus</h2>
+          <span className="panel-link muted">Sense · Govern · Defend</span>
+        </header>
+        <div className="tier-row">
+          <TierCard
+            eyebrow="Sense"
+            title="Quality-aware auto"
+            metric="auto alias"
+            description="Single 'auto' alias ranks every model against a fresh composite of quality × cost × latency — re-ranked on every refresh so today's fast model is today's fast model."
+            glow="pink"
+            accent="#ec4899"
+            ctaLabel="See routing"
+            onClick={() => window.location.assign("/routing")}
+          />
+          <TierCard
+            eyebrow="Govern"
+            title="Strict BYOK + audit"
+            metric="100% your keys"
+            description="Per-user or per-org provider keys, encrypted at rest with a chart-rotated master, never logged. Every control-plane change is auditable with actor + target + detail."
+            glow="cyan"
+            accent="#22d3ee"
+            ctaLabel="Open audit log"
+            onClick={() => window.location.assign("/audit")}
+          />
+          <TierCard
+            eyebrow="Defend"
+            title="Eval-aware failover"
+            metric="PII + SLM judge"
+            description="Built-in heuristics (PII, completeness) and a local SLM judge flag regressions in real time; routing auto-rotates and an alert fires through the failover notifier."
+            glow="violet"
+            accent="#a855f7"
+            ctaLabel="Tune evals"
+            onClick={() => window.location.assign("/eval")}
+          />
+        </div>
+      </section>
+
+      <section className="tier-row" aria-label="Routing picks">
         <TierCard
           eyebrow="Routing · top quality"
           title="Best pick"
