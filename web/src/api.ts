@@ -178,12 +178,14 @@ export interface EvalConfigSnapshot {
 }
 
 export async function fetchEvalConfig(): Promise<EvalConfigSnapshot> {
+  // Same defense-in-depth as fetchStats: an unauthenticated 401 body cannot
+  // be safely cast to EvalConfigSnapshot (deeply nested optional fields will
+  // throw downstream). Return a minimal "router-only" snapshot so the dials
+  // render in a disabled state rather than unmounting the React tree.
   const res = await fetch("/api/eval/config");
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
-  return res.json();
+  if (!res.ok) return ZERO_EVAL;
+  const data = await res.json().catch(() => ({}));
+  return sanitizeEvalConfig(data);
 }
 
 export async function patchEvalConfig(patch: Record<string, unknown>): Promise<EvalConfigSnapshot> {
@@ -196,8 +198,99 @@ export async function patchEvalConfig(patch: Record<string, unknown>): Promise<E
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || `HTTP ${res.status}`);
   }
-  return res.json();
+  return sanitizeEvalConfig(await res.json());
 }
+
+function sanitizeEvalConfig(raw: unknown): EvalConfigSnapshot {
+  const safe = (v: unknown, fallback: number) =>
+    typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  const safeBool = (v: unknown, fallback: boolean) =>
+    typeof v === "boolean" ? v : fallback;
+  const safeStr = (v: unknown, fallback: string) =>
+    typeof v === "string" ? v : fallback;
+  const safeStrArr = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : [];
+
+  const evalBlock = raw && typeof raw === "object" && "eval" in (raw as Record<string, unknown>)
+    ? (raw as Record<string, unknown>).eval as Record<string, unknown>
+    : {};
+  const judge = (evalBlock.judge as Record<string, unknown>) ?? {};
+  const remote = (evalBlock.remote as Record<string, unknown>) ?? {};
+  const weightsRaw =
+    raw && typeof raw === "object" && "routing" in (raw as Record<string, unknown>)
+      ? ((raw as Record<string, unknown>).routing as Record<string, unknown>)?.weights as
+          | Record<string, unknown>
+          | undefined
+      : undefined;
+
+  return {
+    eval_enabled: safeBool((raw as any)?.eval_enabled, false),
+    routing_enabled: safeBool((raw as any)?.routing_enabled, false),
+    score_store: safeStr((raw as any)?.score_store, ""),
+    trace_store: safeStr((raw as any)?.trace_store, ""),
+    score_persisted: safeBool((raw as any)?.score_persisted, false),
+    routing_stats_store: safeStr((raw as any)?.routing_stats_store, ""),
+    eval: {
+      pii_enabled: safeBool(evalBlock.pii_enabled, false),
+      completeness_enabled: safeBool(evalBlock.completeness_enabled, false),
+      sample_rate: safe(evalBlock.sample_rate, 0),
+      workers: safe(evalBlock.workers, 0),
+      judge: {
+        enabled: safeBool(judge.enabled, false),
+        base_url: safeStr(judge.base_url, ""),
+        model: safeStr(judge.model, ""),
+        api_key_set: safeBool(judge.api_key_set, false),
+      },
+      remote: {
+        enabled: safeBool(remote.enabled, false),
+        url: safeStr(remote.url, ""),
+        metrics: safeStrArr(remote.metrics),
+        timeout: safeStr(remote.timeout, "30s"),
+      },
+    },
+    routing: {
+      weights: {
+        quality: safe(weightsRaw?.quality, 0.6),
+        cost: safe(weightsRaw?.cost, 0.2),
+        latency: safe(weightsRaw?.latency, 0.2),
+      },
+      window: safeStr((raw as any)?.routing?.window, "1h"),
+      refresh: safeStr((raw as any)?.routing?.refresh, "60s"),
+      groups: ((raw as any)?.routing?.groups && typeof (raw as any).routing.groups === "object")
+        ? ((raw as any).routing.groups as Record<string, string[]>)
+        : {},
+      groups_spec: safeStr((raw as any)?.routing?.groups_spec, ""),
+      load_balance: safeBool((raw as any)?.routing?.load_balance, false),
+    },
+    restart_required: safeStrArr((raw as any)?.restart_required),
+  };
+}
+
+const ZERO_EVAL: EvalConfigSnapshot = {
+  eval_enabled: false,
+  routing_enabled: false,
+  score_store: "",
+  trace_store: "",
+  score_persisted: false,
+  routing_stats_store: "",
+  eval: {
+    pii_enabled: false,
+    completeness_enabled: false,
+    sample_rate: 0,
+    workers: 0,
+    judge: { enabled: false, base_url: "", model: "", api_key_set: false },
+    remote: { enabled: false, url: "", metrics: [], timeout: "30s" },
+  },
+  routing: {
+    weights: { quality: 0, cost: 0, latency: 0 },
+    window: "",
+    refresh: "",
+    groups: {},
+    groups_spec: "",
+    load_balance: false,
+  },
+  restart_required: [],
+};
 
 // --- Gateway /v1/models (open-source discovery) ---
 
