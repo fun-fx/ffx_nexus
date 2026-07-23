@@ -1,13 +1,59 @@
-import { describe, expect, it } from "vitest";
-import { render, fireEvent, waitFor, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import axe from "axe-core";
 import { useState } from "react";
 import { Drawer } from "./Drawer";
 
-function Demo({ initialOpen }: { initialOpen: boolean }) {
-  const [open, setOpen] = useState(initialOpen);
-  return (
-    <>
-      <button type="button" onClick={() => setOpen(true)}>Open drawer</button>
+describe("Drawer", () => {
+  it("does not render when closed", () => {
+    render(
+      <Drawer open={false} onClose={() => {}} title="Hidden">
+        <p>should not render</p>
+      </Drawer>,
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("renders the title and children when open", () => {
+    render(
+      <Drawer open onClose={() => {}} title="Inspect">
+        <p>hello drawer</p>
+      </Drawer>,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByText("hello drawer")).toBeInTheDocument();
+  });
+
+  it("closes on Esc", async () => {
+    const onClose = vi.fn();
+    render(
+      <Drawer open onClose={onClose} title="Inspect">
+        <button>x</button>
+      </Drawer>,
+    );
+    await userEvent.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("no axe violations when open", async () => {
+    const { container } = render(
+      <Drawer open onClose={() => {}} title="Inspect">
+        <p>content</p>
+      </Drawer>,
+    );
+    const violations = await axe.run(container, {
+      rules: { "color-contrast": { enabled: false } },
+    });
+    expect(violations.violations).toEqual([]);
+  });
+});
+
+describe("<Drawer /> focus management", () => {
+  function Demo() {
+    const [open, setOpen] = useState(true);
+    return (
       <Drawer open={open} onClose={() => setOpen(false)} title="Demo">
         <form id="demo-form">
           <label>
@@ -16,15 +62,22 @@ function Demo({ initialOpen }: { initialOpen: boolean }) {
           </label>
         </form>
       </Drawer>
-    </>
-  );
-}
+    );
+  }
 
-describe("<Drawer /> focus management", () => {
+  function ConfirmOnly() {
+    const [open, setOpen] = useState(true);
+    return (
+      <Drawer open={open} onClose={() => setOpen(false)} title="Confirm">
+        <p>No inputs here.</p>
+        <button type="button">OK</button>
+      </Drawer>
+    );
+  }
+
   it("focuses the first text input in the body, not the header close button", async () => {
-    render(<Demo initialOpen={true} />);
+    render(<Demo />);
 
-    // Header button is rendered, but its focus halo must NOT be active.
     const closeBtn = screen.getByRole("button", { name: "Close" });
     const input = screen.getByPlaceholderText("cb") as HTMLInputElement;
 
@@ -35,7 +88,7 @@ describe("<Drawer /> focus management", () => {
   });
 
   it("keeps focus on the input while typing — does not steal to the close button", async () => {
-    render(<Demo initialOpen={true} />);
+    render(<Demo />);
 
     const input = screen.getByPlaceholderText("cb") as HTMLInputElement;
     await waitFor(() => expect(document.activeElement).toBe(input));
@@ -49,18 +102,14 @@ describe("<Drawer /> focus management", () => {
     expect(input.value).toBe("cb");
   });
 
-  it("falls back to the first focusable child when no text field exists", async () => {
-    function ConfirmOnly() {
-      const [open, setOpen] = useState(true);
-      return (
-        <Drawer open={open} onClose={() => setOpen(false)} title="Confirm">
-          <p>No inputs here.</p>
-          <button type="button">OK</button>
-        </Drawer>
-      );
-    }
+  it("falls back to a body button when the drawer has no text field", async () => {
     render(<ConfirmOnly />);
     const ok = screen.getByRole("button", { name: "OK" });
     await waitFor(() => expect(document.activeElement).toBe(ok));
+    // The header close button must not steal focus when the body has its own
+    // interactive control to land on first.
+    expect(document.activeElement).not.toBe(
+      screen.getByRole("button", { name: "Close" }),
+    );
   });
 });
