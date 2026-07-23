@@ -28,9 +28,14 @@ export function Playground() {
   const [thinking, setThinking] = useState(false);
   const [meta, setMeta] = useState<{ tokens?: number; cost?: number; latency?: number }>({});
   const [secret, setSecret] = useState<string>("");
+  const [rememberSecret, setRememberSecret] = useState(true);
   const [secretDrawer, setSecretDrawer] = useState(false);
 
-  // Auto-select first virtual key once they load
+  // Auto-select first virtual key once they load.
+  // Also: when the user picks a different virtual key in the dropdown and we
+  // already have a remembered secret, we keep it — virtual key secrets are
+  // valid until rotated, so there's no need to re-prompt on every selection.
+  // We only force a re-prompt if the user explicitly chose "Forget".
   useEffect(() => {
     if (!keyId && keys.length > 0) setKeyId(keys[0].id);
   }, [keys, keyId]);
@@ -220,6 +225,8 @@ export function Playground() {
           className="form-stack"
           onSubmit={(e) => {
             e.preventDefault();
+            // Box unchecked ⇒ explicit forget so the next Run re-prompts.
+            if (!rememberSecret) setSecret("");
             setSecretDrawer(false);
           }}
         >
@@ -234,8 +241,24 @@ export function Playground() {
               autoComplete="off"
             />
           </label>
+          <label className="pg-remember-row">
+            <input
+              type="checkbox"
+              checked={rememberSecret}
+              onChange={(e) => setRememberSecret(e.target.checked)}
+            />
+            <span>
+              Remember in this session
+              <span className="muted small">
+                {" "}— kept in tab memory only, dropped on tab close. Pick a
+                different key from the dropdown without re-typing.
+              </span>
+            </span>
+          </label>
           <p className="muted small">
-            Kept in this tab only. Playgrounds intentionally do not read secrets via API — copy from the Keys tab after creating or rotating a key.
+            Playgrounds intentionally do not read secrets via API — copy from
+            the Keys tab after creating or rotating. If you rotated this key
+            since the last Run, untick the box to clear the cached secret.
           </p>
         </form>
       </Drawer>

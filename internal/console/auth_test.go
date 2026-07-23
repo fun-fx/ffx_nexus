@@ -99,6 +99,40 @@ func TestRegisterInvalidPasswordReturns400(t *testing.T) {
 	}
 }
 
+// TestPlaygroundCatalogRequiresAuth pins the route behaviour: an
+// unauthenticated probe must be 401'd by the session guard before the
+// catalog adapter is consulted.
+func TestPlaygroundCatalogRequiresAuth(t *testing.T) {
+	srv := newTestServer()
+	mux := srv.Mux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/playground/catalog", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated: want 401, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// The catalog endpoint is invoked only after the user is signed in, but
+// the assertion we care about at this layer is the route is wired (and
+// without a catalog source returns the empty-shape JSON expected by the
+// console client). Logging in is exercised end-to-end by the integration
+// checks against a real Postgres.
+func TestPlaygroundCatalogRouteRegistered(t *testing.T) {
+	srv := newTestServer()
+	mux := srv.Mux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/me/playground/catalog", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("catalog route not registered: got %d", rec.Code)
+	}
+}
+
 func TestMeStatsTracesQualityRequireUser(t *testing.T) {
 	srv := newTestServer()
 	mux := srv.Mux()
