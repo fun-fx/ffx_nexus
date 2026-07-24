@@ -7,6 +7,7 @@ import { StatusPill } from "../components/StatusPill";
 import { GradientText } from "../components/GradientText";
 import { Icon } from "../components/icons";
 import { fetchMe } from "../api";
+import { EvalProfilesCard } from "./EvalProfiles";
 
 interface EvalRule {
   metric: string;
@@ -96,7 +97,7 @@ export function Eval() {
         </div>
       </header>
 
-      <EvalRules rules={heur} />
+      <EvalRules rules={heur} isAdmin={isAdmin} />
       <WeightsCard cfg={cfg} />
       <GroupsCard cfg={cfg} />
 
@@ -110,7 +111,7 @@ export function Eval() {
   );
 }
 
-function EvalRules({ rules }: { rules: EvalRule[] }) {
+function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
   const mut = useMutation({
@@ -184,6 +185,7 @@ function EvalRules({ rules }: { rules: EvalRule[] }) {
           <code>NEXUS_REMOTE_EVAL_*</code>.
         </p>
       </section>
+      <EvalProfilesCard isAdmin={isAdmin} />
     </>
   );
 }

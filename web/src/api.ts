@@ -201,6 +201,100 @@ export async function patchEvalConfig(patch: Record<string, unknown>): Promise<E
   return sanitizeEvalConfig(await res.json());
 }
 
+// ---------------------------------------------------------------------------
+// Eval profiles (PR #137).
+// ---------------------------------------------------------------------------
+
+export type KeySource = "org" | "user" | "inline" | "builtin";
+export type ProfileKind =
+  | "heuristic_pii"
+  | "heuristic_completeness"
+  | "slm_judge"
+  | "remote_eval";
+export type EvalScope = "org" | "user";
+
+export interface EvalProfileEndpoint {
+  base_url?: string;
+  model?: string;
+  key_source?: KeySource;
+  key_ref?: string;
+}
+
+export interface EvalProfile {
+  id?: string;
+  name?: string;
+  kind?: ProfileKind;
+  scope?: EvalScope;
+  owner_user_id?: string;
+  endpoint?: EvalProfileEndpoint;
+  metrics?: string[];
+  threshold?: number;
+  sample_rate?: number;
+  enabled?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface EvalProfilePatch {
+  name?: string;
+  kind?: ProfileKind;
+  scope?: EvalScope;
+  owner_user_id?: string;
+  endpoint?: EvalProfileEndpoint;
+  metrics?: string[];
+  threshold?: number;
+  sample_rate?: number;
+  enabled?: boolean;
+}
+
+export interface EvalProfileListResponse {
+  profiles: EvalProfile[];
+}
+
+async function jsonOrError<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
+export async function fetchEvalProfiles(): Promise<EvalProfile[]> {
+  const res = await fetch("/api/eval/profiles");
+  if (!res.ok) return [];
+  const data = await jsonOrError<EvalProfileListResponse>(res);
+  return Array.isArray(data.profiles) ? data.profiles : [];
+}
+
+export async function createEvalProfile(p: EvalProfile): Promise<EvalProfile> {
+  const res = await fetch("/api/eval/profiles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(p),
+  });
+  return jsonOrError<EvalProfile>(res);
+}
+
+export async function patchEvalProfile(
+  id: string,
+  patch: EvalProfilePatch,
+): Promise<EvalProfile> {
+  const res = await fetch(`/api/eval/profiles/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrError<EvalProfile>(res);
+}
+
+export async function deleteEvalProfile(id: string): Promise<void> {
+  const res = await fetch(`/api/eval/profiles/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+}
+
 function sanitizeEvalConfig(raw: unknown): EvalConfigSnapshot {
   const safe = (v: unknown, fallback: number) =>
     typeof v === "number" && Number.isFinite(v) ? v : fallback;
