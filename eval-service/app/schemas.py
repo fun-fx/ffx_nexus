@@ -19,6 +19,26 @@ class EvaluateRequest(BaseModel):
     metrics: list[str] = Field(default_factory=list)
 
 
+# Per-request overrides. PR #136: when set they take precedence over
+# the operator's NEXUS_JUDGE_BASE_URL / NEXUS_EMBEDDINGS_BASE_URL
+# env vars. Optional in production by design — the sidecar still
+# works without them and falls back to the env-var defaults.
+    judge_url: str | None = None
+    judge_model: str | None = None
+    # Override the pass/fail threshold for this trace only. Empty keeps
+    # the sidecar's default (METRIC_THRESHOLD env var).
+    threshold: float | None = None
+
+
+class EvalBatchRequest(BaseModel):
+    """PR #136 batch contract: N traces per sidecar call.
+
+    Field-per-trace shape mirrors EvaluateRequest so the sidecar can
+    iterate over items without re-deriving the context.
+    """
+    items: list[EvaluateRequest] = Field(default_factory=list)
+
+
 class ScoreOut(BaseModel):
     evaluator: str
     metric: str
@@ -36,3 +56,9 @@ class SkippedMetric(BaseModel):
 class EvaluateResponse(BaseModel):
     scores: list[ScoreOut] = Field(default_factory=list)
     skipped: list[SkippedMetric] = Field(default_factory=list)
+
+
+class EvalBatchResponse(BaseModel):
+    """PR #136 batch reply. scores_by_trace keeps the trace_id → ScoreOut
+    association intact even when traces re-order on the sidecar."""
+    scores_by_trace: dict[str, list[ScoreOut]] = Field(default_factory=dict)

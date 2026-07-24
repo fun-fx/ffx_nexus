@@ -3,6 +3,11 @@
 Heavy libraries are imported lazily so the module (and tests) load without them.
 All builders return None when their dependency is unavailable; callers treat a
 None judge as "skip this metric".
+
+PR #136: builders now take an EvaluateRequest and prefer fields on
+the request (judge_url / judge_model / threshold) over the env-var
+defaults. Falls back to settings.* when a field is omitted so the
+sidecar keeps working for callers that send the legacy shape.
 """
 from __future__ import annotations
 
@@ -11,12 +16,49 @@ import logging
 from typing import Any, Optional
 
 from .config import settings
+from .schemas import EvaluateRequest
 
 log = logging.getLogger("eval-service.judge")
 
 
-def build_deepeval_model() -> Optional[Any]:
-    """Return a DeepEval custom model backed by the configured judge endpoint."""
+def _judge_url(req: EvaluateRequest) -> str:
+    return req.judge_url or settings.judge_base_url
+
+
+def _judge_model(req: EvaluateRequest) -> str:
+    return req.judge_model or settings.judge_model
+
+
+def _judge_api_key(req: EvaluateRequest) -> str:
+    # Settings carry a default placeholder like "not-needed" so Ollama
+    # / vLLM work without auth. The override path passes a real bearer
+    # token when the profile is user-scoped (BYOK).
+    return settings.judge_api_key
+
+
+def _embeddings_url(req: EvaluateRequest) -> str:
+    return settings.embeddings_base_url
+
+
+def _embeddings_model(req: EvaluateRequest) -> str:
+    return settings.embeddings_model
+
+
+def _embeddings_api_key(req: EvaluateRequest) -> str:
+    return settings.embeddings_api_key
+
+
+def _threshold(req: EvaluateRequest) -> float:
+    if req.threshold is not None and req.threshold > 0:
+        return float(req.threshold)
+    return settings.threshold
+
+
+def build_deepeval_model(req: EvaluateRequest) -> Optional[Any]:
+    """Return a DeepEval custom model backed by the configured judge endpoint.
+
+    Override precedence: req.judge_url > settings.judge_base_url.
+    """
     try:
         from deepeval.models import DeepEvalBaseLLM
         from openai import OpenAI
@@ -24,10 +66,14 @@ def build_deepeval_model() -> Optional[Any]:
         log.warning("deepeval/openai unavailable: %s", exc)
         return None
 
+    model_name = _judge_model(req)
+    base_url = _judge_url(req)
+    api_key = _judge_api_key(req)
+
     class LocalDeepEvalLLM(DeepEvalBaseLLM):
         def __init__(self) -> None:
-            self._model = settings.judge_model
-            self._client = OpenAI(base_url=settings.judge_base_url, api_key=settings.judge_api_key)
+            self._model = model_name
+            self._client = OpenAI(base_url=base_url, api_key=api_key)
 
         def load_model(self):
             return self._client
@@ -55,7 +101,7 @@ def build_deepeval_model() -> Optional[Any]:
     return LocalDeepEvalLLM()
 
 
-def build_ragas_llm() -> Optional[Any]:
+def build_ragas_llm(req: EvaluateRequest) -> Optional[Any]:
     try:
         from langchain_openai import ChatOpenAI
         from ragas.llms import LangchainLLMWrapper
@@ -63,16 +109,16 @@ def build_ragas_llm() -> Optional[Any]:
         log.warning("ragas/langchain LLM unavailable: %s", exc)
         return None
     chat = ChatOpenAI(
-        model=settings.judge_model,
-        base_url=settings.judge_base_url,
-        api_key=settings.judge_api_key,
+        model=_judge_model(req),
+        base_url=_judge_url(req),
+        api_key=_judge_api_key(req),
         temperature=0,
     )
     return LangchainLLMWrapper(chat)
 
 
-def build_ragas_embeddings() -> Optional[Any]:
-    if not settings.embeddings_enabled:
+def build_ragas_embeddings(req: EvaluateRequest) -> Optional[Any]:
+    if not _embeddings_url(req):
         return None
     try:
         from langchain_openai import OpenAIEmbeddings
@@ -81,11 +127,24 @@ def build_ragas_embeddings() -> Optional[Any]:
         log.warning("ragas/langchain embeddings unavailable: %s", exc)
         return None
     emb = OpenAIEmbeddings(
-        model=settings.embeddings_model,
-        base_url=settings.embeddings_base_url,
-        api_key=settings.embeddings_api_key,
+        model=_embeddings_model(req),
+        base_url=_embeddings_url(req),
+        api_key=_embeddings_api_key(req),
     )
     return LangchainEmbeddingsWrapper(emb)
+
+
+def threshold_for(req: EvaluateRequest) -> float:
+    return _threshold(req)
+
+
+_PASS_DIRECTION_HIGHER = "higher"
+_PASS_DIRECTION_LOWER = "lower"
+
+
+def passed(req: EvaluateRequest, score: float, higher_is_better: bool) -> bool:
+    t = _threshold(req)
+    return score >= t if higher_is_better else score <= t
 
 
 def _coerce_schema(text: str, schema: Any) -> Any:

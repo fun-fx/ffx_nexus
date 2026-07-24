@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,6 +47,7 @@ type MemoryStore struct {
 	mu       sync.RWMutex
 	profiles map[string]*EvalProfile
 	clock    func() time.Time
+	counter  uint64
 }
 
 // NewMemoryStore creates a deterministic, in-memory ProfileStore. Tests
@@ -58,11 +60,11 @@ func NewMemoryStore(clock func() time.Time) *MemoryStore {
 	return &MemoryStore{profiles: make(map[string]*EvalProfile), clock: clock}
 }
 
-// nextID produces a stable, sortable id without depending on Unstable.
-// Implementations of ProfileStore in the durable world will use UUIDv7
-// or whatever the schema dictates; here we generate a small token.
+// nextID produces a sortable id without depending on rand —
+// sufficiently unique for an in-memory store. Database-backed
+// stores replace this with UUIDv7 once PR #137 lands.
 func (m *MemoryStore) nextID() string {
-	return fmt.Sprintf("ep_%d", m.clock().UnixNano())
+	return fmt.Sprintf("ep_%d_%d", m.clock().UnixNano(), atomic.AddUint64(&m.counter, 1))
 }
 
 func (m *MemoryStore) List(_ context.Context, ownerUserID string) ([]EvalProfile, error) {

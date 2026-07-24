@@ -105,7 +105,7 @@ func TestRemoteEvaluatorTimeout(t *testing.T) {
 func TestRemoteEvaluatorSendsContexts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		var req remoteRequest
+		var req RemoteEvaluatorRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
