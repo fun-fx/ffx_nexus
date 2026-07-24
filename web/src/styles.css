@@ -2140,3 +2140,142 @@ a:hover {
     gap: 10px;
   }
 }
+
+/* PR #137 — eval profile CRUD UI */
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.profile-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.profile-group-title {
+  margin: 0;
+  font-size: var(--fs-13, 13px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted, #99a);
+}
+
+.profile-row-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.profile-row {
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: var(--panel-soft, rgba(255, 255, 255, 0.025));
+}
+
+.profile-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.profile-row-name {
+  font-weight: 600;
+  font-size: var(--fs-15, 15px);
+}
+
+.profile-row-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.profile-row-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 6px 12px;
+  margin: 8px 0 0;
+}
+
+.profile-row-meta > div {
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.profile-row-meta dt {
+  margin: 0;
+  color: var(--muted, #99a);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.profile-row-meta dd {
+  margin: 0;
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted, #99a);
+}
+
+.field-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-control .input {
+  width: 100%;
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.btn.danger {
+  color: #fca5a5;
+}
+
+.btn.danger:hover {
+  background: rgba(252, 165, 165, 0.08);
+}
+
+.drawer-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
