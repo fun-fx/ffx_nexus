@@ -58,6 +58,13 @@ type ConsoleCatalog interface {
 type ConsoleUserProvider struct {
 	Provider string
 	Models   []string
+	// Scope describes the visibility class: public (operator-shipped), org
+	// (tenant-shared team router), user (one account's BYOK). Echoes the
+	// ScopeHint the gateway Registry kept at registration time so the
+	// console can render "Personal" vs "Team" vs "Public" badges.
+	// OwnerID is only meaningful when Scope == "user" (empty otherwise).
+	Scope   Scope
+	OwnerID string
 }
 
 // Catalog exposes the gateway's model universe to the console's Playground
@@ -83,6 +90,7 @@ func (c *handlerCatalog) EmbeddingModels() []string {
 
 func (c *handlerCatalog) UserProviders() []ConsoleUserProvider {
 	seen := map[string]map[string]struct{}{}
+	hints := map[string]ScopeHint{}
 	for _, m := range c.registry.AllModels() {
 		if !strings.HasPrefix(m, "user/") {
 			continue
@@ -101,6 +109,16 @@ func (c *handlerCatalog) UserProviders() []ConsoleUserProvider {
 			seen[provider] = map[string]struct{}{}
 		}
 		seen[provider][model] = struct{}{}
+		// Pull the most-specific hint: model id first, then by name. We
+		// already indexed the model id at RegisterHint() time, but if a
+		// refresh dropped the mapping fall back to the provider name.
+		if hint, ok := c.registry.HintForModel(m); ok {
+			hints[provider] = hint
+			continue
+		}
+		if hint, ok := c.registry.HintForName(provider); ok {
+			hints[provider] = hint
+		}
 	}
 	out := make([]ConsoleUserProvider, 0, len(seen))
 	for provider, models := range seen {
@@ -109,7 +127,19 @@ func (c *handlerCatalog) UserProviders() []ConsoleUserProvider {
 			list = append(list, m)
 		}
 		sort.Strings(list)
-		out = append(out, ConsoleUserProvider{Provider: provider, Models: list})
+		hint := hints[provider]
+		// Default to public for legacy pre-#132 registrations so the
+		// console does not lose existing routes; the registry
+		// improved flag note lives in the field below.
+		if hint.IsZero() {
+			hint = ScopeHint{Scope: ScopePublic}
+		}
+		out = append(out, ConsoleUserProvider{
+			Provider: provider,
+			Models:   list,
+			Scope:    hint.Scope,
+			OwnerID:  hint.OwnerID,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Provider < out[j].Provider })
 	return out

@@ -64,27 +64,72 @@ type ImageGenerationProvider interface {
 // Registry maps model IDs to providers and supports prefix-based routing
 // (e.g. "openai/gpt-4o" forces the openai provider).
 type Registry struct {
-	mu        sync.RWMutex
-	providers map[string]Provider // by name
-	byModel   map[string]Provider // exact model id -> provider
+	mu           sync.RWMutex
+	providers    map[string]Provider  // by name
+	byModel      map[string]Provider  // exact model id -> provider
+	modelHints   map[string]ScopeHint // exact model id -> visibility hint
+	providerHint map[string]ScopeHint // by name (for prefix lookups: "scope" of an alias)
 }
 
 // NewRegistry creates an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		providers: make(map[string]Provider),
-		byModel:   make(map[string]Provider),
+		providers:    make(map[string]Provider),
+		byModel:      make(map[string]Provider),
+		modelHints:   make(map[string]ScopeHint),
+		providerHint: make(map[string]ScopeHint),
 	}
 }
 
-// Register adds a provider and indexes its advertised models.
+// Register adds a provider and indexes its advertised models. The provider
+// is recorded with a default ScopePublic hint so existing callers do not
+// have to change. Use RegisterHint to attach a non-zero scope.
 func (r *Registry) Register(p Provider) {
+	r.RegisterHint(p.Name(), ScopeHint{}, p)
+}
+
+// RegisterHint adds a provider and tags it with a ScopeHint. The hint is
+// stored both per-name (for "openai/foo" style prefix lookups) and per
+// model id (for AllModels/AllEmbeddingModels + the visibility filter the
+// ConsoleCatalog uses). A zero hint means ScopePublic.
+func (r *Registry) RegisterHint(name string, hint ScopeHint, p Provider) {
+	if hint.IsZero() {
+		hint = ScopeHint{Scope: ScopePublic}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.providers[p.Name()] = p
+	r.providers[name] = p
+	r.providerHint[name] = hint
 	for _, m := range p.Models() {
 		r.byModel[m] = p
+		r.modelHints[m] = hint
 	}
+}
+
+// HintForName returns the visibility scope attached to a registered provider
+// name (used for "openai/foo" routing). Returns ScopePublic and ok=false if
+// the name was never registered.
+func (r *Registry) HintForName(name string) (ScopeHint, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	h, ok := r.providerHint[name]
+	if !ok {
+		return ScopeHint{Scope: ScopePublic}, false
+	}
+	return h, true
+}
+
+// HintForModel returns the visibility scope attached to an exact model id.
+// Returns ScopePublic and ok=false when the model id has not been indexed
+// (caller should treat it as truly unknown and refuse the request).
+func (r *Registry) HintForModel(model string) (ScopeHint, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	h, ok := r.modelHints[model]
+	if !ok {
+		return ScopeHint{Scope: ScopePublic}, false
+	}
+	return h, true
 }
 
 // UpdateModels replaces the catalog of model ids indexed under the given
@@ -94,7 +139,10 @@ func (r *Registry) Register(p Provider) {
 // race with the hot path).
 //
 // If name does not refer to a registered provider the call is a no-op and
-// returns false so the caller can log a stale refresh.
+// returns false so the caller can log a stale refresh. The hint attached
+// at registration is preserved across the refresh — model ids removed from
+// the catalog also lose their hint entry, while freshly added ids inherit
+// the provider-level hint.
 func (r *Registry) UpdateModels(name string, models []string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -102,13 +150,16 @@ func (r *Registry) UpdateModels(name string, models []string) bool {
 	if !ok {
 		return false
 	}
+	hint := r.providerHint[name]
 	for id, existing := range r.byModel {
 		if existing == p {
 			delete(r.byModel, id)
+			delete(r.modelHints, id)
 		}
 	}
 	for _, m := range models {
 		r.byModel[m] = p
+		r.modelHints[m] = hint
 	}
 	return true
 }

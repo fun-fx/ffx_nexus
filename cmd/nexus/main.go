@@ -478,6 +478,15 @@ func registerStoredCredentials(ctx context.Context, reg *gateway.Registry, st *c
 		return
 	}
 	for _, c := range creds {
+		// Decide the visibility scope before constructing the adapter so the
+		// Registry can answer ConsoleCatalog.UserProviders() with a stable
+		// Public/Org/User label per registered router. See PR #132.
+		scopeHint := gateway.ScopeHint{Scope: gateway.ScopeOrg}
+		ownerID := c.UserID
+		if ownerID != "" {
+			scopeHint = gateway.ScopeHint{Scope: gateway.ScopeUser, OwnerID: ownerID}
+		}
+		opts := providers.UserCompatOpts{OwnerID: ownerID, Scope: scopeHint.Scope}
 		switch c.Provider {
 		case "openai":
 			base := c.BaseURL
@@ -517,13 +526,20 @@ func registerStoredCredentials(ctx context.Context, reg *gateway.Registry, st *c
 			// with the built-in catalog id space at /v1/models.
 			compat := providers.NewOpenAICompat(c.Provider, c.Secret, c.BaseURL,
 				c.Models.Chat, c.Models.Embed, nil, nil, cfg.UpstreamTimeout)
-			reg.Register(providers.NewUserCompat(compat))
-			log.Info("dynamic compat provider registered", "name", c.Provider, "last4", c.SecretLast4,
+			uc := providers.NewUserCompat(compat, opts)
+			reg.RegisterHint(c.Provider, scopeHint, uc)
+			log.Info("dynamic compat provider registered",
+				"name", c.Provider, "last4", c.SecretLast4,
+				"scope", string(scopeHint.Scope),
+				"owner", ownerID,
 				"chat_models", len(c.Models.Chat), "embed_models", len(c.Models.Embed))
 			continue
 		}
-		log.Info("provider registered from credential store", "name", c.Provider, "last4", c.SecretLast4)
+		log.Info("provider registered from credential store",
+			"name", c.Provider, "last4", c.SecretLast4,
+			"scope", string(scopeHint.Scope), "owner", ownerID)
 	}
+	// End of registerStoredCredentials.
 }
 
 func serve(wg *sync.WaitGroup, srv *http.Server, name, addr string, log *slog.Logger) {
@@ -537,13 +553,17 @@ func serve(wg *sync.WaitGroup, srv *http.Server, name, addr string, log *slog.Lo
 // registerBuiltinCatalog registers every first-party adapter with an empty
 // operator key so /v1/models and model routing work under strict BYOK. Per-
 // request ResolveCredential injects each caller's stored secret at call time.
+//
+// Adapters registered here are tagged ScopePublic so the ConsoleCatalog
+// reports them as "Public" to every tenant, distinct from org-shared team
+// routers (#132) and user BYOK routers (#PR-2).
 func registerBuiltinCatalog(reg *gateway.Registry, cfg config.Config, log *slog.Logger) {
-	reg.Register(providers.NewOpenAI("", cfg.OpenAIBaseURL, cfg.UpstreamTimeout))
-	reg.Register(providers.NewAnthropic("", cfg.UpstreamTimeout))
-	reg.Register(providers.NewGemini("", cfg.UpstreamTimeout))
-	reg.Register(providers.NewGroq("", cfg.UpstreamTimeout))
-	reg.Register(providers.NewMistral("", cfg.UpstreamTimeout))
-	reg.Register(providers.NewGrid("", cfg.UpstreamTimeout))
+	reg.RegisterHint("openai", gateway.ScopeHint{Scope: gateway.ScopePublic}, providers.NewOpenAI("", cfg.OpenAIBaseURL, cfg.UpstreamTimeout))
+	reg.RegisterHint("anthropic", gateway.ScopeHint{Scope: gateway.ScopePublic}, providers.NewAnthropic("", cfg.UpstreamTimeout))
+	reg.RegisterHint("gemini", gateway.ScopeHint{Scope: gateway.ScopePublic}, providers.NewGemini("", cfg.UpstreamTimeout))
+	reg.RegisterHint("groq", gateway.ScopeHint{Scope: gateway.ScopePublic}, providers.NewGroq("", cfg.UpstreamTimeout))
+	reg.RegisterHint("mistral", gateway.ScopeHint{Scope: gateway.ScopePublic}, providers.NewMistral("", cfg.UpstreamTimeout))
+	reg.RegisterHint("grid", gateway.ScopeHint{Scope: gateway.ScopePublic}, providers.NewGrid("", cfg.UpstreamTimeout))
 	log.Info("builtin provider catalogs registered for BYOK routing")
 }
 
