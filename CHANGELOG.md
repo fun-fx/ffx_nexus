@@ -5,6 +5,31 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.3] — EvalRules switcher parity (PR #140)
+
+Console-only follow-up to [v0.6.2](#v062--evalprofiles-switcher--nexus-favicon).
+
+### Highlights
+
+- **Heuristic rows use the same switch cell as profiles.** The PII / Completeness rows
+  inside the Heuristics card now use the shared `ToggleCell` (extracted in
+  PR #138/#139). Drop the previous `StatusPill on/off` + `Disable/Enable`
+  button pair so the heuristics card and the profiles card share one
+  visual affordance for the same underlying state. Keyboard (Space / Enter)
+  works the same as on profile rows.
+- **Shared `ToggleCell` component.** Extracted from the inline copy in
+  `EvalProfiles.tsx` into `web/src/components/ToggleCell.tsx` so future
+  in-row enable flags (routing groups, persona flags, etc.) drop in the
+  same primitive.
+- **SLM judge / Remote eval rows intentionally still use `StatusPill`.**
+  Their `enabled` flag is env-driven and intentionally has no in-UI
+  affordance, so the pill stays.
+
+### Developer notes
+
+- UI only. No backend change, no hot-path impact.
+- Build / TSC / Vitest still clean.
+
 ## [v0.6.2] — EvalProfiles switcher + Nexus favicon
 
 Console-only follow-up to [v0.6.1](#v061--evalprofiles-console-ux-consistency).
