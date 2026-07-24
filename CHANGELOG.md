@@ -5,6 +5,71 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.1] — EvalProfiles console UX consistency
+
+Visual follow-up to [v0.6.0](#v060--profile-driven-evals-go--python-sidecar--console-ui)
+that aligns the new `Eval profiles` card and its drawer with the rest
+of the console (Login / Playground / Keys / Credentials / Routing /
+Eval / Audit / Overview).
+
+### Highlights
+
+- **Shared drawer.** The profile create / edit drawer now uses the
+  same `<Drawer>` component (with the existing focus-trap, ESC-close,
+  and overlay dismiss) as every other tab. No more bespoke
+  `drawer-overlay / drawer-head / drawer-foot` markup.
+- **Shared button palette.** Primary CTAs (`+ New profile`,
+  `Create profile`, `Save changes`) are `btn-neon`; secondary actions
+  (`Cancel`, `Disable`, `Enable`, `Edit`, `Delete`) are `btn-ghost`.
+  The danger tone for `Delete` is a single `.row-action-danger`
+  modifier on top of `btn-ghost`, no more raw `.btn.danger`.
+- **Shared panel shell.** `Eval profiles` now lives in a `.panel`
+  (matching `Audit`, `Credentials`, `Routing`, and the existing eval
+  cards) instead of a one-off `.card` variant. Old `.card-head` /
+  `.card-title` are now `.panel-head` / `.panel-title`.
+- **Shared field rows.** Form rows in the drawer use the global
+  `.field-row` class that `Login`, `Playground`, `Keys`, and
+  `Credentials` already use. The local `.field / .field-label /
+  .field-control` trio is gone.
+- **CSS diet.** `styles.css` sheds the duplicate `.drawer-foot`
+  block, the unused `.field / .field-control`, and the standalone
+  `.btn.danger` rule. Bundle loses 0.35 kB of dead CSS.
+
+### Changed
+
+- `web/src/components/Drawer.tsx`: optional `testId` prop forwarded
+  to the dialog `div` so the existing `data-testid="profile-drawer"`
+  test query keeps working without coupling the tests to internal
+  structure.
+- `web/src/pages/EvalProfiles.tsx`:
+  - Section wrapper: `section card evals-card` →
+    `section panel profiles-card`.
+  - Header: `card-head / card-title (h3)` → `panel-head /
+    panel-title (h2)`.
+  - Action buttons: `btn btn-primary` → `btn-neon`;
+    `btn small` → `btn-ghost btn-small`; `btn small danger` →
+    `btn-ghost btn-small row-action-danger`.
+  - Field rows: `Field` component renamed to `FieldRow` and uses
+    the global `.field-row` wrapper.
+  - Drawer shell: replaced with the shared `<Drawer>` component.
+- `web/src/styles.css`: removed `.field`, `.field-control`,
+  `.btn.danger`, and the duplicate `.drawer-foot` block; added
+  `.row-action-danger` for the delete button tone.
+
+### Performance / hot path
+
+No gateway / eval sidecar changes. This release is purely a console
+UI alignment; `/v1/chat/completions`, eval worker tick, and the
+secret resolver all stay byte-identical with v0.6.0.
+
+### Upgrade notes
+
+Existing `v0.6.0` deployments need no configuration changes — the
+console rebuilds from the existing Helm value
+(`image.repository: ghcr.io/fun-fx/ffx_nexus`, tag pinned by the
+Helm release). Helm chart version bumps to `0.6.1`, `appVersion`
+to `0.6.1`.
+
 ## [v0.6.0] — Profile-driven evals (Go + Python sidecar + Console UI)
 
 Replaces the global, env-only eval configuration with first-class,
