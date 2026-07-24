@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { GradientText } from "../components/GradientText";
 import { TierCard } from "../components/TierCard";
 import { Icon } from "../components/icons";
@@ -81,14 +82,14 @@ export function Overview() {
           </p>
         </div>
         <div className="hero-cta">
-          <button className="btn-neon" type="button">
+          <Link to="/playground" className="btn-neon">
             <Icon.play size={14} />
             Open Playground
-          </button>
-          <button className="btn-ghost" type="button">
+          </Link>
+          <Link to="/traces" className="btn-ghost">
             <Icon.chart size={14} />
             View Traces
-          </button>
+          </Link>
         </div>
       </section>
 
