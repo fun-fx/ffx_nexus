@@ -5,6 +5,121 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.0] — Profile-driven evals (Go + Python sidecar + Console UI)
+
+Replaces the global, env-only eval configuration with first-class,
+per-evaluation **profiles** that admins can author, toggle, and scope
+from the Console without redeploying the gateway.
+
+### Highlights
+
+- **One profile = one evaluator spec.** `EvalProfile` (`internal/evals/profiles.go`)
+  carries the metric kind (`heuristic_pii` / `heuristic_completeness` /
+  `slm_judge` / `remote_eval`), scope (`org` vs `user`), endpoint,
+  `key_source` (`org` / `user` / `inline` / `builtin`), threshold,
+  sample rate, and a metric-specific config blob. `Worker.ReplaceProfiles`
+  swaps the active profile set on the next eval tick; profiles that are
+  disabled in the UI are skipped at dispatch.
+- **UI-driven secrets.** No more `OPENAI_API_KEY` / `JUDGE_URL` env vars
+  required for evals. `SecretResolver` (`internal/evals/secret_resolver.go`)
+  fetches keys from org credentials, the calling user's BYOK store, or
+  an inline registered secret, matching the same precedence the gateway
+  uses for normal traffic.
+- **Dynamic per-request overrides.** `EvalOverride`
+  (`internal/evals/override.go`) carries judge URL, judge model, and
+  threshold from the active profile to the Python sidecar on every
+  batch. The Python service honors request fields over env config
+  (`eval-service/app/judge.py`), so changing a profile in the Console
+  flows through without a restart.
+- **Console CRUD UI.** A new *Profiles* card under the Eval page lets
+  admins create / edit / enable / disable / delete profiles and groups
+  them by scope (`web/src/pages/EvalProfiles.tsx`). `ProfileDrawer`
+  encodes the key-source ↔ kind invariants client-side (heuristics are
+  pinned to `builtin`), and the React Query cache invalidates on
+  every mutation for instant feedback.
+
+### Added
+
+- `internal/evals/profiles.go`, `internal/evals/profile_store.go`,
+  `internal/evals/profile_store_helpers.go` — `EvalProfile` schema,
+  `ProfileStore` interface, and a persistent store wrapper.
+- `internal/evals/secret_resolver.go`,
+  `internal/evals/store_secret_lookup.go` — `SecretResolver` + a
+  `core.Store`-backed lookup that mirrors gateway BYOK precedence.
+- `internal/evals/batcher.go` — `Batcher` collects traces and flushes
+  them to the Python sidecar in size/time-windowed batches
+  (configurable `BatchConfig`).
+- `internal/evals/override.go` — `EvalOverride` request envelope.
+- `internal/console/eval_profiles.go` — `/api/eval/profiles` CRUD
+  handlers (`profileCallerCanSee` / `profileCallerCanWrite`).
+- `eval-service/app/schemas.py` — `EvalBatchRequest` /
+  `EvalBatchResponse` and override fields on `EvaluateRequest`.
+- `eval-service/app/main.py` — `/evaluate/batch` endpoint with
+  concurrent metric dispatch (`asyncio.gather`).
+- `web/src/pages/EvalProfiles.tsx` + `EvalProfilesCard` /
+  `ProfileDrawer` — full CRUD UI.
+- `cmd/nexus/profile_store.go`, `cmd/nexus/eval_runtime.go` — runtime
+  wiring (`SeedProfilesFromConfig`, `SetSecretResolver`,
+  `SetEvalProfiles`).
+
+### Changed
+
+- `internal/evals/worker.go` — eval execution now fans out across
+  metrics (`scoreBag` + `runEvaluators`) so a request's eval latency is
+  bounded by the slowest metric, not their sum. Sequential execution
+  paths were removed.
+- `internal/evals/remote.go` — `RemoteEvaluator` now accepts
+  `EvalOverride`, supports `EvaluateBatch`, and runs on an
+  `http.Transport` with keep-alive (`MaxIdleConns=64`,
+  `MaxIdleConnsPerHost=16`).
+- `eval-service/app/judge.py`, `eval-service/app/metrics.py` —
+  LLM / embeddings / threshold construction prefers request fields
+  over `settings`.
+- `cmd/nexus/main.go` — startup seeds default profiles from the
+  current env (if set) and registers a `SecretResolver` so existing
+  configs keep working without editing the deploy.
+- `web/src/pages/Eval.tsx` — renders the new `EvalProfilesCard` and
+  forwards `isAdmin` to `EvalRules`.
+- `web/src/api.ts` — `EvalProfile` types and CRUD helpers.
+
+### Performance guardrails (hot path zero-impact)
+
+- Profile resolution runs only on the eval worker tick, **never** in
+  the gateway hot path. Gateway middleware, `ResolveCredential`,
+  routing, and tracing remain unchanged for a `/v1/chat/completions`
+  call.
+- Eval dispatch uses fan-out + batched HTTP to the Python sidecar, so
+  per-request eval overhead drops from `O(metrics)` to `O(1)` HTTP
+  round trips and parallel metric latency.
+- Remote evaluator HTTP client pools keep-alive connections
+  (`IdleConnTimeout=90s`).
+- Batcher caps in-flight queues (`MaxQueue`); on overflow it drops
+  with a counter so a stuck sidecar can never back-pressure live
+  traffic.
+- `secretResolver` is invoked inside the worker goroutine; org/user
+  lookups reuse the existing credential pool — no new
+  database connections per request.
+
+### Security / boundary
+
+- Inline secrets are stored in-memory only (process-local); they are
+  scoped to the registering user and never persisted.
+- Profile mutations are gated by `profileCallerCanWrite`: only admins
+  can edit org-scope profiles; users can only edit their own user-scope
+  profiles.
+- Eval override fields never leak credentials: the sidecar only sees
+  the resolved key, not the source.
+
+### Upgrade notes
+
+- Existing deployments using `OPENAI_API_KEY` / `JUDGE_URL` env vars
+  will continue to work: `SeedProfilesFromConfig` materialises a
+  default profile from those vars on first boot.
+- To go fully env-free, run `GET /api/eval/profiles` to find the
+  seeded profile and `PATCH /api/eval/profiles/{id}` to attach an
+  inline key (or switch `key_source` to `user` / `org`).
+- Helm chart version bumped to `0.6.0`, `appVersion` to `0.6.0`.
+
 ## [v0.4.0] — user-defined OpenAI-compatible providers
 
 Splits production deployment out of the public repo into a private
