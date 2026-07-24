@@ -13,6 +13,7 @@ import {
 } from "../api";
 import { Chip } from "../components/Chip";
 import { StatusPill } from "../components/StatusPill";
+import { Drawer } from "../components/Drawer";
 
 /**
  * PR #137 — per-eval profile CRUD UI.
@@ -264,10 +265,10 @@ export function EvalProfilesCard({ isAdmin }: { isAdmin: boolean }) {
   const grouped = useMemo(() => groupProfiles(profiles.data ?? []), [profiles.data]);
 
   return (
-    <section className="card evals-card" data-testid="eval-profiles">
-      <header className="card-head">
+    <section className="panel profiles-card" data-testid="eval-profiles">
+      <header className="panel-head">
         <div>
-          <h3 className="card-title">Eval profiles</h3>
+          <h2 className="panel-title">Eval profiles</h2>
           <p className="muted small">
             Per-eval configuration. Each profile carries its own judge / sidecar endpoint,
             credential source, and sample rate.
@@ -276,7 +277,7 @@ export function EvalProfilesCard({ isAdmin }: { isAdmin: boolean }) {
         {isAdmin ? (
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn-neon"
             onClick={openCreate}
             disabled={createM.isPending}
           >
@@ -288,7 +289,7 @@ export function EvalProfilesCard({ isAdmin }: { isAdmin: boolean }) {
         {profiles.isLoading ? (
           <p className="muted small">Loading profiles…</p>
         ) : (profiles.data?.length ?? 0) === 0 ? (
-          <p className="muted small">No profiles. Default env-var seeding runs on boot.</p>
+          <p className="muted">No profiles. Default env-var seeding runs on boot.</p>
         ) : (
           <>
             <Group title="Org profiles" rows={grouped.org} isAdmin={isAdmin} onEdit={openEdit} onToggle={(id, enabled) => toggleM.mutate({ id, enabled })} onDelete={(id) => deleteM.mutate({ id })} busyDeleteId={deleteM.isPending ? deleteM.variables?.id ?? null : null} />
@@ -383,21 +384,21 @@ function ProfileRow({
           <StatusPill label={enabled ? "on" : "off"} tone={enabled ? "ok" : "neutral"} />
           <button
             type="button"
-            className="btn small"
+            className="btn-ghost btn-small"
             aria-label={`toggle ${profile.name}`}
             onClick={() => onToggle(!enabled)}
           >
             {enabled ? "Disable" : "Enable"}
           </button>
           {isAdmin ? (
-            <button type="button" className="btn small" onClick={onEdit}>
+            <button type="button" className="btn-ghost btn-small" onClick={onEdit}>
               Edit
             </button>
           ) : null}
           {isAdmin && profile.id ? (
             <button
               type="button"
-              className="btn small danger"
+              className="btn-ghost btn-small row-action-danger"
               onClick={onDelete}
               disabled={busyDelete}
             >
@@ -458,169 +459,159 @@ function ProfileDrawer({
   error: string | null;
 }) {
   return (
-    <div className="drawer-overlay" role="presentation" onClick={onClose}>
-      <div
-        className="drawer"
-        role="dialog"
-        aria-label={editing ? "Edit profile" : "Create profile"}
-        aria-modal="true"
-        onClick={(e) => e.stopPropagation()}
-        data-testid="profile-drawer"
-      >
-        <header className="drawer-head">
-          <h3 className="drawer-title">{editing ? "Edit profile" : "New profile"}</h3>
-          <button type="button" className="btn small" onClick={onClose}>
-            Close
-          </button>
-        </header>
-        <div className="drawer-body">
-          <Field label="Name">
-            <input
-              className="input"
-              value={draft.name}
-              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-              placeholder="e.g. Claude safety judge"
-              autoFocus
-            />
-          </Field>
-          <Field label="Kind">
-            <select
-              className="input"
-              value={draft.kind}
-              onChange={(e) => setDraft({ ...draft, kind: e.target.value as ProfileKind })}
-            >
-              {KIND_PRESETS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-            <p className="muted tiny">
-              {KIND_PRESETS.find((p) => p.id === draft.kind)?.description}
-            </p>
-          </Field>
-          <Field label="Scope">
-            <select
-              className="input"
-              value={draft.scope}
-              onChange={(e) => setDraft({ ...draft, scope: e.target.value as EvalScope })}
-            >
-              <option value="org">Org</option>
-              <option value="user">User (BYOK)</option>
-            </select>
-            {draft.scope === "user" ? (
-              <input
-                className="input"
-                placeholder="owner_user_id"
-                value={draft.owner_user_id}
-                onChange={(e) => setDraft({ ...draft, owner_user_id: e.target.value })}
-              />
-            ) : null}
-          </Field>
-          <Field label="Endpoint">
-            <input
-              className="input"
-              placeholder="https://api.openai.com/v1"
-              value={draft.endpoint_base}
-              onChange={(e) => setDraft({ ...draft, endpoint_base: e.target.value })}
-            />
-            <input
-              className="input"
-              placeholder="model id"
-              value={draft.endpoint_model}
-              onChange={(e) => setDraft({ ...draft, endpoint_model: e.target.value })}
-            />
-          </Field>
-          <Field label="Key source">
-            <select
-              className="input"
-              value={draft.key_source}
-              onChange={(e) => setDraft({ ...draft, key_source: e.target.value as KeySource })}
-            >
-              {KEY_SOURCE_PRESETS.map((p) => (
-                <option key={p.id} value={p.id} disabled={isHeuristic(draft.kind) && p.id !== "builtin"}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-            <p className="muted tiny">
-              {KEY_SOURCE_PRESETS.find((p) => p.id === draft.key_source)?.description}
-            </p>
-            {draft.key_source === "inline" ? (
-              <input
-                className="input"
-                placeholder="key_ref (server-issued token)"
-                value={draft.key_ref}
-                onChange={(e) => setDraft({ ...draft, key_ref: e.target.value })}
-              />
-            ) : null}
-          </Field>
-          <Field label="Metrics (comma separated)">
-            <input
-              className="input"
-              value={draft.metricsRaw}
-              onChange={(e) => setDraft({ ...draft, metricsRaw: e.target.value })}
-              placeholder="answer_relevancy,toxicity,bias"
-            />
-          </Field>
-          <Field label="Threshold">
-            <input
-              type="number"
-              className="input"
-              step="0.05"
-              min={0}
-              max={1}
-              value={draft.threshold}
-              onChange={(e) => setDraft({ ...draft, threshold: Number(e.target.value) })}
-            />
-          </Field>
-          <Field label="Sample rate">
-            <input
-              type="number"
-              className="input"
-              step="0.05"
-              min={0}
-              max={1}
-              value={draft.sample_rate}
-              onChange={(e) => setDraft({ ...draft, sample_rate: Number(e.target.value) })}
-            />
-          </Field>
-          <Field label="Enabled">
-            <label className="checkbox">
-              <input
-                type="checkbox"
-                checked={draft.enabled}
-                onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
-              />
-              <span>On</span>
-            </label>
-          </Field>
-          {error ? <p className="error small">{error}</p> : null}
-        </div>
-        <footer className="drawer-foot">
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>
+    <Drawer
+      open
+      title={editing ? "Edit profile" : "New profile"}
+      onClose={onClose}
+      testId="profile-drawer"
+      footer={
+        <>
+          <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>
             Cancel
           </button>
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn-neon"
             onClick={onSubmit}
             disabled={busy}
             data-testid="profile-submit"
           >
             {busy ? "Saving…" : editing ? "Save changes" : "Create profile"}
           </button>
-        </footer>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <FieldRow label="Name">
+        <input
+          className="input"
+          value={draft.name}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          placeholder="e.g. Claude safety judge"
+          autoFocus
+        />
+      </FieldRow>
+      <FieldRow label="Kind">
+        <select
+          className="input"
+          value={draft.kind}
+          onChange={(e) => setDraft({ ...draft, kind: e.target.value as ProfileKind })}
+        >
+          {KIND_PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        <p className="muted tiny">
+          {KIND_PRESETS.find((p) => p.id === draft.kind)?.description}
+        </p>
+      </FieldRow>
+      <FieldRow label="Scope">
+        <select
+          className="input"
+          value={draft.scope}
+          onChange={(e) => setDraft({ ...draft, scope: e.target.value as EvalScope })}
+        >
+          <option value="org">Org</option>
+          <option value="user">User (BYOK)</option>
+        </select>
+        {draft.scope === "user" ? (
+          <input
+            className="input"
+            placeholder="owner_user_id"
+            value={draft.owner_user_id}
+            onChange={(e) => setDraft({ ...draft, owner_user_id: e.target.value })}
+          />
+        ) : null}
+      </FieldRow>
+      <FieldRow label="Endpoint">
+        <input
+          className="input"
+          placeholder="https://api.openai.com/v1"
+          value={draft.endpoint_base}
+          onChange={(e) => setDraft({ ...draft, endpoint_base: e.target.value })}
+        />
+        <input
+          className="input"
+          placeholder="model id"
+          value={draft.endpoint_model}
+          onChange={(e) => setDraft({ ...draft, endpoint_model: e.target.value })}
+        />
+      </FieldRow>
+      <FieldRow label="Key source">
+        <select
+          className="input"
+          value={draft.key_source}
+          onChange={(e) => setDraft({ ...draft, key_source: e.target.value as KeySource })}
+        >
+          {KEY_SOURCE_PRESETS.map((p) => (
+            <option key={p.id} value={p.id} disabled={isHeuristic(draft.kind) && p.id !== "builtin"}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        <p className="muted tiny">
+          {KEY_SOURCE_PRESETS.find((p) => p.id === draft.key_source)?.description}
+        </p>
+        {draft.key_source === "inline" ? (
+          <input
+            className="input"
+            placeholder="key_ref (server-issued token)"
+            value={draft.key_ref}
+            onChange={(e) => setDraft({ ...draft, key_ref: e.target.value })}
+          />
+        ) : null}
+      </FieldRow>
+      <FieldRow label="Metrics (comma separated)">
+        <input
+          className="input"
+          value={draft.metricsRaw}
+          onChange={(e) => setDraft({ ...draft, metricsRaw: e.target.value })}
+          placeholder="answer_relevancy,toxicity,bias"
+        />
+      </FieldRow>
+      <FieldRow label="Threshold">
+        <input
+          type="number"
+          className="input"
+          step="0.05"
+          min={0}
+          max={1}
+          value={draft.threshold}
+          onChange={(e) => setDraft({ ...draft, threshold: Number(e.target.value) })}
+        />
+      </FieldRow>
+      <FieldRow label="Sample rate">
+        <input
+          type="number"
+          className="input"
+          step="0.05"
+          min={0}
+          max={1}
+          value={draft.sample_rate}
+          onChange={(e) => setDraft({ ...draft, sample_rate: Number(e.target.value) })}
+        />
+      </FieldRow>
+      <FieldRow label="Enabled">
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={draft.enabled}
+            onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+          />
+          <span>On</span>
+        </label>
+      </FieldRow>
+      {error ? <p className="error small">{error}</p> : null}
+    </Drawer>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="field">
+    <label className="field-row">
       <span className="field-label">{label}</span>
-      <div className="field-control">{children}</div>
+      {children}
     </label>
   );
 }

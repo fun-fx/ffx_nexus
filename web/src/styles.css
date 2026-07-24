@@ -2231,31 +2231,6 @@ a:hover {
   white-space: nowrap;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 14px;
-}
-
-.field-label {
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted, #99a);
-}
-
-.field-control {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field-control .input {
-  width: 100%;
-}
-
 .checkbox {
   display: inline-flex;
   align-items: center;
@@ -2264,18 +2239,12 @@ a:hover {
   user-select: none;
 }
 
-.btn.danger {
+/* Danger tone for ghost-style buttons in profile row actions. */
+.row-action-danger {
   color: #fca5a5;
+  border-color: rgba(252, 165, 165, 0.35);
 }
 
-.btn.danger:hover {
+.row-action-danger:hover {
   background: rgba(252, 165, 165, 0.08);
-}
-
-.drawer-foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 20px;
-  border-top: 1px solid var(--border);
 }

@@ -7,6 +7,7 @@ interface Props {
   onClose: () => void;
   footer?: React.ReactNode;
   children: React.ReactNode;
+  testId?: string;
 }
 
 /**
@@ -15,7 +16,7 @@ interface Props {
  * steal the caret on open) and returns focus to the previously-focused
  * element on close.
  */
-export function Drawer({ open, title, onClose, footer, children }: Props) {
+export function Drawer({ open, title, onClose, footer, children, testId }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const lastFocused = useRef<HTMLElement | null>(null);
 
@@ -71,6 +72,7 @@ export function Drawer({ open, title, onClose, footer, children }: Props) {
         role="dialog"
         aria-modal="true"
         aria-label={typeof title === "string" ? title : undefined}
+        data-testid={testId}
         onClick={(e) => e.stopPropagation()}
       >
         <header className="drawer-head">
