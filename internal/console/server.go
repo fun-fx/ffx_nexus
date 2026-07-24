@@ -56,6 +56,7 @@ type Server struct {
 	sso              *ssoClient             // OIDC client; nil when SSO is not configured
 	evalConfigSrc    EvalConfigSource       // nil when eval worker is disabled
 	evalConfigApply  EvalConfigApplier      // nil when eval worker is disabled
+	evalProfiles     EvalProfileSource      // PR #135: profile CRUD store
 	loginLim         *limiter.IPLimiter     // per-IP rate limit for /api/auth/login
 	registerLim      *limiter.IPLimiter     // per-IP rate limit for /api/auth/register
 	ssoLim           *limiter.IPLimiter     // per-IP rate limit for /api/auth/sso/*
@@ -114,6 +115,14 @@ func (s *Server) SetCredentialReloader(fn func(context.Context)) { s.reload = fn
 func (s *Server) SetEvalConfig(src EvalConfigSource, apply EvalConfigApplier) {
 	s.evalConfigSrc = src
 	s.evalConfigApply = apply
+}
+
+// SetEvalProfiles attaches the profile store used by PR #135 per-eval
+// endpoints. The console reads/writes through this dependency; the
+// runtime controller pushes profile snapshots into the worker on
+// changes via a separate channel.
+func (s *Server) SetEvalProfiles(src EvalProfileSource) {
+	s.evalProfiles = src
 }
 
 // NewServer builds the console server. reader and store may be nil.
@@ -190,6 +199,18 @@ func (s *Server) Mux() http.Handler {
 		// the console session has no view of; this endpoint lets the reader
 		// enumerate stock + user-defined providers using their Nexus cookie.
 		r.Get("/me/playground/catalog", s.requireUser(s.playgroundCatalog))
+
+		// PR #135: per-eval profile CRUD. Visibilities mirror router
+		// models (PR #133): org profiles are visible to every member,
+		// user profiles to the calling user only, admins always see
+		// both. Mutating POST/PATCH/DELETE on org profiles is admin-only;
+		// user profiles are editable by their owner.
+		r.Route("/eval/profiles", func(r chi.Router) {
+			r.Get("/", s.requireUser(s.listEvalProfiles))
+			r.Post("/", s.requireAdmin(s.createEvalProfile))
+			r.Patch("/{id}", s.requireUser(s.patchEvalProfile))
+			r.Delete("/{id}", s.requireUser(s.deleteEvalProfile))
+		})
 
 		// User management (admin only).
 		r.Get("/users", s.requireAdmin(s.listUsers))

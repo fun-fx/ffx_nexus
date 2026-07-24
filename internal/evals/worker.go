@@ -14,9 +14,23 @@ import (
 // goroutines. It implements observability.Recorder so it can be attached to the
 // gateway's recorder fan-out; Record() is a non-blocking enqueue that never
 // adds latency to the request path.
+//
+// PR #135: the worker is now profile-driven. Each EvalProfile can
+// toggle Enabled, set its own sample_rate, scope to org or user, and
+// attach to an external endpoint. The default `workerPool` (Workers
+// in Options) is replaced by a bounded goroutine fan-out at evaluate()
+// time — sequential evaluator dispatch in PR #132 era cost O(n) round
+// trips per trace; with PR #135 we run all enabled evaluators
+// concurrently with a WaitGroup so a slow remote judge no longer
+// blocks cheap heuristics.
 type Worker struct {
 	mu sync.RWMutex
 
+	// Single global toggles kept for legacy ≤133 callers that drop a
+	// wide PII / Completeness opt through Apply(). ConfiguredProfiles
+	// is the new canonical source of truth; the Worker's settings
+	// here are simply a "default" profile projected for backward
+	// compat (env-var seed migration in cmd/nexus).
 	piiEnabled          bool
 	completenessEnabled bool
 	judges              []Evaluator // LLM-as-judge; gated by judgeSampleRate (expensive)
@@ -38,6 +52,19 @@ type Worker struct {
 	judgeSampleRate float64
 	workerCount     int
 	evalTimeout     time.Duration
+
+	// ConfiguredProfiles is the snapshot used by the next evaluate()
+	// call. Refreshed via ReplaceProfiles() which holds w.mu briefly so
+	// readers run against a consistent slice. The snapshot is built in
+	// cmd/nexus/eval_runtime.go (PR #135) from the ProfileStore plus
+	// the runtime controller.
+	configuredProfiles []EvalProfile
+
+	// secretResolver is the per-profile secret lookup hook set by
+	// SetSecretResolver. Resolved at evaluate() time so a profile's
+	// referenced credential is fetched on the worker's goroutine and
+	// the plaintext is gone once Evaluate() finishes.
+	secretResolver SecretResolver
 
 	ch     chan observability.Trace
 	done   chan struct{}
@@ -151,48 +178,40 @@ func (w *Worker) evaluate(t observability.Trace) {
 	ctx, cancel := context.WithTimeout(context.Background(), w.evalTimeout)
 	defer cancel()
 
+	// Per-trace evaluator slice built from configured profiles plus the
+	// legacy single-config path. PR #135 widens this to "any number of
+	// EvalProfile entries" so multiple scoring strategies (admin
+	// heuristic, user BYOK judge, org remote eval) can co-exist.
+	resolver := w.SecretResolver()
 	w.mu.RLock()
-	piiOn := w.piiEnabled
-	compOn := w.completenessEnabled
+	profiles := append([]EvalProfile(nil), w.configuredProfiles...)
 	judges := append([]Evaluator(nil), w.judges...)
 	rate := w.judgeSampleRate
 	w.mu.RUnlock()
 
-	evaluators := make([]Evaluator, 0, 4+len(judges))
-	if piiOn {
-		evaluators = append(evaluators, PIIEvaluator{})
-	}
-	if compOn {
-		evaluators = append(evaluators, CompletenessEvaluator{})
-	}
-	if len(judges) > 0 && w.sampleJudge(rate) {
-		evaluators = append(evaluators, judges...)
-	}
-
-	var scores []Score
-	for _, e := range evaluators {
-		s, err := e.Evaluate(ctx, t)
-		if err != nil {
-			w.log.Warn("evaluator failed", "evaluator", e.Name(), "trace_id", t.TraceID, "err", err)
-			continue
-		}
-		scores = append(scores, s...)
-	}
-	if len(scores) == 0 {
+	evaluators := w.collectEvaluators(t, profiles, judges, rate, resolver)
+	if len(evaluators) == 0 {
 		return
 	}
-	// Stamp the caller's user_id so eval scores can be aggregated per user
-	// (per-user quality), not just per virtual key — evaluators don't need to
-	// know about tenancy.
-	for i := range scores {
-		if scores[i].UserID == "" {
-			scores[i].UserID = t.UserID
+	initialGuess := len(evaluators) * 2
+	bag := newScoreBag(initialGuess)
+	w.runEvaluators(ctx, t, evaluators, bag)
+	scs := bag.take()
+	if len(scs) == 0 {
+		return
+	}
+	// Stamp caller info on every score so per-user aggregates remain
+	// intact. Evaluators don't know about tenancy today; centralising
+	// the stamping ensures we don't drown the schema later.
+	for i := range scs {
+		if scs[i].UserID == "" {
+			scs[i].UserID = t.UserID
 		}
-		if scores[i].RequestModel == "" {
-			scores[i].RequestModel = traceModel(t)
+		if scs[i].RequestModel == "" {
+			scs[i].RequestModel = traceModel(t)
 		}
 	}
-	if err := w.sink.WriteScores(ctx, scores); err != nil {
+	if err := w.sink.WriteScores(ctx, scs); err != nil {
 		w.log.Error("write eval scores failed", "trace_id", t.TraceID, "err", err)
 	}
 	// Mirror successful quality scores into the in-process metrics recorder so
@@ -202,13 +221,105 @@ func (w *Worker) evaluate(t observability.Trace) {
 	// is propagated — the heuristic panels are aggregated later and the
 	// per-model consult would just add noise.
 	if w.metricsRecorder != nil {
-		for _, s := range scores {
+		for _, s := range scs {
 			if s.Metric != "quality" {
 				continue
 			}
 			w.metricsRecorder.RecordQualityScore(s.RequestModel, s.Score)
 		}
 	}
+}
+
+// collectEvaluators resolves the set of Evaluator instances for a
+// single trace. PR #135: it's profile-driven, so you can have any
+// combination of heuristic + judge + remote-eval entries in the same
+// snapshot. Each profile can independently toggle itself on/off and
+// contribute its own sample gate.
+//
+// resolver is the secret-resolution hook (defaults to nil in tests; the
+// runtime controller wires the org/user/inline lookup in PR #136). A
+// nil resolver short-circuits profile resolution unless the kind is
+// builtin (heuristics never need a secret).
+func (w *Worker) collectEvaluators(
+	t observability.Trace,
+	profiles []EvalProfile,
+	judges []Evaluator,
+	rate float64,
+	resolver SecretResolver,
+) []Evaluator {
+	evs := make([]Evaluator, 0, len(profiles)+len(judges)+2)
+	// Legacy single-config path: PII + completeness flags + judges
+	// slice coexist with profiles for env-var seeded callers.
+	if w.piiEnabled {
+		evs = append(evs, PIIEvaluator{})
+	}
+	if w.completenessEnabled {
+		evs = append(evs, CompletenessEvaluator{})
+	}
+	for _, ep := range profiles {
+		if !ep.Enabled {
+			continue
+		}
+		if ep.SampleRate <= 0 {
+			continue
+		}
+		if ep.SampleRate < 1 && !w.sampleJudge(ep.SampleRate) {
+			continue
+		}
+		// Built-in heuristics don't need a secret; ignore resolver.
+		switch ep.Kind {
+		case ProfileHeuristicPII:
+			evs = append(evs, PIIEvaluator{})
+			continue
+		case ProfileHeuristicCompleteness:
+			evs = append(evs, CompletenessEvaluator{})
+			continue
+		}
+		// Profiles that need an LLM resolution short-circuit when
+		// the resolver is nil (callers in tests). In production the
+		// runtime controller always wires a resolver.
+		if resolver == nil {
+			continue
+		}
+		secret, err := resolver(t, ep.Endpoint)
+		if err != nil || secret == "" {
+			w.log.Warn(
+				"eval profile secret unresolved",
+				"profile_id", ep.ID,
+				"name", ep.Name,
+				"kind", string(ep.Kind),
+				"key_source", string(ep.Endpoint.KeySource),
+				"err", err,
+			)
+			continue
+		}
+		switch ep.Kind {
+		case ProfileSLMJudge:
+			if j := NewSLMJudge(JudgeConfig{
+				BaseURL: ep.Endpoint.BaseURL,
+				Model:   ep.Endpoint.Model,
+				APIKey:  secret,
+			}); j != nil {
+				evs = append(evs, j)
+			}
+		case ProfileRemoteEval:
+			if r := NewRemoteEvaluator(RemoteConfig{
+				BaseURL: ep.Endpoint.BaseURL,
+				Metrics: ep.Metrics,
+				APIKey:  secret,
+				Timeout: 30 * time.Second,
+			}); r != nil {
+				evs = append(evs, r)
+			}
+		}
+	}
+	// Legacy judges slice preserved for backward compat — anything
+	// already wired into Worker.judges at construction time still
+	// participates. Sample-gated identically to before.
+	if len(judges) > 0 && w.sampleJudge(rate) {
+		evs = append(evs, judges...)
+	}
+	return evs
 }
 
 func (w *Worker) sampleJudge(rate float64) bool {
@@ -236,6 +347,43 @@ func (w *Worker) Close(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	return nil
+}
+
+// ReplaceProfiles atomically swaps in the next snapshot of profiles
+// the worker uses for per-trace evaluation. The snapshot is owned by
+// the worker after the swap (we copy in), so the runtime controller
+// can drop its reference without keeping heavy objects alive.
+func (w *Worker) ReplaceProfiles(profiles []EvalProfile) {
+	cp := make([]EvalProfile, 0, len(profiles))
+	for i := range profiles {
+		cp = append(cp, *profiles[i].Clone())
+	}
+	w.mu.Lock()
+	w.configuredProfiles = cp
+	w.mu.Unlock()
+}
+
+// SecretResolver returns the plaintext API secret backing an endpoint,
+// or "" if the source is nil / not found / forbidden to this caller.
+// PR #136 wires the real implementation (org / user / inline lookup
+// against provider_credentials and the eval_credentials table); for
+// #135 it's a no-op slot so the worker compiles and tests cover the
+// shape of the resolver signature.
+type SecretResolver func(t observability.Trace, ep EvalEndpoint) (string, error)
+
+// SetSecretResolver attaches a SecretResolver. nil disables profile
+// evaluation that requires a secret (heuristics still run).
+func (w *Worker) SetSecretResolver(r SecretResolver) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.secretResolver = r
+}
+
+// SecretResolver returns the currently bound resolver (or nil).
+func (w *Worker) SecretResolver() SecretResolver {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.secretResolver
 }
 
 // SetMetricsRecorder wires an optional observability.MetricsRecorder so eval

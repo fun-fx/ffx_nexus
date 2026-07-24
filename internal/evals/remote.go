@@ -25,18 +25,28 @@ import (
 type RemoteEvaluator struct {
 	baseURL string
 	metrics []string
+	apiKey  string // optional bearer token; never logged
 	hc      *http.Client
 }
 
 // RemoteConfig configures the remote eval evaluator.
 type RemoteConfig struct {
-	BaseURL string   // e.g. http://localhost:8200 (empty disables)
-	Metrics []string // metric ids requested, e.g. ["answer_relevancy","toxicity"]
-	Timeout time.Duration
+	BaseURL string        // e.g. http://localhost:8200 (empty disables)
+	Metrics []string      // metric ids requested, e.g. ["answer_relevancy","toxicity"]
+	Timeout time.Duration // default 30s when zero
+	// APIKey is an optional bearer token sent as "Authorization: Bearer ...".
+	// Empty keeps the legacy behaviour (sidecars that don't require auth
+	// skip the header altogether). Populated by the worker's secret
+	// resolver when the per-profile key source resolves to a string.
+	APIKey string
 }
 
 // NewRemoteEvaluator builds a remote evaluator. Returns nil when BaseURL is
-// empty (feature disabled).
+// empty (feature disabled). PR #135 widens the http client with
+// IdleConnTimeout and MaxIdleConnsPerHost so consecutive traces reuse
+// the TCP/TLS connection (HTTP keep-alive) — before this change every
+// remote-eval call paid a fresh handshake, which on a 30 ms RTT lan
+// is the difference between a healthy eval pipeline and a slow one.
 func NewRemoteEvaluator(cfg RemoteConfig) *RemoteEvaluator {
 	if cfg.BaseURL == "" {
 		return nil
@@ -44,10 +54,18 @@ func NewRemoteEvaluator(cfg RemoteConfig) *RemoteEvaluator {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 30 * time.Second
 	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       30 * time.Second,
+		ExpectContinueTimeout: 500 * time.Millisecond,
+	}
 	return &RemoteEvaluator{
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		metrics: cfg.Metrics,
-		hc:      &http.Client{Timeout: cfg.Timeout},
+		apiKey:  cfg.APIKey,
+		hc:      &http.Client{Timeout: cfg.Timeout, Transport: transport},
 	}
 }
 
@@ -101,6 +119,9 @@ func (r *RemoteEvaluator) Evaluate(ctx context.Context, t observability.Trace) (
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if r.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+r.apiKey)
+	}
 
 	resp, err := r.hc.Do(req)
 	if err != nil {
