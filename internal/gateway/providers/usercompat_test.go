@@ -28,10 +28,16 @@ func TestUserCompatStripsPrefixOnChatCompletion(t *testing.T) {
 
 	inner := NewOpenAICompat("myprov", "secret", upstream.URL,
 		[]string{"raw"}, []string{"emb-raw"}, nil, nil, 0)
-	uc := NewUserCompat(inner)
+	uc := NewUserCompat(inner, UserCompatOpts{OwnerID: "u-test"})
 
 	if got := uc.Name(); got != "myprov" {
 		t.Fatalf("name: got %q, want myprov", got)
+	}
+	if got := uc.Scope(); got != gateway.ScopeUser {
+		t.Fatalf("scope: got %q, want user (Opts.OwnerID set)", got)
+	}
+	if got := uc.OwnerID(); got != "u-test" {
+		t.Fatalf("owner: got %q, want u-test", got)
 	}
 	models := uc.Models()
 	if len(models) != 1 || models[0] != "user/myprov/raw" {
@@ -75,7 +81,7 @@ func TestUserCompatModelWithoutPrefixUnchanged(t *testing.T) {
 
 	inner := NewOpenAICompat("myprov", "secret", upstream.URL,
 		[]string{"raw"}, nil, nil, nil, 0)
-	uc := NewUserCompat(inner)
+	uc := NewUserCompat(inner, UserCompatOpts{OwnerID: "u-test"})
 
 	_, err := uc.ChatCompletion(context.Background(), gateway.ChatCompletionRequest{
 		Model: "raw",

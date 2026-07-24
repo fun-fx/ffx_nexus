@@ -12,6 +12,8 @@ import (
 	"context"
 	"strings"
 
+	"log/slog"
+
 	"github.com/ffxnexus/nexus/internal/gateway"
 )
 
@@ -26,18 +28,69 @@ type UserCompat struct {
 	// prefix is "user/<inner.Name()>/", cached on construction so per-request
 	// prefix-strip is just a string comparison + slice.
 	prefix string
+
+	// ownerID is the user_id of the credential owner. Empty when the
+	// credential is org-level (i.e. registered by an admin for everyone).
+	ownerID string
+	// scope duplicates the registry's ScopeHint so callers that already hold
+	// the wrapper (and not the Registry) can answer scoping questions without
+	// reaching back through the package boundary.
+	scope gateway.Scope
+}
+
+// UserCompatOpts describes the visibility/tag metadata attached when a
+// tenant BYOK credential is wired into the gateway. Pass OwnerID="" + nil
+// Scope to tag the registration as org-level (sharing the credential across
+// every member of the org); pass OwnerID=<user> to limit visibility to a
+// single personal account.
+type UserCompatOpts struct {
+	OwnerID string
+	Scope   gateway.Scope // ScopePublic | ScopeOrg | ScopeUser
 }
 
 // NewUserCompat returns a wrapper around an OpenAICompat adapter registered
 // under name (e.g. "myprov"). The wrapper's Models() and EmbeddingModels()
 // return strings prefixed with "user/<name>/" so the registry indexes the
 // user-namespaced form; ChatCompletion/Stream/Embed strip that prefix before
-// the inner openai call.
-func NewUserCompat(inner *OpenAICompat) *UserCompat {
-	return &UserCompat{
-		inner:  inner,
-		prefix: "user/" + inner.Name() + "/",
+// the inner openai call. Scope defaults to user when only OwnerID is set,
+// and to org otherwise; pass an explicit Scope in opts to override.
+func NewUserCompat(inner *OpenAICompat, opts UserCompatOpts) *UserCompat {
+	scope := opts.Scope
+	if scope == "" {
+		if opts.OwnerID != "" {
+			scope = gateway.ScopeUser
+		} else {
+			scope = gateway.ScopeOrg
+		}
 	}
+	return &UserCompat{
+		inner:   inner,
+		prefix:  "user/" + inner.Name() + "/",
+		ownerID: opts.OwnerID,
+		scope:   scope,
+	}
+}
+
+// OwnerID returns the credential owner's user_id (empty for org-shared
+// credentials). Used by the registry/console catalog to answer the
+// "is this user allowed to see this provider?" question without a second
+// source-of-truth lookup.
+func (u *UserCompat) OwnerID() string { return u.ownerID }
+
+// Scope returns the visibility scope attached to this wrapper (see
+// internal/gateway.Scope). Mirrors the ScopeHint the registry stores for
+// the same provider name.
+func (u *UserCompat) Scope() gateway.Scope { return u.scope }
+
+// LogValue makes UserCompat printable via slog without dumping the inner
+// adapter. Handy in boot logs where we already iterate every registered
+// provider.
+func (u *UserCompat) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", u.inner.Name()),
+		slog.String("scope", string(u.scope)),
+		slog.String("owner", u.ownerID),
+	)
 }
 
 // Name implements Provider. Returns the wrapped provider's name (unprefixed).
