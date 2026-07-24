@@ -5,6 +5,43 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.2] — EvalProfiles switcher + Nexus favicon
+
+Console-only follow-up to [v0.6.1](#v061--evalprofiles-console-ux-consistency).
+
+### Highlights
+
+- **Switch cell.** Replace the old two-element "StatusPill on/off +
+  Disable/Enable button" arrangement inside each profile row with a
+  single `role="switch"` cell. Same shape and size regardless of
+  state — off keeps the muted panel tone, on slides the thumb across
+  the accent gradient. Space / Enter work too.
+- **Nexus favicon.** A simple two-node / connector motif rendered as a
+  32×32 SVG on the existing gradient, declared via
+  `<link rel="icon" type="image/svg+xml" href="/favicon.svg">`.
+  Browser tabs and bookmarks for `https://nexus.ffx.ai` show this
+  instead of the default globe.
+
+### Changed
+
+- `web/src/pages/EvalProfiles.tsx`: introduces `<ToggleCell>`
+  replacing the StatusPill + Disable/Enable pair; `busyToggle`
+  state threaded through `<Group>` (mirroring `busyDelete`).
+- `web/src/styles.css`: new `.toggle-cell` / `.toggle-cell-track` /
+  `.toggle-cell-thumb` rules with `.toggle-cell-on` modifier.
+- `web/index.html`: added `<link rel="icon">` tag.
+- `web/public/favicon.svg`: new asset.
+
+### Performance / hot path
+
+No backend changes. `/v1/chat/completions` and the eval worker stay
+byte-identical with v0.6.0 / v0.6.1.
+
+### Upgrade notes
+
+Existing deployments pick this up on the next `v*` tag push. Helm
+chart version bumps to `0.6.2`, `appVersion` to `0.6.2`.
+
 ## [v0.6.1] — EvalProfiles console UX consistency
 
 Visual follow-up to [v0.6.0](#v060--profile-driven-evals-go--python-sidecar--console-ui)
