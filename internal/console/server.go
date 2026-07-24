@@ -403,7 +403,23 @@ func (s *Server) audit(ctx context.Context, actorID, orgID, action, targetID, de
 // playgroundCatalog exposes the merged model catalog for any
 // session-authenticated user (member or admin). Returned shape mirrors the
 // shape GatewayModelCatalog expects on the client.
-func (s *Server) playgroundCatalog(w http.ResponseWriter, _ *http.Request, _ core.User) {
+//
+// Visibility rules (informally known as "team router / personal router"
+// gating, see the user's feedback that arrived 2026-07-24):
+//   - Every chat/embed model id from the registry is returned for everyone
+//     — that path is taken by stock provider models registered with
+//     ScopePublic, which the catalog reports through ChatModels() /
+//     EmbeddingModels() (their fillter happens upstream in the gateway).
+//   - The "user" provider list is filtered per caller:
+//   - ScopePublic  → visible to everyone
+//   - ScopeOrg     → visible only to members of the same org_id
+//   - ScopeUser    → visible only to the OwnerID matching the caller's
+//     user id; admins always see them so they can audit
+//     accidental leaks / noisy neighbours.
+//
+// The frontend Playground page uses the per-provider scope to colour
+// "Personal" vs "Team" vs "Public" badges (frontend PR #133).
+func (s *Server) playgroundCatalog(w http.ResponseWriter, _ *http.Request, caller core.User) {
 	if s.catalog == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"chat":  []string{},
@@ -412,12 +428,17 @@ func (s *Server) playgroundCatalog(w http.ResponseWriter, _ *http.Request, _ cor
 		})
 		return
 	}
-	users := s.catalog.UserProviders()
-	userOut := make([]map[string]any, 0, len(users))
-	for _, u := range users {
+	allUsers := s.catalog.UserProviders()
+	userOut := make([]map[string]any, 0, len(allUsers))
+	for _, u := range allUsers {
+		if !callerCanSee(u, caller) {
+			continue
+		}
 		userOut = append(userOut, map[string]any{
 			"provider": u.Provider,
 			"models":   u.Models,
+			"scope":    string(u.Scope),
+			"owner_id": u.OwnerID,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -425,6 +446,42 @@ func (s *Server) playgroundCatalog(w http.ResponseWriter, _ *http.Request, _ cor
 		"embed": s.catalog.EmbeddingModels(),
 		"user":  userOut,
 	})
+}
+
+// callerCanSee answers "should this caller be told this provider exists?"
+// against the per-provider scope metadata the gateway recorded at
+// registration time (PR #132).
+//
+//   - Public   → always shown (no per-caller state check).
+//   - Org      → shown when the caller shares the provider's owning org.
+//     Console users all live in a single org today (Org:
+//     "default" via core.NewStore), so the org-scope filter
+//     collapses to "always" while the surface area stays ready
+//     for a future multi-tenancy switch.
+//   - User     → shown only when the caller's user_id matches the
+//     provider's OwnerID, or when the caller is an admin so
+//     they retain a "see all routers" oversight.
+//
+// Empty OwnerID for a user-scoped provider is treated as "unbound, never
+// visible" so a misconfigured credential cannot leak through the
+// picker, even to admins.
+func callerCanSee(p gateway.ConsoleUserProvider, caller core.User) bool {
+	switch p.Scope {
+	case gateway.ScopePublic, "":
+		return true
+	case gateway.ScopeOrg:
+		return true // single-tenant console today; future-proof.
+	case gateway.ScopeUser:
+		if p.OwnerID == "" {
+			return false
+		}
+		if caller.Role == "admin" {
+			return true
+		}
+		return p.OwnerID == caller.ID
+	default:
+		return true
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
