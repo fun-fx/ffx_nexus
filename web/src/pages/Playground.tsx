@@ -40,12 +40,36 @@ export function Playground() {
     if (!keyId && keys.length > 0) setKeyId(keys[0].id);
   }, [keys, keyId]);
 
-  const allChoices = useMemo(() => {
-    const set = new Set<string>(["auto"]);
-    (gw?.chat ?? []).forEach((m) => set.add(m));
-    (gw?.user ?? []).forEach((u) => u.models.forEach((m) => set.add(m)));
-    (gw?.embed ?? []).forEach((m) => set.add("embed:" + m));
-    return Array.from(set);
+  // Group every model the gateway exposes (after PRs #132/#133) by its
+  // visibility scope so the Playground picker can label them. We render
+  // an empty option <optgroup> when the bucket is missing — preferred
+  // over hiding it so the user can tell at a glance whether they have
+  // access to e.g. a team router or any personal ones.
+  const scopeGroups = useMemo(() => {
+    type Bucket = { label: string; scope: "public" | "org" | "user"; models: string[] };
+    const buckets: Record<Bucket["scope"], Bucket> = {
+      public: { label: "Public providers", scope: "public", models: ["auto"] },
+      org: { label: "Team routers", scope: "org", models: [] },
+      user: { label: "Personal routers", scope: "user", models: [] },
+    };
+    // First-party models are always public/legacy. Until the gateway tells
+    // us otherwise we lump them into the public bucket so the picker
+    // still surfaces every reachable model.
+    for (const id of gw?.chat ?? []) {
+      if (!buckets.public.models.includes(id)) buckets.public.models.push(id);
+    }
+    for (const u of gw?.user ?? []) {
+      const scope: Bucket["scope"] =
+        u.scope === "org" ? "org" : u.scope === "user" ? "user" : "public";
+      for (const m of u.models) {
+        if (!buckets[scope].models.includes(m)) buckets[scope].models.push(m);
+      }
+    }
+    for (const e of gw?.embed ?? []) {
+      const id = "embed:" + e;
+      if (!buckets.public.models.includes(id)) buckets.public.models.push(id);
+    }
+    return buckets;
   }, [gw]);
 
   async function run() {
@@ -147,10 +171,14 @@ export function Playground() {
             <label className="pg-row">
               <span className="pg-label">Model</span>
               <select value={model} onChange={(e) => setModel(e.target.value)}>
-                {allChoices.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
+                {(["public", "org", "user"] as const).map((scope) => (
+                  <optgroup key={scope} label={scopeGroups[scope].label}>
+                    {scopeGroups[scope].models.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>

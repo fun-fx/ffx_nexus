@@ -302,7 +302,18 @@ export interface GatewayModel {
 export interface GatewayModelCatalog {
   chat: string[];
   embed: string[];
-  user: { provider: string; models: string[] }[];
+  user: {
+    provider: string;
+    models: string[];
+    // Scope is the visibility class the Gateway registered this router
+    // with (PR #132). Empty string is treated as "legacy / unknown" and
+    // falls back to the historical "Public" badge. The console player
+    // sees *only* routers that her caller is allowed to see — so the
+    // badge here is mostly an honest label, not a privacy knob (server
+    // already enforced it in PR #133).
+    scope?: "public" | "org" | "user" | string;
+    owner_id?: string;
+  }[];
 }
 
 // fetchGatewayModels hits /v1/models and returns the union list, plus a
@@ -339,30 +350,55 @@ export async function fetchGatewayModels(): Promise<GatewayModelCatalog> {
 }
 
 function normalizeCatalog(data: any): GatewayModelCatalog {
-  const chat = Array.isArray(data?.data)
-    ? data.data
-        .map((m: { id: string }) => m.id)
-        .filter((id: unknown): id is string => typeof id === "string")
-    : [];
+  // First-party (gateway's /v1/models path) ships an OpenAI {data:[{id}]}
+  // shape, while the console's /api/me/playground/catalog path returns the
+  // pre-split {chat, embed, user, scope, owner_id} shape. Detect which one
+  // arrived so the picker can group models by visibility scope.
+  let chat: string[];
+  if (Array.isArray(data?.chat)) {
+    chat = data.chat.filter((s: unknown): s is string => typeof s === "string");
+  } else if (Array.isArray(data?.data)) {
+    chat = data.data
+      .map((m: { id: string }) => m.id)
+      .filter((id: unknown): id is string => typeof id === "string");
+  } else {
+    chat = [];
+  }
   const embed = Array.isArray(data?.embeddings?.data)
     ? data.embeddings.data
         .map((m: { id: string }) => m.id)
         .filter((id: unknown): id is string => typeof id === "string")
-    : [];
+    : Array.isArray(data?.embed)
+      ? data.embed.filter((s: unknown): s is string => typeof s === "string")
+      : [];
   const userRaw = Array.isArray(data?.user) ? data.user : [];
-  const user = collectUserModels(
-    Array.isArray(data?.chat)
-      ? data.chat.filter((s: unknown): s is string => typeof s === "string")
-      : chat,
-  );
-  // /api/me/playground/catalog already splits providers; /v1/models does not,
-  // so we still re-group anything we received via the latter path.
-  if (userRaw.length > 0 && user.length === 0) {
-    for (const u of userRaw) {
-      if (!u || typeof u.provider !== "string" || !Array.isArray(u.models)) continue;
+  const out: GatewayModelCatalog["user"] = [];
+  for (const u of userRaw) {
+    if (!u || typeof u.provider !== "string" || !Array.isArray(u.models)) continue;
+    const models = u.models.filter((m: unknown): m is string => typeof m === "string");
+    out.push({
+      provider: u.provider,
+      models,
+      scope: typeof u.scope === "string" ? u.scope : undefined,
+      owner_id: typeof u.owner_id === "string" ? u.owner_id : undefined,
+    });
+  }
+  // /api/me/playground/catalog already splits providers; /v1/models does
+  // not, so if we're on the older path (no user array, but entries live in
+  // /data) re-derive the provider grouping so the picker renders scoped
+  // badges for any /user/... entries that happen to be in the union.
+  if (out.length === 0) {
+    const legacy = collectUserModels(chat);
+    for (const l of legacy) {
+      out.push({
+        provider: l.provider,
+        models: l.models,
+        scope: undefined,
+        owner_id: undefined,
+      });
     }
   }
-  return { chat, embed, user };
+  return { chat, embed, user: out };
 }
 
 // collectUserModels groups the catalog by the "user/<provider>/" schema
