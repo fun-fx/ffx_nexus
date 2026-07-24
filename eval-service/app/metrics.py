@@ -17,7 +17,12 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from .config import settings
-from .judge import build_deepeval_model, build_ragas_embeddings, build_ragas_llm
+from .judge import (
+    build_deepeval_model,
+    build_ragas_embeddings,
+    build_ragas_llm,
+    passed as _passed,
+)
 from .schemas import EvaluateRequest, ScoreOut, SkippedMetric
 
 log = logging.getLogger("eval-service.metrics")
@@ -32,8 +37,7 @@ class MetricSpec:
     run: Callable[[EvaluateRequest], ScoreOut]
 
 
-def _passed(score: float, higher_is_better: bool) -> bool:
-    return score >= settings.threshold if higher_is_better else score <= settings.threshold
+# --- DeepEval metrics -------------------------------------------------------
 
 
 # --- DeepEval metrics -------------------------------------------------------
@@ -55,7 +59,12 @@ def _run_deepeval(metric_cls_path: str, metric_id: str, higher_is_better: bool):
         module_name, cls_name = metric_cls_path.rsplit(".", 1)
         mod = __import__(module_name, fromlist=[cls_name])
         metric_cls = getattr(mod, cls_name)
-        model = build_deepeval_model()
+        # PR #136: pass the request to the builder so per-request
+        # overrides take precedence over the env-var defaults.
+        model = build_deepeval_model(req)
+        # DeepEval's metric threshold controls its internal
+        # pass/fail; we re-derive with our override-aware `passed()`
+        # afterwards so a request-level threshold beats env.
         metric = metric_cls(model=model, threshold=settings.threshold)
         metric.measure(_deepeval_case(req))
         score = float(metric.score if metric.score is not None else 0.0)
@@ -63,9 +72,9 @@ def _run_deepeval(metric_cls_path: str, metric_id: str, higher_is_better: bool):
             evaluator="deepeval",
             metric=metric_id,
             score=score,
-            passed=_passed(score, higher_is_better),
+            passed=_passed(req, score, higher_is_better),
             rationale=(getattr(metric, "reason", "") or "")[:1000],
-            judge_model=settings.judge_model,
+            judge_model=req.judge_model or settings.judge_model,
         )
 
     return runner
@@ -82,8 +91,10 @@ def _run_ragas(metric_factory: str, metric_id: str, higher_is_better: bool):
         mod = __import__(module_name, fromlist=[attr])
         metric_obj = getattr(mod, attr)
 
-        llm = build_ragas_llm()
-        embeddings = build_ragas_embeddings()
+        # PR #136: builders receive the request so the per-request
+        # judge_url / judge_model wins over the env defaults.
+        llm = build_ragas_llm(req)
+        embeddings = build_ragas_embeddings(req)
         ds = Dataset.from_dict(
             {
                 "question": [req.input],
@@ -106,9 +117,9 @@ def _run_ragas(metric_factory: str, metric_id: str, higher_is_better: bool):
             evaluator="ragas",
             metric=metric_id,
             score=score,
-            passed=_passed(score, higher_is_better),
+            passed=_passed(req, score, higher_is_better),
             rationale="",
-            judge_model=settings.judge_model,
+            judge_model=req.judge_model or settings.judge_model,
         )
 
     return runner

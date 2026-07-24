@@ -20,6 +20,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/console"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
+	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/gateway/providers"
 	"github.com/ffxnexus/nexus/internal/guardrails"
@@ -289,8 +290,25 @@ func main() {
 	}
 	consoleSrvHandler.SetCatalog(gwHandler.Catalog())
 	if evalWorker != nil {
-		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore)
+		// PR #136: profile store + secret resolver. We always wire a
+		// profile store (in-memory when no Postgres / ClickHouse) so
+		// the CRUD endpoints answer 200 with an empty list when the
+		// deployment doesn't persist profiles. The resolver maps to
+		// core.Store when Postgres is up; otherwise nil (heuristics
+		// and the env-var default profiles still run).
+		var profileStore evals.ProfileStore = evals.NewMemoryStore(nil)
+		var resolver *evals.Resolver
+		if store != nil {
+			profileStore = newProfileStoreFromCore(store)
+			resolver = evals.NewResolver(evals.NewStoreSecretLookup(store, "default"))
+		}
+		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore, profileStore, resolver)
 		consoleSrvHandler.SetEvalConfig(erc, erc)
+		erc.SeedProfilesFromConfig(ctx)
+		if resolver != nil {
+			evalWorker.SetSecretResolver(resolver.Resolve)
+		}
+		consoleSrvHandler.SetEvalProfiles(erc)
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
 	// secret takes effect without restarting the gateway.
@@ -377,17 +395,7 @@ func splitDenyPatterns(spec string) []string {
 	return out
 }
 
-// splitCSV parses a comma-separated list, trimming whitespace and dropping
-// empty entries.
-func splitCSV(spec string) []string {
-	var out []string
-	for _, p := range strings.Split(spec, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
+// (splitCSV lives in eval_runtime.go since PR #136.)
 
 // makeAuthenticator adapts the store into a gateway virtual-key authenticator.
 func makeAuthenticator(st *core.Store) gateway.VKeyAuthenticator {

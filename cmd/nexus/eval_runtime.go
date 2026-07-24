@@ -35,9 +35,12 @@ func formatDuration(d time.Duration) string {
 	return d.String()
 }
 
-// evalRuntimeController holds mutable eval/routing settings for the console
-// PATCH /api/eval/config endpoint. Env vars seed the initial state; runtime
-// changes apply in-memory until the next process restart.
+// evalRuntimeController holds mutable eval/routing settings for the
+// console PATCH endpoints. Env vars seed both the legacy single-config
+// block (EvalConfigPatch in console/eval_config.go) and the new
+// EvalProfile set (PR #135/#136). Profile changes apply in-memory
+// until the next process restart; an admin POST against a profile is
+// stitched in immediately by ReplaceProfiles.
 type evalRuntimeController struct {
 	mu sync.Mutex
 
@@ -45,6 +48,8 @@ type evalRuntimeController struct {
 	worker            *evals.Worker
 	modelRouter       *router.Router
 	gwHandler         *gateway.Handler
+	profileStore      evals.ProfileStore // PR #136: persistent EvalProfile store
+	secretResolver    *evals.Resolver    // PR #136: org/user/inline credential lookup
 	routeRefresh      time.Duration
 	loadBalance       bool
 	scoreStore        evals.StoreKind
@@ -60,18 +65,232 @@ func newEvalRuntimeController(
 	scoreStore evals.StoreKind,
 	traceStore string,
 	routingStatsStore string,
+	profileStore evals.ProfileStore,
+	resolver *evals.Resolver,
 ) *evalRuntimeController {
 	return &evalRuntimeController{
 		cfg:               cfg,
 		worker:            worker,
 		modelRouter:       modelRouter,
 		gwHandler:         gwHandler,
+		profileStore:      profileStore,
+		secretResolver:    resolver,
 		routeRefresh:      cfg.RouteRefresh,
 		loadBalance:       cfg.RouteLoadBalance,
 		scoreStore:        scoreStore,
 		traceStore:        traceStore,
 		routingStatsStore: routingStatsStore,
 	}
+}
+
+// SeedProfilesFromConfig materialises the legacy env-var block
+// (NEXUS_EVAL_* / NEXUS_EVAL_SERVICE_*) as EvalProfile rows the first
+// time the store opens. PR #136 introduces this so existing
+// deployments can use the new code path without manually creating a
+// profile in the console; the next refactor can drop the env-var
+// path entirely. Seeded rows are org-scoped.
+//
+// Returns the profiles that were inserted; the caller pushes them
+// through Worker.ReplaceProfiles so the next evaluate() call uses
+// them. Idempotent: re-running on a populated store inserts nothing.
+func (c *evalRuntimeController) SeedProfilesFromConfig(ctx context.Context) ([]evals.EvalProfile, error) {
+	if c.profileStore == nil || c.worker == nil {
+		return nil, nil
+	}
+	existing, err := c.profileStore.List(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) > 0 {
+		c.worker.ReplaceProfiles(existing)
+		return existing, nil
+	}
+	seeded := envVarSeedProfiles(c.cfg)
+	for i := range seeded {
+		if err := c.profileStore.Save(ctx, &seeded[i]); err != nil {
+			return nil, err
+		}
+	}
+	c.worker.ReplaceProfiles(seeded)
+	return seeded, nil
+}
+
+// envVarSeedProfiles builds the default profile set from NEXUS_EVAL_*
+// env vars. Kept separate from SeedProfilesFromConfig so a unit test
+// can exercise the construction without a real Store.
+//
+// The mapping is intentionally permissive: missing optional fields
+// short-circuit their profile rather than fail boot. Operators who
+// want every profile can layer overrides on top via the console.
+func envVarSeedProfiles(cfg config.Config) []evals.EvalProfile {
+	out := make([]evals.EvalProfile, 0, 4)
+
+	if cfg.JudgeBaseURL != "" && cfg.JudgeModel != "" {
+		out = append(out, evals.EvalProfile{
+			ID:    "default-judge",
+			Name:  "Default LLM judge (env-var)",
+			Kind:  evals.ProfileSLMJudge,
+			Scope: evals.ScopeOrg,
+			Endpoint: evals.EvalEndpoint{
+				BaseURL: cfg.JudgeBaseURL,
+				Model:   cfg.JudgeModel,
+				// Org-keyed: the runtime controller looks up the
+				// credential via StoreSecretLookup ORG. Operator
+				// can rotate the key without a restart.
+				KeySource: evals.KeySourceOrg,
+			},
+			SampleRate: clampSample(cfg.EvalSampleRate),
+			Enabled:    cfg.EvalSampleRate > 0,
+		})
+	}
+
+	if cfg.EvalServiceURL != "" && len(cfg.EvalServiceMetrics) > 0 {
+		out = append(out, evals.EvalProfile{
+			ID:    "default-remote",
+			Name:  "Default sidecar eval (env-var)",
+			Kind:  evals.ProfileRemoteEval,
+			Scope: evals.ScopeOrg,
+			Endpoint: evals.EvalEndpoint{
+				BaseURL:   cfg.EvalServiceURL,
+				KeySource: evals.KeySourceOrg,
+			},
+			Metrics:    splitCSV(cfg.EvalServiceMetrics),
+			Threshold:  0.5,
+			SampleRate: clampSample(cfg.EvalSampleRate),
+			Enabled:    cfg.EvalSampleRate > 0,
+		})
+	}
+
+	// Always ship the heuristic profiles — they're cheap, never
+	// require an external secret, and most tenants want a baseline.
+	out = append(out, evals.EvalProfile{
+		ID:         "default-pii",
+		Name:       "PII heuristic",
+		Kind:       evals.ProfileHeuristicPII,
+		Scope:      evals.ScopeOrg,
+		Endpoint:   evals.EvalEndpoint{KeySource: evals.KeySourceBuiltin},
+		SampleRate: 1.0,
+		Enabled:    true,
+	})
+	out = append(out, evals.EvalProfile{
+		ID:         "default-completeness",
+		Name:       "Completeness heuristic",
+		Kind:       evals.ProfileHeuristicCompleteness,
+		Scope:      evals.ScopeOrg,
+		Endpoint:   evals.EvalEndpoint{KeySource: evals.KeySourceBuiltin},
+		SampleRate: 1.0,
+		Enabled:    true,
+	})
+
+	return out
+}
+
+// clampSample normalises sample_rate into the [0,1] band the profile
+// validator enforces. cfg.EvalSampleRate can be set via env where
+// >0 / NaN mistakes are easy.
+func clampSample(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// splitCSV trims + de-dupes comma-delimited strings. Used to turn
+// NEXUS_EVAL_SERVICE_METRICS (CSV) into the []string the profile
+// schema expects.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := make([]string, 0, 4)
+	for _, tok := range strings.Split(s, ",") {
+		t := strings.TrimSpace(tok)
+		if t == "" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// RegisterInlineSecret inserts a decrypted inline secret into the
+// resolver's in-memory map. Console EndpointKeySource=inline
+// PATCH/POST flow through this path; revocation calls RevokeInline
+// on the same resolver. Keeping the secrets in-process avoids
+// re-decrypting on every evaluate() call — once Redis/fleshing of
+// cipher material lands we'll move this behind a cache.
+func (c *evalRuntimeController) RegisterInlineSecret(keyRef, plaintext string, expires time.Time) {
+	if c.secretResolver == nil || keyRef == "" || plaintext == "" {
+		return
+	}
+	c.secretResolver.RegisterInline(keyRef, plaintext, expires)
+}
+
+// RevokeInlineSecret drops a previously-registered inline secret
+// so the worker skips the profile going forward.
+func (c *evalRuntimeController) RevokeInlineSecret(keyRef string) {
+	if c.secretResolver == nil || keyRef == "" {
+		return
+	}
+	c.secretResolver.RevokeInline(keyRef)
+}
+
+// ListEvalProfiles implements console.EvalProfileSource. The console
+// never sees the secretResolver's plaintext — it returns profile
+// metadata only.
+func (c *evalRuntimeController) ListEvalProfiles(ctx context.Context, ownerUserID string) ([]evals.EvalProfile, error) {
+	if c.profileStore == nil {
+		return nil, nil
+	}
+	return c.profileStore.List(ctx, ownerUserID)
+}
+
+// GetEvalProfile implements console.EvalProfileSource.
+func (c *evalRuntimeController) GetEvalProfile(ctx context.Context, id string) (*evals.EvalProfile, error) {
+	if c.profileStore == nil {
+		return nil, evals.ErrProfileNotFound
+	}
+	return c.profileStore.Get(ctx, id)
+}
+
+// SaveEvalProfile implements console.EvalProfileSource. After a
+// successful save the controller pushes the updated profile snapshot
+// through Worker.ReplaceProfiles so the next evaluate() call sees
+// the new state on the producer's next loop tick.
+func (c *evalRuntimeController) SaveEvalProfile(ctx context.Context, p *evals.EvalProfile) error {
+	if c.profileStore == nil {
+		return nil
+	}
+	if err := c.profileStore.Save(ctx, p); err != nil {
+		return err
+	}
+	if c.worker != nil {
+		all, err := c.profileStore.List(ctx, "")
+		if err == nil {
+			c.worker.ReplaceProfiles(all)
+		}
+	}
+	return nil
+}
+
+// DeleteEvalProfile implements console.EvalProfileSource.
+func (c *evalRuntimeController) DeleteEvalProfile(ctx context.Context, id string) error {
+	if c.profileStore == nil {
+		return nil
+	}
+	if err := c.profileStore.Delete(ctx, id); err != nil {
+		return err
+	}
+	if c.worker != nil {
+		all, err := c.profileStore.List(ctx, "")
+		if err == nil {
+			c.worker.ReplaceProfiles(all)
+		}
+	}
+	return nil
 }
 
 func (c *evalRuntimeController) Snapshot() console.EvalConfigSnapshot {
