@@ -13,6 +13,7 @@ import {
 } from "../api";
 import { Chip } from "../components/Chip";
 import { Drawer } from "../components/Drawer";
+import { ToggleCell } from "../components/ToggleCell";
 
 /**
  * PR #137 — per-eval profile CRUD UI.
@@ -384,48 +385,10 @@ function Group({
 }
 
 /**
- * Styled switch cell — single on/off affordance shared across all rows
- * regardless of the underlying enabled flag so operators don't see the
- * "row aligned to make `on`/`off` look balanced" trick the previous
- * StatusPill version had. States keep their visual contrast (on uses the
- * accent gradient, off uses the muted panel) but the cell itself is the
- * same shape on both sides.
+ * Single on/off switch cell — see `web/src/components/ToggleCell`. Shared
+ * with `Eval.tsx` so the PII / Completeness heuristic rows look like the
+ * profile list rows.
  */
-function ToggleCell({
-  checked,
-  disabled,
-  onChange,
-  label,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (next: boolean) => void;
-  label: string;
-}) {
-  return (
-    <span
-      className={`toggle-cell${checked ? " toggle-cell-on" : ""}`}
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      tabIndex={disabled ? -1 : 0}
-      onClick={() => {
-        if (!disabled) onChange(!checked);
-      }}
-      onKeyDown={(e) => {
-        if (disabled) return;
-        if (e.key === " " || e.key === "Enter") {
-          e.preventDefault();
-          onChange(!checked);
-        }
-      }}
-    >
-      <span className="toggle-cell-track">
-        <span className="toggle-cell-thumb" />
-      </span>
-    </span>
-  );
-}
 
 function ProfileRow({
   profile,

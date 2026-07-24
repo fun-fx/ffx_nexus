@@ -6,6 +6,7 @@ import { Chip } from "../components/Chip";
 import { StatusPill } from "../components/StatusPill";
 import { GradientText } from "../components/GradientText";
 import { Icon } from "../components/icons";
+import { ToggleCell } from "../components/ToggleCell";
 import { fetchMe } from "../api";
 import { EvalProfilesCard } from "./EvalProfiles";
 
@@ -134,42 +135,30 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
     {
       id: "enabled",
       header: "Enabled",
-      width: "110px",
-      cell: (r) =>
-        r.enabled ? (
-          <StatusPill label="on" tone="ok" />
-        ) : (
-          <StatusPill label="off" tone="neutral" />
-        ),
+      width: "80px",
+      cell: (r) => {
+        if (r.metric !== "PII" && r.metric !== "Completeness") {
+          return <StatusPill label={r.enabled ? "on" : "off"} tone={r.enabled ? "ok" : "neutral"} />;
+        }
+        return (
+          <ToggleCell
+            checked={r.enabled}
+            disabled={busy === r.metric || mut.isPending}
+            onChange={(next) => {
+              setBusy(r.metric);
+              const key = r.metric === "PII" ? "pii" : "completeness";
+              mut.mutate({ [key]: next } as { pii?: boolean; completeness?: boolean });
+            }}
+            label={`toggle ${r.metric}`}
+          />
+        );
+      },
       sortValue: (r) => Number(r.enabled),
     },
     {
       id: "detail",
       header: "Detail",
       cell: (r) => <span className="muted small">{r.detail}</span>,
-    },
-    {
-      id: "actions",
-      header: "",
-      width: "120px",
-      align: "right",
-      cell: (r) =>
-        r.metric === "PII" || r.metric === "Completeness" ? (
-          <button
-            type="button"
-            className="btn-ghost"
-            disabled={busy === r.metric || mut.isPending}
-            onClick={() => {
-              setBusy(r.metric);
-              const key = r.metric === "PII" ? "pii" : "completeness";
-              mut.mutate({ [key]: !r.enabled } as { pii?: boolean; completeness?: boolean });
-            }}
-          >
-            {r.enabled ? "Disable" : "Enable"}
-          </button>
-        ) : (
-          <span className="muted">—</span>
-        ),
     },
   ];
 
