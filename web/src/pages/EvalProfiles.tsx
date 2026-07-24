@@ -12,7 +12,6 @@ import {
   type ProfileKind,
 } from "../api";
 import { Chip } from "../components/Chip";
-import { StatusPill } from "../components/StatusPill";
 import { Drawer } from "../components/Drawer";
 
 /**
@@ -292,8 +291,26 @@ export function EvalProfilesCard({ isAdmin }: { isAdmin: boolean }) {
           <p className="muted">No profiles. Default env-var seeding runs on boot.</p>
         ) : (
           <>
-            <Group title="Org profiles" rows={grouped.org} isAdmin={isAdmin} onEdit={openEdit} onToggle={(id, enabled) => toggleM.mutate({ id, enabled })} onDelete={(id) => deleteM.mutate({ id })} busyDeleteId={deleteM.isPending ? deleteM.variables?.id ?? null : null} />
-            <Group title="My profiles" rows={grouped.user} isAdmin={isAdmin} onEdit={openEdit} onToggle={(id, enabled) => toggleM.mutate({ id, enabled })} onDelete={(id) => deleteM.mutate({ id })} busyDeleteId={deleteM.isPending ? deleteM.variables?.id ?? null : null} />
+            <Group
+              title="Org profiles"
+              rows={grouped.org}
+              isAdmin={isAdmin}
+              onEdit={openEdit}
+              onToggle={(id, enabled) => toggleM.mutate({ id, enabled })}
+              onDelete={(id) => deleteM.mutate({ id })}
+              busyDeleteId={deleteM.isPending ? deleteM.variables?.id ?? null : null}
+              busyTogglingId={toggleM.isPending ? toggleM.variables?.id ?? null : null}
+            />
+            <Group
+              title="My profiles"
+              rows={grouped.user}
+              isAdmin={isAdmin}
+              onEdit={openEdit}
+              onToggle={(id, enabled) => toggleM.mutate({ id, enabled })}
+              onDelete={(id) => deleteM.mutate({ id })}
+              busyDeleteId={deleteM.isPending ? deleteM.variables?.id ?? null : null}
+              busyTogglingId={toggleM.isPending ? toggleM.variables?.id ?? null : null}
+            />
           </>
         )}
       </div>
@@ -331,9 +348,19 @@ interface GroupProps {
   onToggle: (id: string, enabled: boolean) => void;
   onDelete: (id: string) => void;
   busyDeleteId: string | null;
+  busyTogglingId: string | null;
 }
 
-function Group({ title, rows, isAdmin, onEdit, onToggle, onDelete, busyDeleteId }: GroupProps) {
+function Group({
+  title,
+  rows,
+  isAdmin,
+  busyTogglingId,
+  onEdit,
+  onToggle,
+  onDelete,
+  busyDeleteId,
+}: GroupProps) {
   if (rows.length === 0) return null;
   return (
     <div className="profile-group">
@@ -348,10 +375,55 @@ function Group({ title, rows, isAdmin, onEdit, onToggle, onDelete, busyDeleteId 
             onToggle={(next) => p.id && onToggle(p.id, next)}
             onDelete={() => p.id && onDelete(p.id)}
             busyDelete={busyDeleteId === p.id}
+            busyToggle={busyTogglingId === p.id}
           />
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * Styled switch cell — single on/off affordance shared across all rows
+ * regardless of the underlying enabled flag so operators don't see the
+ * "row aligned to make `on`/`off` look balanced" trick the previous
+ * StatusPill version had. States keep their visual contrast (on uses the
+ * accent gradient, off uses the muted panel) but the cell itself is the
+ * same shape on both sides.
+ */
+function ToggleCell({
+  checked,
+  disabled,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+}) {
+  return (
+    <span
+      className={`toggle-cell${checked ? " toggle-cell-on" : ""}`}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      tabIndex={disabled ? -1 : 0}
+      onClick={() => {
+        if (!disabled) onChange(!checked);
+      }}
+      onKeyDown={(e) => {
+        if (disabled) return;
+        if (e.key === " " || e.key === "Enter") {
+          e.preventDefault();
+          onChange(!checked);
+        }
+      }}
+    >
+      <span className="toggle-cell-track">
+        <span className="toggle-cell-thumb" />
+      </span>
+    </span>
   );
 }
 
@@ -362,6 +434,7 @@ function ProfileRow({
   onToggle,
   onDelete,
   busyDelete,
+  busyToggle,
 }: {
   profile: EvalProfile;
   isAdmin: boolean;
@@ -369,6 +442,7 @@ function ProfileRow({
   onToggle: (next: boolean) => void;
   onDelete: () => void;
   busyDelete: boolean;
+  busyToggle: boolean;
 }) {
   const enabled = profile.enabled ?? false;
   const sample = typeof profile.sample_rate === "number" ? profile.sample_rate : 0;
@@ -381,15 +455,12 @@ function ProfileRow({
           <Chip tone="neutral">{keySourceLabel((profile.endpoint?.key_source as KeySource) ?? "org")}</Chip>
         </div>
         <div className="profile-row-actions">
-          <StatusPill label={enabled ? "on" : "off"} tone={enabled ? "ok" : "neutral"} />
-          <button
-            type="button"
-            className="btn-ghost btn-small"
-            aria-label={`toggle ${profile.name}`}
-            onClick={() => onToggle(!enabled)}
-          >
-            {enabled ? "Disable" : "Enable"}
-          </button>
+          <ToggleCell
+            checked={enabled}
+            disabled={busyToggle}
+            onChange={(next) => onToggle(next)}
+            label={`toggle ${profile.name}`}
+          />
           {isAdmin ? (
             <button type="button" className="btn-ghost btn-small" onClick={onEdit}>
               Edit
