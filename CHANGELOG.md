@@ -5,6 +5,27 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.7] — Toggle round-trip + single heuristic panel (PR #149)
+
+Console + gateway follow-up to [v0.6.6](#v066--heuristic--env-driven-split--stable-profile-order-pr-147).
+
+Real-world test surfaced two issues with the PR #147 wiring:
+
+1. **PII / Completeness toggles were a silent no-op.** The console sent
+   `{pii:true|false}` short keys, but the backend `EvalConfigPatch` only
+   knew the flat `pii_enabled` form. The worker kept the previous state,
+   the GET snapshot didn't change, and the click looked dead.
+
+   `EvalConfigPatch` now also accepts the nested `{eval:{pii_enabled:..}}`
+   shape (`EvalConfigPatchEval`) and merges it into the flat fields before
+   delegating to the worker. Old admin scripts continue to work. The web
+   console sends the canonical `{pii_enabled:..}` flat form.
+2. **The heuristics card had two visually-unrelated panels** after
+   #147 — one for heuristic rows, one for env-driven evaluators. This
+   PR merges them into a single `DataTable` so the operator sees one
+   panel with 4 metric rows. Env-driven rows render with a dimmed
+   `LabelToggle` and a tooltip pointing at the env vars.
+
 ## [v0.6.6] — Heuristic / env-driven split + stable profile order (PR #147)
 
 Console-only follow-up to [v0.6.5](#v065--label-toggle-everywhere-pr-145).
