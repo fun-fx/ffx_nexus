@@ -62,6 +62,22 @@ type EvalConfigPatch struct {
 	RouteWLatency       *float64 `json:"route_w_latency"`
 	RouteWindow         *string  `json:"route_window"`
 	RouteGroups         *string  `json:"route_groups"`
+
+	// Nested form accepted from the new console. Some callers (the legacy
+	// admin scripts and older console builds) still POST the flat top-level
+	// fields above. Apply() prefers the nested form when present, then
+	// falls back to the flat fields, so both shapes update the same cells.
+	Eval *EvalConfigPatchEval `json:"eval"`
+}
+
+// EvalConfigPatchEval mirrors the nested shape the console sends on
+// /api/eval/config PATCH. PIIEnabled/CompletenessEnabled are the only
+// cells that benefit from the nested form today — sample rate, workers,
+// and judge/remote are still env-driven.
+type EvalConfigPatchEval struct {
+	PIIEnabled          *bool    `json:"pii_enabled"`
+	CompletenessEnabled *bool    `json:"completeness_enabled"`
+	SampleRate          *float64 `json:"sample_rate"`
 }
 
 // EvalConfigSource supplies the current effective eval/routing snapshot.
