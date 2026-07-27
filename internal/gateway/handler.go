@@ -624,7 +624,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					trace.GuardrailAction = "output_schema_blocked:" + f.Rule
 					trace.FinishReason = resp.Choices[0].FinishReason
 					trace.OutputMessages = resp.Choices[0].Message.Content
-					trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
+					trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
 					h.recorder.Record(trace)
 					h.recordSpend(r.Context(), trace.CostUSD)
 					writeError(w, http.StatusUnprocessableEntity, "schema_validation_failed", f.Reason)
@@ -634,7 +634,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 			trace.FinishReason = resp.Choices[0].FinishReason
 			trace.OutputMessages = resp.Choices[0].Message.Content
 		}
-		trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
+		trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
 		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
 			if b, err := json.Marshal(resp); err == nil {
 				if err := h.scache.Store(r.Context(), cacheScope(r.Context()), req.Model, promptText(req.Messages), embedVec, b); err != nil {
@@ -806,7 +806,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 			trace.GuardrailAction = "output_schema_violation:" + f.Rule
 		}
 	}
-	trace.CostUSD = CostUSD(trace.RequestModel, trace.InputTokens, trace.OutputTokens)
+	trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
 	h.recorder.Record(trace)
 	h.recordSpend(r.Context(), trace.CostUSD)
 }
