@@ -5,6 +5,30 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.4] — Routing weights stats bar sync (PR #143)
+
+Console-only follow-up to [v0.6.3](#v063--evalrules-switcher-parity-pr-140).
+
+### Highlights
+
+- **Upper stats bar now mirrors the routing weights card.** Saving the
+  weights card rebalances the row to sum to 100% (existing behavior from
+  #128), and now the upper eyebrow repaints in the same render: the
+  thumbnails, the % labels, and the stats bar tiles (quality / cost /
+  latency) all converge on the post-save values.
+- **Smooth save/seek.** The 60/20/20 → 75/25/0 case no longer leaves
+  the upper bar frozen on the pre-save numbers while everything below
+  snaps to the rebalanced row.
+
+### Developer notes
+
+- UI only. The three `useState` calls were lifted from `WeightsCard`
+  into `Eval` so the two surfaces bind to the same source. A small
+  `useEffect([cfg.routing.weights])` re-hydrates the state on a fresh
+  config fetch (the previous lazy initializer could leave the values
+  clamped to 0 if the first render observed `cfg = null`).
+- 49/49 tests pass; `tsc --noEmit` clean; `npm run build` clean.
+
 ## [v0.6.3] — EvalRules switcher parity (PR #140)
 
 Console-only follow-up to [v0.6.2](#v062--evalprofiles-switcher--nexus-favicon).
