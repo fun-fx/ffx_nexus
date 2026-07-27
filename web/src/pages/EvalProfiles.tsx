@@ -445,13 +445,22 @@ function ProfileRow({
 }) {
   const enabled = profile.enabled ?? false;
   const sample = typeof profile.sample_rate === "number" ? profile.sample_rate : 0;
+  // Default-* profiles are seeded from env at boot. A small chip
+  // surfaces that origin so the operator doesn't wonder whether the
+  // row was hand-authored or boot-seeded.
+  const isEnvSeeded =
+    (typeof profile.id === "string" && profile.id.startsWith("default-")) ||
+    (typeof profile.name === "string" && profile.name.startsWith("Default "));
   return (
     <article className="profile-row" data-testid={`profile-row-${profile.id}`}>
       <div className="profile-row-head">
         <div>
           <span className="profile-row-name">{profile.name}</span>{" "}
           <Chip tone="info">{kindLabel((profile.kind as ProfileKind) ?? "slm_judge")}</Chip>{" "}
-          <Chip tone="neutral">{keySourceLabel((profile.endpoint?.key_source as KeySource) ?? "org")}</Chip>
+          <Chip tone="neutral">{keySourceLabel((profile.endpoint?.key_source as KeySource) ?? "org")}</Chip>{" "}
+          {isEnvSeeded ? (
+            <Chip tone="neutral" data-testid="env-seed-chip">env-seed</Chip>
+          ) : null}
         </div>
         <div className="profile-row-actions">
           <LabelToggle

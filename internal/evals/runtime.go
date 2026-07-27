@@ -6,19 +6,23 @@ import (
 )
 
 // RuntimeState is a point-in-time view of worker eval settings.
+//
+// PIIEnabled / CompletenessEnabled intentionally omit legacy per-call
+// toggles: v0.6.9 made every heuristic evaluator profile-driven and
+// the console reads those flags from Worker.ProfileStatus() instead of
+// maintaining a parallel write here. The judge/remote fields stay
+// because the runtime controller still surfaces the env-derived wiring
+// (Base URL / model / metrics / timeout) — not just whether it's
+// currently scoring.
 type RuntimeState struct {
-	PIIEnabled          bool
-	CompletenessEnabled bool
-	SampleRate          float64
-	Workers             int
-	JudgeBaseURL        string
-	JudgeModel          string
-	JudgeAPIKeySet      bool
-	RemoteURL           string
-	RemoteMetrics       []string
-	RemoteTimeout       time.Duration
-	JudgeEnabled        bool
-	RemoteEnabled       bool
+	SampleRate     float64
+	Workers        int
+	JudgeBaseURL   string
+	JudgeModel     string
+	JudgeAPIKeySet bool
+	RemoteURL      string
+	RemoteMetrics  []string
+	RemoteTimeout  time.Duration
 }
 
 // RuntimeState returns the current worker eval configuration.
@@ -26,33 +30,15 @@ func (w *Worker) RuntimeState() RuntimeState {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return RuntimeState{
-		PIIEnabled:          w.piiEnabled,
-		CompletenessEnabled: w.completenessEnabled,
-		SampleRate:          w.judgeSampleRate,
-		Workers:             w.workerCount,
-		JudgeBaseURL:        w.judgeBaseURL,
-		JudgeModel:          w.judgeModel,
-		JudgeAPIKeySet:      w.judgeAPIKey != "",
-		RemoteURL:           w.remoteURL,
-		RemoteMetrics:       append([]string(nil), w.remoteMetrics...),
-		RemoteTimeout:       w.remoteTimeout,
-		JudgeEnabled:        w.judgeBaseURL != "" && w.judgeModel != "",
-		RemoteEnabled:       w.remoteURL != "",
+		SampleRate:     w.judgeSampleRate,
+		Workers:        w.workerCount,
+		JudgeBaseURL:   w.judgeBaseURL,
+		JudgeModel:     w.judgeModel,
+		JudgeAPIKeySet: w.judgeAPIKey != "",
+		RemoteURL:      w.remoteURL,
+		RemoteMetrics:  append([]string(nil), w.remoteMetrics...),
+		RemoteTimeout:  w.remoteTimeout,
 	}
-}
-
-// SetPIIEnabled toggles the heuristic PII evaluator at runtime.
-func (w *Worker) SetPIIEnabled(on bool) {
-	w.mu.Lock()
-	w.piiEnabled = on
-	w.mu.Unlock()
-}
-
-// SetCompletenessEnabled toggles the heuristic completeness evaluator.
-func (w *Worker) SetCompletenessEnabled(on bool) {
-	w.mu.Lock()
-	w.completenessEnabled = on
-	w.mu.Unlock()
 }
 
 // SetJudgeSampleRate sets the fraction of traces sent to expensive judges.

@@ -81,13 +81,21 @@ func TestWorkerIsolatesRemoteFailure(t *testing.T) {
 	sink := &fakeSink{}
 	remote := NewRemoteEvaluator(RemoteConfig{BaseURL: deadURL, Timeout: 200 * time.Millisecond})
 	w := NewWorker(Options{
-		PIIEnabled:          true,
-		CompletenessEnabled: true,
-		Judges:              []Evaluator{remote},
-		Sink:                sink,
-		JudgeSampleRate:     1.0,
-		Workers:             2,
+		Judges:          []Evaluator{remote},
+		Sink:            sink,
+		JudgeSampleRate: 1.0,
+		Workers:         2,
 	}, discardLogger())
+
+	w.ReplaceProfiles([]EvalProfile{{
+		ID:         "default-pii",
+		Name:       "Default PII",
+		Kind:       ProfileHeuristicPII,
+		Scope:      ScopeOrg,
+		SampleRate: 1.0,
+		Enabled:    true,
+		Endpoint:   EvalEndpoint{KeySource: KeySourceBuiltin},
+	}})
 
 	w.Record(observability.Trace{
 		TraceID:        "t-iso",

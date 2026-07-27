@@ -159,18 +159,16 @@ func buildEvalWorker(cfg config.Config, chRec *observability.CHRecorder, store *
 	}
 
 	worker := evals.NewWorker(evals.Options{
-		PIIEnabled:          true,
-		CompletenessEnabled: true,
-		Judges:              judges,
-		Sink:                sink,
-		JudgeBaseURL:        cfg.JudgeBaseURL,
-		JudgeModel:          cfg.JudgeModel,
-		JudgeAPIKey:         cfg.JudgeAPIKey,
-		RemoteURL:           cfg.EvalServiceURL,
-		RemoteMetrics:       splitCSV(cfg.EvalServiceMetrics),
-		RemoteTimeout:       cfg.EvalServiceTimeout,
-		JudgeSampleRate:     cfg.EvalSampleRate,
-		Workers:             cfg.EvalWorkers,
+		Judges:          judges,
+		Sink:            sink,
+		JudgeBaseURL:    cfg.JudgeBaseURL,
+		JudgeModel:      cfg.JudgeModel,
+		JudgeAPIKey:     cfg.JudgeAPIKey,
+		RemoteURL:       cfg.EvalServiceURL,
+		RemoteMetrics:   splitCSV(cfg.EvalServiceMetrics),
+		RemoteTimeout:   cfg.EvalServiceTimeout,
+		JudgeSampleRate: cfg.EvalSampleRate,
+		Workers:         cfg.EvalWorkers,
 	}, log)
 	log.Info("eval worker enabled", "score_store", scoreKind, "trace_store", traceStore)
 	return worker

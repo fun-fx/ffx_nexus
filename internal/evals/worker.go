@@ -26,16 +26,14 @@ import (
 type Worker struct {
 	mu sync.RWMutex
 
-	// Single global toggles kept for legacy ≤133 callers that drop a
-	// wide PII / Completeness opt through Apply(). ConfiguredProfiles
-	// is the new canonical source of truth; the Worker's settings
-	// here are simply a "default" profile projected for backward
-	// compat (env-var seed migration in cmd/nexus).
-	piiEnabled          bool
-	completenessEnabled bool
-	judges              []Evaluator // LLM-as-judge; gated by judgeSampleRate (expensive)
-	sink                Sink
-	log                 *slog.Logger
+	// judges is the legacy LLM-as-judge slice built once from env and
+	// (optionally) updated by ConfigureJudges. Profile-driven evaluators
+	// arrive via ReplaceProfiles and are kept as configuredProfiles
+	// below; this slice is the env-var seeding fallback for tenants
+	// that don't run with profile-driven CRDs yet.
+	judges []Evaluator
+	sink   Sink
+	log    *slog.Logger
 	// metricsRecorder is the gateway's Prometheus recorder. When non-nil,
 	// every successful eval score for metric="quality" is also propagated to
 	// nexus_eval_quality_score so the Grafana `Quality judge score (rolling
@@ -76,20 +74,18 @@ type Worker struct {
 
 // Options configures the Worker.
 type Options struct {
-	PIIEnabled          bool
-	CompletenessEnabled bool
-	Judges              []Evaluator
-	Sink                Sink
-	JudgeBaseURL        string
-	JudgeModel          string
-	JudgeAPIKey         string
-	RemoteURL           string
-	RemoteMetrics       []string
-	RemoteTimeout       time.Duration
-	JudgeSampleRate     float64 // 0..1, fraction of traces sent to LLM judges
-	Workers             int     // concurrent eval goroutines
-	BufferSize          int
-	EvalTimeout         time.Duration
+	Judges          []Evaluator
+	Sink            Sink
+	JudgeBaseURL    string
+	JudgeModel      string
+	JudgeAPIKey     string
+	RemoteURL       string
+	RemoteMetrics   []string
+	RemoteTimeout   time.Duration
+	JudgeSampleRate float64 // 0..1, fraction of traces sent to LLM judges
+	Workers         int     // concurrent eval goroutines
+	BufferSize      int
+	EvalTimeout     time.Duration
 	// MetricsRecorder, if non-nil, receives RecordQualityScore calls so eval
 	// results feed the Prometheus nexus_eval_quality_score gauge as well as
 	// the clickhouse/pg sink. Optional; nil = no metric propagation.
@@ -112,25 +108,23 @@ func NewWorker(opts Options, log *slog.Logger) *Worker {
 	}
 
 	w := &Worker{
-		piiEnabled:          opts.PIIEnabled,
-		completenessEnabled: opts.CompletenessEnabled,
-		judges:              opts.Judges,
-		sink:                opts.Sink,
-		log:                 log,
-		judgeBaseURL:        opts.JudgeBaseURL,
-		judgeModel:          opts.JudgeModel,
-		judgeAPIKey:         opts.JudgeAPIKey,
-		remoteURL:           opts.RemoteURL,
-		remoteMetrics:       opts.RemoteMetrics,
-		remoteTimeout:       opts.RemoteTimeout,
-		judgeSampleRate:     opts.JudgeSampleRate,
-		workerCount:         opts.Workers,
-		evalTimeout:         opts.EvalTimeout,
-		metricsRecorder:     opts.MetricsRecorder,
-		ch:                  make(chan observability.Trace, opts.BufferSize),
-		done:                make(chan struct{}),
-		closed:              make(chan struct{}),
-		rnd:                 rand.New(rand.NewSource(time.Now().UnixNano())),
+		judges:          opts.Judges,
+		sink:            opts.Sink,
+		log:             log,
+		judgeBaseURL:    opts.JudgeBaseURL,
+		judgeModel:      opts.JudgeModel,
+		judgeAPIKey:     opts.JudgeAPIKey,
+		remoteURL:       opts.RemoteURL,
+		remoteMetrics:   opts.RemoteMetrics,
+		remoteTimeout:   opts.RemoteTimeout,
+		judgeSampleRate: opts.JudgeSampleRate,
+		workerCount:     opts.Workers,
+		evalTimeout:     opts.EvalTimeout,
+		metricsRecorder: opts.MetricsRecorder,
+		ch:              make(chan observability.Trace, opts.BufferSize),
+		done:            make(chan struct{}),
+		closed:          make(chan struct{}),
+		rnd:             rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 
 	w.wg.Add(opts.Workers)
@@ -247,15 +241,36 @@ func (w *Worker) collectEvaluators(
 	rate float64,
 	resolver SecretResolver,
 ) []Evaluator {
+	// "Policy A" personal override: a user-scope profile of kind X with
+	// enabled=false suppresses the org-scope profile of the same kind
+	// for that user's traces only. Additive rule: an enabled user-scope
+	// profile still scores alongside the org profile (the user is
+	// delegating to a different model, not replacing — that's a
+	// documented operator decision). Owner identity comes from
+	// Trace.UserID set by the gateway recorder fan-out.
+	disabledKindsByOwner := map[ProfileKind]bool{}
+	owner := t.UserID
+	if owner != "" {
+		for _, ep := range profiles {
+			if ep.Scope != ScopeUser || ep.OwnerUserID != owner {
+				continue
+			}
+			if ep.Enabled {
+				continue
+			}
+			disabledKindsByOwner[ep.Kind] = true
+		}
+	}
+
 	evs := make([]Evaluator, 0, len(profiles)+len(judges)+2)
-	// Legacy single-config path: PII + completeness flags + judges
-	// slice coexist with profiles for env-var seeded callers.
-	if w.piiEnabled {
-		evs = append(evs, PIIEvaluator{})
-	}
-	if w.completenessEnabled {
-		evs = append(evs, CompletenessEvaluator{})
-	}
+	// v0.6.9: PII / Completeness are no longer toggled at the Worker
+	// level — the env-var seeded default-pii / default-completeness
+	// profiles (scope=org) are the single source of truth and arrive
+	// via ReplaceProfiles on every boot. The previous `if w.piiEnabled`
+	// short-circuit duplicated scoring for tenants that had both
+	// legacy state and seeded profiles; v0.6.8 console patches that
+	// still hit /api/eval/config PII fields are rejected by the
+	// console router (we removed the handler there too).
 	for _, ep := range profiles {
 		if !ep.Enabled {
 			continue
@@ -264,6 +279,13 @@ func (w *Worker) collectEvaluators(
 			continue
 		}
 		if ep.SampleRate < 1 && !w.sampleJudge(ep.SampleRate) {
+			continue
+		}
+		// Org-scoped entries of a kind disabled-by-owner for the trace's
+		// owner are skipped. The user-scoped entry that disabled them
+		// already dropped out a few lines above (!ep.Enabled short-circuit),
+		// so nothing else needs filtering.
+		if ep.Scope == ScopeOrg && disabledKindsByOwner[ep.Kind] {
 			continue
 		}
 		// Built-in heuristics don't need a secret; ignore resolver.
@@ -349,13 +371,21 @@ func (w *Worker) Close(ctx context.Context) error {
 	return nil
 }
 
-// ProfileKind is exported here for runtime controller / UI consumption.
+// ProfileKindSummary is exported here for runtime controller / UI consumption.
 // We only need to know whether *any* profile of a given kind is enabled
 // to drive the disabled-state UI; the rest of the profile API stays
 // where the rest of the eval logic lives.
+//
+// Includes the heuristic kinds (PII / Completeness) so the console can
+// present a single uniform "is this evaluator currently scoring?"
+// strip without reaching into legacy Worker fields. v0.6.9 removed
+// the legacy Worker.piiEnabled / Worker.completenessEnabled toggles —
+// these are now derived purely from profile state.
 type ProfileKindSummary struct {
-	SLMJudgeEnabled   bool
-	RemoteEvalEnabled bool
+	SLMJudgeEnabled     bool
+	RemoteEvalEnabled   bool
+	PIIEnabled          bool
+	CompletenessEnabled bool
 }
 
 // ProfileStatus returns the user-facing "is this evaluator currently
@@ -377,6 +407,10 @@ func (w *Worker) ProfileStatus() ProfileKindSummary {
 			out.SLMJudgeEnabled = true
 		case ProfileRemoteEval:
 			out.RemoteEvalEnabled = true
+		case ProfileHeuristicPII:
+			out.PIIEnabled = true
+		case ProfileHeuristicCompleteness:
+			out.CompletenessEnabled = true
 		}
 	}
 	return out
