@@ -5,6 +5,97 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.9] — Unified Eval toggles + per-user scope override (PR #153)
+
+Round-up of the v0.6.8 release with the operator feedback that landed in the
+week after. Three problems were identified by a live admin test in the
+production console:
+
+1. `Disable evaluation` was a one-way trip — the button dropped to a disabled
+   state once the row flagged `enabled: false`, leaving no obvious way to flip
+   SLM judge or Remote eval back on without a manual profile edit.
+2. The Heuristics panel and the Eval Profiles panel underneath felt like two
+   separate surfaces; admins weren't sure why seeded `default-*` profiles
+   appeared after touching the top table's toggles.
+3. PII and Completeness could be **double-scored** — once from the legacy
+   `Worker.piiEnabled` / `Worker.completenessEnabled` fields (env-driven),
+   once from the seeded `default-pii` / `default-completeness` profiles
+   (`scope:org`). It wasn't visible in the UI but it was visible in
+   `eval_scores`, doubling the heuristic storage.
+
+This PR lands **"Policy A"** for the per-user override question, with all four
+metrics now using the same control surface:
+
+### Unified toggle
+
+The Heuristics panel now exposes **one switch per metric** with a uniform UI:
+
+- **PII** and **Completeness** remain on the same direct toggle they had; the
+  only behavioural change is that they now drive a single seeded default
+  profile (`default-pii` / `default-completeness`) instead of the legacy
+  `Worker.piiEnabled` flag.
+- **SLM judge** and **Remote eval** lose the prior "Disable evaluation" /
+  read-only pill split. The row is now a real `LabelToggle` whose `aria-label`
+  flips between `disable X` and `enable X`. The "Change configuration" shortcut
+  is preserved for admins so they can edit the underlying default profile
+  without scrolling.
+
+A short hint under the table spells out the override rule below, so an admin
+reading the page cannot miss it.
+
+### Per-user scope override ("Policy A")
+
+`scope: user` profiles with `enabled: false` for a given `Kind` *suppress* the
+matching `scope: org` profile **for that user's traffic only**. Other members
+in the same org see no change. `scope: user` profiles with `enabled: true`
+remain *additive* — both the org and user profiles score that user's traces.
+This is the additive-when-enabled, suppressive-when-disabled rule so a member
+can opt out *or* layer their own judge model without rewriting the org
+default.
+
+### Removed legacy paths
+
+- `Worker.piiEnabled` / `Worker.completenessEnabled` fields and their `Set*`
+  methods are gone.
+- `cmd/nexus/eval_runtime.go::Apply` no longer consumes `{pii_enabled}` /
+  `{completeness_enabled}` from `EvalConfigPatch`. The console router already
+  rejects those fields with a 400; this is defense-in-depth.
+- `evalRuntime.buildSnapshot` populates `snap.Eval.PIIEnabled` /
+  `snap.Eval.CompletenessEnabled` from `Worker.ProfileStatus()` now (which
+  also gained those two flags).
+
+### Surface-level touches
+
+- A small `env-seed` chip now appears next to profiles whose id starts with
+  `default-` (matches the env-seeded rows) so the operator can tell at a
+  glance which entries the gateway authored vs hand-created.
+
+### Operator notes
+
+- Existing tenants boot with `default-pii` and `default-completeness` already
+  `enabled:true`, so disabling PII/Completeness from the Heuristics panel
+  produces the same wire effect as before — but now goes through a
+  profile-driven path that's discoverable in the Eval Profiles list.
+- The eval pod is **not** restarted. Patches to `default-*.enabled` are
+  picked up by the worker on the next evaluate() loop, exactly like
+  v0.6.8 for SLM judge / Remote eval.
+- Personal overrides (`scope: user`) require an admin or the member
+  themselves to create the user-scope row via the existing "New profile"
+  drawer. The console exposes `My profiles` vs `Org profiles` groups
+  under the Eval Profiles card.
+
+### Tests
+
+- Backend: `TestScopeOverride_UserOffSuppressesOrgForUser`,
+  `TestScopeOverride_DoesNotAffectOtherUsers`,
+  `TestScopeOverride_UserON_AdditiveWithOrg`,
+  `TestScopeOverride_CompletenessAndPII` (covers Policy A scope semantics
+  for both PII and Completeness kinds).
+- Frontend: heuristic table renders 4 interactive toggles (no
+  `aria-disabled` on any), admin sees `Change configuration` per row, and a
+  PII / SLM judge click PATCHes the matching default profile with
+  `{enabled:false}`.
+
 ## [v0.6.8] — Console-level disable + reconfigure for SLM judge / Remote eval (PR #151)
 
 Console + gateway follow-up to [v0.6.7](#v067--toggle-round-trip--single-heuristic-panel-pr-149).
