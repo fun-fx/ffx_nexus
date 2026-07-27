@@ -5,6 +5,36 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.5] — Label-toggle everywhere (PR #145)
+
+Console-only follow-up to [v0.6.4](#v064--routing-weights-stats-bar-sync-pr-143).
+
+### Highlights
+
+- **One toggle shape across the entire Heuristics card.** Earlier
+  releases left two different on/off affordances in the same table —
+  a round track for PII / Completeness and a read-only `StatusPill`
+  for SLM judge / Remote eval. PR #145 collapses both into one
+  pill-shaped `LabelToggle`:
+  - **on** → green pill `#1f9d55` with white `on` text
+  - **off** → red pill   `#dc2626` with white `off` text
+  - same shape, same `min-width`, same font metric in both states
+- **Interactivity is preserved where it exists.** PII / Completeness
+  flip calls the existing `/api/eval/config` PATCH. SLM judge / Remote
+  eval render with `aria-disabled` and a non-interactive cursor so
+  they're visibly distinct from rows an operator can actually flip
+  while still showing what the env has the system set to. A footnote
+  under the table makes plain that those two are env-driven.
+- **Profile rows too.** Each `EvalProfile` row in the EvalProfiles
+  card now uses the same `LabelToggle`, so the heuristic table and
+  the profile table read from a single visual language.
+
+### Notes for ops
+
+- No backend change, no hot-path change.
+- Old `.toggle-cell*` CSS removed; the round-track variant was no
+  longer referenced after this PR.
+
 ## [v0.6.4] — Routing weights stats bar sync (PR #143)
 
 Console-only follow-up to [v0.6.3](#v063--evalrules-switcher-parity-pr-140).
