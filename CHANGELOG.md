@@ -5,6 +5,15 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.6] — Heuristic / env-driven split + stable profile order (PR #147)
+
+Console-only follow-up to [v0.6.5](#v065--label-toggle-everywhere-pr-145).
+Re-shapes the Eval heuristics card so PII / Completeness keep the toggle
+(they're PATCH-able from the console) and SLM judge / Remote eval no longer
+look like toggles — they sit in a separate table with `env-driven` tags.
+Also pins `GET /api/eval/profiles` to creation order so the operator's
+mental model of "who came first" survives a refetch.
+
 ## [Unreleased]
 
 ### Fixed
