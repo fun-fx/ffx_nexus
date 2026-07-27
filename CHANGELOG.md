@@ -5,6 +5,91 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.11] — Server-side filter + time-window pagination for Traces (PR #157)
+
+The Traces page previously hard-coded a fetch of the most-recent 500
+events with all filters applied client-side. With gateway traffic
+growing past 500 events/minute, operators searching "last week's 4xx
+calls for claude" had no way to reach older rows. The page showed
+exactly 500/25 = 20 pages and that was the whole story — the 90-day
+TTL on `gateway_traces` had nothing to do with it (it never even
+asked for the older rows).
+
+This change moves every existing filter into the URL and adds a
+cursor-paged `Load older` control so operators can walk back through
+time within the active filter set.
+
+### Backend
+
+- `internal/observability/reader.go`
+  - New `TracePage` envelope: `{items, next_cursor: {before, since}}`.
+  - `Reader.TracePage(ctx, before, since, limit, userID, TraceFilter)`
+    runs the windowed + filter-narrowed SELECT and uses a `LIMIT + 1`
+    probe to detect whether a next page exists (no separate `count()`).
+  - Pure-function SQL builder (`buildTracePageQuery`,
+    `buildTracePageArgs`) so the SQL shape is unit-testable.
+  - `TraceFilter.Status` ("ok"/"err"), `.Provider` (exact match),
+    `.Q` (case-insensitive LIKE on `request_model | provider_name |
+    user_email | guardrail_action`). `%` and `_` in user input are
+    escaped to literals; pre-fix `q = "5%"` would have matched every
+    row.
+  - `(before, since)` describes a half-open window so adjacent pages
+    never double-count at the boundary.
+- `internal/console/server.go` — `parseTraceQuery` accepts
+  `before`/`since`/`status`/`provider`/`q`. RFC3339 and RFC3339Nano
+  both accepted.
+- `internal/console/auth.go` — `myTraces` mirror.
+
+### Frontend
+
+- `web/src/api.ts` — `fetchTraces(TraceQuery)` returns `TracePage`;
+  defensive decoding of the legacy bare-array shape so a rolling
+  restart between v0.6.10 and v0.6.11 doesn't black out the page.
+- `web/src/pages/Traces.tsx` — fully rewritten:
+  - Date pickers for `since` / `before` (browser-local <input
+    type="datetime-local">, sent to the server as RFC3339 UTC).
+  - Status / provider chips + free-text search now flow through to
+    the server. Client-side filtering is gone — single source of
+    truth = server response.
+  - `Load older` button under the table re-applies the current filter
+    set with the server's `next_cursor` and merges new items into
+    the in-memory list (de-duplicated by `trace_id`).
+  - Button label flips to `No more pages` once the cursor is empty.
+
+### Tests added
+
+- `internal/observability/reader_test.go` (new): 22 cases pin every
+  filter combination, the `q` LIKE escape shape, the cursor timezone
+  round-trip, and the slice/empty-cursor contract.
+- `internal/console/trace_query_test.go` (new): 11 cases pin
+  `parseTraceQuery` — invalid `before`/`since`, inverted window,
+  unknown status enum, etc.
+- `web/src/pages/Traces.test.tsx` (new): 6 cases pin the wire
+  contract — initial URL params, date input → ISO conversion, status
+  chip round-trip, search round-trip, `Load older` follow-up
+  (including cursor fields), and a negative-status-value regression
+  check.
+
+### Operator-visible effect
+
+- "20 pages only" goes away. After `Load older` reaches the bottom
+  of the result set, the button disables itself — no spurious pages
+  past the time window.
+- `q = "gpt-4o"` actually runs on the indexed column now. With the
+  legacy client filter the operator could only search the in-memory
+  500-row slice, so anything not in the first page was effectively
+  invisible.
+- Date range + status + provider + free-text can be combined. A
+  query like `?status=err&provider=openai&q=gpt-4o&since=2026-07-20`
+  walks only `gpt-4o` calls on `openai` that came back `>= 400`
+  since 7/20.
+
+### Risk
+
+Low. Pure additive: filters AND into the existing WHERE clause,
+cursor is opaque to the client, and the legacy bare-array shape is
+still decoded so a rolling restart is non-fatal.
+
 ## [v0.6.10] — Cost regression fix for versioned + prefixed model ids (PR #155)
 
 After deploying v0.6.9 the operator reported that **every trace's `CostUSD`
