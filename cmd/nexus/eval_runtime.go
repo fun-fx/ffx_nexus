@@ -356,6 +356,22 @@ func (c *evalRuntimeController) Apply(patch console.EvalConfigPatch) (console.Ev
 		return console.EvalConfigSnapshot{}, fmt.Errorf("eval worker not running")
 	}
 
+	// Merge nested {"eval":{"pii_enabled":...}} form when the request body
+	// uses it. The console switched to that shape during the PR #145 UX
+	// redesign. Flat top-level fields ({"pii_enabled":...}) still work for
+	// older callers and admin scripts.
+	if patch.Eval != nil {
+		if patch.Eval.PIIEnabled != nil && patch.PIIEnabled == nil {
+			patch.PIIEnabled = patch.Eval.PIIEnabled
+		}
+		if patch.Eval.CompletenessEnabled != nil && patch.CompletenessEnabled == nil {
+			patch.CompletenessEnabled = patch.Eval.CompletenessEnabled
+		}
+		if patch.Eval.SampleRate != nil && patch.SampleRate == nil {
+			patch.SampleRate = patch.Eval.SampleRate
+		}
+	}
+
 	if patch.PIIEnabled != nil {
 		c.worker.SetPIIEnabled(*patch.PIIEnabled)
 	}

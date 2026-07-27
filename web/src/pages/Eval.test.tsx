@@ -215,24 +215,20 @@ describe("<Eval /> weights sliders", () => {
   });
 });
 
-describe("<Eval /> heuristic table split", () => {
-  it("renders PII / Completeness with an Enabled column and SLM judge / Remote eval without", async () => {
+describe("<Eval /> heuristic table layout", () => {
+  it("renders all metrics in one panel — 2 toggles clickable + 2 dimmed (env-driven)", async () => {
     renderEval();
     await waitFor(() => screen.getByText("Heuristics"));
 
-    // PII and Completeness rows: each has a LabelToggle (role=switch).
-    // SLM judge / Remote eval rows do NOT have any role=switch because they
-    // are env-driven and intentionally non-interactive (no Enabled column).
+    // One single table holds all 4 metric rows.
+    // PII / Completeness have an interactive (clickable) toggle.
+    // SLM judge / Remote eval also have a role=switch, but it is dimmed
+    // via aria-disabled so the operator sees the current env-driven state.
     const switches = screen.queryAllByRole("switch");
-    // 2 toggles from the heuristics table — and zero from the env-backed
-    // table — total of 2 is what we expect.
-    expect(switches.length).toBe(2);
+    expect(switches.length).toBe(4);
 
-    // Both env-backed rows render with the "env-driven" hint tag so the
-    // operator sees why there's nothing to flip.
-    await screen.findAllByText("env-driven");
-
-    // The Configured-at column has its own header.
-    expect(screen.getByText("Where it's wired")).toBeInTheDocument();
+    // The text "SLM judge" and "Remote eval" are present in the same table.
+    expect(screen.getByText("SLM judge")).toBeInTheDocument();
+    expect(screen.getByText("Remote eval")).toBeInTheDocument();
   });
 });

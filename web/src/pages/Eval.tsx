@@ -191,8 +191,11 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
   const [busy, setBusy] = useState<string | null>(null);
   void isAdmin;
   const mut = useMutation({
-    mutationFn: (p: { pii?: boolean; completeness?: boolean }) =>
-      patchEvalConfig({ eval: p }),
+    // Backend EvalConfigPatch accepts both nested {eval:{pii_enabled:..}}
+    // and flat {pii_enabled:..} (the dual form makes the wire format
+    // tolerant of older scripts). Use flat form here so the wire payload
+    // matches the snake_case keys EvalConfigSnapshot returns.
+    mutationFn: (p: Record<string, unknown>) => patchEvalConfig(p),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["eval-config"] }),
     onSettled: (_d, _e, payload) => {
       void payload;
@@ -200,14 +203,13 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
     },
   });
 
-  // SLM judge and Remote eval are seeded from env vars; their on/off flag
-  // cannot be flipped from the console today, so we render them in a
-  // separate table without the Enabled column.
+  // Every row lives in one panel now. PII / Completeness have a clickable
+  // toggle; SLM judge / Remote eval are env-driven and rendered as a
+  // dimmed "on / off" pill with a small hint glyph so the operator sees
+  // why the click does nothing.
   const interactiveMetrics = new Set(["PII", "Completeness"]);
-  const heurRules = rules.filter((r) => interactiveMetrics.has(r.metric));
-  const envRules = rules.filter((r) => !interactiveMetrics.has(r.metric));
 
-  const heurCols: Column<EvalRule>[] = [
+  const cols: Column<EvalRule>[] = [
     {
       id: "metric",
       header: "Metric",
@@ -217,48 +219,43 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
     {
       id: "enabled",
       header: "Enabled",
-      width: "60px",
-      cell: (r) => (
-        <LabelToggle
-          checked={r.enabled}
-          disabled={busy === r.metric || mut.isPending}
-          onChange={(next) => {
-            setBusy(r.metric);
-            const key = r.metric === "PII" ? "pii" : "completeness";
-            mut.mutate({ [key]: next } as { pii?: boolean; completeness?: boolean });
-          }}
-          label={`toggle ${r.metric}`}
-        />
-      ),
-      sortValue: (r) => Number(r.enabled),
+      width: "110px",
+      cell: (r) => {
+        const interactive = interactiveMetrics.has(r.metric);
+        return interactive ? (
+          <LabelToggle
+            checked={r.enabled}
+            disabled={busy === r.metric || mut.isPending}
+            onChange={(next) => {
+              setBusy(r.metric);
+              const key =
+                r.metric === "PII"
+                  ? { pii_enabled: next }
+                  : { completeness_enabled: next };
+              mut.mutate(key);
+            }}
+            label={`toggle ${r.metric}`}
+          />
+        ) : (
+          <span title="Seeded from NEXUS_EVAL_* / NEXUS_REMOTE_EVAL_*">
+            <LabelToggle
+              checked={r.enabled}
+              label={`state ${r.metric}`}
+              aria-disabled
+              // No-op handler: this row's checked value is read-only on the
+              // console, but we still render the same component so the row's
+              // geometry and colour language matches the interactive rows.
+              onChange={() => undefined}
+            />
+          </span>
+        );
+      },
+      sortValue: (r) => Number(!interactiveMetrics.has(r.metric)) * 10 + Number(r.enabled),
     },
     {
       id: "detail",
       header: "Detail",
       cell: (r) => <span className="muted small">{r.detail}</span>,
-    },
-  ];
-
-  const envCols: Column<EvalRule>[] = [
-    {
-      id: "metric",
-      header: "Metric",
-      cell: (r) => <strong>{r.metric}</strong>,
-      sortValue: (r) => r.metric,
-    },
-    {
-      id: "detail",
-      header: "Where it's wired",
-      cell: (r) => <span className="muted small">{r.detail}</span>,
-    },
-    {
-      id: "source",
-      header: "",
-      cell: () => (
-        <span className="hint-tag" title="Seeded from NEXUS_EVAL_* / NEXUS_REMOTE_EVAL_*">
-          env-driven
-        </span>
-      ),
     },
   ];
 
@@ -268,26 +265,16 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
         <h2 className="section-title">Heuristics</h2>
         <div className="panel" style={{ padding: 4 }}>
           <DataTable
-            rows={heurRules}
-            columns={heurCols}
-            emptyMessage="No heuristic metrics."
+            rows={rules}
+            columns={cols}
+            emptyMessage="No metrics."
           />
         </div>
-        {envRules.length > 0 && (
-          <>
-            <p className="muted small" style={{ marginTop: 14 }}>
-              The following evaluators are seeded from <code>NEXUS_EVAL_*</code> /
-              <code> NEXUS_REMOTE_EVAL_*</code> env vars; flip them with a config rollout.
-            </p>
-            <div className="panel" style={{ padding: 4 }}>
-              <DataTable
-                rows={envRules}
-                columns={envCols}
-                emptyMessage="No env-driven evaluators."
-              />
-            </div>
-          </>
-        )}
+        <p className="muted small" style={{ marginTop: 10 }}>
+          SLM judge and Remote eval state is read from{" "}
+          <code>NEXUS_EVAL_*</code> / <code>NEXUS_REMOTE_EVAL_*</code>; flip
+          them with a config rollout.
+        </p>
       </section>
       <EvalProfilesCard isAdmin={isAdmin} />
     </>
