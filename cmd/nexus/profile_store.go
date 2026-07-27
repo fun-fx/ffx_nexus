@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -43,6 +44,17 @@ func (s *coreProfileStore) List(_ context.Context, ownerUserID string) ([]evals.
 		}
 		out = append(out, *p.Clone())
 	}
+	// Return rows in creation order (oldest first, tie-break by ID).
+	// Without this sort, Go's map-iteration order leaks through — seeded
+	// profiles share one timestamp, so the console would shuffle them on
+	// every refetch and operators lose the mental model they have for
+	// who-first.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 

@@ -5,6 +5,13 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [Unreleased]
+
+### Fixed
+
+- **Heuristic / env-driven split on Eval page (PR)**: PII / Completeness now render with an `Enabled` column so the toggle is actionable from the console. SLM judge and Remote eval are no longer drawn under the same row type — they live in a separate, narrower table without an `Enabled` column, with an `env-driven` hint tag so operators no longer see a non-clickable `on/off` pill. The previous UX left two rows looking like toggles but doing nothing on click which was a confusing affordance.
+- **Eval profile list is now in creation order**: `coreProfileStore.List()` now sorts by `created_at` ascending (tie-break by ID) instead of leaking Go's map-iteration order. Console pages, refetches, and any CLI navigation now produce the same row order — operators keep their mental model of "who came first".
+
 ## [v0.6.5] — Label-toggle everywhere (PR #145)
 
 Console-only follow-up to [v0.6.4](#v064--routing-weights-stats-bar-sync-pr-143).

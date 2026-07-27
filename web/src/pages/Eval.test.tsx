@@ -214,3 +214,25 @@ describe("<Eval /> weights sliders", () => {
     expect(sent.quality + sent.cost + sent.latency).toBeCloseTo(1, 2);
   });
 });
+
+describe("<Eval /> heuristic table split", () => {
+  it("renders PII / Completeness with an Enabled column and SLM judge / Remote eval without", async () => {
+    renderEval();
+    await waitFor(() => screen.getByText("Heuristics"));
+
+    // PII and Completeness rows: each has a LabelToggle (role=switch).
+    // SLM judge / Remote eval rows do NOT have any role=switch because they
+    // are env-driven and intentionally non-interactive (no Enabled column).
+    const switches = screen.queryAllByRole("switch");
+    // 2 toggles from the heuristics table — and zero from the env-backed
+    // table — total of 2 is what we expect.
+    expect(switches.length).toBe(2);
+
+    // Both env-backed rows render with the "env-driven" hint tag so the
+    // operator sees why there's nothing to flip.
+    await screen.findAllByText("env-driven");
+
+    // The Configured-at column has its own header.
+    expect(screen.getByText("Where it's wired")).toBeInTheDocument();
+  });
+});
