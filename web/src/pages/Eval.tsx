@@ -189,6 +189,7 @@ export function Eval() {
 function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
+  void isAdmin;
   const mut = useMutation({
     mutationFn: (p: { pii?: boolean; completeness?: boolean }) =>
       patchEvalConfig({ eval: p }),
@@ -199,7 +200,14 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
     },
   });
 
-  const cols: Column<EvalRule>[] = [
+  // SLM judge and Remote eval are seeded from env vars; their on/off flag
+  // cannot be flipped from the console today, so we render them in a
+  // separate table without the Enabled column.
+  const interactiveMetrics = new Set(["PII", "Completeness"]);
+  const heurRules = rules.filter((r) => interactiveMetrics.has(r.metric));
+  const envRules = rules.filter((r) => !interactiveMetrics.has(r.metric));
+
+  const heurCols: Column<EvalRule>[] = [
     {
       id: "metric",
       header: "Metric",
@@ -210,31 +218,18 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
       id: "enabled",
       header: "Enabled",
       width: "60px",
-      cell: (r) => {
-        // Heuristic metrics (PII, Completeness) toggle through PATCH
-        // /api/eval/config. SLM judge / Remote eval are seeded from env vars
-        // and intentionally have no in-UI affordance yet — the toggle is
-        // visualised the same way but rendered disabled so an admin can see
-        // the configured state at a glance without confusion that it'll act.
-        const interactive =
-          r.metric === "PII" || r.metric === "Completeness";
-        return (
-          <LabelToggle
-            checked={r.enabled}
-            disabled={
-              !interactive || (busy === r.metric || mut.isPending)
-            }
-            onChange={(next) => {
-              if (!interactive) return;
-              setBusy(r.metric);
-              const key = r.metric === "PII" ? "pii" : "completeness";
-              mut.mutate({ [key]: next } as { pii?: boolean; completeness?: boolean });
-            }}
-            label={`toggle ${r.metric}`}
-            aria-disabled={!interactive}
-          />
-        );
-      },
+      cell: (r) => (
+        <LabelToggle
+          checked={r.enabled}
+          disabled={busy === r.metric || mut.isPending}
+          onChange={(next) => {
+            setBusy(r.metric);
+            const key = r.metric === "PII" ? "pii" : "completeness";
+            mut.mutate({ [key]: next } as { pii?: boolean; completeness?: boolean });
+          }}
+          label={`toggle ${r.metric}`}
+        />
+      ),
       sortValue: (r) => Number(r.enabled),
     },
     {
@@ -244,18 +239,55 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
     },
   ];
 
+  const envCols: Column<EvalRule>[] = [
+    {
+      id: "metric",
+      header: "Metric",
+      cell: (r) => <strong>{r.metric}</strong>,
+      sortValue: (r) => r.metric,
+    },
+    {
+      id: "detail",
+      header: "Where it's wired",
+      cell: (r) => <span className="muted small">{r.detail}</span>,
+    },
+    {
+      id: "source",
+      header: "",
+      cell: () => (
+        <span className="hint-tag" title="Seeded from NEXUS_EVAL_* / NEXUS_REMOTE_EVAL_*">
+          env-driven
+        </span>
+      ),
+    },
+  ];
+
   return (
     <>
       <section>
         <h2 className="section-title">Heuristics</h2>
         <div className="panel" style={{ padding: 4 }}>
-          <DataTable rows={rules} columns={cols} emptyMessage="No heuristics configured." />
+          <DataTable
+            rows={heurRules}
+            columns={heurCols}
+            emptyMessage="No heuristic metrics."
+          />
         </div>
-        <p className="muted small" style={{ marginTop: 8 }}>
-          Judge + remote eval are configured in <code>NEXUS_EVAL_*</code> /{" "}
-          <code>NEXUS_REMOTE_EVAL_*</code>; their on/off pill is display-only
-          and cannot be flipped from the console yet.
-        </p>
+        {envRules.length > 0 && (
+          <>
+            <p className="muted small" style={{ marginTop: 14 }}>
+              The following evaluators are seeded from <code>NEXUS_EVAL_*</code> /
+              <code> NEXUS_REMOTE_EVAL_*</code> env vars; flip them with a config rollout.
+            </p>
+            <div className="panel" style={{ padding: 4 }}>
+              <DataTable
+                rows={envRules}
+                columns={envCols}
+                emptyMessage="No env-driven evaluators."
+              />
+            </div>
+          </>
+        )}
       </section>
       <EvalProfilesCard isAdmin={isAdmin} />
     </>
