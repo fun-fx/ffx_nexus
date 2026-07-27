@@ -2197,54 +2197,53 @@ a:hover {
   flex-wrap: wrap;
 }
 
-/* Switch cell — single on/off affordance, no labels, no alignment tricks.
- * Same shape and size regardless of state; off state keeps the muted panel
- * tone so a disabled profile still reads as a row of the same visual weight.
+/* LabelToggle — pill-shaped on/off switch with a visible "on"/"off" label.
+ * Same shape, font, and box metrics in both states so a row's geometry
+ * never shifts when the user flips a cell. The text inside the pill is
+ * the affordance itself: green = on, red = off, white uppercase label
+ * that reads at a glance.
  */
-.toggle-cell {
+.label-toggle {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: #ffffff;
   cursor: pointer;
   user-select: none;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  outline: none;
+  border: 1px solid transparent;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
 }
 
-.toggle-cell:focus-visible .toggle-cell-track {
+.label-toggle-on {
+  background: #1f9d55;
+  border-color: rgba(31, 157, 85, 0.6);
+}
+
+.label-toggle-off {
+  background: #dc2626;
+  border-color: rgba(220, 38, 38, 0.6);
+}
+
+.label-toggle:hover:not([aria-disabled="true"]) {
+  filter: brightness(1.08);
+}
+
+.label-toggle:focus-visible {
+  outline: none;
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 28%, transparent);
 }
 
-.toggle-cell-track {
-  position: relative;
-  width: 32px;
-  height: 18px;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--panel-2) 88%, var(--border));
-  border: 1px solid var(--border);
-  transition: background 140ms ease, border-color 140ms ease;
-}
-
-.toggle-cell-thumb {
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: var(--muted);
-  transition: transform 140ms ease, background 140ms ease;
-}
-
-.toggle-cell-on .toggle-cell-track {
-  background: var(--accent-grad);
-  border-color: transparent;
-}
-
-.toggle-cell-on .toggle-cell-thumb {
-  transform: translateX(14px);
-  background: #100614;
+.label-toggle[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .profile-row-meta {

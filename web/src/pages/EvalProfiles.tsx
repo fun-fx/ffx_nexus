@@ -13,7 +13,7 @@ import {
 } from "../api";
 import { Chip } from "../components/Chip";
 import { Drawer } from "../components/Drawer";
-import { ToggleCell } from "../components/ToggleCell";
+import { LabelToggle } from "../components/LabelToggle";
 
 /**
  * PR #137 — per-eval profile CRUD UI.
@@ -418,7 +418,7 @@ function ProfileRow({
           <Chip tone="neutral">{keySourceLabel((profile.endpoint?.key_source as KeySource) ?? "org")}</Chip>
         </div>
         <div className="profile-row-actions">
-          <ToggleCell
+          <LabelToggle
             checked={enabled}
             disabled={busyToggle}
             onChange={(next) => onToggle(next)}

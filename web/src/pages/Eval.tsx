@@ -3,10 +3,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchEvalConfig, patchEvalConfig, type EvalConfigSnapshot } from "../api";
 import { DataTable, type Column } from "../components/DataTable";
 import { Chip } from "../components/Chip";
-import { StatusPill } from "../components/StatusPill";
 import { GradientText } from "../components/GradientText";
 import { Icon } from "../components/icons";
-import { ToggleCell } from "../components/ToggleCell";
+import { LabelToggle } from "../components/LabelToggle";
 import { fetchMe } from "../api";
 import { EvalProfilesCard } from "./EvalProfiles";
 
@@ -210,21 +209,29 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
     {
       id: "enabled",
       header: "Enabled",
-      width: "80px",
+      width: "60px",
       cell: (r) => {
-        if (r.metric !== "PII" && r.metric !== "Completeness") {
-          return <StatusPill label={r.enabled ? "on" : "off"} tone={r.enabled ? "ok" : "neutral"} />;
-        }
+        // Heuristic metrics (PII, Completeness) toggle through PATCH
+        // /api/eval/config. SLM judge / Remote eval are seeded from env vars
+        // and intentionally have no in-UI affordance yet — the toggle is
+        // visualised the same way but rendered disabled so an admin can see
+        // the configured state at a glance without confusion that it'll act.
+        const interactive =
+          r.metric === "PII" || r.metric === "Completeness";
         return (
-          <ToggleCell
+          <LabelToggle
             checked={r.enabled}
-            disabled={busy === r.metric || mut.isPending}
+            disabled={
+              !interactive || (busy === r.metric || mut.isPending)
+            }
             onChange={(next) => {
+              if (!interactive) return;
               setBusy(r.metric);
               const key = r.metric === "PII" ? "pii" : "completeness";
               mut.mutate({ [key]: next } as { pii?: boolean; completeness?: boolean });
             }}
             label={`toggle ${r.metric}`}
+            aria-disabled={!interactive}
           />
         );
       },
@@ -246,7 +253,8 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
         </div>
         <p className="muted small" style={{ marginTop: 8 }}>
           Judge + remote eval are configured in <code>NEXUS_EVAL_*</code> /{" "}
-          <code>NEXUS_REMOTE_EVAL_*</code>.
+          <code>NEXUS_REMOTE_EVAL_*</code>; their on/off pill is display-only
+          and cannot be flipped from the console yet.
         </p>
       </section>
       <EvalProfilesCard isAdmin={isAdmin} />
