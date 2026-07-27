@@ -5,6 +5,34 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.8] — Console-level disable + reconfigure for SLM judge / Remote eval (PR #151)
+
+Console + gateway follow-up to [v0.6.7](#v067--toggle-round-trip--single-heuristic-panel-pr-149).
+
+Until this release, the **SLM judge** and **Remote eval** rows in the Eval page rendered an `on/off` pill but could not be flipped from the console — their `BaseURL` / `Model` / `Metrics` were seeded by environment variables on the eval pod and the toggle was effectively cosmetic. Admins who wanted to disable either metric (or to swap a judge model) had no console-level escape hatch.
+
+This PR introduces one via the `EvalProfile` store, while keeping the operator off any direct cluster touchpath:
+
+- **Worker `ProfileStatus()`** derives `{SLMJudgeEnabled, RemoteEvalEnabled}` from the `configuredProfiles` slice (enabled per `Kind | ProfileSLMJudge | ProfileRemoteEval`). `cmd/nexus/eval_runtime.go::buildSnapshot` now uses this for `snap.Eval.Judge.Enabled` / `snap.Eval.Remote.Enabled`, while keeping `BaseURL` / `Model` / `URL` / `Metrics` sourced from env. The console sees whether the metric is *running*, not just whether it is wired.
+- **Two business buttons on the heuristic row**, both admin-only:
+  - **Change configuration** — opens the seeded `default-<kind>` profile in the existing Eval Profiles drawer. Admins can swap `BaseURL` / `Model` / `Metrics` directly, without editing the helm chart.
+  - **Disable evaluation** — flips `default-<kind>.enabled` to `false`. The eval pod keeps running but the disabled evaluator is skipped at runtime; no pod restart, no scaledown.
+- The previous dimmed `LabelToggle` is preserved as a *read-only* status indicator (`aria-disabled`) so non-admin operators still see the current running state and a hint that the row is env-driven.
+- **Two independent kinds** — disabling `default-judge` does not touch `default-remote`. Covered by `TestProfileStatus_TwoKindsIndependent`.
+
+### Operator notes
+
+- The eval pod is **not** restarted or scaled. The metric is simply skipped at score time. Existing traces keep flowing for the metrics you did not disable.
+- Reconfiguring a model / endpoint updates the profile store only. The next eval batch picks up the new configuration; no Helm / `kubectl` interaction is required.
+- For non-admin members, the buttons are not rendered, and the page itself remains admin-gated.
+
+### Tests
+
+- Backend: `TestProfileStatus_RespectsProfileEnabled`,
+  `TestProfileStatus_TwoKindsIndependent`,
+  `TestProfileStatus_IgnoresLegacyJudgesField`.
+- Frontend: heuristic table renders 4 metric toggles (2 clickable, 2 `aria-disabled`), admin sees both action buttons per row, and the disable button PATCHes `default-<kind>` with `{ enabled: false }`.
+
 ## [v0.6.7] — Toggle round-trip + single heuristic panel (PR #149)
 
 Console + gateway follow-up to [v0.6.6](#v066--heuristic--env-driven-split--stable-profile-order-pr-147).
