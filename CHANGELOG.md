@@ -5,6 +5,58 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.10] — Cost regression fix for versioned + prefixed model ids (PR #155)
+
+After deploying v0.6.9 the operator reported that **every trace's `CostUSD`
+showed $0** in the Traces page. Two coupled root causes:
+
+1. **Stale `pricingTable` vs. dynamic model catalog.** PR #111 added a
+   dynamic `/v1/models` sync that pushed upstream-returned versioned ids
+   (`gpt-4o-2024-08-06`, `o3-2025-01-31`, ...) and bare family ids into
+   the registry. The pricing table only held family roots; the lookup
+   had a single `<provider>/` strip fallback but no family-prefix
+   fallback. The silent `return 0` in `CostUSD` then charged zero for
+   every versioned id.
+2. **Three providers missing entirely.** `groq`, `mistral`, and `grid`
+   were absent from `pricingTable` even though the gateway registered
+   them via `providers.NewGroq` / `NewMistral` / `NewGrid`. Every
+   request that landed on those providers produced `trace.CostUSD = 0`,
+   which polluted cost-weighted routing weights and per-member spend
+   dashboards.
+
+### Changes
+
+- `internal/gateway/pricing.go`
+  - Adds a `familyAliases` longest-prefix mapper so versioned ids
+    resolve to their family root: `gpt-4o-2024-08-06` -> `gpt-4o`,
+    `o3-2025-01-31` -> `o3`, `claude-3-7-sonnet-20250219` ->
+    `claude-3-7-sonnet-latest`, etc. The alias list is conservative; a
+    future model like `gpt-5` fails closed (cost = 0) instead of
+    inheriting a sibling's price.
+  - Populates `pricingTable` with the chat/embed catalog shipped in
+    `providers/openai_compat.go` for **groq** (Llama 3.3/3.1, Mixtral,
+    Gemma2, Llama-Guard), **mistral** (Large/Medium/Small, Codestral,
+    Ministral, Pixtral), and **grid** (text/code/agent x
+    standard/prime/max instruments).
+  - Extends `CostUSD(requestModel, responseModel, in, out)` to accept
+    the upstream `ResponseModel` alongside the `RequestModel`; some
+    providers rewrite the model field on the response even though they
+    price at the family level.
+- `internal/gateway/handler.go`: three call sites updated to pass
+  `trace.ResponseModel`.
+- `internal/gateway/pricing_test.go` (new): 25-case table-driven test
+  that pins every newly-priced key, both negative paths, the
+  future-model fail-closed invariant, and token-scaling math. There was
+  no dedicated pricing test before this change.
+
+### Test plan
+- `go test ./internal/gateway/ -run 'TestCostUSD|TestPricingTable'`: 25
+  subcases pass.
+- `go test ./...`: full module regression green (console, evals,
+  eval-batch, observability, gateway, router, limiter, balancer,
+  semcache, guardrails).
+- `go vet ./...` clear.
+
 ## [v0.6.9] — Unified Eval toggles + per-user scope override (PR #153)
 
 Round-up of the v0.6.8 release with the operator feedback that landed in the
