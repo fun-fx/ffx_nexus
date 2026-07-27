@@ -81,6 +81,8 @@ function renderEval(
             profiles: [
               { id: "default-judge", kind: "slm_judge", scope: "org", enabled: true },
               { id: "default-remote", kind: "remote_eval", scope: "org", enabled: true },
+              { id: "default-pii", kind: "heuristic_pii", scope: "org", enabled: true },
+              { id: "default-completeness", kind: "heuristic_completeness", scope: "org", enabled: true },
             ],
           }),
           { status: 200 },
@@ -228,53 +230,72 @@ describe("<Eval /> weights sliders", () => {
 });
 
 describe("<Eval /> heuristic table layout", () => {
-  it("renders all metrics in one panel — 2 toggles clickable + 2 aria-disabled (env-driven)", async () => {
+  it("renders all metrics in one panel — every toggle is interactive, env-seeded profiles included", async () => {
     renderEval();
     await waitFor(() => screen.getByText("Heuristics"));
 
-    // The heuristics table holds 4 metric rows:
-    //   PII / Completeness -> interactive LabelToggle (role=switch)
-    //   SLM judge / Remote eval -> dimmed LabelToggle (role=switch,
-    //   aria-disabled=true)
-    //
-    // The Eval Profiles card below also renders one LabelToggle per
-    // profile row (default-judge, default-remote = 2 more), so total
-    // role=switch count is 6 — but EXACTLY 2 of the 4 are aria-disabled.
+    // v0.6.9 unified all four metric rows under a single switch with
+    // no aria-disabled. There are 4 switches from the heuristics
+    // table plus 4 more from the Eval Profiles card (default-pii /
+    // default-completeness / default-judge / default-remote all seeded
+    // by renderEval's fixture).
     const switches = screen.queryAllByRole("switch");
-    expect(switches.length).toBe(6);
+    expect(switches.length).toBe(8);
+    // None of the role=switch elements are aria-disabled any more —
+    // even the env-seeded SLM judge / Remote eval rows now expose a
+    // real Enable/Disable switch.
     const disabled = switches.filter(
       (s) => s.getAttribute("aria-disabled") === "true",
     );
-    // 2 dimmed from the heuristics table for SLM judge / Remote eval.
-    // The 2 profile rows render interactive toggles (they have their
-    // own admin-only cell, just not aria-disabled).
-    expect(disabled.length).toBe(2);
+    expect(disabled.length).toBe(0);
 
     // The text "SLM judge" and "Remote eval" are present in the
     // heuristics table — multiple matches are fine because there is
-    // also a Chip in the Eval Profiles card below. Use a heading
-    // selector to disambiguate.
+    // also a Chip in the Eval Profiles card below.
     expect(screen.getAllByText("SLM judge").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Remote eval").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^PII$/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Completeness$/i).length).toBeGreaterThan(0);
   });
 
-  it("admin sees Change configuration + Disable evaluation on SLM judge and Remote eval", async () => {
+  it("renders 4 interactive toggles on the heuristic table — admin can flip every kind", async () => {
     renderEval();
     await waitFor(() => screen.getByText("Heuristics"));
 
-    const changeBtns = screen.getAllByText("Change configuration");
-    expect(changeBtns.length).toBe(2);
-    const disableBtns = screen.getAllByText("Disable evaluation");
-    expect(disableBtns.length).toBe(2);
-    // Both buttons should not be disabled when the row reports enabled=true.
-    disableBtns.forEach((b) => {
-      expect(b).not.toBeDisabled();
-    });
+    // v0.6.9 unified all 4 rows under the same switch. The label's
+    // aria-label flips between "disable X" and "enable X" so the tests
+    // match by metric-specific label rather than the prior fixed
+    // "Disable evaluation" button text.
+    const switches = screen.queryAllByRole("switch");
+    // 4 metric rows + 4 profile rows below (default-{pii,completeness,judge,remote})
+    expect(switches.length).toBe(8);
+    // Every switch is interactive, not aria-disabled any more.
+    const disabledLabelsOnTable = switches.filter(
+      (s) => s.getAttribute("aria-disabled") === "true",
+    );
+    expect(disabledLabelsOnTable.length).toBe(0);
+
+    // The four kinds are still present in both the heuristic table and
+    // the profile card below; multiple matches are fine.
+    expect(screen.getAllByText("SLM judge").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Remote eval").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^PII$/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Completeness$/i).length).toBeGreaterThan(0);
+  });
+
+  it("admin sees Change configuration buttons on SLM judge and Remote eval rows", async () => {
+    renderEval();
+    await waitFor(() => screen.getByText("Heuristics"));
+
+    // v0.6.9: every heuristic-table row surfaces Change configuration
+    // because admins can edit any seeded default profile directly.
+    const changeBtns = screen.getAllByText(/Change configuration/i);
+    expect(changeBtns.length).toBeGreaterThanOrEqual(2);
   });
 });
 
-describe("<Eval /> admin disable profile flow", () => {
-  it("clicking Disable evaluation PATCHes the matching default profile with {enabled:false}", async () => {
+describe("<Eval /> admin toggle profile flow", () => {
+  it("clicking the toggle on SLM judge PATCHes default-judge with {enabled:false}", async () => {
     const patches: Array<{ url: string; body: unknown; method: string }> = [];
     vi.stubGlobal(
       "fetch",
@@ -298,6 +319,8 @@ describe("<Eval /> admin disable profile flow", () => {
               profiles: [
                 { id: "default-judge", kind: "slm_judge", scope: "org", enabled: true },
                 { id: "default-remote", kind: "remote_eval", scope: "org", enabled: true },
+                { id: "default-pii", kind: "heuristic_pii", scope: "org", enabled: true },
+                { id: "default-completeness", kind: "heuristic_completeness", scope: "org", enabled: true },
               ],
             }),
             { status: 200 },
@@ -317,9 +340,10 @@ describe("<Eval /> admin disable profile flow", () => {
     );
 
     await waitFor(() => screen.getByText("Heuristics"));
-    const [disableJudge, disableRemote] = screen.getAllByText("Disable evaluation");
 
-    fireEvent.click(disableJudge);
+    // Click the SLM judge switch (aria-label="disable SLM judge").
+    const slmSwitch = screen.getByRole("switch", { name: /disable SLM judge/i });
+    fireEvent.click(slmSwitch);
     await waitFor(() =>
       expect(
         patches.find((p) => p.url.includes("default-judge")),
@@ -329,21 +353,72 @@ describe("<Eval /> admin disable profile flow", () => {
       (patches.find((p) => p.url.includes("default-judge"))!.body as { enabled?: boolean })
         .enabled,
     ).toBe(false);
+  });
 
-    patches.length = 0;
-    fireEvent.click(disableRemote);
+  it("clicking the PII toggle PATCHes default-pii with {enabled:false}", async () => {
+    const patches: Array<{ url: string; body: unknown; method: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (method === "PATCH") {
+          const body = init?.body ? JSON.parse(String(init.body)) : {};
+          patches.push({ url, body, method });
+          return new Response("{}", { status: 200 });
+        }
+        if (url.endsWith("/api/me")) {
+          return new Response(JSON.stringify(adminMe), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/config")) {
+          return new Response(JSON.stringify(buildBundle({})), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/profiles")) {
+          return new Response(
+            JSON.stringify({
+              profiles: [
+                { id: "default-pii", kind: "heuristic_pii", scope: "org", enabled: true },
+                { id: "default-completeness", kind: "heuristic_completeness", scope: "org", enabled: true },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={qc}>
+          <Eval />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => screen.getByText("Heuristics"));
+
+    // Wait until the profile store has hydrated so profileIdByKind
+    // resolves to non-null values; otherwise the toggle click fires
+    // before the row's profileId is set and silently no-ops.
+    await waitFor(() =>
+      expect(screen.getAllByRole("switch", { name: /disable PII/i }).length).toBeGreaterThan(0),
+    );
+    const piiSwitch = screen.getByRole("switch", { name: /disable PII/i });
+    fireEvent.click(piiSwitch);
     await waitFor(() =>
       expect(
-        patches.find((p) => p.url.includes("default-remote")),
+        patches.find((p) => p.url.includes("default-pii")),
       ).toBeDefined(),
     );
     expect(
-      (patches.find((p) => p.url.includes("default-remote"))!.body as { enabled?: boolean })
+      (patches.find((p) => p.url.includes("default-pii"))!.body as { enabled?: boolean })
         .enabled,
     ).toBe(false);
   });
 
-  it("non-admin members do not see Disable evaluation / Change configuration buttons", async () => {
+  it("non-admin members do not see admin-only profile actions", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -379,11 +454,9 @@ describe("<Eval /> admin disable profile flow", () => {
       </ThemeProvider>,
     );
     // The Eval page is admin-gated, so a member just gets a Forbidden
-    // page. None of the action buttons (or the heuristic table itself)
-    // render for non-admin accounts.
+    // page. None of the admin-only actions render for non-admin.
     await waitFor(() => screen.getByText(/Forbidden/i));
-    expect(screen.queryByText("Disable evaluation")).toBeNull();
-    expect(screen.queryByText("Change configuration")).toBeNull();
-    expect(screen.queryByText("Heuristics")).toBeNull();
+    expect(screen.queryByText(/Change configuration/i)).toBeNull();
+    expect(screen.queryByText(/Heuristics/i)).toBeNull();
   });
 });

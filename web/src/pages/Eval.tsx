@@ -15,15 +15,19 @@ import { LabelToggle } from "../components/LabelToggle";
 import { fetchMe } from "../api";
 import { EvalProfilesCard } from "./EvalProfiles";
 
+type EvalMetric = "heuristic_pii" | "heuristic_completeness" | "slm_judge" | "remote_eval";
+
 interface EvalRule {
   metric: string;
+  kind: EvalMetric;
   enabled: boolean;
   detail: string;
   /**
    * Optional link from a top-table row down to the underlying
-   * EvalProfile. Populated for SLM judge / Remote eval so admin
-   * actions (Change configuration / Disable evaluation) can route
-   * directly to the right profile row.
+   * EvalProfile. The four core kinds each resolve to their default
+   * profile id (default-pii, default-completeness, default-judge,
+   * default-remote) so a uniform Enable / Disable switch routes the
+   * mutation straight to the right profile row.
    */
   profileId?: string | null;
 }
@@ -60,21 +64,32 @@ export function Eval() {
     refetchInterval: 30_000,
   });
 
-  // Stable id resolution: the backend seeds default-judge and
-  // default-remote as org-scoped profiles at first boot. If a custom
-  // profile of the same kind exists we prefer it (admin already chose
-  // it specifically), otherwise the seeded default is the right one
-  // to operate on.
+  // Stable id resolution: each of the four core kinds has a default-*
+  // profile seeded from env at boot. The top table button is wired to
+  // whichever default matches, falling back to any org-scope profile of
+  // the requested kind if the default has been deleted.
+  //
+  // `profileIdByKind` is keyed by the ProfileKind union (matches what
+  // /api/eval/profiles returns) so a single `evalRule.kind` lookup
+  // resolves straight to a profile row id.
   const profileIdByKind = useMemo(() => {
     const out: Record<string, string | undefined> = {
+      heuristic_pii: undefined,
+      heuristic_completeness: undefined,
       slm_judge: undefined,
       remote_eval: undefined,
     };
     const list = profilesQ.data ?? [];
-    for (const kind of ["slm_judge", "remote_eval"] as const) {
+    const wantDefault: Record<string, string> = {
+      heuristic_pii: "default-pii",
+      heuristic_completeness: "default-completeness",
+      slm_judge: "default-judge",
+      remote_eval: "default-remote",
+    };
+    for (const kind of Object.keys(wantDefault)) {
       const matches = list.filter((p) => p.kind === kind);
       out[kind] =
-        matches.find((p) => p.id === `default-${kind === "slm_judge" ? "judge" : "remote"}`)?.id ??
+        matches.find((p) => p.id === wantDefault[kind])?.id ??
         matches.find((p) => p.scope === "org")?.id ??
         matches[0]?.id;
     }
@@ -154,22 +169,28 @@ export function Eval() {
   const heur: EvalRule[] = [
     {
       metric: "PII",
+      kind: "heuristic_pii",
       enabled: cfg.eval.pii_enabled,
       detail: "Detects requests / responses that contain emails, phone numbers, etc.",
+      profileId: profileIdByKind["heuristic_pii"] ?? null,
     },
     {
       metric: "Completeness",
+      kind: "heuristic_completeness",
       enabled: cfg.eval.completeness_enabled,
       detail: "Trims runaway responses and flags truncated outputs.",
+      profileId: profileIdByKind["heuristic_completeness"] ?? null,
     },
     {
       metric: "SLM judge",
+      kind: "slm_judge",
       enabled: cfg.eval.judge.enabled,
       detail: `${cfg.eval.judge.model} @ ${cfg.eval.judge.base_url}`,
       profileId: profileIdByKind["slm_judge"] ?? null,
     },
     {
       metric: "Remote eval",
+      kind: "remote_eval",
       enabled: cfg.eval.remote.enabled,
       detail: cfg.eval.remote.metrics.join(", ") || "—",
       profileId: profileIdByKind["remote_eval"] ?? null,
@@ -229,10 +250,12 @@ export function Eval() {
       <EvalRules
           rules={heur}
           isAdmin={isAdmin}
-          profileIdByKind={profileIdByKind}
           onRequestOpenProfile={setPendingOpenProfileId}
-          onDisableProfile={(id) => profileToggleMut.mutate({ id, enabled: false })}
-          disableBusy={profileToggleMut.isPending}
+          onToggleProfile={(id, enabled) =>
+            profileToggleMut.mutate({ id, enabled })
+          }
+          toggleBusy={profileToggleMut.isPending}
+          profileToggleRow={profileToggleMut.variables?.id ?? null}
         />
       <EvalProfilesCard
         isAdmin={isAdmin}
@@ -265,39 +288,38 @@ export function Eval() {
   );
 }
 
-// The SLM judge / Remote eval rows are not toggleable from the console
-// in the same way PII / Completeness are: their BaseURL/Model/Metrics
-// are seeded from env at boot, and the operator's control surface is
-// the seeded default-* profile row below. This cell renders a pill
-// status that's read-only, plus admin-only action buttons that
-// delegate to the profile editor / to a profile-level enable toggle.
-// Non-admins see only the pill and a hint that the row is locked to
-// env config.
+// Uniform status cell for all four core evaluation kinds. v0.6.9 drops
+// the prior "locked-to-env" read-only pill for SLM judge / Remote eval;
+// every row now routes through PATCH /api/eval/profiles/<id> with the
+// toggled enabled flag, so an admin can flip SLM judge back on after
+// disabling it. Non-admins see a static on/off pill and the row detail.
+// Env-driven kinds (SLM judge / Remote eval) additionally expose a
+// "Change configuration" shortcut to the profile editor.
 function EnvDrivenCell({
   rule,
   isAdmin,
   busy,
   onChangeConfig,
-  onDisable,
+  onToggle,
 }: {
   rule: EvalRule;
   isAdmin: boolean;
   busy: boolean;
-  onChangeConfig: () => void;
-  onDisable: () => void;
+  onChangeConfig?: () => void;
+  onToggle: (next: boolean) => void;
 }) {
   const detail = rule.profileId
-    ? `Model: ${rule.detail}`
+    ? `Toggle ${rule.metric} — ${rule.detail}`
     : `No seeded profile yet for ${rule.metric}.`;
   return (
     <div className="env-driven-cell" title={detail}>
       <LabelToggle
         checked={rule.enabled}
-        label={`status ${rule.metric}`}
-        aria-disabled
-        onChange={() => undefined}
+        label={rule.enabled ? `disable ${rule.metric}` : `enable ${rule.metric}`}
+        disabled={busy || !rule.profileId}
+        onChange={(next) => onToggle(next)}
       />
-      {isAdmin && rule.profileId ? (
+      {isAdmin && rule.profileId && onChangeConfig ? (
         <div className="env-driven-actions">
           <button
             type="button"
@@ -306,18 +328,10 @@ function EnvDrivenCell({
           >
             Change configuration
           </button>
-          <button
-            type="button"
-            className="btn-ghost btn-small"
-            disabled={busy || !rule.enabled}
-            onClick={onDisable}
-          >
-            Disable evaluation
-          </button>
         </div>
       ) : null}
       {isAdmin && !rule.profileId ? (
-        <span className="hint-tag">seed not present</span>
+        <span className="hint-tag">default profile missing — toggle disabled</span>
       ) : null}
     </div>
   );
@@ -326,39 +340,19 @@ function EnvDrivenCell({
 function EvalRules({
   rules,
   isAdmin,
-  profileIdByKind,
   onRequestOpenProfile,
-  onDisableProfile,
-  disableBusy,
+  onToggleProfile,
+  toggleBusy,
+  profileToggleRow,
 }: {
   rules: EvalRule[];
   isAdmin: boolean;
-  profileIdByKind: Record<string, string | undefined>;
   onRequestOpenProfile: (id: string) => void;
-  onDisableProfile: (id: string) => void;
-  disableBusy: boolean;
+  onToggleProfile: (id: string, enabled: boolean) => void;
+  toggleBusy: boolean;
+  profileToggleRow: string | null;
 }) {
-  const qc = useQueryClient();
-  const [busy, setBusy] = useState<string | null>(null);
   void isAdmin;
-  const mut = useMutation({
-    // Backend EvalConfigPatch accepts both nested {eval:{pii_enabled:..}}
-    // and flat {pii_enabled:..} (the dual form makes the wire format
-    // tolerant of older scripts). Use flat form here so the wire payload
-    // matches the snake_case keys EvalConfigSnapshot returns.
-    mutationFn: (p: Record<string, unknown>) => patchEvalConfig(p),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["eval-config"] }),
-    onSettled: (_d, _e, payload) => {
-      void payload;
-      setBusy(null);
-    },
-  });
-
-  // Every row lives in one panel now. PII / Completeness have a clickable
-  // toggle; SLM judge / Remote eval are env-driven and rendered as a
-  // locked-to-env badge with admin-only configurable actions.
-  const interactiveMetrics = new Set(["PII", "Completeness"]);
-
   const cols: Column<EvalRule>[] = [
     {
       id: "metric",
@@ -369,50 +363,24 @@ function EvalRules({
     {
       id: "enabled",
       header: "Status",
-      width: "320px",
-      cell: (r) => {
-        const interactive = interactiveMetrics.has(r.metric);
-        if (interactive) {
-          return (
-            <LabelToggle
-              checked={r.enabled}
-              disabled={busy === r.metric || mut.isPending}
-              onChange={(next) => {
-                setBusy(r.metric);
-                const key =
-                  r.metric === "PII"
-                    ? { pii_enabled: next }
-                    : { completeness_enabled: next };
-                mut.mutate(key);
-              }}
-              label={`toggle ${r.metric}`}
-            />
-          );
-        }
-        // Non-interactive row (SLM judge / Remote eval). Cells render a
-        // "running / disabled" pill that's purely informational — never
-        // clickable — alongside admin-only buttons to either open the
-        // profile drawer for editing, or flip the profile's enabled
-        // flag (which is the new hot-path "disable evaluation" switch).
-        return (
-          <EnvDrivenCell
-            rule={r}
-            isAdmin={isAdmin}
-            busy={disableBusy}
-            onChangeConfig={() => {
-              const id =
-                profileIdByKind[r.metric === "SLM judge" ? "slm_judge" : "remote_eval"];
-              if (id) onRequestOpenProfile(id);
-            }}
-            onDisable={() => {
-              const id =
-                profileIdByKind[r.metric === "SLM judge" ? "slm_judge" : "remote_eval"];
-              if (id) onDisableProfile(id);
-            }}
-          />
-        );
-      },
-      sortValue: (r) => Number(!interactiveMetrics.has(r.metric)) * 10 + Number(r.enabled),
+      width: "340px",
+      cell: (r) => (
+        <EnvDrivenCell
+          rule={r}
+          isAdmin={isAdmin}
+          busy={toggleBusy && profileToggleRow === r.profileId}
+          onChangeConfig={
+            isAdmin && r.profileId
+              ? () => r.profileId && onRequestOpenProfile(r.profileId)
+              : undefined
+          }
+          onToggle={(next) => r.profileId && onToggleProfile(r.profileId, next)}
+        />
+      ),
+      // Sort: enabled rows first (true → 0), then by metric name. v0.6.9
+      // dropped the env-driven vs interactive split; all four core kinds
+      // live under the same switch now.
+      sortValue: (r) => (r.enabled ? 0 : 10) + String(r.metric).localeCompare(""),
     },
     {
       id: "detail",
@@ -433,13 +401,18 @@ function EvalRules({
           />
         </div>
         <p className="muted small" style={{ marginTop: 10 }}>
-          SLM judge and Remote eval are seeded from <code>NEXUS_EVAL_*</code> /
-          <code> NEXUS_REMOTE_EVAL_*</code> and exposed through default
-          profiles. Admins can change the wiring inside the profile
-          editor or flip the profile&apos;s enabled flag to turn
-          evaluation off — both apply without a Pod restart. Other
-          surfaces (PII / Completeness, routing weights, sample rate)
-          are unaffected.
+          All four metrics are driven by <code>EvalProfile</code> rows
+          below — each toggle flips the corresponding profile&apos;s{" "}
+          <code>enabled</code> flag without a Pod restart. SLM judge and
+          Remote eval are seeded from <code>NEXUS_EVAL_*</code> /
+          <code> NEXUS_REMOTE_EVAL_*</code> at boot; admins can edit their
+          BaseURL, model, or metrics inside the profile editor (the
+          &quot;Change configuration&quot; shortcut on each row). Any
+          member can override per-user by creating a{" "}
+          <code>scope: user</code> profile of the same <code>kind</code>:
+          leaving it enabled runs additively alongside the org profile,
+          while disabling it suppresses the org profile for that
+          member&apos;s traffic only.
         </p>
       </section>
     </>

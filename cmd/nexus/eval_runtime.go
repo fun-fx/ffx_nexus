@@ -310,18 +310,14 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 
 	if c.worker != nil {
 		st := c.worker.RuntimeState()
-		snap.Eval.PIIEnabled = st.PIIEnabled
-		snap.Eval.CompletenessEnabled = st.CompletenessEnabled
 		snap.Eval.SampleRate = st.SampleRate
 		snap.Eval.Workers = st.Workers
 
-		// Surface the profile-driven "is this evaluator running" state
-		// separately from the legacy config "is it wired" state. The
-		// BaseURL/Model/URL/Metrics below always reflect the env-derived
-		// wiring so the operator can see what's deployed, while Enabled
-		// tells them whether the worker is actually scoring anything
-		// right now. Toggling default-<kind>.enabled=false flips
-		// Enabled to false immediately without a pod restart.
+		// v0.6.9: every heuristic ("is X currently scoring?") is sourced
+		// from the profile snapshot — not from Worker.piiEnabled /
+		// Worker.completenessEnabled, which were removed in this PR. The
+		// env-derived wiring (BaseURL / Model / URL / Metrics) still
+		// comes from RuntimeState so the operator can see what's deployed.
 		ps := c.worker.ProfileStatus()
 		snap.Eval.Judge.BaseURL = st.JudgeBaseURL
 		snap.Eval.Judge.Model = st.JudgeModel
@@ -331,6 +327,8 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 		snap.Eval.Remote.Metrics = st.RemoteMetrics
 		snap.Eval.Remote.Timeout = formatDuration(st.RemoteTimeout)
 		snap.Eval.Remote.Enabled = ps.RemoteEvalEnabled
+		snap.Eval.PIIEnabled = ps.PIIEnabled
+		snap.Eval.CompletenessEnabled = ps.CompletenessEnabled
 	}
 
 	if c.modelRouter != nil {
@@ -365,28 +363,13 @@ func (c *evalRuntimeController) Apply(patch console.EvalConfigPatch) (console.Ev
 		return console.EvalConfigSnapshot{}, fmt.Errorf("eval worker not running")
 	}
 
-	// Merge nested {"eval":{"pii_enabled":...}} form when the request body
-	// uses it. The console switched to that shape during the PR #145 UX
-	// redesign. Flat top-level fields ({"pii_enabled":...}) still work for
-	// older callers and admin scripts.
-	if patch.Eval != nil {
-		if patch.Eval.PIIEnabled != nil && patch.PIIEnabled == nil {
-			patch.PIIEnabled = patch.Eval.PIIEnabled
-		}
-		if patch.Eval.CompletenessEnabled != nil && patch.CompletenessEnabled == nil {
-			patch.CompletenessEnabled = patch.Eval.CompletenessEnabled
-		}
-		if patch.Eval.SampleRate != nil && patch.SampleRate == nil {
-			patch.SampleRate = patch.Eval.SampleRate
-		}
-	}
-
-	if patch.PIIEnabled != nil {
-		c.worker.SetPIIEnabled(*patch.PIIEnabled)
-	}
-	if patch.CompletenessEnabled != nil {
-		c.worker.SetCompletenessEnabled(*patch.CompletenessEnabled)
-	}
+	// v0.6.9: PII / Completeness toggles ARE NOT handled here. They live in
+	// the profile store and the console hits PATCH /api/eval/profiles/<id>
+	// for those flips. `{eval:{pii_enabled:...}}` field patches arriving
+	// here are dropped on the floor; the upstream console router already
+	// rejects them, so this is defense-in-depth for direct API callers.
+	// Only judge-side wiring (BaseURL / Model / API key / SampleRate /
+	// sidecar URL / metrics) flows through here.
 	if patch.SampleRate != nil {
 		c.worker.SetJudgeSampleRate(*patch.SampleRate)
 	}

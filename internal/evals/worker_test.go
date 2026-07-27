@@ -30,18 +30,28 @@ func (s *captureSink) len() int {
 }
 
 // TestWorkerHeuristicsWithoutClickHouse verifies the eval engine runs heuristics
-// with a non-ClickHouse sink (NoopSink path via captureSink).
+// when the default PIICheck profile is loaded into the worker. (v0.6.9:
+// the legacy Worker.PIIEnabled flag was removed; the seeded default-pii
+// profile is the single source of truth now.)
 func TestWorkerHeuristicsWithoutClickHouse(t *testing.T) {
 	sink := &captureSink{}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	w := NewWorker(Options{
-		PIIEnabled:          true,
-		CompletenessEnabled: true,
-		Sink:                sink,
-		JudgeSampleRate:     0,
-		Workers:             1,
-		BufferSize:          4,
+		Sink:            sink,
+		JudgeSampleRate: 0,
+		Workers:         1,
+		BufferSize:      4,
 	}, log)
+
+	w.ReplaceProfiles([]EvalProfile{{
+		ID:         "default-pii",
+		Name:       "Default PII",
+		Kind:       ProfileHeuristicPII,
+		Scope:      ScopeOrg,
+		SampleRate: 1.0,
+		Enabled:    true,
+		Endpoint:   EvalEndpoint{KeySource: KeySourceBuiltin},
+	}})
 
 	w.Record(observability.Trace{
 		TraceID:        "t1",
@@ -84,12 +94,10 @@ func TestWorkerSetMetricsRecorder(t *testing.T) {
 	metricsRec := observability.NewMetricsRecorder("127.0.0.1:0", log)
 	defer metricsRec.Close(context.Background())
 	w := NewWorker(Options{
-		PIIEnabled:          true,
-		CompletenessEnabled: true,
-		Sink:                sink,
-		JudgeSampleRate:     0, // skip SLM judge; we only test the post-write quality branch
-		Workers:             1,
-		BufferSize:          4,
+		Sink:            sink,
+		JudgeSampleRate: 0, // skip SLM judge; we only test the post-write quality branch
+		Workers:         1,
+		BufferSize:      4,
 	}, log)
 	w.SetMetricsRecorder(metricsRec)
 
