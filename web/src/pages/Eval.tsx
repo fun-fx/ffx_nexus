@@ -34,6 +34,50 @@ export function Eval() {
   const cfg = qc.data?.cfg ?? null;
 
   const isAdmin = me?.role === "admin";
+
+  // Lifted weight state so the upper stats bar and the slider card stay in
+  // sync after `Save weights` re-normalises the row. Hooks must run on
+  // every render *before* any early return — otherwise the previous
+  // render's hook count disagrees with the current one and React throws.
+  // The initial seed is 0 because we run before the config is necessarily
+  // present; we hydrate from `cfg.routing.weights` in the effect below.
+  const [quality, setQuality] = useState(0);
+  const [cost, setCost] = useState(0);
+  const [latency, setLatency] = useState(0);
+
+  // Re-sync weights whenever a fresh config fetch lands. This is the only
+  // path that writes the initial values into local state — the lazy
+  // `useState` initialiser fires once at mount and would otherwise be
+  // permanently clamped to 0 if the first render observed `cfg = null`.
+  // We also heal "all-zero" rows (server may have written negatives before
+  // #128) by falling back to the historical 60/20/20 default.
+  const cfgWeights = cfg?.routing.weights;
+  useEffect(() => {
+    if (!cfgWeights) return;
+    const safe = (v: number | undefined) =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+    const q = safe(cfgWeights.quality);
+    const c = safe(cfgWeights.cost);
+    const l = safe(cfgWeights.latency);
+    if (q > 0 || c > 0 || l > 0) {
+      setQuality(q);
+      setCost(c);
+      setLatency(l);
+    } else {
+      // Server read a malformed all-zero row. Fall back to the historical
+      // default rather than rendering three 0% sliders.
+      setQuality(0.6);
+      setCost(0.2);
+      setLatency(0.2);
+    }
+  }, [
+    cfgWeights?.quality,
+    cfgWeights?.cost,
+    cfgWeights?.latency,
+    cfgWeights,
+  ]);
+  void quality; void cost; void latency;
+
   if (!isAdmin) return <Forbidden />;
   if (!cfg) {
     return (
@@ -85,6 +129,24 @@ export function Eval() {
           </p>
         </div>
         <div className="page-stats">
+          <div className="page-stat" data-stat="quality">
+            <div className="page-stat-label">quality</div>
+            <div className="page-stat-value">
+              {(quality * 100).toFixed(0)}%
+            </div>
+          </div>
+          <div className="page-stat" data-stat="cost">
+            <div className="page-stat-label">cost</div>
+            <div className="page-stat-value">
+              {(cost * 100).toFixed(0)}%
+            </div>
+          </div>
+          <div className="page-stat" data-stat="latency">
+            <div className="page-stat-label">latency</div>
+            <div className="page-stat-value">
+              {(latency * 100).toFixed(0)}%
+            </div>
+          </div>
           <div className="page-stat">
             <div className="page-stat-label">sample rate</div>
             <div className="page-stat-value">
@@ -99,7 +161,20 @@ export function Eval() {
       </header>
 
       <EvalRules rules={heur} isAdmin={isAdmin} />
-      <WeightsCard cfg={cfg} />
+      <WeightsCard
+        cfg={cfg}
+        quality={quality}
+        cost={cost}
+        latency={latency}
+        onQuality={setQuality}
+        onCost={setCost}
+        onLatency={setLatency}
+        onSaved={(after) => {
+          setQuality(after.quality);
+          setCost(after.cost);
+          setLatency(after.latency);
+        }}
+      />
       <GroupsCard cfg={cfg} />
 
       <div className="eval-footer">
@@ -179,31 +254,28 @@ function EvalRules({ rules, isAdmin }: { rules: EvalRule[]; isAdmin: boolean }) 
   );
 }
 
-function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
+function WeightsCard({
+  cfg,
+  quality,
+  cost,
+  latency,
+  onQuality,
+  onCost,
+  onLatency,
+  onSaved,
+}: {
+  cfg: EvalConfigSnapshot;
+  quality: number;
+  cost: number;
+  latency: number;
+  onQuality: (v: number) => void;
+  onCost: (v: number) => void;
+  onLatency: (v: number) => void;
+  onSaved: (next: { quality: number; cost: number; latency: number }) => void;
+}) {
   const qc = useQueryClient();
-  // Server-supplied weights may have been written before the backend started
-  // clamping negatives (#128), or by an admin via raw API. Snap anything
-  // < 0 to 0 so the slider thumb and value label display "0%" instead of
-  // "-20%". The "0" floor is intentional — showing the historical default
-  // (0.6 / 0.2 / 0.2) for a malformed row would silently introduce a 60/40
-  // skew the user never intended; clamping to 0 surfaces the bad state and
-  // lets the on-screen redistribute pass pick a sane replacement.
-  const safe = (v: number | undefined) =>
-    typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
-  const [quality, setQuality] = useState(safe(cfg.routing.weights.quality));
-  const [latency, setLatency] = useState(safe(cfg.routing.weights.latency));
-  const [cost, setCost] = useState(safe(cfg.routing.weights.cost));
-
-  // Heal degenerate "all zero" rows that came out of the safe() pass. Without
-  // this, a server response like {0, -0.1, -0.1} would render as three 0%
-  // sliders — the redistribute helpers won't have a non-zero base to scale
-  // against until the first user interaction.
-  useEffect(() => {
-    if (quality > 0 || latency > 0 || cost > 0) return;
-    setQuality(0.6);
-    setLatency(0.2);
-    setCost(0.2);
-  }, []); // Run only once after first hydration.
+  // State (quality / cost / latency) lives in the parent so the upper stats
+  // bar and the slider card stay in sync after Save re-normalises the row.
 
   const mut = useMutation({
     mutationFn: (next: { quality: number; cost: number; latency: number }) =>
@@ -231,6 +303,9 @@ function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
         ? `Sum was rebalanced to 100%: ${describeChange(before, after)}.`
         : "Saved — totals stay at 100%.",
     );
+    // Push the normalised row up so the upper stats bar re-paints to the
+    // post-save values as well, not just the slider thumbs.
+    onSaved(after);
     mut.mutate(after);
   }
 
@@ -245,19 +320,19 @@ function WeightsCard({ cfg }: { cfg: EvalConfigSnapshot }) {
           label="Quality"
           tone="accent"
           value={quality}
-          onChange={(v) => setQuality(clamp(v))}
+          onChange={(v) => onQuality(clamp(v))}
         />
         <WeightSlider
           label="Cost"
           tone="info"
           value={cost}
-          onChange={(v) => setCost(clamp(v))}
+          onChange={(v) => onCost(clamp(v))}
         />
         <WeightSlider
           label="Latency"
           tone="warn"
           value={latency}
-          onChange={(v) => setLatency(clamp(v))}
+          onChange={(v) => onLatency(clamp(v))}
         />
         <div className="weight-actions">
           <span className="muted small">
