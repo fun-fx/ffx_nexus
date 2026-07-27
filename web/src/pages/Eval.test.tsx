@@ -34,12 +34,12 @@ function buildBundle(o: Overrides) {
       sample_rate: 0.1,
       workers: 4,
       judge: {
-        enabled: false,
-        base_url: "",
-        model: "",
+        enabled: true,
+        base_url: "http://judge.local",
+        model: "judge-v1",
         api_key_set: false,
       },
-      remote: { enabled: false, url: "", metrics: [], timeout: "" },
+      remote: { enabled: true, url: "http://remote.local", metrics: ["faithfulness"], timeout: "30s" },
     },
     eval_enabled: true,
     routing_enabled: true,
@@ -63,7 +63,8 @@ function renderEval(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (init?.method === "PATCH") {
+      const method = init?.method?.toUpperCase() ?? "GET";
+      if (method === "PATCH") {
         const body = init?.body ? JSON.parse(String(init.body)) : {};
         onPatch(body);
         return new Response("{}", { status: 200 });
@@ -73,6 +74,17 @@ function renderEval(
       }
       if (url.endsWith("/api/eval/config")) {
         return new Response(JSON.stringify(buildBundle(o)), { status: 200 });
+      }
+      if (url.endsWith("/api/eval/profiles")) {
+        return new Response(
+          JSON.stringify({
+            profiles: [
+              { id: "default-judge", kind: "slm_judge", scope: "org", enabled: true },
+              { id: "default-remote", kind: "remote_eval", scope: "org", enabled: true },
+            ],
+          }),
+          { status: 200 },
+        );
       }
       return new Response("{}", { status: 200 });
     }),
@@ -216,19 +228,162 @@ describe("<Eval /> weights sliders", () => {
 });
 
 describe("<Eval /> heuristic table layout", () => {
-  it("renders all metrics in one panel — 2 toggles clickable + 2 dimmed (env-driven)", async () => {
+  it("renders all metrics in one panel — 2 toggles clickable + 2 aria-disabled (env-driven)", async () => {
     renderEval();
     await waitFor(() => screen.getByText("Heuristics"));
 
-    // One single table holds all 4 metric rows.
-    // PII / Completeness have an interactive (clickable) toggle.
-    // SLM judge / Remote eval also have a role=switch, but it is dimmed
-    // via aria-disabled so the operator sees the current env-driven state.
+    // The heuristics table holds 4 metric rows:
+    //   PII / Completeness -> interactive LabelToggle (role=switch)
+    //   SLM judge / Remote eval -> dimmed LabelToggle (role=switch,
+    //   aria-disabled=true)
+    //
+    // The Eval Profiles card below also renders one LabelToggle per
+    // profile row (default-judge, default-remote = 2 more), so total
+    // role=switch count is 6 — but EXACTLY 2 of the 4 are aria-disabled.
     const switches = screen.queryAllByRole("switch");
-    expect(switches.length).toBe(4);
+    expect(switches.length).toBe(6);
+    const disabled = switches.filter(
+      (s) => s.getAttribute("aria-disabled") === "true",
+    );
+    // 2 dimmed from the heuristics table for SLM judge / Remote eval.
+    // The 2 profile rows render interactive toggles (they have their
+    // own admin-only cell, just not aria-disabled).
+    expect(disabled.length).toBe(2);
 
-    // The text "SLM judge" and "Remote eval" are present in the same table.
-    expect(screen.getByText("SLM judge")).toBeInTheDocument();
-    expect(screen.getByText("Remote eval")).toBeInTheDocument();
+    // The text "SLM judge" and "Remote eval" are present in the
+    // heuristics table — multiple matches are fine because there is
+    // also a Chip in the Eval Profiles card below. Use a heading
+    // selector to disambiguate.
+    expect(screen.getAllByText("SLM judge").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Remote eval").length).toBeGreaterThan(0);
+  });
+
+  it("admin sees Change configuration + Disable evaluation on SLM judge and Remote eval", async () => {
+    renderEval();
+    await waitFor(() => screen.getByText("Heuristics"));
+
+    const changeBtns = screen.getAllByText("Change configuration");
+    expect(changeBtns.length).toBe(2);
+    const disableBtns = screen.getAllByText("Disable evaluation");
+    expect(disableBtns.length).toBe(2);
+    // Both buttons should not be disabled when the row reports enabled=true.
+    disableBtns.forEach((b) => {
+      expect(b).not.toBeDisabled();
+    });
+  });
+});
+
+describe("<Eval /> admin disable profile flow", () => {
+  it("clicking Disable evaluation PATCHes the matching default profile with {enabled:false}", async () => {
+    const patches: Array<{ url: string; body: unknown; method: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (method === "PATCH") {
+          const body = init?.body ? JSON.parse(String(init.body)) : {};
+          patches.push({ url, body, method });
+          return new Response("{}", { status: 200 });
+        }
+        if (url.endsWith("/api/me")) {
+          return new Response(JSON.stringify(adminMe), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/config")) {
+          return new Response(JSON.stringify(buildBundle({})), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/profiles")) {
+          return new Response(
+            JSON.stringify({
+              profiles: [
+                { id: "default-judge", kind: "slm_judge", scope: "org", enabled: true },
+                { id: "default-remote", kind: "remote_eval", scope: "org", enabled: true },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={qc}>
+          <Eval />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => screen.getByText("Heuristics"));
+    const [disableJudge, disableRemote] = screen.getAllByText("Disable evaluation");
+
+    fireEvent.click(disableJudge);
+    await waitFor(() =>
+      expect(
+        patches.find((p) => p.url.includes("default-judge")),
+      ).toBeDefined(),
+    );
+    expect(
+      (patches.find((p) => p.url.includes("default-judge"))!.body as { enabled?: boolean })
+        .enabled,
+    ).toBe(false);
+
+    patches.length = 0;
+    fireEvent.click(disableRemote);
+    await waitFor(() =>
+      expect(
+        patches.find((p) => p.url.includes("default-remote")),
+      ).toBeDefined(),
+    );
+    expect(
+      (patches.find((p) => p.url.includes("default-remote"))!.body as { enabled?: boolean })
+        .enabled,
+    ).toBe(false);
+  });
+
+  it("non-admin members do not see Disable evaluation / Change configuration buttons", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (method === "PATCH") {
+          return new Response("{}", { status: 200 });
+        }
+        if (url.endsWith("/api/me")) {
+          return new Response(
+            JSON.stringify({
+              ...adminMe,
+              role: "member",
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/api/eval/config")) {
+          return new Response(JSON.stringify(buildBundle({})), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/profiles")) {
+          return new Response(JSON.stringify({ profiles: [] }), { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={qc}>
+          <Eval />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+    // The Eval page is admin-gated, so a member just gets a Forbidden
+    // page. None of the action buttons (or the heuristic table itself)
+    // render for non-admin accounts.
+    await waitFor(() => screen.getByText(/Forbidden/i));
+    expect(screen.queryByText("Disable evaluation")).toBeNull();
+    expect(screen.queryByText("Change configuration")).toBeNull();
+    expect(screen.queryByText("Heuristics")).toBeNull();
   });
 });

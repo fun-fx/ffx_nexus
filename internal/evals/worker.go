@@ -349,6 +349,39 @@ func (w *Worker) Close(ctx context.Context) error {
 	return nil
 }
 
+// ProfileKind is exported here for runtime controller / UI consumption.
+// We only need to know whether *any* profile of a given kind is enabled
+// to drive the disabled-state UI; the rest of the profile API stays
+// where the rest of the eval logic lives.
+type ProfileKindSummary struct {
+	SLMJudgeEnabled   bool
+	RemoteEvalEnabled bool
+}
+
+// ProfileStatus returns the user-facing "is this evaluator currently
+// running?" view derived from the profile snapshot, mirroring the gate
+// in collectEvaluators (which skips !Enabled profiles before anything
+// else). Default-* profiles seeded from env count as profile state too;
+// toggling default-judge.enabled=false flips this flag in lockstep.
+func (w *Worker) ProfileStatus() ProfileKindSummary {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	var out ProfileKindSummary
+	for i := range w.configuredProfiles {
+		ep := &w.configuredProfiles[i]
+		if !ep.Enabled {
+			continue
+		}
+		switch ep.Kind {
+		case ProfileSLMJudge:
+			out.SLMJudgeEnabled = true
+		case ProfileRemoteEval:
+			out.RemoteEvalEnabled = true
+		}
+	}
+	return out
+}
+
 // ReplaceProfiles atomically swaps in the next snapshot of profiles
 // the worker uses for per-trace evaluation. The snapshot is owned by
 // the worker after the swap (we copy in), so the runtime controller

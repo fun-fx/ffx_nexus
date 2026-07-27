@@ -314,14 +314,23 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 		snap.Eval.CompletenessEnabled = st.CompletenessEnabled
 		snap.Eval.SampleRate = st.SampleRate
 		snap.Eval.Workers = st.Workers
-		snap.Eval.Judge.Enabled = st.JudgeBaseURL != "" && st.JudgeModel != ""
+
+		// Surface the profile-driven "is this evaluator running" state
+		// separately from the legacy config "is it wired" state. The
+		// BaseURL/Model/URL/Metrics below always reflect the env-derived
+		// wiring so the operator can see what's deployed, while Enabled
+		// tells them whether the worker is actually scoring anything
+		// right now. Toggling default-<kind>.enabled=false flips
+		// Enabled to false immediately without a pod restart.
+		ps := c.worker.ProfileStatus()
 		snap.Eval.Judge.BaseURL = st.JudgeBaseURL
 		snap.Eval.Judge.Model = st.JudgeModel
 		snap.Eval.Judge.APIKeySet = st.JudgeAPIKeySet
-		snap.Eval.Remote.Enabled = st.RemoteURL != ""
+		snap.Eval.Judge.Enabled = ps.SLMJudgeEnabled
 		snap.Eval.Remote.URL = st.RemoteURL
 		snap.Eval.Remote.Metrics = st.RemoteMetrics
 		snap.Eval.Remote.Timeout = formatDuration(st.RemoteTimeout)
+		snap.Eval.Remote.Enabled = ps.RemoteEvalEnabled
 	}
 
 	if c.modelRouter != nil {

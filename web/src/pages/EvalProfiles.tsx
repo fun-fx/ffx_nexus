@@ -164,7 +164,23 @@ function keySourceLabel(k: KeySource): string {
   return KEY_SOURCE_PRESETS.find((p) => p.id === k)?.label ?? k;
 }
 
-export function EvalProfilesCard({ isAdmin }: { isAdmin: boolean }) {
+export function EvalProfilesCard({
+  isAdmin,
+  pendingOpenProfileId,
+  onPendingOpenConsumed,
+}: {
+  isAdmin: boolean;
+  /**
+   * Optional id of a profile the parent (Eval page) wants the drawer
+   * opened on next render. Useful when the parent exposes a "Change
+   * configuration" button next to a non-interactive row (e.g. the SLM
+   * judge / Remote eval rows on the /eval page) and wants to deep-link
+   * the operator straight into the editor for that profile kind's
+   * default profile.
+   */
+  pendingOpenProfileId?: string | null;
+  onPendingOpenConsumed?: () => void;
+}) {
   const qc = useQueryClient();
   const profiles = useQuery({
     queryKey: ["eval-profiles"],
@@ -176,6 +192,26 @@ export function EvalProfilesCard({ isAdmin }: { isAdmin: boolean }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftProfile>(emptyDraft());
   const [error, setError] = useState<string | null>(null);
+
+  // When the parent /eval page asks us to open the editor on a specific
+  // profile id, do so as soon as the profile list has resolved and we
+  // have a real EvalProfile to load. We treat the request as one-shot
+  // and clear it via onPendingOpenConsumed so a re-render (including
+  // the editor's own close handler) doesn't loop us back in.
+  useEffect(() => {
+    if (!pendingOpenProfileId) return;
+    if (!profiles.data) return;
+    const target = profiles.data.find((p) => p.id === pendingOpenProfileId);
+    if (!target?.id) {
+      onPendingOpenConsumed?.();
+      return;
+    }
+    setEditingId(target.id);
+    setDraft(fromProfile(target));
+    setError(null);
+    setDrawerOpen(true);
+    onPendingOpenConsumed?.();
+  }, [pendingOpenProfileId, profiles.data, onPendingOpenConsumed]);
 
   // Heuristic kinds ignore non-builtin key sources — match the
   // server-side validation in profiles.go so the client never sends

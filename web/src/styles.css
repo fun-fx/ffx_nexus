@@ -71,6 +71,32 @@ a:hover {
   transform: translateY(0);
 }
 
+.env-driven-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.env-driven-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.env-driven-actions .btn-ghost {
+  white-space: nowrap;
+}
+
+.env-driven-actions .btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.env-driven-cell .hint-tag {
+  white-space: nowrap;
+}
+
 .btn-ghost {
   display: inline-flex;
   align-items: center;
