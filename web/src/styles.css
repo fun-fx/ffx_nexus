@@ -1365,7 +1365,57 @@ a:hover {
 }
 
 .dt-row {
-  display: contents;
+  display: grid;
+  align-items: stretch;
+}
+
+.dt-th {
+  /* Inside the new explicit-row grid, each header cell is its own
+     grid item. We attach the resize handle at the right edge via a
+     flex row. */
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--muted-2);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+/* The override above applies when .dt-th is a real grid item, which
+   is the case for the current DataTable. Earlier iterations used
+   `.dt-row { display: contents }` so .dt-th was inline; we keep no
+   fallback because no consumer still emits that pattern. */
+
+
+.dt-th-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color 140ms ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dt-th-btn .dt-sort-ind {
+  /* The sort indicator sits at the end of the inline button row, so
+     it doesn't compete with the resize handle for the right-most
+     pixel. */
+  margin-left: auto;
 }
 
 .dt-row.is-head,
@@ -1385,42 +1435,51 @@ a:hover {
   font-weight: 600;
 }
 
-.dt-th {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-}
-
-.dt-th-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 10px 12px;
-  background: transparent;
-  border: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: color 140ms ease;
-}
-
 .dt-th-btn:hover,
 .dt-th-btn:focus-visible {
   color: var(--text);
   outline: none;
 }
 
-.dt-th.is-sorted > .dt-th-btn,
-.dt-th.is-sorted .dt-th-btn {
-  color: var(--accent-2);
+/* Hover/focus reveal of the resize handle is animated so the column
+   stays visually quiet up until the user reaches for it. */
+.dt-resize-handle {
+  flex: 0 0 6px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  margin-left: auto;
+  /* Avoid stealing clicks on the actual sort button. */
+  touch-action: none;
+  user-select: none;
+}
+
+.dt-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  right: 2px;
+  width: 1px;
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.dt-th:hover .dt-resize-handle::after,
+.dt-th:focus-within .dt-resize-handle::after,
+.dt-resize-handle:focus-visible::after,
+.dt-resize-handle.is-dragging::after {
+  opacity: 1;
+}
+
+/* While the user is dragging, block selection on the rest of the
+   grid so text doesn't accidentally get highlighted. The cursor
+   rule keeps the visible affordance honest. */
+.dt-resizing {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 .dt-sort-ind {

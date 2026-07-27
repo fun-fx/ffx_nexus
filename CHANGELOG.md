@@ -5,6 +5,43 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [v0.6.12] — Resizable columns on the Traces page
+
+Operators reported that the `Time` column on the Traces page was being
+clipped at narrow viewport widths because every `DataTable` column used
+a fixed pixel width. This change gives operators first-class control
+over column widths via a draggable resize handle on each header cell.
+
+### Frontend
+
+- `web/src/components/DataTable.tsx`
+  - New resize handle rendered at the right edge of each column header
+    that has a numeric width (or a stored user override).
+  - Pointer-driven drag commits the chosen px width to React state on
+    every move; the next pointerup releases the session.
+  - Keyboard accessibility: focus the handle and use ← / → to nudge by
+    8 px, Home / Escape to reset to the declared width.
+  - `storageKey` prop namespaces the persisted widths in
+    `localStorage`; supplied as `"nexus:dt:traces"` for the Traces
+    page so the operator's drag survives reloads.
+  - Per-instance `useRef` for the drag session so two `DataTable`s on
+    the same page do not share a session.
+  - `aria-valuenow/min/max` on the handle reflect the live width for
+    screen-reader users.
+- `web/src/components/DataTable.test.tsx`
+  - Five new tests covering the handle being rendered, keyboard
+    nudge, MIN_PX clamp at 40 px, restored-width on mount, and the
+    per-key storage write contract.
+- `web/src/styles.css` + `web/src/pages/Traces.tsx`
+  - `.dt-row` promoted from `display: contents` to a real grid so the
+    resize handle can live next to its header cell; column-header
+    button is now an `inline-flex` row inside a flex `<th>`.
+  - `.dt-resize-handle` is a narrow column cursor with a 1 px reveal
+    bar on hover / focus / drag.
+  - `body.dt-resizing` locks selection globally during a drag.
+
+
+
 ## [v0.6.11] — Server-side filter + time-window pagination for Traces (PR #157)
 
 The Traces page previously hard-coded a fetch of the most-recent 500

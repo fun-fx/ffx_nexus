@@ -405,6 +405,7 @@ export function Traces() {
             isLoading ? "Loading traces…" : "No traces match the filters."
           }
           initialSort={{ id: "time", dir: "desc" }}
+          storageKey="nexus:dt:traces"
         />
       </div>
 
