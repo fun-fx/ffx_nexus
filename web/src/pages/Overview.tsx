@@ -28,7 +28,7 @@ async function fetchOverview() {
     me: me.status === "fulfilled" ? (me.value as User | null) : null,
     stats: stats.status === "fulfilled" ? (stats.value as Stats) : null,
     traces:
-      traces.status === "fulfilled" ? (traces.value as TraceSummary[]) : [],
+      traces.status === "fulfilled" ? traces.value.items : [],
     routing:
       routing.status === "fulfilled" ? (routing.value as RoutingModel[]) : [],
     eval:

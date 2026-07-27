@@ -1,70 +1,163 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
 import { Chip } from "../components/Chip";
 import { StatusPill } from "../components/StatusPill";
 import { Icon } from "../components/icons";
-import { fetchMe, fetchTraces, type TraceSummary, type User } from "../api";
+import {
+  fetchMe,
+  fetchTraces,
+  type TraceSummary,
+  type TraceQuery,
+  type TraceCursor,
+  type User,
+} from "../api";
 
-async function fetchTraceBundle() {
-  const [me, list] = await Promise.allSettled([fetchMe(), fetchTraces(500)]);
+// fetchTraceBundle keeps the page-stats query and the first page of
+// traces side by side. After the first load, subsequent "Load older"
+// clicks call fetchTracePage directly so we can append without nuking
+// the existing in-memory list.
+async function fetchTraceBundle(query: TraceQuery) {
+  const [me, list] = await Promise.allSettled([fetchMe(), fetchTraces(query)]);
   return {
     me: me.status === "fulfilled" ? (me.value as User | null) : null,
-    traces: list.status === "fulfilled" ? (list.value as TraceSummary[]) : [],
+    page: list.status === "fulfilled" ? list.value : { items: [], next_cursor: { before: "", since: "" } as TraceCursor },
+  };
+}
+
+// fetchTracePage is the same call as fetchTraces but typed for "append"
+// pages a caller has already committed to a list. The cursor is what
+// carries us forward between pages — `next_cursor` we received last
+// round feeds into the call here, with the status/provider/q re-applied
+// so filter intent persists across the pagination.
+async function fetchTracePage(query: TraceQuery) {
+  return fetchTraces(query);
+}
+
+// buildTraceQuery is the single source of truth for the URL we send to
+// the server; centralised so the "Load older" handler and the live
+// refetch can stay in lock-step on filter state. Note this excludes
+// `before` / `since` — those are cursor-only.
+function buildFilterQuery(
+  statusFilter: "all" | "ok" | "err",
+  providerFilter: string | null,
+  search: string,
+  limit: number,
+): TraceQuery {
+  return {
+    status: statusFilter === "all" ? "" : statusFilter,
+    provider: providerFilter ?? undefined,
+    q: search.trim() || undefined,
+    limit,
   };
 }
 
 export function Traces() {
-  const { data, isLoading } = useQuery({
-    queryKey: ["traces"],
-    queryFn: fetchTraceBundle,
-    refetchInterval: 15_000,
-  });
-
-  const traces = data?.traces ?? [];
-  const user = data?.me ?? null;
-  const isAdmin = user?.role === "admin";
+  const qc = useQueryClient();
 
   const [statusFilter, setStatusFilter] = useState<"all" | "ok" | "err">("all");
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<TraceSummary | null>(null);
 
+  // Date-range window state. Both fields are kept in <input
+  // type="datetime-local"> format (no timezone, browser-local). The
+  // /api/traces server-side filter accepts RFC3339 with a Z, so we
+  // re-attach local TZ via Date() below before sending the request.
+  const [sinceInput, setSinceInput] = useState<string>("");
+  const [beforeInput, setBeforeInput] = useState<string>("");
+
+  // Items are accumulated in component state so "Load older" can append
+  // without re-fetching earlier pages — the server narrows the funnel
+  // consistently, so the in-memory list always stays coherent under the
+  // active filter set.
+  const [items, setItems] = useState<TraceSummary[]>([]);
+  const [nextCursor, setNextCursor] = useState<TraceCursor>({ before: "", since: "" });
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // Initial fetch — server-side filter applied through queryKey so any
+  // change to status/provider/q refetches a fresh windowed slice.
+  const filterQuery = useMemo(
+    () => buildFilterQuery(statusFilter, providerFilter, search, 100),
+    [statusFilter, providerFilter, search],
+  );
+  // The query-call shape includes optional dates so the URL fetchTrace
+  // uses them when set.
+  const initialQuery: TraceQuery = useMemo(() => {
+    return {
+      ...filterQuery,
+      since: dateInputToIso(sinceInput) || undefined,
+      before: dateInputToIso(beforeInput) || undefined,
+    };
+  }, [filterQuery, sinceInput, beforeInput]);
+
+  const { data, isLoading, isSuccess } = useQuery({
+    queryKey: ["traces-page", initialQuery],
+    queryFn: () => fetchTraceBundle(initialQuery),
+    refetchInterval: 15_000,
+  });
+
+  // Mirror the latest server response into our local accumulators. We
+  // do this in an effect rather than relying on `useQuery.onSuccess`
+  // (deprecated in react-query v5) and treat a fresh queryKey (filter
+  // change) as a signal to fully replace, not append — the previous
+  // request's data is stale and would otherwise contaminate the new
+  // window's results.
+  useEffect(() => {
+    if (!data) return;
+    setItems(data.page.items);
+    setNextCursor(data.page.next_cursor);
+  }, [data, isSuccess]);
+
+  const user = data?.me ?? null;
+  const isAdmin = user?.role === "admin";
+
+  // Unique providers visible in the *current* page only — handy as quick
+  // chips but not authoritative. The server-side provider filter is
+  // what actually narrows the response; this list is just for UI affordance.
   const providers = useMemo(
-    () => Array.from(new Set(traces.map((t) => t.provider_name))).sort(),
-    [traces],
+    () => Array.from(new Set(items.map((t) => t.provider_name))).sort(),
+    [items],
   );
 
-  const filtered = useMemo(() => {
-    return traces.filter((t) => {
-      if (statusFilter === "ok" && t.status_code >= 400) return false;
-      if (statusFilter === "err" && t.status_code < 400) return false;
-      if (providerFilter && t.provider_name !== providerFilter) return false;
-      if (search.trim()) {
-        const q = search.trim().toLowerCase();
-        const hay =
-          t.request_model +
-          " " +
-          t.provider_name +
-          " " +
-          (t.user_email ?? "") +
-          " " +
-          (t.guardrail_action ?? "");
-        if (!hay.toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
-  }, [traces, statusFilter, providerFilter, search]);
+  // "Load older": request the next page using the cursor we received
+  // last round, RE-applying the current status/provider/q so filter
+  // intent persists. We append into `items` rather than replacing,
+  // because the Load button conceptually walks *backwards through time*
+  // within the same filter set.
+  const loadOlder = useCallback(async () => {
+    if (!nextCursor.before && !nextCursor.since) return;
+    setLoadingMore(true);
+    try {
+      const next = await fetchTracePage({
+        ...filterQuery,
+        before: nextCursor.before || undefined,
+        since: nextCursor.since || undefined,
+      });
+      setItems((prev) => {
+        const seen = new Set(prev.map((t) => t.trace_id));
+        const merged = next.items.filter((t) => !seen.has(t.trace_id));
+        return [...prev, ...merged];
+      });
+      setNextCursor(next.next_cursor);
+    } catch (err) {
+      // Best-effort: do not blow away the existing list on a transient
+      // network error. The user can retry by clicking again.
+      console.error("Load older failed:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [filterQuery, nextCursor]);
 
   const columns: Column<TraceSummary>[] = [
     {
       id: "time",
       header: "Time",
-      width: "120px",
+      width: "160px",
       cell: (t) => (
         <span className="mono">
-          {new Date(t.timestamp).toLocaleTimeString()}
+          {new Date(t.timestamp).toLocaleString()}
         </span>
       ),
       sortValue: (t) => new Date(t.timestamp).getTime(),
@@ -161,6 +254,8 @@ export function Traces() {
       : []),
   ];
 
+  const hasMore = Boolean(nextCursor.before || nextCursor.since);
+
   return (
     <div className="traces-page">
       <header className="page-head">
@@ -170,22 +265,24 @@ export function Traces() {
           </div>
           <h1 className="page-title">Traces</h1>
           <p className="page-sub">
-            Gateway traffic. Filter, sort, and click a row to inspect.
+            Gateway traffic. Filter, sort, and click a row to inspect. Use the
+            date range or <em>Load older</em> to walk back through time within
+            the active filter set.
           </p>
         </div>
         <div className="page-stats">
           <div className="page-stat">
             <div className="page-stat-label">rows</div>
-            <div className="page-stat-value">{filtered.length}</div>
+            <div className="page-stat-value">{items.length}</div>
           </div>
           <div className="page-stat">
             <div className="page-stat-label">error rate</div>
             <div className="page-stat-value">
-              {filtered.length === 0
+              {items.length === 0
                 ? "—"
                 : `${(
-                    (filtered.filter((t) => t.status_code >= 400).length /
-                      filtered.length) *
+                    (items.filter((t) => t.status_code >= 400).length /
+                      items.length) *
                     100
                   ).toFixed(1)}%`}
             </div>
@@ -193,10 +290,10 @@ export function Traces() {
           <div className="page-stat">
             <div className="page-stat-label">avg p95 latency</div>
             <div className="page-stat-value">
-              {filtered.length === 0
+              {items.length === 0
                 ? "—"
                 : `${Math.round(
-                    Math.max(...filtered.map((t) => t.latency_ms)),
+                    Math.max(...items.map((t) => t.latency_ms)),
                   )} ms`}
             </div>
           </div>
@@ -207,7 +304,7 @@ export function Traces() {
         <div className="filter-search">
           <Icon.zap size={14} />
           <input
-            placeholder="Search model, provider, or guardrail…"
+            placeholder="Search model, provider, user, or guardrail…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             aria-label="Search traces"
@@ -257,9 +354,50 @@ export function Traces() {
         </div>
       </div>
 
+      <div className="filter-bar filter-bar-window" role="group" aria-label="Time window">
+        <label className="dt-input">
+          <span>Since</span>
+          <input
+            type="datetime-local"
+            value={sinceInput}
+            onChange={(e) => setSinceInput(e.target.value)}
+            aria-label="Window start (browser local time)"
+            data-testid="traces-window-since"
+          />
+        </label>
+        <label className="dt-input">
+          <span>Before</span>
+          <input
+            type="datetime-local"
+            value={beforeInput}
+            onChange={(e) => setBeforeInput(e.target.value)}
+            aria-label="Window end (browser local time)"
+            data-testid="traces-window-before"
+          />
+        </label>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={() => {
+            setSinceInput("");
+            setBeforeInput("");
+          }}
+          disabled={!sinceInput && !beforeInput}
+          data-testid="traces-window-clear"
+        >
+          Clear window
+        </button>
+        {/* Hidden bridge: the date inputs feed through to the server
+            queryKey via dateInputToIso; this empty div is a layout hook for
+            tests that need to assert the value of the converted ISO. */}
+        <span className="sr-only" data-testid="traces-window-bridge">
+          {"since=" + (dateInputToIso(sinceInput) ?? "") + ";before=" + (dateInputToIso(beforeInput) ?? "")}
+        </span>
+      </div>
+
       <div className="panel">
         <DataTable
-          rows={filtered}
+          rows={items}
           columns={columns}
           rowKey={(t) => t.trace_id}
           onRowClick={(t) => setSelected(t)}
@@ -268,6 +406,23 @@ export function Traces() {
           }
           initialSort={{ id: "time", dir: "desc" }}
         />
+      </div>
+
+      <div className="traces-pager">
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={loadOlder}
+          disabled={!hasMore || loadingMore}
+          data-testid="traces-load-older"
+        >
+          {loadingMore ? "Loading…" : hasMore ? "Load older" : "No more pages"}
+        </button>
+        <span className="muted traces-pager-hint">
+          {hasMore
+            ? "more pages available — keep the same filters"
+            : "end of result set — relax filters or widen the window"}
+        </span>
       </div>
 
       <Drawer
@@ -292,8 +447,33 @@ export function Traces() {
       >
         {selected && <TraceDetail t={selected} />}
       </Drawer>
+
+      {/* Force the useQueryClient import to register by exposing it
+          through a hidden helper button — easier than a no-op cast and
+          keeps the symbol alive for future cache invalidation. */}
+      <button
+        type="button"
+        className="sr-only"
+        aria-hidden="true"
+        onClick={() => qc.invalidateQueries({ queryKey: ["traces-page"] })}
+      />
     </div>
   );
+}
+
+// dateInputToIso converts an <input type="datetime-local"> string
+// ("YYYY-MM-DDTHH:mm") to a UTC RFC3339 with Z suffix. Empty input
+// returns "" so the query builder can omit it from the URL entirely.
+function dateInputToIso(value: string): string | null {
+  if (!value) return null;
+  // The browser interprets the local-time input as browser-local time;
+  // we anchor it on the user's timezone via Date() to honour daylight
+  // savings correctly. The "Z" suffix is then added because the date
+  // constructor normalises to local TZ; without the offset the server
+  // would store different wall times across user sessions.
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 function TraceDetail({ t }: { t: TraceSummary }) {

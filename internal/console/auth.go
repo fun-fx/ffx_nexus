@@ -310,17 +310,22 @@ func (s *Server) myStats(w http.ResponseWriter, r *http.Request, u core.User) {
 
 func (s *Server) myTraces(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
-		writeJSON(w, http.StatusOK, []any{})
+		writeJSON(w, http.StatusOK, observability.TracePage{Items: []observability.TraceSummary{}})
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	traces, err := s.reader.RecentTraces(r.Context(), limit, u.ID)
+	before, since, filter, err := parseTraceQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	page, err := s.reader.TracePage(r.Context(), before, since, limit, u.ID, filter)
 	if err != nil {
 		s.log.Error("my traces query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, traces)
+	writeJSON(w, http.StatusOK, page)
 }
 
 // myQuality returns the caller's own rolling quality/spend aggregate as a

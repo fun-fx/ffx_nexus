@@ -32,6 +32,36 @@ export interface TraceSummary {
   user_email?: string;
 }
 
+// TraceCursor is the server-issued "what to fetch next" handle. Empty
+// `before` means start at "now"; empty `since` means the floor is the
+// table TTL (90 days). Both RFC3339Nano UTC strings; the client passes
+// them unchanged back into fetchTraces.
+export interface TraceCursor {
+  before: string;
+  since: string;
+}
+
+// TracePage is one cursor-paged, server-filter-narrowed view of
+// /api/traces. Items that match all of {before/since window, status,
+// provider, q} come back here; an empty `next_cursor` means there is
+// no further page in this window under the current filter set.
+export interface TracePage {
+  items: TraceSummary[];
+  next_cursor: TraceCursor;
+}
+
+// TraceQuery describes one request to the trace listing endpoint. All
+// fields are optional; omitted means "no filter" / "newest first" /
+// "page size 100".
+export interface TraceQuery {
+  before?: string;
+  since?: string;
+  status?: "ok" | "err" | "";
+  provider?: string;
+  q?: string;
+  limit?: number;
+}
+
 export interface User {
   id: string;
   org_id: string;
@@ -129,10 +159,34 @@ const ZERO_STATS: Stats = {
   guardrail_events: 0,
 };
 
-export async function fetchTraces(limit = 100): Promise<TraceSummary[]> {
-  const res = await fetch(`/api/traces?limit=${limit}`);
+export async function fetchTraces(query: TraceQuery = {}): Promise<TracePage> {
+  // Build the URL manually so we can attach the cursor fields and the
+  // filter fields without a third-party query-string dependency and so
+  // the wire shape stays an exact mirror of /api/traces' contract.
+  const params = new URLSearchParams();
+  if (query.before) params.set("before", query.before);
+  if (query.since) params.set("since", query.since);
+  if (query.status) params.set("status", query.status);
+  if (query.provider) params.set("provider", query.provider);
+  if (query.q) params.set("q", query.q);
+  if (typeof query.limit === "number") params.set("limit", String(query.limit));
+  const qs = params.toString();
+  const url = qs ? `/api/traces?${qs}` : `/api/traces`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    return { items: [], next_cursor: { before: "", since: "" } };
+  }
   const data = await res.json();
-  return Array.isArray(data) ? data : [];
+  // Server envelope shape OR bare array shape (defensive — old binary
+  // versions of the gateway might still emit the bare array). The Traces
+  // page already handles both during the rolling deploy.
+  if (Array.isArray(data)) {
+    return { items: data as TraceSummary[], next_cursor: { before: "", since: "" } };
+  }
+  if (data && Array.isArray(data.items)) {
+    return data as TracePage;
+  }
+  return { items: [], next_cursor: { before: "", since: "" } };
 }
 
 export async function fetchRouting(): Promise<RoutingModel[]> {

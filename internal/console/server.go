@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -275,24 +276,86 @@ func spaHandler(log *slog.Logger) http.Handler {
 
 func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
-		writeJSON(w, http.StatusOK, []any{})
+		writeJSON(w, http.StatusOK, observability.TracePage{Items: []observability.TraceSummary{}})
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	before, since, filter, err := parseTraceQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	uid := ""
 	if u.Role != core.RoleAdmin {
 		uid = u.ID
 	}
-	traces, err := s.reader.RecentTraces(r.Context(), limit, uid)
+	page, err := s.reader.TracePage(r.Context(), before, since, limit, uid, filter)
 	if err != nil {
 		s.log.Error("recent traces query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
 	if u.Role == core.RoleAdmin {
-		s.enrichTraceUserEmails(r.Context(), orgID(r), traces)
+		s.enrichTraceUserEmails(r.Context(), orgID(r), page.Items)
 	}
-	writeJSON(w, http.StatusOK, traces)
+	writeJSON(w, http.StatusOK, page)
+}
+
+// parseTraceQuery extracts the trace-listing query parameters off the
+// `/api/traces` and `/api/me/traces` endpoints. All fields are optional:
+//
+//   - `before` / `since`: RFC3339 timestamps forming a half-open window
+//     `[since, before)` — must be `before > since` when both set.
+//   - `status`: "ok" (<400) / "err" (>=400) / empty (any).
+//   - `provider`: exact match against `provider_name`.
+//   - `q`: free-text fuzzy match against `request_model | provider_name |
+//     user_email | guardrail_action`. `%` and `_` are NOT yet escaped here —
+//     the reader does that server-side so the SQL text stays clean.
+//
+// Invalid values return a 4xx-friendly error.
+func parseTraceQuery(r *http.Request) (before, since time.Time, filter observability.TraceFilter, err error) {
+	q := r.URL.Query()
+
+	if v := q.Get("before"); v != "" {
+		t, perr := parseRFC3339(v)
+		if perr != nil {
+			return time.Time{}, time.Time{}, filter, fmt.Errorf("invalid `before` timestamp: %w", perr)
+		}
+		before = t
+	}
+	if v := q.Get("since"); v != "" {
+		t, perr := parseRFC3339(v)
+		if perr != nil {
+			return time.Time{}, time.Time{}, filter, fmt.Errorf("invalid `since` timestamp: %w", perr)
+		}
+		since = t
+	}
+	if !before.IsZero() && !since.IsZero() && !before.After(since) {
+		return time.Time{}, time.Time{}, filter, fmt.Errorf("`before` must be after `since`")
+	}
+
+	filter.Status = q.Get("status")
+	switch filter.Status {
+	case "", "ok", "err":
+		// accepted
+	default:
+		return time.Time{}, time.Time{}, filter, fmt.Errorf("invalid `status`: want ok|err|<empty>, got %q", filter.Status)
+	}
+	filter.Provider = q.Get("provider")
+	filter.Q = q.Get("q")
+	return before, since, filter, nil
+}
+
+// parseRFC3339 accepts both RFC3339 ("...Z") and RFC3339Nano ("...123456789Z")
+// forms because the console may emit nanoseconds when an upstream returned
+// a high-precision timestamp. ClickHouse's DateTime64(3) column rejects
+// nanosecond precision so the reader converts to UTC second precision
+// inside the query; accepting both here keeps the API forgiving.
+func parseRFC3339(v string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, v)
 }
 
 // enrichTraceUserEmails attaches caller emails to trace rows for the admin

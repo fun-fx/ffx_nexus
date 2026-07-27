@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -38,6 +39,9 @@ type TraceSummary struct {
 
 // RecentTraces returns the most recent traces, newest first. When userID is
 // non-empty, the result is scoped to that caller's traffic (BYOK dashboard).
+//
+// Exists for backwards compatibility; new callers should prefer TracePage,
+// which exposes a sliding time-window and a cursor for "Load older".
 func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]TraceSummary, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -75,6 +79,205 @@ func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// TraceFilter narrows a TracePage's match set to a single status slice, a
+// specific provider, or a fuzzy text query. Empty fields collapse to "any".
+// The console sends these straight through to /api/traces as query params
+// (?status=err&provider=openai&q=gpt-4o), so the field names mirror the URL
+// surface exactly. `Q` is matched as a substring against request_model,
+// provider_name, user_email (joined in via enrichTraceUserEmails), and
+// guardrail_action — same set as the legacy client-side filter, just
+// pushed into ClickHouse so pages stay consistent under time-windowing.
+type TraceFilter struct {
+	Status   string // "ok" | "err" | "" (any)
+	Provider string // exact match against provider_name, empty = any
+	Q        string // fuzzy match, empty = any
+}
+
+// TraceCursor is an opaque cursor the console holds between pages of trace
+// listings. Encoding only the timestamp is sufficient because TracePage orders
+// by `(timestamp, trace_id) DESC` and uses the timestamp as the cursor key
+// with `WHERE timestamp < ?` filtered server-side; trace_id is not needed for
+// correctness (only `<` not `<=`), but emitting it makes the cursor URL
+// self-documenting and discourages hand-edits.
+type TraceCursor struct {
+	BeforeISO string `json:"before"` // RFC3339Nano; empty when at the newest edge
+	SinceISO  string `json:"since"`  // RFC3339Nano; lower bound on the window
+}
+
+// TracePage is one windowed, cursor-paged, filter-narrowed view of
+// gateway_traces.
+//
+// "Window" = [since, before) — half-open so two adjacent pages do not overlap
+// at the boundary and so subsequent calls without a "since" still produce a
+// bounded result. When `since` is the empty string, the server treats the
+// floor as the gateway_traces TTL (90 days in the prod migration), and when
+// `before` is the empty string the result is anchored on "now" at query time.
+//
+// Filters (status, provider, q) widen the funnel so the cursor walks only
+// matches. The console preserves them across "Load older" pages by echoing
+// them back into the next request — see TraceCursor for the wire shape.
+type TracePage struct {
+	Items      []TraceSummary `json:"items"`
+	NextCursor TraceCursor    `json:"next_cursor"`
+}
+
+// TracePage returns one cursor-paged, filter-narrowed slice of traces bounded
+// by the supplied time window. When `userID` is non-empty the result is
+// scoped to that caller's traffic, identical to RecentTraces.
+//
+// `before` / `since` are RFC3339 timestamps (second or nano precision). A zero
+// value on either side collapses the bound to the underlying table TTL on
+// the low end and to "now" on the high end.
+//
+// `limit` caps the page size. The function requests `limit + 1` rows so it
+// can detect whether a next page exists without a second `COUNT(*)`. The
+// returned cursor's `before` is set to the timestamp of the last returned
+// row so the next call's `before=...` predicate continues from there.
+func (r *Reader) TracePage(ctx context.Context, before, since time.Time, limit int, userID string, filter TraceFilter) (TracePage, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	// We request limit+1 rows so we can detect "next page exists" without a
+	// `count()`. The last row is dropped below.
+	const probe = 1
+	rows, err := r.conn.Query(ctx, buildTracePageQuery(userID, before, since, limit+probe, filter), buildTracePageArgs(userID, before, since, limit+probe, filter)...)
+	if err != nil {
+		return TracePage{}, err
+	}
+	defer rows.Close()
+
+	out := make([]TraceSummary, 0, limit+probe)
+	for rows.Next() {
+		var s TraceSummary
+		if err := rows.Scan(
+			&s.TraceID, &s.Timestamp, &s.ProviderName, &s.RequestModel,
+			&s.InputTokens, &s.OutputTokens, &s.LatencyMs, &s.TTFTMs, &s.CostUSD,
+			&s.StatusCode, &s.Streamed, &s.FinishReason, &s.CacheHit, &s.GuardrailAction,
+			&s.UserID, &s.CredentialSource,
+		); err != nil {
+			return TracePage{}, err
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return TracePage{}, err
+	}
+
+	page := TracePage{}
+	if len(out) > limit {
+		// Probe indicates there is at least one more page.
+		page.NextCursor = TraceCursor{
+			BeforeISO: out[limit-1].Timestamp.UTC().Format(time.RFC3339Nano),
+			SinceISO:  cursorSince(since),
+		}
+		out = out[:limit]
+	} else {
+		// Emit a self-documenting cursor only when the caller had set
+		// `since`; otherwise the page concept collapses to "no more pages
+		// in this window", which the client already knows.
+		if !since.IsZero() {
+			page.NextCursor = TraceCursor{SinceISO: cursorSince(since)}
+		}
+	}
+	page.Items = out
+	return page, nil
+}
+
+func cursorSince(since time.Time) string {
+	if since.IsZero() {
+		return ""
+	}
+	return since.UTC().Format(time.RFC3339Nano)
+}
+
+// buildTracePageQuery produces the windowed + filter-narrowed SELECT for
+// TracePage. Pulled out as a pure function so the unit test in reader_test.go
+// can pin the SQL shape without needing a real ClickHouse connection.
+//
+// Placeholder ordering (mirrored by buildTracePageArgs) is:
+//  1. user_id (if present)
+//  2. timestamp < (before)
+//  3. timestamp >= (since)
+//  4. provider_name (=)
+//  5. status predicate (no args; uses inline literal `>= 400` or `< 400`)
+//  6. q ILIKE on four columns (the operator `%?%` repeats four times)
+//  7. LIMIT
+func buildTracePageQuery(userID string, before, since time.Time, limit int, filter TraceFilter) string {
+	q := `
+		SELECT trace_id, timestamp, provider_name, request_model,
+		       input_tokens, output_tokens, latency_ms, ttft_ms, cost_usd,
+		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
+		       user_id, credential_source
+		FROM gateway_traces`
+	conds := []string{}
+	if userID != "" {
+		conds = append(conds, "user_id = ?")
+	}
+	if !before.IsZero() {
+		conds = append(conds, "timestamp < ?")
+	}
+	if !since.IsZero() {
+		conds = append(conds, "timestamp >= ?")
+	}
+	if filter.Provider != "" {
+		conds = append(conds, "provider_name = ?")
+	}
+	switch filter.Status {
+	case "ok":
+		conds = append(conds, "status_code < 400")
+	case "err":
+		conds = append(conds, "status_code >= 400")
+	}
+	if filter.Q != "" {
+		conds = append(conds,
+			"(request_model LIKE ? OR provider_name LIKE ? OR user_email LIKE ? OR guardrail_action LIKE ?)")
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += " ORDER BY timestamp DESC, trace_id DESC LIMIT ?"
+	return q
+}
+
+// buildTracePageArgs mirrors buildTracePageQuery's placeholder ordering. The
+// caller MUST pass both to the driver in this exact order; ClickHouse binds
+// positionally. The `q` argument is wildcard-padded and percent/underscore
+// escaped here (NOT in the SQL string) so the SQL stays a single placeholder.
+func buildTracePageArgs(userID string, before, since time.Time, limit int, filter TraceFilter) []any {
+	args := []any{}
+	if userID != "" {
+		args = append(args, userID)
+	}
+	if !before.IsZero() {
+		args = append(args, before.UTC())
+	}
+	if !since.IsZero() {
+		args = append(args, since.UTC())
+	}
+	if filter.Provider != "" {
+		args = append(args, filter.Provider)
+	}
+	if filter.Q != "" {
+		pattern := "%" + escapeLike(filter.Q) + "%"
+		args = append(args, pattern, pattern, pattern, pattern)
+	}
+	args = append(args, limit)
+	return args
+}
+
+// escapeLike escapes the two metacharacters the SQL `LIKE` operator treats
+// specially when NOT paired with an explicit ESCAPE clause. Without it,
+// `q = "gpt_"` would match `gptX` (underscore = any single char) and
+// `q = "100%"` would expect trailing digits — both obvious surprises for
+// a free-text search box.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 // Stats holds dashboard aggregates over a recent time window.
