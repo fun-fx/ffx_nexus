@@ -407,6 +407,7 @@ curl http://localhost:8080/v1/images/generations \
 | `NEXUS_JUDGE_API_KEY` / `NEXUS_EVAL_SAMPLE_RATE` | — / `1.0` | Judge auth + judge sampling fraction |
 | `NEXUS_EVAL_SERVICE_URL` / `_METRICS` | — / `answer_relevancy,toxicity,bias` | Python eval sidecar (DeepEval/RAGAS) |
 | `NEXUS_EVAL_WORKERS` / `NEXUS_EVAL_SERVICE_TIMEOUT` | `4` / `30s` | Eval worker concurrency + sidecar timeout |
+| `NEXUS_EVAL_PLUGIN_DIR` | `/etc/nexus/eval-plugins` | Directory of Helm-mounted EvalPlugin YAMLs (loaded at boot) |
 | `NEXUS_ROUTE_GROUPS` | _(empty)_ | Routing aliases, `alias=m1,m2;...` (Phase 4) |
 | `NEXUS_ROUTE_W_QUALITY` / `_W_COST` / `_W_LATENCY` | `0.6` / `0.2` / `0.2` | Routing weights |
 | `NEXUS_ROUTE_WINDOW` / `NEXUS_ROUTE_REFRESH` | `1h` / `30s` | Routing stats window & refresh |
@@ -933,17 +934,57 @@ and judges run without ClickHouse; **score persistence** uses ClickHouse when
 `NEXUS_CLICKHOUSE_URL` is set, otherwise **Postgres** when `NEXUS_POSTGRES_URL`
 is set. **Quality-aware routing** still requires ClickHouse for rolling stats.
 
-- **Heuristics (always on when eval is enabled, cheap):** `heuristic_pii` (flags emails/SSN/phone/card
-  patterns in output) and `heuristic_completeness` (empty or truncated answers).
-- **LLM-as-judge (sampled):** a local SLM (Ollama/vLLM, OpenAI-compatible API)
-  scores response `quality` 0..1. Runs on `NEXUS_EVAL_SAMPLE_RATE` of traces and
-  stays local for data privacy. Enable with `NEXUS_JUDGE_BASE_URL`.
-- **External eval service (sampled):** an optional Python sidecar running mature
-  eval libraries (**DeepEval** + **RAGAS**) for richer metrics
-  (answer relevancy, toxicity, bias, and — when retrieval contexts are supplied —
-  hallucination / faithfulness). Enable with `NEXUS_EVAL_SERVICE_URL`. See below.
+In **v0.7** Nexus ships with three first-class evaluator kinds:
 
-### External Python eval service
+- **`heuristic_pii` (always on, cheap)** — flags emails/SSN/phone/card patterns
+  in output. In-process regex; zero resource footprint.
+- **`heuristic_completeness` (always on, cheap)** — empty or truncated answers.
+  In-process regex.
+- **`external` plugin (admin opt-in)** — a YAML manifest that forwards traces
+  (and collects results) to an evaluation service you choose: LangSmith,
+  Langfuse, Datadog LLM Observability, Braintrust, Arize Phoenix/AX, an OTel
+  collector, or any HTTPS endpoint via the generic `webhook` adapter. See
+  [`docs/eval-plugins.md`](docs/eval-plugins.md) for the schema reference.
+
+Legacy `slm_judge` (Ollama-in-cluster) and `remote_eval` (Python sidecar with
+DeepEval/RAGAS) evaluators are still supported for back-compat but are no
+longer seeded automatically — opt in via the existing eval-profile endpoints
+if you want to keep them running. A deprecation banner in `/eval` calls out
+the migration path to plugins.
+
+The Go gateway stays self-contained: nothing in the hot path depends on an
+external service. The dispatcher reads the plugin registry, samples each
+plugin's `spec.send.sampling`, and forwards the rendered payload off-cluster
+on the worker goroutine.
+
+### Results schema
+
+All incoming eval scores are normalised to the OTel GenAI semantic
+convention `gen_ai.evaluation.result`
+(`name`, `score.value`, `score.label`, `explanation`, `response.id`). Per-vendor
+JSONPath mapping (`spec.collect.mapping`) handles the wire-shape differences;
+results are written to `eval_scores` with `evaluator = "plugin:<name>"` so a
+single SQL `GROUP BY evaluator` separates plugin scores from heuristic /
+legacy ones.
+
+### Legacy local backend
+
+The Go gateway ships **two legacy evaluator profiles** for back-compat with
+v0.5 / v0.6:
+
+- `slm_judge` — local Ollama/vLLM LLM-as-judge; back-compat for the v0.6-era
+  `NEXUS_JUDGE_*` env vars. Cells the worker through the same internal
+  plugin interface (the plugin name resolves to `legacy-judge`).
+- `remote_eval` — the Python sidecar ([`eval-service/`](eval-service/)) with
+  DeepEval/RAGAS; back-compat for `NEXUS_EVAL_SERVICE_*`. Cells through
+  `legacy-sidecar`.
+
+### External Python eval service (legacy)
+
+> **Status (v0.7+)**: Pre-existing `NEXUS_EVAL_SERVICE_*` env vars still wire up
+> the Python sidecar for tenants that depend on it, but new installations should
+> use the Eval plugin system above instead. See
+> [`docs/eval-plugins.md`](docs/eval-plugins.md).
 
 The Go gateway stays the hot path; deep eval (which benefits from Python's
 ecosystem) runs in a separate async sidecar under `eval-service/`. The eval

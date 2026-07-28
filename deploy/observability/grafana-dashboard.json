@@ -183,6 +183,10 @@
           "expr": "avg_over_time(nexus_eval_quality_score[1h])",
           "legendFormat": "{{gen_ai_request_model}}",
           "refId": "A"
+          // Plugin-originated scores (LangSmith / Langfuse / Datadog)
+          // share the same metric name; filter on evaluator label:
+          //   panel: "Plugins: quality by model"
+          //   expr:   avg_over_time(nexus_eval_quality_score{evaluator=~"plugin:.*"}[1h])
         }
       ],
       "title": "Quality judge score (rolling 1h mean)",

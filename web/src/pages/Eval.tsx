@@ -12,7 +12,7 @@ import { Chip } from "../components/Chip";
 import { GradientText } from "../components/GradientText";
 import { Icon } from "../components/icons";
 import { LabelToggle } from "../components/LabelToggle";
-import { fetchMe } from "../api";
+import { fetchMe, type EvalProfile } from "../api";
 import { EvalProfilesCard } from "./EvalProfiles";
 
 type EvalMetric = "heuristic_pii" | "heuristic_completeness" | "slm_judge" | "remote_eval";
@@ -246,6 +246,8 @@ export function Eval() {
           </div>
         </div>
       </header>
+
+      <LegacyDeprecationBanner profiles={profilesQ.data ?? []} />
 
       <EvalRules
           rules={heur}
@@ -697,6 +699,31 @@ function Forbidden() {
           <p className="page-sub">Only admin accounts can view this page.</p>
         </div>
       </header>
+    </div>
+  );
+}
+
+// LegacyDeprecationBanner renders a one-time notice whenever an org
+// has a `slm_judge` or `remote_eval` profile still enabled. The
+// Plan swaps them out for EvalPlugins hosted on LangSmith /
+// Langfuse, etc.; existing tenants continue to work but can
+// migrate whenever convenient.
+function LegacyDeprecationBanner({ profiles }: { profiles: EvalProfile[] }) {
+  const legacy = profiles.filter(
+    (p) => (p.kind === "slm_judge" || p.kind === "remote_eval") && p.enabled,
+  );
+  if (legacy.length === 0) return null;
+  return (
+    <div className="tier-card" role="status">
+      <h2 className="tier-card-title">Legacy evaluator still enabled</h2>
+      <p className="tier-card-desc">
+        {legacy.length} evaluator{legacy.length === 1 ? "" : "s"} of
+        type <code>slm_judge</code> or <code>remote_eval</code> are
+        running. We recommend migrating to{" "}
+        <a href="/eval/plugins">Eval plugins</a> (LangSmith, Langfuse,
+        Datadog, …) — same functionality, no in-cluster Ollama or
+        Python sidecar required.
+      </p>
     </div>
   );
 }

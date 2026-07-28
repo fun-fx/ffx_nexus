@@ -1,0 +1,28 @@
+apiVersion: nexus.io/v1alpha1
+kind: EvalPlugin
+metadata:
+  name: langfuse-judge
+  labels:
+    tier: reference
+spec:
+  service:
+    type: langfuse
+    endpoint: https://cloud.langfuse.com
+    auth:
+      secretRef: langfuse-public-key
+  send:
+    trigger: on_trace
+    sampling: "0.1"
+    payload:
+      input: "{{ index .trace \"gen_ai.input.messages\" }}"
+      output: "{{ index .trace \"gen_ai.output.messages\" }}"
+    redact: [pii]
+  collect:
+    mode: poll
+    interval: 60s
+    mapping:
+      name: "name"
+      score: "value"
+      explanation: "comment"
+      trace_id: "traceId"
+  timeout: 30s

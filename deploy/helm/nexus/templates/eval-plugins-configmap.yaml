@@ -1,0 +1,31 @@
+{{/*
+Render user-authored EvalPlugin manifests declared under
+`eval.plugins.configMaps` into a single ConfigMap mounted by the
+Nexus gateway at /etc/nexus/eval-plugins/.
+
+This template is intentionally non-recursive: each plugin file is a
+top-level key. The gateway loader (evalplugin.Registry.LoadFromDir)
+walks the directory; aggregated keys keep Helm diffs minimal.
+*/}}
+{{- if .Values.eval.plugins.configMaps }}
+{{- range $cm := .Values.eval.plugins.configMaps }}
+{{- if not $cm.name }}
+{{- fail "eval.plugins.configMaps[].name is required" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $cm.name }}
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: eval-plugins
+data:
+  {{- range $file := $cm.files }}
+  {{- if not $file.path }}
+  {{- fail "eval.plugins.configMaps[].files[].path is required" }}
+  {{- end }}
+  {{ $file.path }}: |
+    {{- $file.content | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

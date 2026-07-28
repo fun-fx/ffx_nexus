@@ -1,0 +1,30 @@
+apiVersion: nexus.io/v1alpha1
+kind: EvalPlugin
+metadata:
+  name: langsmith-judge
+  labels:
+    tier: reference
+spec:
+  service:
+    type: langsmith
+    endpoint: https://api.smith.langchain.com
+    auth:
+      secretRef: langsmith-api-key
+  send:
+    trigger: on_trace
+    sampling: "0.1"
+    payload:
+      input: "{{ .trace.input_messages }}"
+      output: "{{ .trace.output_messages }}"
+      reference: "{{ .trace.eval_reference }}"
+    redact: [pii]
+  collect:
+    mode: webhook
+    mapping:
+      name: "$.key"
+      score: "$.score"
+      label: "$.value"
+      explanation: "$.comment"
+      trace_id: "$.trace_id"
+      metric: "$.metric"
+  timeout: 30s

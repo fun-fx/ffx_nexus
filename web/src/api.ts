@@ -349,6 +349,60 @@ export async function deleteEvalProfile(id: string): Promise<void> {
   }
 }
 
+// ---- Eval plugins (Phase B) ------------------------------------------
+
+export interface EvalPluginRecord {
+  id?: string;
+  org_id?: string;
+  name: string;
+  spec_yaml: string;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface EvalPluginListResponse {
+  plugins: EvalPluginRecord[];
+}
+
+export async function fetchEvalPlugins(): Promise<EvalPluginRecord[]> {
+  const res = await fetch("/api/eval/plugins");
+  if (!res.ok) return [];
+  const data = await jsonOrError<EvalPluginListResponse>(res);
+  return Array.isArray(data.plugins) ? data.plugins : [];
+}
+
+export async function createEvalPlugin(
+  body: Omit<EvalPluginRecord, "id">,
+): Promise<EvalPluginRecord> {
+  const res = await fetch("/api/eval/plugins", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrError<EvalPluginRecord>(res);
+}
+
+export async function patchEvalPlugin(
+  id: string,
+  patch: { spec_yaml?: string; enabled?: boolean },
+): Promise<EvalPluginRecord> {
+  const res = await fetch(`/api/eval/plugins/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrError<EvalPluginRecord>(res);
+}
+
+export async function deleteEvalPlugin(id: string): Promise<void> {
+  const res = await fetch(`/api/eval/plugins/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+}
+
 function sanitizeEvalConfig(raw: unknown): EvalConfigSnapshot {
   const safe = (v: unknown, fallback: number) =>
     typeof v === "number" && Number.isFinite(v) ? v : fallback;

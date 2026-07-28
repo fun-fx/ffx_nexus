@@ -53,6 +53,7 @@ type Config struct {
 	EvalServiceURL     string
 	EvalServiceMetrics string // comma-separated metric ids
 	EvalServiceTimeout time.Duration
+	PluginDir          string // directory containing Helm-mounted EvalPlugin YAMLs
 
 	// Quality-aware routing (Phase 4). RouteGroups maps an alias to candidate
 	// models, e.g. "fast=gpt-4o-mini,gemini-2.5-flash;smart=gpt-4o,claude-...".
@@ -257,6 +258,7 @@ func Load() Config {
 		EvalServiceURL:         env("NEXUS_EVAL_SERVICE_URL", ""),
 		EvalServiceMetrics:     env("NEXUS_EVAL_SERVICE_METRICS", "answer_relevancy,toxicity,bias"),
 		EvalServiceTimeout:     envDuration("NEXUS_EVAL_SERVICE_TIMEOUT", 30*time.Second),
+		PluginDir:              env("NEXUS_EVAL_PLUGIN_DIR", "/etc/nexus/eval-plugins"),
 		RouteGroups:            env("NEXUS_ROUTE_GROUPS", ""),
 		RouteWQuality:          envFloat("NEXUS_ROUTE_W_QUALITY", 0.6),
 		RouteWCost:             envFloat("NEXUS_ROUTE_W_COST", 0.2),

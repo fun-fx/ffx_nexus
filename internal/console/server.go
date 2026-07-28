@@ -58,6 +58,9 @@ type Server struct {
 	evalConfigSrc    EvalConfigSource       // nil when eval worker is disabled
 	evalConfigApply  EvalConfigApplier      // nil when eval worker is disabled
 	evalProfiles     EvalProfileSource      // PR #135: profile CRUD store
+	evalPlugins      EvalPluginSource       // eval-plugin store (Phase B)
+	pluginCollector  PluginWebhookReceiver  // eval-plugin webhook sink (Phase C)
+	pluginTester     EvalPluginTester       // eval-plugin test-send (Phase D)
 	loginLim         *limiter.IPLimiter     // per-IP rate limit for /api/auth/login
 	registerLim      *limiter.IPLimiter     // per-IP rate limit for /api/auth/register
 	ssoLim           *limiter.IPLimiter     // per-IP rate limit for /api/auth/sso/*
@@ -124,6 +127,27 @@ func (s *Server) SetEvalConfig(src EvalConfigSource, apply EvalConfigApplier) {
 // changes via a separate channel.
 func (s *Server) SetEvalProfiles(src EvalProfileSource) {
 	s.evalProfiles = src
+}
+
+// SetEvalPlugins attaches the plugin store used by the admin REST
+// routes under /api/eval/plugins. nil means the feature is disabled
+// (single-tenant builds without Postgres) and the routes respond 503.
+func (s *Server) SetEvalPlugins(src EvalPluginSource) {
+	s.evalPlugins = src
+}
+
+// SetPluginCollector wires the inbound webhook receiver. Webhook
+// routing keys on plugin metadata.name so a single shared endpoint
+// covers all installed plugins.
+func (s *Server) SetPluginCollector(c PluginWebhookReceiver) {
+	s.pluginCollector = c
+}
+
+// SetPluginTester wires the "test-send" handler. nil means the
+// route answers 503 — set this from main.go once the dispatcher is
+// up and ready.
+func (s *Server) SetPluginTester(t EvalPluginTester) {
+	s.pluginTester = t
 }
 
 // NewServer builds the console server. reader and store may be nil.
@@ -212,6 +236,30 @@ func (s *Server) Mux() http.Handler {
 			r.Patch("/{id}", s.requireUser(s.patchEvalProfile))
 			r.Delete("/{id}", s.requireUser(s.deleteEvalProfile))
 		})
+
+		// Eval plugins (Phase B). Admin-only writes (post/patch/delete);
+		// admin-only reads because the YAML can carry sensitive URLs.
+		r.Route("/eval/plugins", func(r chi.Router) {
+			r.Get("/", s.requireAdmin(s.listEvalPlugins))
+			r.Post("/", s.requireAdmin(s.createEvalPlugin))
+			r.Patch("/{id}", s.requireAdmin(s.patchEvalPlugin))
+			r.Delete("/{id}", s.requireAdmin(s.deleteEvalPlugin))
+		})
+
+		// Plugin webhooks — third-party services POST score results. The
+		// signature and replay-prevention checks live in Collector;
+		// this route only reads the body.
+		if s.pluginCollector != nil {
+			r.Post("/eval/plugins/{name}/webhook", s.pluginWebhook)
+		}
+
+		// Test-send verifies a plugin's secret ref + endpoint; admins
+		// hit this before flipping the toggle to "on" so misconfigured
+		// endpoints surface in the UI rather than silently dropping
+		// traces.
+		if s.pluginTester != nil {
+			r.Post("/eval/plugins/{name}/test", s.requireAdmin(s.pluginTest))
+		}
 
 		// User management (admin only).
 		r.Get("/users", s.requireAdmin(s.listUsers))

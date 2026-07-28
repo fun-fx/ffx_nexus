@@ -12,6 +12,7 @@ import { Keys } from "./pages/Keys";
 import { Users } from "./pages/Users";
 import { Credentials } from "./pages/Credentials";
 import { Eval } from "./pages/Eval";
+import { EvalPlugins } from "./pages/EvalPlugins";
 import { Audit } from "./pages/Audit";
 import { Playground } from "./pages/Playground";
 
@@ -44,6 +45,7 @@ export function App() {
                 <Route path="routing" element={<Routing />} />
                 <Route path="routing/:alias" element={<RoutingDetail />} />
                 <Route path="eval" element={<Eval />} />
+                <Route path="eval/plugins" element={<EvalPlugins />} />
                 <Route path="users" element={<Users />} />
                 <Route path="keys" element={<Keys />} />
                 <Route path="credentials" element={<Credentials />} />

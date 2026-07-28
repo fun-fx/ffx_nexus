@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/console"
+	"github.com/ffxnexus/nexus/internal/evalplugin"
 	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/router"
@@ -49,6 +51,8 @@ type evalRuntimeController struct {
 	modelRouter       *router.Router
 	gwHandler         *gateway.Handler
 	profileStore      evals.ProfileStore // PR #136: persistent EvalProfile store
+	pluginStore       evalplugin.PluginStore
+	workerPlugins     *evalplugin.Registry
 	secretResolver    *evals.Resolver    // PR #136: org/user/inline credential lookup
 	routeRefresh      time.Duration
 	loadBalance       bool
@@ -80,7 +84,20 @@ func newEvalRuntimeController(
 		scoreStore:        scoreStore,
 		traceStore:        traceStore,
 		routingStatsStore: routingStatsStore,
+		pluginStore:       evalplugin.NewMemoryStore(nil),
 	}
+}
+
+// PluginStore exposes the controller's plugin store so the console
+// admin REST can CRUD plugins against the same backing store the
+// registry reads on boot.
+//
+// In single-binary deployments (no Postgres/ClickHouse) the store is
+// the in-process MemoryStore; rows are lost on restart but the
+// cluster-wide Helm-installed plugins still load from
+// /etc/nexus/eval-plugins/.
+func (c *evalRuntimeController) PluginStore() evalplugin.PluginStore {
+	return c.pluginStore
 }
 
 // SeedProfilesFromConfig materialises the legacy env-var block
@@ -123,12 +140,12 @@ func (c *evalRuntimeController) SeedProfilesFromConfig(ctx context.Context) ([]e
 // short-circuit their profile rather than fail boot. Operators who
 // want every profile can layer overrides on top via the console.
 func envVarSeedProfiles(cfg config.Config) []evals.EvalProfile {
-	out := make([]evals.EvalProfile, 0, 4)
+	out := make([]evals.EvalProfile, 0, 2)
 
 	if cfg.JudgeBaseURL != "" && cfg.JudgeModel != "" {
 		out = append(out, evals.EvalProfile{
 			ID:    "default-judge",
-			Name:  "Default LLM judge (env-var)",
+			Name:  "Default LLM judge (env-var, legacy)",
 			Kind:  evals.ProfileSLMJudge,
 			Scope: evals.ScopeOrg,
 			Endpoint: evals.EvalEndpoint{
@@ -147,7 +164,7 @@ func envVarSeedProfiles(cfg config.Config) []evals.EvalProfile {
 	if cfg.EvalServiceURL != "" && len(cfg.EvalServiceMetrics) > 0 {
 		out = append(out, evals.EvalProfile{
 			ID:    "default-remote",
-			Name:  "Default sidecar eval (env-var)",
+			Name:  "Default sidecar eval (env-var, legacy)",
 			Kind:  evals.ProfileRemoteEval,
 			Scope: evals.ScopeOrg,
 			Endpoint: evals.EvalEndpoint{
@@ -161,8 +178,10 @@ func envVarSeedProfiles(cfg config.Config) []evals.EvalProfile {
 		})
 	}
 
-	// Always ship the heuristic profiles — they're cheap, never
-	// require an external secret, and most tenants want a baseline.
+	// Heuristic profiles ship by default in v0.7+. They are 0-cost
+	// (in-process regex) and provide baseline coverage for every
+	// fresh install. Plugin evaluators add LLM-as-judge / framework
+	// integration on top.
 	out = append(out, evals.EvalProfile{
 		ID:         "default-pii",
 		Name:       "PII heuristic",
@@ -291,6 +310,116 @@ func (c *evalRuntimeController) DeleteEvalProfile(ctx context.Context, id string
 		}
 	}
 	return nil
+}
+
+// ListEvalPlugins implements console.EvalPluginSource. The console
+// passes the org_id from the session; cluster-wide rows (org_id="")
+// are visible to every caller, per-org rows only to their own org.
+func (c *evalRuntimeController) ListEvalPlugins(ctx context.Context, orgID string) ([]evalplugin.PluginRecord, error) {
+	if c.pluginStore == nil {
+		return nil, nil
+	}
+	return c.pluginStore.List(ctx, orgID)
+}
+
+// GetEvalPlugin implements console.EvalPluginSource.
+func (c *evalRuntimeController) GetEvalPlugin(ctx context.Context, id string) (*evalplugin.PluginRecord, error) {
+	if c.pluginStore == nil {
+		return nil, evalplugin.ErrPluginNotFound
+	}
+	return c.pluginStore.Get(ctx, id)
+}
+
+// LookupEvalPlugin resolves a plugin record by metadata.name,
+// preferring cluster-wide rows so admins can target Helm-installed
+// plugins without remembering their DB id. The merged Registry is
+// consulted first; the DB store is the fallback for per-org rows.
+func (c *evalRuntimeController) LookupEvalPlugin(ctx context.Context, name string) (*evalplugin.PluginRecord, error) {
+	if name == "" {
+		return nil, evalplugin.ErrPluginNotFound
+	}
+	c.mu.Lock()
+	reg := c.workerPlugins
+	c.mu.Unlock()
+	if reg != nil {
+		if rec, ok := reg.Lookup(name); ok {
+			return &evalplugin.PluginRecord{
+				Name:     rec.Plugin.Metadata.Name,
+				SpecYAML: pluginToYAML(rec.Plugin),
+				Enabled:  rec.Enabled,
+			}, nil
+		}
+	}
+	if c.pluginStore == nil {
+		return nil, evalplugin.ErrPluginNotFound
+	}
+	all, err := c.pluginStore.List(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, rec := range all {
+		if rec.Name == name {
+			return &rec, nil
+		}
+	}
+	return nil, evalplugin.ErrPluginNotFound
+}
+
+// pluginToYAML is a stub used by LookupEvalPlugin so admins see the
+// same spec content they shipped. The full round-trip via the YAML
+// manifest happens at Save time.
+func pluginToYAML(p *evalplugin.Plugin) string {
+	if p == nil {
+		return ""
+	}
+	b, _ := json.Marshal(p)
+	return string(b)
+}
+
+// SaveEvalPlugin implements console.EvalPluginSource. After save we
+// re-load the registry so the runtime dispatcher sees the new plugin
+// without a process restart.
+func (c *evalRuntimeController) SaveEvalPlugin(ctx context.Context, rec *evalplugin.PluginRecord) error {
+	if c.pluginStore == nil {
+		return nil
+	}
+	if err := c.pluginStore.Save(ctx, rec); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	plugins := c.workerPlugins
+	c.mu.Unlock()
+	if plugins != nil {
+		_ = plugins.LoadFromStore(ctx, c.pluginStore, rec.OrgID)
+	}
+	return nil
+}
+
+// DeleteEvalPlugin implements console.EvalPluginSource.
+func (c *evalRuntimeController) DeleteEvalPlugin(ctx context.Context, id, orgID string) error {
+	if c.pluginStore == nil {
+		return nil
+	}
+	if err := c.pluginStore.Delete(ctx, id); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	plugins := c.workerPlugins
+	c.mu.Unlock()
+	if plugins != nil {
+		_ = plugins.LoadFromStore(ctx, c.pluginStore, orgID)
+	}
+	return nil
+}
+
+// AttachPluginRegistry lets main.go wire the worker's plugin
+// registry into the controller; PATCH/POST/DELETE on the admin
+// routes push a refresh through here so the dispatcher sees the
+// new state without a process restart.
+func (c *evalRuntimeController) AttachPluginRegistry(reg *evalplugin.Registry) {
+	c.mu.Lock()
+	c.workerPlugins = reg
+	c.mu.Unlock()
 }
 
 func (c *evalRuntimeController) Snapshot() console.EvalConfigSnapshot {

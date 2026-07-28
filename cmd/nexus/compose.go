@@ -31,6 +31,21 @@ type NexusStack struct {
 	ScoreStore        evals.StoreKind
 	TraceStore        string
 	RoutingStatsStore string
+	// scoreSink is exposed so the plugin collector can write
+	// externally-produced scores without going through the worker.
+	// Lazy-built from the same backend selection as EvalWorker.
+	scoreSink evals.Sink
+}
+
+// SinkForPlugins returns the score sink used by the plugin collector.
+// Returns NoopSink when the deployment has neither ClickHouse nor
+// Postgres configured; the collector's NoopSink path keeps the
+// goroutine idle without crashing.
+func (s NexusStack) SinkForPlugins() evals.Sink {
+	if s.scoreSink != nil {
+		return s.scoreSink
+	}
+	return evals.NoopSink{}
 }
 
 func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHRecorder, store *core.Store, log *slog.Logger) NexusStack {
@@ -91,6 +106,19 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	} else {
 		log.Info("eval worker disabled (NEXUS_EVAL_ENABLED=false)")
 	}
+
+	// Independent sink the plugin collector can write into without
+	// going through the worker's hot path. Same backend selection
+	// rules as NewScoreSink.
+	var chConn driver.Conn
+	if chRec != nil {
+		chConn = chRec.Conn()
+	}
+	deps := evals.ScoreSinkDeps{CHConn: chConn}
+	if store != nil {
+		deps.PGPool = store.Pool()
+	}
+	stack.scoreSink = evals.NewScoreSink(stack.ScoreStore, deps)
 
 	stack.Recorder = observability.NewMultiRecorder(recorders...)
 
