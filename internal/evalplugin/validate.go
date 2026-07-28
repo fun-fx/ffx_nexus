@@ -75,7 +75,7 @@ func Validate(p *Plugin) error {
 	if _, ok := validTrigger[p.Spec.Send.Trigger]; !ok {
 		return fmt.Errorf("spec.send.trigger %q is not supported", p.Spec.Send.Trigger)
 	}
-	if p.Spec.Send.Sampling < 0 || p.Spec.Send.Sampling > 1 {
+	if v := float64(p.Spec.Send.Sampling); v < 0 || v > 1 {
 		return errors.New("spec.send.sampling must be in [0,1]")
 	}
 	for _, r := range p.Spec.Send.Redact {
@@ -87,7 +87,7 @@ func Validate(p *Plugin) error {
 	if _, ok := validCollectMode[p.Spec.Collect.Mode]; !ok {
 		return fmt.Errorf("spec.collect.mode %q is not supported", p.Spec.Collect.Mode)
 	}
-	if p.Spec.Collect.Mode == "poll" && p.Spec.Collect.Interval <= 0 {
+	if p.Spec.Collect.Mode == "poll" && p.Spec.Collect.Interval.Std() <= 0 {
 		return errors.New("spec.collect.interval is required when mode=poll")
 	}
 	return nil

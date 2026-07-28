@@ -16,8 +16,13 @@
 package evalplugin
 
 import (
+	"fmt"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
+
+	yaml "go.yaml.in/yaml/v3"
 )
 
 // PluginAPIVersion is the schema version manifest authors target. Today
@@ -75,10 +80,12 @@ type ResultMapping struct {
 
 // SendSpec describes how each trace is forwarded. Sampling is
 // probability so that the dispatcher can roll dice once per trace
-// without inspecting the trace payload twice (privacy).
+// without inspecting the trace payload twice (privacy). Sampling is a
+// 0–1 fraction; the tolerant UnmarshalYAML on SamplingFraction also
+// accepts percent strings and bare integers for convenience.
 type SendSpec struct {
 	Trigger  string            `yaml:"trigger" json:"trigger"`
-	Sampling float64           `yaml:"sampling" json:"sampling"`
+	Sampling SamplingFraction  `yaml:"sampling" json:"sampling"`
 	Payload  map[string]string `yaml:"payload" json:"payload"`
 	Redact   []string          `yaml:"redact" json:"redact"`
 }
@@ -86,10 +93,11 @@ type SendSpec struct {
 // CollectSpec describes how results come back. The three modes trade
 // trivial deployment (sync) for symmetry with vendor APIs (webhook is
 // the recommended default; poll is the fallback when the platform
-// doesn't support webhooks).
+// doesn't support webhooks). All durations are YAML-tolerant — quoted
+// Go strings (`60s`) and bare numbers (`60` → seconds) both work.
 type CollectSpec struct {
 	Mode     string        `yaml:"mode" json:"mode"`
-	Interval time.Duration `yaml:"interval" json:"interval"`
+	Interval Duration      `yaml:"interval" json:"interval"`
 	Mapping  ResultMapping `yaml:"mapping" json:"mapping"`
 }
 
@@ -125,7 +133,7 @@ type PluginSpec struct {
 	Service ServiceSpec `yaml:"service" json:"service"`
 	Send    SendSpec    `yaml:"send" json:"send"`
 	Collect CollectSpec `yaml:"collect" json:"collect"`
-	Timeout time.Duration `yaml:"timeout" json:"timeout"`
+	Timeout Duration    `yaml:"timeout" json:"timeout"`
 }
 
 // Plugin is a fully-decoded EvalPlugin manifest. Use Decode to obtain
@@ -153,3 +161,91 @@ var reservedPluginNames = map[string]struct{}{
 // metric labels and selector identifiers so a misconfigured manifest
 // fails fast at startup rather than producing garbage dashboards.
 var validPluginName = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}[a-z0-9]$`)
+
+// SamplingFraction is a YAML-tolerant 0–1 probability. Manifests author
+// it as `sampling: 0.1`, `sampling: "0.1"`, `sampling: "15%"`, or even
+// `sampling: 15` (interpreted as a percentage). Go's yaml v3 is strict
+// about float→string mismatches, so we implement UnmarshalYAML so the
+// template defaults authored as quoted strings still decode.
+type SamplingFraction float64
+
+func (s *SamplingFraction) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+	var raw float64
+	switch node.Kind {
+	case yaml.ScalarNode:
+		text := strings.TrimSpace(node.Value)
+		if text == "" {
+			return nil
+		}
+		if strings.HasSuffix(text, "%") {
+			pct, err := strconv.ParseFloat(strings.TrimSuffix(text, "%"), 64)
+			if err != nil {
+				return fmt.Errorf("sampling: invalid percent %q: %w", node.Value, err)
+			}
+			raw = pct / 100.0
+		} else if n, err := strconv.ParseFloat(text, 64); err == nil && !strings.ContainsAny(text, "eE") {
+			// float64 catch — including "0.1", "1.0", "100" (which
+			// ParseFloat also accepts as 100).
+			raw = n
+		} else if dur, err := time.ParseDuration(text); err == nil {
+			raw = dur.Seconds()
+		} else {
+			return fmt.Errorf("sampling: cannot parse %q as float, percent, or duration", node.Value)
+		}
+	default:
+		return fmt.Errorf("sampling: unsupported yaml node kind %d", node.Kind)
+	}
+	*s = SamplingFraction(raw)
+	return nil
+}
+
+func (s SamplingFraction) MarshalYAML() (any, error) {
+	return float64(s), nil
+}
+
+// Duration is a YAML-tolerant time.Duration. Helm-rendered manifests
+// commonly emit durations as either bare numbers (e.g. `interval:
+// 60` → "60 seconds") or quoted Go-style strings (`interval: 60s`).
+// time.Duration.UnmarshalText only accepts the latter, so we accept
+// both forms and emit a clear error otherwise.
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+	var out time.Duration
+	switch node.Kind {
+	case yaml.ScalarNode:
+		text := strings.TrimSpace(node.Value)
+		if text == "" {
+			return nil
+		}
+		if dur, err := time.ParseDuration(text); err == nil {
+			out = dur
+			*d = Duration(out)
+			return nil
+		}
+		// Fall back to "bare number = seconds" so Helm's `.Files.Get`
+		// style interpolation, which always produces strings, still
+		// resolves.
+		if n, err := strconv.ParseFloat(text, 64); err == nil {
+			out = time.Duration(n * float64(time.Second))
+			*d = Duration(out)
+			return nil
+		}
+		return fmt.Errorf("duration: cannot parse %q", node.Value)
+	default:
+		return fmt.Errorf("duration: unsupported yaml node kind %d", node.Kind)
+	}
+}
+
+func (d Duration) MarshalYAML() (any, error) {
+	return time.Duration(d).String(), nil
+}
+
+func (d Duration) Std() time.Duration { return time.Duration(d) }
+

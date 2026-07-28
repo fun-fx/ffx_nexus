@@ -41,7 +41,7 @@ func (m *MultiEvaluator) Name() string { return "external" }
 func (m *MultiEvaluator) Evaluate(ctx context.Context, t observability.Trace) ([]evals.Score, error) {
 	enabled := m.reg.Enabled()
 	for _, rec := range enabled {
-		if !sampleTrace(rec.Plugin.Spec.Send.Sampling) {
+		if !sampleTrace(float64(rec.Plugin.Spec.Send.Sampling)) {
 			continue
 		}
 		_ = m.dispatcher.Dispatch(ctx, t, rec.Plugin)
