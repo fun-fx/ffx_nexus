@@ -18,6 +18,7 @@ const NAV: NavItem[] = [
   { to: "/keys", label: "Keys", icon: "keys", group: "Workspace" },
   { to: "/credentials", label: "Credentials", icon: "shield", group: "Workspace" },
   { to: "/eval", label: "Eval", icon: "sparkles", group: "Admin" },
+  { to: "/eval/plugins", label: "Plugins", icon: "sparkles", group: "Admin" },
   { to: "/audit", label: "Audit", icon: "list", group: "Admin" },
   { to: "/users", label: "Users", icon: "users", group: "Admin" },
 ];

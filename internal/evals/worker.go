@@ -51,12 +51,17 @@ type Worker struct {
 	workerCount     int
 	evalTimeout     time.Duration
 
-	// ConfiguredProfiles is the snapshot used by the next evaluate()
-	// call. Refreshed via ReplaceProfiles() which holds w.mu briefly so
-	// readers run against a consistent slice. The snapshot is built in
-	// cmd/nexus/eval_runtime.go (PR #135) from the ProfileStore plus
-	// the runtime controller.
+// ConfiguredProfiles is the snapshot used by the next evaluate()
+// call. Refreshed via ReplaceProfiles() which holds w.mu briefly so
+// readers run against a consistent slice. The snapshot is built in
+// cmd/nexus/eval_runtime.go (PR #135) from the ProfileStore plus
+// the runtime controller.
 	configuredProfiles []EvalProfile
+
+	// pluginEvaluator is the per-trace evaluator for plugin-typed
+	// manifests. Wired via SetPluginEvaluator; nil means plugins
+	// are disabled (default).
+	pluginEvaluator Evaluator
 
 	// secretResolver is the per-profile secret lookup hook set by
 	// SetSecretResolver. Resolved at evaluate() time so a profile's
@@ -184,6 +189,12 @@ func (w *Worker) evaluate(t observability.Trace) {
 	w.mu.RUnlock()
 
 	evaluators := w.collectEvaluators(t, profiles, judges, rate, resolver)
+	w.mu.RLock()
+	plugin := w.pluginEvaluator
+	w.mu.RUnlock()
+	if plugin != nil {
+		evaluators = append(evaluators, plugin)
+	}
 	if len(evaluators) == 0 {
 		return
 	}
@@ -444,6 +455,14 @@ func (w *Worker) SetSecretResolver(r SecretResolver) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.secretResolver = r
+}
+
+// SetPluginEvaluator attaches the plugin dispatcher so every trace
+// is forwarded to the registered EvalPlugin set. Pass nil to disable.
+func (w *Worker) SetPluginEvaluator(e Evaluator) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pluginEvaluator = e
 }
 
 // SecretResolver returns the currently bound resolver (or nil).

@@ -1,6 +1,6 @@
 {
   "name": "03 - Eval Quality",
-  "description": "Quality dashboards: eval-score distribution by model and provider over time. Reads from the eval_scores table (Postgres control plane) joined with gateway_traces (ClickHouse) via virtual_key / replica lookup where applicable.",
+  "description": "Quality dashboards: eval-score distribution by model and provider over time. Reads from the eval_scores table (Postgres control plane) joined with gateway_traces (ClickHouse) via virtual_key / replica lookup where applicable. Plugin-originated scores (LangSmith, Langfuse, Datadog, …) appear with `evaluator = 'plugin:<name>'`; legacy SLM judge / sidecar show as their original kinds. Use `evaluator LIKE 'plugin:%'` to filter only plugin scores.",
   "cards": [
     {
       "name": "Model catalog",

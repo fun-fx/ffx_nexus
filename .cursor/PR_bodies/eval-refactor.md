@@ -185,3 +185,38 @@ series so review surface area is bounded.
 4. **Heuristic PII configurable**: today the four regex patterns are
    hard-coded. Do you want admins to add/edit/delete regex entries per
    org? Default: leave hard-coded for now, expose regex ids only.
+
+---
+
+## Status 2026-07-28 — Eval plugins shipped
+
+Mirrors the architectural pivot approved on 2026-07-28: Nexus is
+"config-only" for advanced evals, replacing the in-cluster Ollama /
+Python sidecar default with YAML-installed plugins (LangSmith,
+Langfuse, Datadog, Braintrust, Arize, OTel, generic webhook).
+
+Resolved:
+
+- **Per-eval config**: shipped via `internal/evalplugin`. Plugin
+  manifests are validated, layered (Helm + DB), and dispatched
+  through `internal/evaluators/external`.
+- **Env vars as source of truth**: deprecated. `NEXUS_EVAL_PLUGIN_DIR`
+  replaces the legacy `NEXUS_JUDGE_*` / `NEXUS_EVAL_SERVICE_*` env
+  block for new installs. Legacy env vars continue to seed
+  `default-judge` and `default-remote` rows for back-compat; the
+  "Migrate to plugin" UI banner guides operators to move off.
+- **Key sourcing**: unchanged — the existing `evals.SecretResolver`
+  already covers org/user/inline lookups. Plugin auth references
+  surface as `secretRef` so no secrets are ever inline in YAML.
+- **User / org scope**: unchanged for the legacy 4-eval surface;
+  plugin manifests are cluster-wide by Helm install, per-org
+  override through `eval_plugins.org_id`.
+
+Still open:
+
+- `eval_credentials` (PR #137 inline-key persistence) — pending.
+  Plugins route secrets through K8s Secret refs or the existing
+  `provider_credentials` table; an inline-encrypted store isn't
+  required for the plugin path.
+- Configurable PII regex (open question 4). Not in v0.7 plugin
+  scope; carried over to a follow-up PR.

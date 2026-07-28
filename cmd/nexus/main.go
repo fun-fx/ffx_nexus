@@ -20,6 +20,8 @@ import (
 	"github.com/ffxnexus/nexus/internal/console"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
+	"github.com/ffxnexus/nexus/internal/evalplugin"
+	"github.com/ffxnexus/nexus/internal/evaluators/external"
 	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/gateway/providers"
@@ -309,6 +311,34 @@ func main() {
 			evalWorker.SetSecretResolver(resolver.Resolve)
 		}
 		consoleSrvHandler.SetEvalProfiles(erc)
+
+		// Eval-plugin store + dispatcher + collector (Phases B/C).
+		// The registry absorbs Helm-mounted ConfigMap plugins at
+		// /etc/nexus/eval-plugins then layers DB-stored per-org
+		// overrides on top (Helm wins).
+		pluginReg := evalplugin.NewRegistry()
+		if dir := cfg.PluginDir; dir != "" {
+			if err := pluginReg.LoadFromDir(dir); err != nil {
+				log.Warn("load plugin configmaps failed", "dir", dir, "err", err)
+			}
+		}
+		if err := pluginReg.LoadFromStore(ctx, erc.PluginStore(), ""); err != nil {
+			log.Warn("load plugins from db failed", "err", err)
+		}
+		dispatcher := external.NewDispatcher(pluginReg, httpClientForPlugins())
+		collector := external.NewCollector(pluginReg, stack.SinkForPlugins(), httpClientForPlugins())
+		registerPluginAdapters(dispatcher, collector)
+		multiEval := external.NewMultiEvaluator(pluginReg, dispatcher)
+		evalWorker.SetPluginEvaluator(multiEval)
+		go func() {
+			if err := collector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Warn("plugin collector stopped", "err", err)
+			}
+		}()
+		erc.AttachPluginRegistry(pluginReg)
+		consoleSrvHandler.SetEvalPlugins(pluginSourceAdapter{reg: pluginReg, store: erc.PluginStore()})
+		consoleSrvHandler.SetPluginCollector(collector)
+		consoleSrvHandler.SetPluginTester(newTester(pluginReg, dispatcher, collector))
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
 	// secret takes effect without restarting the gateway.
