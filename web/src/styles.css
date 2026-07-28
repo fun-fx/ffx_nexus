@@ -2396,3 +2396,231 @@ a:hover {
 .row-action-danger:hover {
   background: rgba(252, 165, 165, 0.08);
 }
+
+/* ---------------------------------------------------------------------- */
+/* Evaluators card — Phase H (merged eval + plugins view)                  */
+/* ---------------------------------------------------------------------- */
+
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 18px 0 12px;
+}
+.section-head .section-title {
+  margin: 0;
+}
+.section-head .muted.small {
+  margin-top: 4px;
+}
+
+/* Source chip in the Evaluators table. Reuse the existing chip row
+ * for spacing; just keep the unique tones consistent. */
+.hint-tag.warn {
+  background: rgba(234, 179, 8, 0.12);
+  border-color: rgba(234, 179, 8, 0.4);
+  color: #facc15;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Plugin form (used in PluginEditorDrawer and the merged card drawer)     */
+/* ---------------------------------------------------------------------- */
+
+.plugin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.plugin-form-mode {
+  display: inline-flex;
+  gap: 6px;
+  align-self: flex-end;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.plugin-form-mode .btn-ghost.btn-small.is-active {
+  background: rgba(118, 209, 234, 0.18);
+  border-color: rgba(118, 209, 234, 0.4);
+  color: #ffffff;
+}
+
+.plugin-form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.plugin-form-section {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 14px 16px 16px;
+  margin: 0;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plugin-form-section legend {
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 0 6px;
+  background: var(--page-bg, #0e0e14);
+}
+
+.plugin-form-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+.plugin-form-presets .chip-row {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.plugin-form-presets .btn-ghost.btn-small.is-active {
+  background: rgba(118, 209, 234, 0.14);
+  border-color: rgba(118, 209, 234, 0.4);
+}
+
+/* Key/value editor for `send.payload` and `collect.mapping`. Each
+ * row is two inputs plus a delete affordance. The "+ Add ..." button
+ * below sits on its own line. */
+.kv-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.kv-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.kv-row .input {
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.plugin-form-yaml {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.yaml-textarea {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.36);
+  color: #d8e8ff;
+  border: 1px solid rgba(118, 209, 234, 0.25);
+  border-radius: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  padding: 12px 14px;
+  resize: vertical;
+  min-height: 180px;
+}
+.yaml-textarea:focus {
+  outline: 2px solid rgba(118, 209, 234, 0.45);
+  outline-offset: 1px;
+}
+
+.plugin-form-preview {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.36);
+  overflow: hidden;
+}
+.plugin-form-preview .preview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.plugin-form-preview .preview-head h4 {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+.yaml-preview {
+  margin: 0;
+  padding: 12px 14px;
+  white-space: pre;
+  overflow-x: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #d8e8ff;
+  background: transparent;
+}
+
+.plugin-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  align-items: center;
+  padding-top: 4px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Plugin list card / row                                                  */
+/* ---------------------------------------------------------------------- */
+
+.plugin-list-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plugin-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 12px;
+}
+.plugin-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.plugin-row-name {
+  font-size: 0.95rem;
+}
+.plugin-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plugin-row-test {
+  margin: 0;
+  font-size: 0.8rem;
+}
+.plugin-row-test.ok {
+  color: #74e0a3;
+}
+.plugin-row-test.err {
+  color: #fca5a5;
+}
+
+/* Plugin page legacy header — used only at /eval/plugins (kept for the
+ * deep-link back-compat page that admin may still hit during a stale
+ * browser tab session). */
+.eval-plugins-page .page-head {
+  margin-bottom: 18px;
+}

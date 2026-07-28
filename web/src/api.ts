@@ -403,6 +403,37 @@ export async function deleteEvalPlugin(id: string): Promise<void> {
   }
 }
 
+export interface PluginTestResult {
+  ok: boolean;
+  message: string;
+  /** Latency in milliseconds for the underlying PING/HEAD round-trip. Optional
+   * because some adapters (e.g. a cold cache) may report a generic failure
+   * without timing it. */
+  latency_ms?: number;
+}
+
+export async function testEvalPlugin(id: string): Promise<PluginTestResult> {
+  const res = await fetch(`/api/eval/plugins/${id}/test`, { method: "POST" });
+  const data = jsonOrError<PluginTestResult>(res);
+  return data;
+}
+
+/** Send a synthetic webhook payload to a plugin's inbox. Backed by the
+ * `/api/eval/plugins/{name}/webhook` console endpoint. Useful to verify
+ * that an external vendor's webhook can actually reach Nexus after the
+ * operator pasted their secretRef in. */
+export async function pingEvalPluginWebhook(
+  name: string,
+  body: unknown,
+): Promise<{ ok: boolean; accepted: number; message?: string }> {
+  const res = await fetch(`/api/eval/plugins/${name}/webhook`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrError(res);
+}
+
 function sanitizeEvalConfig(raw: unknown): EvalConfigSnapshot {
   const safe = (v: unknown, fallback: number) =>
     typeof v === "number" && Number.isFinite(v) ? v : fallback;

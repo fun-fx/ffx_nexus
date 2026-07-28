@@ -3,9 +3,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchEvalConfig,
   fetchEvalProfiles,
+  fetchEvalPlugins,
   patchEvalConfig,
   patchEvalProfile,
+  patchEvalPlugin,
+  testEvalPlugin,
   type EvalConfigSnapshot,
+  type EvalPluginRecord,
 } from "../api";
 import { DataTable, type Column } from "../components/DataTable";
 import { Chip } from "../components/Chip";
@@ -14,6 +18,11 @@ import { Icon } from "../components/icons";
 import { LabelToggle } from "../components/LabelToggle";
 import { fetchMe, type EvalProfile } from "../api";
 import { EvalProfilesCard } from "./EvalProfiles";
+import {
+  PluginEditorDrawer,
+  type PluginFormState,
+} from "./EvalPlugins";
+import { parseYamlToForm } from "../lib/pluginManifest";
 
 type EvalMetric = "heuristic_pii" | "heuristic_completeness" | "slm_judge" | "remote_eval";
 
@@ -113,6 +122,18 @@ export function Eval() {
       qc.invalidateQueries({ queryKey: ["eval-profiles"] });
     },
   });
+
+  // Plugin query + drawer state — the merged Evaluators card lists
+  // plugin rows next to heuristic rows and routes the editor through
+  // the same drawer the standalone /eval/plugins page uses.
+  const pluginsQ = useQuery({
+    queryKey: ["eval-plugins"],
+    queryFn: fetchEvalPlugins,
+    refetchInterval: 30_000,
+  });
+  const [pluginDrawer, setPluginDrawer] = useState<
+    { open: boolean; initial?: PluginFormState }
+  >({ open: false, initial: undefined });
 
   // Lifted weight state so the upper stats bar and the slider card stay in
   // sync after `Save weights` re-normalises the row. Hooks must run on
@@ -249,16 +270,22 @@ export function Eval() {
 
       <LegacyDeprecationBanner profiles={profilesQ.data ?? []} />
 
-      <EvalRules
-          rules={heur}
-          isAdmin={isAdmin}
-          onRequestOpenProfile={setPendingOpenProfileId}
-          onToggleProfile={(id, enabled) =>
-            profileToggleMut.mutate({ id, enabled })
-          }
-          toggleBusy={profileToggleMut.isPending}
-          profileToggleRow={profileToggleMut.variables?.id ?? null}
-        />
+      <EvaluatorsCard
+        rules={heur}
+        isAdmin={isAdmin}
+        profileIdByKind={profileIdByKind}
+        plugins={pluginsQ.data ?? []}
+        onRequestOpenProfile={setPendingOpenProfileId}
+        onToggleProfile={(id, enabled) =>
+          profileToggleMut.mutate({ id, enabled })
+        }
+        profileToggleBusy={profileToggleMut.isPending}
+        profileToggleRow={profileToggleMut.variables?.id ?? null}
+        onCreatePlugin={() => setPluginDrawer({ open: true, initial: undefined })}
+        onEditPlugin={(rec) =>
+          setPluginDrawer({ open: true, initial: parseYamlToForm(rec.spec_yaml ?? "") })
+        }
+      />
       <EvalProfilesCard
         isAdmin={isAdmin}
         pendingOpenProfileId={pendingOpenProfileId}
@@ -286,139 +313,277 @@ export function Eval() {
           <code>{cfg.routing_stats_store}</code>
         </span>
       </div>
-    </div>
-  );
-}
 
-// Uniform status cell for all four core evaluation kinds. v0.6.9 drops
-// the prior "locked-to-env" read-only pill for SLM judge / Remote eval;
-// every row now routes through PATCH /api/eval/profiles/<id> with the
-// toggled enabled flag, so an admin can flip SLM judge back on after
-// disabling it. Non-admins see a static on/off pill and the row detail.
-// Env-driven kinds (SLM judge / Remote eval) additionally expose a
-// "Change configuration" shortcut to the profile editor.
-function EnvDrivenCell({
-  rule,
-  isAdmin,
-  busy,
-  onChangeConfig,
-  onToggle,
-}: {
-  rule: EvalRule;
-  isAdmin: boolean;
-  busy: boolean;
-  onChangeConfig?: () => void;
-  onToggle: (next: boolean) => void;
-}) {
-  const detail = rule.profileId
-    ? `Toggle ${rule.metric} — ${rule.detail}`
-    : `No seeded profile yet for ${rule.metric}.`;
-  return (
-    <div className="env-driven-cell" title={detail}>
-      <LabelToggle
-        checked={rule.enabled}
-        label={rule.enabled ? `disable ${rule.metric}` : `enable ${rule.metric}`}
-        disabled={busy || !rule.profileId}
-        onChange={(next) => onToggle(next)}
+      <PluginEditorDrawer
+        open={pluginDrawer.open}
+        initial={pluginDrawer.initial}
+        onClose={() => setPluginDrawer({ open: false, initial: undefined })}
+        onSaved={() => {
+          setPluginDrawer({ open: false, initial: undefined });
+        }}
       />
-      {isAdmin && rule.profileId && onChangeConfig ? (
-        <div className="env-driven-actions">
-          <button
-            type="button"
-            className="btn-ghost btn-small"
-            onClick={onChangeConfig}
-          >
-            Change configuration
-          </button>
-        </div>
-      ) : null}
-      {isAdmin && !rule.profileId ? (
-        <span className="hint-tag">default profile missing — toggle disabled</span>
-      ) : null}
     </div>
   );
 }
 
-function EvalRules({
+function EvaluatorsCard({
   rules,
   isAdmin,
+  profileIdByKind,
+  plugins,
   onRequestOpenProfile,
   onToggleProfile,
-  toggleBusy,
+  profileToggleBusy,
   profileToggleRow,
+  onCreatePlugin,
+  onEditPlugin,
 }: {
   rules: EvalRule[];
   isAdmin: boolean;
+  profileIdByKind: Record<string, string | undefined>;
+  plugins: EvalPluginRecord[];
   onRequestOpenProfile: (id: string) => void;
   onToggleProfile: (id: string, enabled: boolean) => void;
-  toggleBusy: boolean;
+  profileToggleBusy: boolean;
   profileToggleRow: string | null;
+  onCreatePlugin: () => void;
+  onEditPlugin: (rec: EvalPluginRecord) => void;
 }) {
-  void isAdmin;
-  const cols: Column<EvalRule>[] = [
+  const qc = useQueryClient();
+  const pluginToggleM = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      patchEvalPlugin(id, { enabled }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["eval-plugins"] }),
+  });
+  const testM = useMutation({
+    mutationFn: (id: string) => testEvalPlugin(id),
+  });
+
+  // One row per evaluator instance: built-in heuristics, legacy
+  // (SLM judge / Remote eval), and per-org plugins. Rendered as a single
+  // table so an operator sees the *whole* surface in one glance — no
+  // round-trip between pages when adding/removing a plugin.
+  type EvalRow =
+    | {
+        kind: "heuristic";
+        id: string;
+        title: string;
+        enabled: boolean;
+        source: "heuristic";
+        detail: React.ReactNode;
+        action?: React.ReactNode;
+      }
+    | {
+        kind: "legacy";
+        id: string;
+        title: string;
+        enabled: boolean;
+        source: "legacy";
+        detail: React.ReactNode;
+        action?: React.ReactNode;
+      }
+    | {
+        kind: "plugin";
+        id: string;
+        title: string;
+        enabled: boolean;
+        source: "plugin";
+        detail: React.ReactNode;
+        action?: React.ReactNode;
+        rec: EvalPluginRecord;
+      };
+
+  const rows: EvalRow[] = [];
+  for (const r of rules) {
+    const isLegacy = r.kind === "slm_judge" || r.kind === "remote_eval";
+    const profileId = profileIdByKind[r.kind];
+    const detail = (
+      <div className="muted small">
+        <span>{r.detail}</span>{" "}
+        {isLegacy ? (
+          <span className="hint-tag warn">legacy — migrate to plugin</span>
+        ) : null}
+      </div>
+    );
+    const action = isAdmin ? (
+      <div className="env-driven-cell">
+        <LabelToggle
+          checked={r.enabled}
+          label={`toggle ${r.metric}`}
+          disabled={profileToggleBusy && profileToggleRow === profileId}
+          onChange={(next) => profileId && onToggleProfile(profileId, next)}
+        />
+        {profileId ? (
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            onClick={() => profileId && onRequestOpenProfile(profileId)}
+          >
+            Change configuration
+          </button>
+        ) : (
+          <span className="hint-tag">default profile missing</span>
+        )}
+      </div>
+    ) : null;
+    if (isLegacy) {
+      rows.push({
+        kind: "legacy",
+        id: r.kind,
+        title: `${r.metric} (legacy)`,
+        enabled: r.enabled,
+        source: "legacy",
+        detail,
+        action,
+      });
+    } else {
+      rows.push({
+        kind: "heuristic",
+        id: r.kind,
+        title: r.metric,
+        enabled: r.enabled,
+        source: "heuristic",
+        detail,
+        action,
+      });
+    }
+  }
+  for (const p of plugins) {
+    const parsed = safeParsePlugin(p.spec_yaml ?? "");
+    const isRowTesting =
+      !!testM.isPending && testM.variables === p.id;
+    const isRowToggling =
+      !!pluginToggleM.isPending && pluginToggleM.variables?.id === p.id;
+    rows.push({
+      kind: "plugin",
+      id: `plugin:${p.id ?? p.name}`,
+      title: p.name,
+      enabled: p.enabled,
+      source: "plugin",
+      rec: p,
+      detail: (
+        <div className="muted small">
+          <Chip tone="info">{parsed.type ?? "—"}</Chip>{" "}
+          <Chip tone="neutral">sample {parsed.sampling ?? "—"}</Chip>{" "}
+          <Chip tone="neutral">{parsed.mode ?? "—"}</Chip>
+        </div>
+      ),
+      action: isAdmin ? (
+        <div className="env-driven-cell">
+          <LabelToggle
+            checked={p.enabled}
+            label={`toggle ${p.name}`}
+            disabled={isRowToggling}
+            onChange={() => {
+              if (!p.id) return;
+              pluginToggleM.mutate({ id: p.id, enabled: !p.enabled });
+            }}
+          />
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            onClick={() => p.id && testM.mutate(p.id)}
+            disabled={!p.enabled || isRowTesting}
+          >
+            {isRowTesting ? "Testing…" : "Test"}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            onClick={() => onEditPlugin(p)}
+          >
+            Edit
+          </button>
+        </div>
+      ) : null,
+    });
+  }
+
+  const cols: Column<EvalRow>[] = [
     {
-      id: "metric",
-      header: "Metric",
-      cell: (r) => <strong>{r.metric}</strong>,
-      sortValue: (r) => r.metric,
+      id: "title",
+      header: "Evaluator",
+      cell: (r) => <strong>{r.title}</strong>,
+      sortValue: (r) => r.title,
     },
     {
-      id: "enabled",
-      header: "Status",
-      width: "340px",
-      cell: (r) => (
-        <EnvDrivenCell
-          rule={r}
-          isAdmin={isAdmin}
-          busy={toggleBusy && profileToggleRow === r.profileId}
-          onChangeConfig={
-            isAdmin && r.profileId
-              ? () => r.profileId && onRequestOpenProfile(r.profileId)
-              : undefined
-          }
-          onToggle={(next) => r.profileId && onToggleProfile(r.profileId, next)}
-        />
-      ),
-      // Sort: enabled rows first (true → 0), then by metric name. v0.6.9
-      // dropped the env-driven vs interactive split; all four core kinds
-      // live under the same switch now.
-      sortValue: (r) => (r.enabled ? 0 : 10) + String(r.metric).localeCompare(""),
+      id: "source",
+      header: "Source",
+      width: "120px",
+      cell: (r) =>
+        r.source === "heuristic" ? (
+          <Chip tone="info">heuristic</Chip>
+        ) : r.source === "legacy" ? (
+          <Chip tone="warn">legacy</Chip>
+        ) : (
+          <Chip tone="accent">plugin</Chip>
+        ),
+      sortValue: (r) =>
+        r.source === "heuristic" ? 0 : r.source === "legacy" ? 1 : 2,
     },
     {
       id: "detail",
       header: "Detail",
-      cell: (r) => <span className="muted small">{r.detail}</span>,
+      cell: (r) => r.detail,
+    },
+    {
+      id: "action",
+      header: "Action",
+      width: "320px",
+      cell: (r) => r.action ?? null,
     },
   ];
 
   return (
-    <>
-      <section>
-        <h2 className="section-title">Heuristics</h2>
-        <div className="panel" style={{ padding: 4 }}>
-          <DataTable
-            rows={rules}
-            columns={cols}
-            emptyMessage="No metrics."
-          />
+    <section>
+      <header className="section-head">
+        <div>
+          <h2 className="section-title">Evaluators</h2>
+          <p className="muted small">
+            Heuristics run in-process;{" "}
+            <strong>plugins</strong> forward traces to Langfuse,
+            LangSmith, Datadog, etc. and pull scores back.{" "}
+            <strong>legacy</strong> rows are kept on for transparency —
+            migrate them to plugins when convenient.
+          </p>
         </div>
-        <p className="muted small" style={{ marginTop: 10 }}>
-          All four metrics are driven by <code>EvalProfile</code> rows
-          below — each toggle flips the corresponding profile&apos;s{" "}
-          <code>enabled</code> flag without a Pod restart. SLM judge and
-          Remote eval are seeded from <code>NEXUS_EVAL_*</code> /
-          <code> NEXUS_REMOTE_EVAL_*</code> at boot; admins can edit their
-          BaseURL, model, or metrics inside the profile editor (the
-          &quot;Change configuration&quot; shortcut on each row). Any
-          member can override per-user by creating a{" "}
-          <code>scope: user</code> profile of the same <code>kind</code>:
-          leaving it enabled runs additively alongside the org profile,
-          while disabling it suppresses the org profile for that
-          member&apos;s traffic only.
-        </p>
-      </section>
-    </>
+        {isAdmin ? (
+          <button type="button" className="btn-neon" onClick={onCreatePlugin}>
+            + Install plugin
+          </button>
+        ) : null}
+      </header>
+      <div className="panel" style={{ padding: 4 }}>
+        <DataTable
+          rows={rows}
+          columns={cols}
+          emptyMessage="No evaluators."
+        />
+      </div>
+    </section>
   );
+}
+
+// Cheap visual extract for the EvaluatorsCard's plugin rows. The same
+// logic exists in EvalPlugins.tsx — duplicated here on purpose to avoid
+// pulling the list card up into the parent and forcing a heavier
+// refactor. Co-locating the extractor next to the table that uses it
+// keeps the boundary obvious.
+function safeParsePlugin(raw: string): {
+  type?: string;
+  sampling?: string;
+  mode?: string;
+} {
+  const out: { type?: string; sampling?: string; mode?: string } = {};
+  for (const line of raw.split("\n")) {
+    const m = line.match(/^\s*type:\s*(.+)\s*$/);
+    if (m && out.type === undefined) out.type = m[1].trim();
+    const s = line.match(/^\s*sampling:\s*(.+)\s*$/);
+    if (s && out.sampling === undefined) out.sampling = s[1].trim();
+    const c = line.match(/^\s*mode:\s*(.+)\s*$/);
+    if (c && out.mode === undefined) out.mode = c[1].trim();
+  }
+  return out;
 }
 
 function WeightsCard({

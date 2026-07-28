@@ -248,4 +248,3 @@ func (d Duration) MarshalYAML() (any, error) {
 }
 
 func (d Duration) Std() time.Duration { return time.Duration(d) }
-

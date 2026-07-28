@@ -16,7 +16,7 @@ const pluginKindExpected = "EvalPlugin"
 // dispatcher implements on_trace today; scheduled/manual are reserved
 // for follow-up work so users can write YAML now without breakage.
 var validTrigger = map[string]struct{}{
-	"on_trace": {},
+	"on_trace":  {},
 	"scheduled": {},
 	"manual":    {},
 }

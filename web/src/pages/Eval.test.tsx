@@ -232,7 +232,7 @@ describe("<Eval /> weights sliders", () => {
 describe("<Eval /> heuristic table layout", () => {
   it("renders all metrics in one panel — every toggle is interactive, env-seeded profiles included", async () => {
     renderEval();
-    await waitFor(() => screen.getByText("Heuristics"));
+    await waitFor(() => screen.getByText("Evaluators"));
 
     // v0.6.9 unified all four metric rows under a single switch with
     // no aria-disabled. There are 4 switches from the heuristics
@@ -250,17 +250,18 @@ describe("<Eval /> heuristic table layout", () => {
     expect(disabled.length).toBe(0);
 
     // The text "SLM judge" and "Remote eval" are present in the
-    // heuristics table — multiple matches are fine because there is
-    // also a Chip in the Eval Profiles card below.
+    // Heuristic rows render the metric name as their title; legacy rows
+    // append "(legacy)" to the same title. Multiple matches are fine
+    // because the same names also appear as chips in the profiles card.
     expect(screen.getAllByText("SLM judge").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Remote eval").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Remote eval/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^PII$/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^Completeness$/i).length).toBeGreaterThan(0);
   });
 
   it("renders 4 interactive toggles on the heuristic table — admin can flip every kind", async () => {
     renderEval();
-    await waitFor(() => screen.getByText("Heuristics"));
+    await waitFor(() => screen.getByText("Evaluators"));
 
     // v0.6.9 unified all 4 rows under the same switch. The label's
     // aria-label flips between "disable X" and "enable X" so the tests
@@ -278,14 +279,14 @@ describe("<Eval /> heuristic table layout", () => {
     // The four kinds are still present in both the heuristic table and
     // the profile card below; multiple matches are fine.
     expect(screen.getAllByText("SLM judge").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Remote eval").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Remote eval/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^PII$/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^Completeness$/i).length).toBeGreaterThan(0);
   });
 
   it("admin sees Change configuration buttons on SLM judge and Remote eval rows", async () => {
     renderEval();
-    await waitFor(() => screen.getByText("Heuristics"));
+    await waitFor(() => screen.getByText("Evaluators"));
 
     // v0.6.9: every heuristic-table row surfaces Change configuration
     // because admins can edit any seeded default profile directly.
@@ -339,10 +340,10 @@ describe("<Eval /> admin toggle profile flow", () => {
       </ThemeProvider>,
     );
 
-    await waitFor(() => screen.getByText("Heuristics"));
+    await waitFor(() => screen.getByText("Evaluators"));
 
-    // Click the SLM judge switch (aria-label="disable SLM judge").
-    const slmSwitch = screen.getByRole("switch", { name: /disable SLM judge/i });
+    // Click the SLM judge switch (aria-label="toggle SLM judge").
+    const slmSwitch = screen.getByRole("switch", { name: /toggle SLM judge/i });
     fireEvent.click(slmSwitch);
     await waitFor(() =>
       expect(
@@ -397,15 +398,15 @@ describe("<Eval /> admin toggle profile flow", () => {
       </ThemeProvider>,
     );
 
-    await waitFor(() => screen.getByText("Heuristics"));
+    await waitFor(() => screen.getByText("Evaluators"));
 
     // Wait until the profile store has hydrated so profileIdByKind
     // resolves to non-null values; otherwise the toggle click fires
     // before the row's profileId is set and silently no-ops.
     await waitFor(() =>
-      expect(screen.getAllByRole("switch", { name: /disable PII/i }).length).toBeGreaterThan(0),
+      expect(screen.getAllByRole("switch", { name: /toggle PII/i }).length).toBeGreaterThan(0),
     );
-    const piiSwitch = screen.getByRole("switch", { name: /disable PII/i });
+    const piiSwitch = screen.getByRole("switch", { name: /toggle PII/i });
     fireEvent.click(piiSwitch);
     await waitFor(() =>
       expect(
@@ -457,6 +458,6 @@ describe("<Eval /> admin toggle profile flow", () => {
     // page. None of the admin-only actions render for non-admin.
     await waitFor(() => screen.getByText(/Forbidden/i));
     expect(screen.queryByText(/Change configuration/i)).toBeNull();
-    expect(screen.queryByText(/Heuristics/i)).toBeNull();
+    expect(screen.queryByText(/Evaluators/i)).toBeNull();
   });
 });
