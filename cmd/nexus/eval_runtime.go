@@ -53,7 +53,7 @@ type evalRuntimeController struct {
 	profileStore      evals.ProfileStore // PR #136: persistent EvalProfile store
 	pluginStore       evalplugin.PluginStore
 	workerPlugins     *evalplugin.Registry
-	secretResolver    *evals.Resolver    // PR #136: org/user/inline credential lookup
+	secretResolver    *evals.Resolver // PR #136: org/user/inline credential lookup
 	routeRefresh      time.Duration
 	loadBalance       bool
 	scoreStore        evals.StoreKind

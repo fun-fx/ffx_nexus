@@ -8,6 +8,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/evalplugin"
 	"github.com/ffxnexus/nexus/internal/observability"
 )
+
 func TestApplyMapsToOTelRecord(t *testing.T) {
 	raw := json.RawMessage(`{"key":"quality","score":0.91,"comment":"nice","trace_id":"abc"}`)
 	mapping := evalplugin.ResultMapping{
@@ -39,9 +40,9 @@ func TestApplyMapsToOTelRecord(t *testing.T) {
 
 func TestApplyPassFlagFromLabel(t *testing.T) {
 	cases := []struct {
-		name   string
-		label  string
-		want   bool
+		name  string
+		label string
+		want  bool
 	}{
 		{"pass", "pass", true},
 		{"true", "true", true},
@@ -106,7 +107,7 @@ func TestDispatcherDispatchesViaRegisteredAdapter(t *testing.T) {
 				Endpoint: "https://api.smith.langchain.com",
 				Auth:     evalplugin.AuthSpec{SecretRef: "k"},
 			},
-			Send: evalplugin.SendSpec{Trigger: "on_trace", Sampling: 1, Payload: map[string]string{"k": "v"}},
+			Send:    evalplugin.SendSpec{Trigger: "on_trace", Sampling: 1, Payload: map[string]string{"k": "v"}},
 			Collect: evalplugin.CollectSpec{Mode: "webhook"},
 		},
 	}

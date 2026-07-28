@@ -22,7 +22,7 @@ const (
 // ConfigMap or from the DB.
 type Source struct {
 	Kind SourceKind `json:"kind"`
-	Ref string      `json:"ref,omitempty"`
+	Ref  string     `json:"ref,omitempty"`
 }
 
 // Record is one entry in the runtime Registry. It carries the decoded

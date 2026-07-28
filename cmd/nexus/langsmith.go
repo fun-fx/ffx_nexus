@@ -83,7 +83,7 @@ func langsmithEnvelope(payload map[string]any) map[string]any {
 		}
 	}
 	span := map[string]any{
-		"name": "nexus.trace",
+		"name":       "nexus.trace",
 		"attributes": map[string]any{},
 	}
 	for _, k := range []string{"input", "output", "reference"} {
@@ -94,7 +94,7 @@ func langsmithEnvelope(payload map[string]any) map[string]any {
 	return map[string]any{
 		"resourceSpans": []map[string]any{
 			{
-				"resource":  resource,
+				"resource":   resource,
 				"scopeSpans": []map[string]any{{"scope": map[string]any{"name": "nexus"}, "spans": []map[string]any{span}}},
 			},
 		},
