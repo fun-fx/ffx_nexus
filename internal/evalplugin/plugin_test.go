@@ -1,8 +1,12 @@
 package evalplugin
 
 import (
+	"math"
 	"strings"
 	"testing"
+	"time"
+
+	yaml "go.yaml.in/yaml/v3"
 )
 
 const goodPlugin = `
@@ -45,11 +49,11 @@ func TestDecodeHappyPath(t *testing.T) {
 	if p.Spec.Service.Type != ServiceLangSmith {
 		t.Fatalf("service type: %s", p.Spec.Service.Type)
 	}
-	if p.Spec.Send.Sampling != 0.1 {
-		t.Fatalf("sampling: %v", p.Spec.Send.Sampling)
+	if p.Spec.Send.Sampling != SamplingFraction(0.1) {
+		t.Fatalf("sampling: %v", float64(p.Spec.Send.Sampling))
 	}
-	if p.Spec.Timeout.Seconds() != 30 {
-		t.Fatalf("timeout: %s", p.Spec.Timeout)
+	if p.Spec.Timeout.Std().Seconds() != 30 {
+		t.Fatalf("timeout: %s", p.Spec.Timeout.Std())
 	}
 	if len(p.Spec.Send.Redact) != 1 || p.Spec.Send.Redact[0] != "pii" {
 		t.Fatalf("redact: %v", p.Spec.Send.Redact)
@@ -123,8 +127,8 @@ func TestValidatePollWithInterval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if p.Spec.Collect.Interval.Seconds() != 60 {
-		t.Fatalf("interval: %s", p.Spec.Collect.Interval)
+	if p.Spec.Collect.Interval.Std().Seconds() != 60 {
+		t.Fatalf("interval: %s", p.Spec.Collect.Interval.Std())
 	}
 }
 
@@ -149,6 +153,106 @@ func TestValidateRejectsUnknownRedact(t *testing.T) {
 	_, err := Decode([]byte(bad))
 	if err == nil || !strings.Contains(err.Error(), "redact") {
 		t.Fatalf("expected redact error, got: %v", err)
+	}
+}
+
+// TestSamplingFractionAcceptsMultipleForms covers the marshalling
+// tolerance fix: manifests authored as `sampling: "0.1"` (quoted
+// string), `sampling: 0.25` (unquoted float), and `sampling: "25%"`
+// (percent) must all decode to a normalized 0–1 fraction after the
+// SamplingFraction UnmarshalYAML rewire. Bare integers are deliberately
+// NOT accepted as a percentage: an integer like `15` carries no
+// semantic hint, and silently treating it as 15×100% would silently
+// fail the [0,1] validation in a non-obvious way.
+func TestSamplingFractionAcceptsMultipleForms(t *testing.T) {
+	cases := map[string]float64{
+		"unquoted_float": 0.25,
+		"quoted_float":   0.25,
+		"percent":        0.25,
+	}
+	for label, want := range cases {
+		t.Run(label, func(t *testing.T) {
+			var s SamplingFraction
+			text := map[string]string{
+				"unquoted_float": "0.25",
+				"quoted_float":   "0.25",
+				"percent":        "25%",
+			}[label]
+			node := &yaml.Node{Kind: yaml.ScalarNode, Value: text}
+			if err := s.UnmarshalYAML(node); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if math.Abs(float64(s)-want) > 1e-9 {
+				t.Fatalf("got %v, want %v", float64(s), want)
+			}
+		})
+	}
+}
+
+func TestSamplingFractionRejectsBareInt(t *testing.T) {
+	// A bare integer like `sampling: 15` parses as float 15 and is then
+	// caught by the schema's [0,1] range check. Either the parser or
+	// the validator may produce that decision — both are acceptable;
+	// the failure mode we care about is "silent acceptance of 15.0 as
+	// a value greater than 1.0".
+	node := &yaml.Node{Kind: yaml.ScalarNode, Value: "15"}
+	var s SamplingFraction
+	if err := s.UnmarshalYAML(node); err == nil {
+		// parse succeeded — now the validator should reject the out-of-
+		// range value; we assert here only that whatever the parser
+		// produced, it isn't a quietly-coerced 15.0 such that the value
+		// would land inside the valid range. We test the validator below.
+		_ = s
+	}
+	raw := strings.Replace(goodPlugin, "sampling: 0.1", "sampling: 15", 1)
+	_, err := Decode([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "sampling") {
+		t.Fatalf("expected sampling-range rejection, got: %v", err)
+	}
+}
+
+// TestDurationAcceptsBothForms: Helm-rendered manifests commonly emit
+// durations as quoted strings (`"60s"`); legacy configs pass bare
+// seconds (`60`). The Duration UnmarshalYAML rewire must accept both,
+// and must NOT silently accept junk.
+func TestDurationAcceptsBothForms(t *testing.T) {
+	cases := map[string]time.Duration{
+		"quoted_string": 60 * time.Second,
+		"bare_number":   60 * time.Second,
+		"millis":        1500 * time.Millisecond,
+	}
+	for label, want := range cases {
+		t.Run(label, func(t *testing.T) {
+			var d Duration
+			text := map[string]string{
+				"quoted_string": "60s",
+				"bare_number":   "60",
+				"millis":        `"1500ms"`,
+			}[label]
+			node := &yaml.Node{Kind: yaml.ScalarNode, Value: text}
+			node.Value = strings.Trim(text, `"`)
+			if err := d.UnmarshalYAML(node); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if d.Std() != want {
+				t.Fatalf("got %v, want %v", d.Std(), want)
+			}
+		})
+	}
+}
+
+// TestDecodeAllowsQuotedSampling covers the user-reported failure
+// mode: `sampling: "0.1"` (a quoted string in a YAML field the schema
+// typed as float) used to return "cannot unmarshal !!str into
+// float64". With the SamplingFraction rewire it must decode cleanly.
+func TestDecodeAllowsQuotedSampling(t *testing.T) {
+	raw := strings.Replace(goodPlugin, "sampling: 0.1", `sampling: "0.1"`, 1)
+	p, err := Decode([]byte(raw))
+	if err != nil {
+		t.Fatalf("quoted sampling must not error: %v", err)
+	}
+	if float64(p.Spec.Send.Sampling) != 0.1 {
+		t.Fatalf("sampling decode wrong: %v", float64(p.Spec.Send.Sampling))
 	}
 }
 

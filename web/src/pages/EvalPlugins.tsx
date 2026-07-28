@@ -26,7 +26,7 @@ spec:
       secretRef: langfuse-public-key
   send:
     trigger: on_trace
-    sampling: "0.1"
+    sampling: 0.1
     payload:
       input: "{{ .trace.input_messages }}"
       output: "{{ .trace.output_messages }}"

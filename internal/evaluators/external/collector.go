@@ -70,7 +70,7 @@ func (c *Collector) Run(ctx context.Context) error {
 		if rec.Plugin.Spec.Collect.Mode != "poll" {
 			continue
 		}
-		interval := rec.Plugin.Spec.Collect.Interval
+		interval := rec.Plugin.Spec.Collect.Interval.Std()
 		if interval <= 0 {
 			interval = 60 * time.Second
 		}
