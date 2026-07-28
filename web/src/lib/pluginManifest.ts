@@ -247,8 +247,13 @@ export function serializeFormToYaml(form: PluginFormState): string {
   lines.push("  service:");
   lines.push(`    type: ${form.service.kind}`);
   lines.push(`    endpoint: ${form.service.endpoint.trim()}`);
-  lines.push(`    secretRef: ${form.service.secretRef.trim()}`);
-  lines.push(`    keyRef: ${form.service.keyRef.trim()}`);
+  lines.push(`    auth:`);
+  if (form.service.secretRef.trim()) {
+    lines.push(`      secretRef: ${form.service.secretRef.trim()}`);
+  }
+  if (form.service.keyRef.trim()) {
+    lines.push(`      keyRef: ${form.service.keyRef.trim()}`);
+  }
   lines.push("  send:");
   lines.push(`    trigger: ${form.send.trigger}`);
   lines.push(`    sampling: ${roundFraction(pctToFraction(form.send.samplingPct))}`);
@@ -307,16 +312,25 @@ type Frame = { key: string; depth: number };
  * it tracks depth with a tiny stack.
  */
 export function parseYamlToForm(yaml: string): PluginFormState {
+  // Deep-clone the template fields. The previous top-level `...DEFAULT`
+  // spread kept `service`, `send.payload`, and `collect.mapping` as
+  // shared references, so any later write from this parse call would
+  // *mutate* the module-level DEFAULT_PLUGIN_TEMPLATE and silently
+  // rewrite every operator's default Langfuse preset on the next
+  // render. Clone every nested array/object the parser writes into.
+  const seed = DEFAULT_PLUGIN_TEMPLATE;
   const out: PluginFormState = {
-    ...DEFAULT_PLUGIN_TEMPLATE,
     name: "",
+    service: { ...seed.service },
     send: {
-      ...DEFAULT_PLUGIN_TEMPLATE.send,
+      trigger: seed.send.trigger,
+      samplingPct: seed.send.samplingPct,
       payload: [],
       redact: "",
     },
     collect: {
-      ...DEFAULT_PLUGIN_TEMPLATE.collect,
+      mode: seed.collect.mode,
+      interval: seed.collect.interval,
       mapping: [],
     },
     timeout: "",
@@ -388,6 +402,26 @@ export function parseYamlToForm(yaml: string): PluginFormState {
       if (k === "type" && isServiceKind(v)) out.service.kind = v;
       else if (k === "endpoint") out.service.endpoint = v;
       else if (k === "secretRef") out.service.secretRef = v;
+      else if (k === "keyRef") out.service.keyRef = v;
+      else if (k === "auth") {
+        // Nested auth: block — descend into a depth-2 frame so the
+        // 6-space secretRef / keyRef lines below it route to the
+        // auth handler instead of leaking back to the service
+        // fields. The empty value (`auth:`) implies a block; non-
+        // empty value (`auth: { ... }`) we keep as a sibling flat
+        // shape for back-compat with any foreign manifest stored
+        // before the form rewrite.
+        if (v.length === 0) stack.push({ key: "auth", depth: indent });
+      }
+      continue;
+    }
+
+    if (key === "auth" && indent === 6) {
+      const m = /^([a-zA-Z]+):\s*(.*)$/.exec(trimmed);
+      if (!m) continue;
+      const k = m[1];
+      const v = cleanYamlScalar(m[2]);
+      if (k === "secretRef") out.service.secretRef = v;
       else if (k === "keyRef") out.service.keyRef = v;
       continue;
     }

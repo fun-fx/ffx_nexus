@@ -50,6 +50,79 @@ describe("pluginManifest round-trip", () => {
     expect(parsed.send.redact).toBe("pii");
   });
 
+  it("parseYamlToForm does not mutate DEFAULT_PLUGIN_TEMPLATE", () => {
+    // Pre-condition: capture the canonical defaults once.
+    const before = JSON.stringify(DEFAULT_PLUGIN_TEMPLATE);
+    // Throw a handful of plausibly-mutating parses at the parser.
+    parseYamlToForm("");
+    parseYamlToForm(serializeFormToYaml(PLUGIN_PRESETS.webhook.form));
+    parseYamlToForm(serializeFormToYaml(PLUGIN_PRESETS.langsmith.form));
+    parseYamlToForm(serializeFormToYaml(PLUGIN_PRESETS.datadog.form));
+    // Post-condition: nothing in the default was clobbered.
+    expect(JSON.stringify(DEFAULT_PLUGIN_TEMPLATE)).toBe(before);
+  });
+
+  it("emit wraps secretRef / keyRef in a nested auth: block", () => {
+    const yaml = serializeFormToYaml(DEFAULT_PLUGIN_TEMPLATE);
+    expect(yaml).toContain("    auth:\n");
+    expect(yaml).toContain("      secretRef: langfuse-creds\n");
+    expect(yaml).toContain("      keyRef: public_key|secret_key\n");
+  });
+
+  it("parser accepts the legacy flat secretRef/keyRef shape", () => {
+    // `auth:` wrapper). The form must still hydrate them so the
+    // operator can edit and re-save.
+    const yaml = [
+      "apiVersion: nexus.io/v1alpha1",
+      "kind: EvalPlugin",
+      "metadata:",
+      "  name: langfuse-judge",
+      "spec:",
+      "  service:",
+      "    type: langfuse",
+      "    endpoint: https://cloud.langfuse.com",
+      "    secretRef: langfuse-creds",
+      "    keyRef: public_key|secret_key",
+      "  send:",
+      "    trigger: on_trace",
+      "    sampling: 0.1",
+      "    redact: [pii]",
+      "  collect:",
+      "    mode: webhook",
+      "    interval: 60s",
+      "  timeout: 30s",
+      "",
+    ].join("\n");
+    const parsed = parseYamlToForm(yaml);
+    expect(parsed.service.secretRef).toBe("langfuse-creds");
+    expect(parsed.service.keyRef).toBe("public_key|secret_key");
+  });
+
+  it("parser accepts the nested auth: shape", () => {
+    const yaml = [
+      "apiVersion: nexus.io/v1alpha1",
+      "kind: EvalPlugin",
+      "metadata:",
+      "  name: langfuse-judge",
+      "spec:",
+      "  service:",
+      "    type: langfuse",
+      "    endpoint: https://cloud.langfuse.com",
+      "    auth:",
+      "      secretRef: langfuse-creds",
+      "      keyRef: public_key|secret_key",
+      "  send:",
+      "    trigger: on_trace",
+      "  collect:",
+      "    mode: webhook",
+      "  timeout: 30s",
+      "",
+    ].join("\n");
+    const parsed = parseYamlToForm(yaml);
+    expect(parsed.service.secretRef).toBe("langfuse-creds");
+    expect(parsed.service.keyRef).toBe("public_key|secret_key");
+  });
+
   it("accepts a 4-space sibling even when `payload:` is mixed in", () => {
     // Simulate a hand-edited YAML where someone moved redact *before*
     // payload — the parser still routes to the form correctly.
