@@ -423,17 +423,20 @@ export async function testEvalPlugin(ref: string): Promise<PluginTestResult> {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    // Surface the message body verbatim so the result reads like a
-    // real probe outcome instead of a generic HTTP error.
-    const message =
-      (data as { message?: string }).message ||
-      (data as { error?: string }).error ||
-      `HTTP ${res.status}`;
-    // Returning a shaped failure keeps the per-row result UI on
-    // the happy path — no need to thread the error through a
-    // separate lane just because the probe failed.
-    return { ok: false, message };
-  }
+    // Resolve to a string the existing tsconfig permits. The
+  // literal field is `message` first (set on both success and the
+  // typed-failure 502), then `error` (legacy 503 path), and only
+  // as a last resort fall back to the HTTP status so the user sees
+  // "HTTP 502" rather than blank when neither is present. Some
+  // vendor probe errors already include "HTTP <code>" inside their
+  // message, so we do *not* prepend "HTTP <status>" to avoid the
+  // "HTTP 502: endpoint ... returned HTTP 502" duplication.
+  const message =
+    (data as { message?: string }).message ||
+    (data as { error?: string }).error ||
+    `Backend HTTP ${res.status}`;
+  return { ok: false, message };
+}
   return jsonOrError<PluginTestResult>(res);
 }
 

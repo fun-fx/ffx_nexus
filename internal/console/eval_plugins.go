@@ -176,18 +176,33 @@ func (s *Server) deleteEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 // pluginWebhook funnels incoming HTTP POSTs from vendor services to
 // the PluginWebhookReceiver. Verification of vendor signatures is
 // the receiver's responsibility — this handler only routes.
+//
+// We emit a typed status envelope (ok + accepted + optional message)
+// on both success and failure so the React client can render the
+// outcome in the per-row inline status instead of having to fall
+// back to fetch's opaque `res.ok` boolean.
 func (s *Server) pluginWebhook(w http.ResponseWriter, r *http.Request) {
 	if s.pluginCollector == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "eval plugin collector disabled"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok":      false,
+			"message": "eval plugin collector disabled",
+		})
 		return
 	}
 	name := chi.URLParam(r, "name")
 	defer r.Body.Close()
 	if err := s.pluginCollector.Webhook(name, r.Body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":      false,
+			"message": err.Error(),
+		})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok":       true,
+		"accepted": 1,
+		"message":  "queued for evaluation",
+	})
 }
 
 // pluginTest issues a vendor-specific connection probe. The
