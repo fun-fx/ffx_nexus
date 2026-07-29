@@ -116,28 +116,49 @@ func (t *PluginTester) withSource(src *pluginSourceAdapter) *PluginTester {
 }
 
 // genericProbe does a cheap authenticated GET against the plugin
-// endpoint. Auth headers (Basic, Langfuse base pair, etc.) are
-// deliberately not added here — those are vendor-specific. We only
-// need to learn whether the endpoint answers at all, so the admin
-// sees a real response status instead of an empty result.
+// endpoint. We add an explicit User-Agent + Accept header so vendors
+// that path-match (e.g. Datadog) don't refuse us with an unhelpful
+// 400. We only learn whether the endpoint answers at all and what
+// HTTP status it returned; auth headers are added by the
+// vendor-specific probe path so this probe deliberately does *not*
+// pretend to authenticate.
+//
+// Returning a typed error keeps the message round-trip lossless so
+// the UI can show "endpoint <url> returned HTTP <code> (<phase>)"
+// instead of a bare "HTTP 502" inherited from our own 502 response.
 func genericProbe(ctx context.Context, endpoint string) error {
 	if strings.TrimSpace(endpoint) == "" {
 		return errors.New("endpoint not configured")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("build probe request against %s: %w", endpoint, err)
 	}
+	req.Header.Set("User-Agent", "nexus-eval-plugin-tester/1.0 (+https://nexus)")
+	req.Header.Set("Accept", "application/json, text/plain;q=0.9, */*;q=0.5")
 	resp, err := httpClientForPlugins().Do(req)
 	if err != nil {
-		return err
+		// Network-layer failure (DNS, TCP, TLS, timeout). Carry the
+		// endpoint into the message so the operator can match it
+		// against their ingress / NetworkPolicy without grepping
+		// the Nexus logs.
+		return fmt.Errorf("probe %s failed at transport layer: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 500 {
-		return fmt.Errorf("endpoint returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("endpoint %s returned HTTP %d", endpoint, resp.StatusCode)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return fmt.Errorf("endpoint reachable but rejected credentials (HTTP %d)", resp.StatusCode)
+		return fmt.Errorf(
+			"endpoint %s reachable but rejected credentials (HTTP %d)",
+			endpoint, resp.StatusCode,
+		)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf(
+			"endpoint %s returned HTTP %d (request malformed; check Accept header / path)",
+			endpoint, resp.StatusCode,
+		)
 	}
 	return nil
 }

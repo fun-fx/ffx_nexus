@@ -762,14 +762,23 @@ function PluginRow({
         </div>
       ) : null}
       {testResult ? (
-        <p className={`plugin-row-test ${testResult.ok ? "ok" : "err"}`}>
-          {testResult.ok ? "Connection OK" : "Connection failed"} — {testResult.message}
+        <p
+          className={`plugin-row-test ${testResult.ok ? "ok" : "err"}`}
+          data-testid={`plugin-test-${rec.name}`}
+        >
+          {testResult.ok
+            ? `✓ ${testResult.message}`
+            : `✗ ${testResult.message}`}
           {typeof testResult.latency_ms === "number"
             ? ` (${testResult.latency_ms}ms)`
             : ""}
         </p>
       ) : null}
-      {testError ? <p className="plugin-row-test err">{testError}</p> : null}
+      {testError ? (
+        <p className="plugin-row-test err" data-testid={`plugin-test-${rec.name}`}>
+          ✗ {testError}
+        </p>
+      ) : null}
     </article>
   );
 }
