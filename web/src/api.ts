@@ -422,22 +422,63 @@ export async function testEvalPlugin(ref: string): Promise<PluginTestResult> {
     method: "POST",
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    // Resolve to a string the existing tsconfig permits. The
-  // literal field is `message` first (set on both success and the
-  // typed-failure 502), then `error` (legacy 503 path), and only
-  // as a last resort fall back to the HTTP status so the user sees
-  // "HTTP 502" rather than blank when neither is present. Some
-  // vendor probe errors already include "HTTP <code>" inside their
-  // message, so we do *not* prepend "HTTP <status>" to avoid the
-  // "HTTP 502: endpoint ... returned HTTP 502" duplication.
-  const message =
-    (data as { message?: string }).message ||
-    (data as { error?: string }).error ||
-    `Backend HTTP ${res.status}`;
-  return { ok: false, message };
-}
+    // Read the body once. The body of a 5xx response can be:
+    //   1. a typed JSON `{ ok, message, ... }` we authored server-side,
+    //   2. a different JSON shape from a legacy / proxy layer,
+    //   3. an HTML page from a CDN / ingress interception,
+    //   4. just empty.
+    // We must read the bytes exactly once per Response, so read text
+    // first and optionally attempt a JSON parse on the result.
+    let rawSnippet = "";
+    try {
+      rawSnippet = await res.text();
+    } catch {
+      rawSnippet = "";
+    }
+    let data: Record<string, unknown> = {};
+    if (rawSnippet) {
+      try {
+        data = JSON.parse(rawSnippet) as Record<string, unknown>;
+      } catch {
+        data = {};
+      }
+    }
+    const message =
+      (data as { message?: string }).message ||
+      (data as { error?: string }).error ||
+      extractBodyHint(rawSnippet, res.status, res.headers.get("content-type")) ||
+      `Backend HTTP ${res.status}`;
+    return { ok: false, message };
+  }
   return jsonOrError<PluginTestResult>(res);
+}
+
+/**
+ * extractBodyHint is the last-resort fallback when the server
+ * reply did not match the typed PluginTestResult envelope. We slice
+ * the first 120 characters of whatever body came back so the row
+ * shows something actionable ("Backend HTTP 502 returned an
+ * unexpected body (nginx 502 Bad Gateway)…") instead of leaving the
+ * operator hunting in browser devtools.
+ */
+function extractBodyHint(
+  raw: string,
+  status: number,
+  contentType: string | null,
+): string | null {
+  if (!raw) {
+    if (status >= 500) {
+      return `Backend HTTP ${status} returned no body — likely an upstream proxy page.`;
+    }
+    return null;
+  }
+  const oneLine = raw.replace(/\s+/g, " ").trim();
+  if (oneLine.length < 3) return null;
+  const ct = (contentType ?? "").toLowerCase();
+  const prefix = ct.includes("html")
+    ? `Backend HTTP ${status} returned HTML — auth or ingress likely intercepted the request (`
+    : `Backend HTTP ${status} returned non-JSON body (`;
+  return `${prefix}${oneLine.slice(0, 120)})`;
 }
 
 /** Send a synthetic webhook payload to a plugin's inbox. Backed by the
