@@ -228,13 +228,18 @@ func (s *Server) pluginTest(w http.ResponseWriter, r *http.Request, _ core.User)
 	ref := chi.URLParam(r, "name")
 	res, err := s.pluginTester.Test(r.Context(), ref)
 	if err != nil {
-		// Always surface a typed response so the React mutation can
-		// render either `testResult.ok=false + message` or
-		// `testError` — we use the former so the result text shows up
-		// next to the plugin row instead of in the global
-		// "Last error" lane, matching what operators expect from
-		// other plugin editors.
-		writeJSON(w, http.StatusBadGateway, map[string]any{
+		// A failed probe is an application-level *result*, not a
+		// transport failure, so it must be reported with 200. When we
+		// answered 5xx here, every reverse proxy in front of the
+		// console was entitled to discard our JSON body and
+		// substitute its own error page: Cloudflare replaced it with
+		// the branded "Bad gateway / Error code 502" HTML, which the
+		// dashboard then reported as "auth or ingress likely
+		// intercepted the request" — hiding the real message
+		// ("plugin ... not found", "probe timed out", …) from the
+		// operator. Keep the status 200 so the typed body always
+		// survives the trip back to the browser.
+		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      false,
 			"message": err.Error(),
 		})

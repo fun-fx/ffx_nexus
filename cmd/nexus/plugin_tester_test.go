@@ -138,6 +138,85 @@ spec:
 	}
 }
 
+// TestPluginTester_ResolvesFreshlyCreatedPluginByName reproduces the
+// production failure behind the "502 Bad gateway" report: the registry
+// is only filled at boot, so a plugin an operator creates through the
+// console lives in Postgres alone until the pod restarts. Test() used
+// to resolve the db fallback through the registry, which by definition
+// misses for such a row, so pressing Test returned `plugin "…" not
+// found` — and the handler then reported that as HTTP 502, which
+// Cloudflare rewrote into its own HTML error page.
+//
+// Here the registry is deliberately left EMPTY and the store holds the
+// full manifest, exactly as it does right after a create.
+func TestPluginTester_ResolvesFreshlyCreatedPluginByName(t *testing.T) {
+	const manifest = `apiVersion: nexus.io/v1alpha1
+kind: EvalPlugin
+metadata:
+  name: langfuse-judge
+spec:
+  service:
+    type: langfuse
+    endpoint: https://cloud.langfuse.com
+    auth:
+      secretRef: langfuse-creds
+      keyRef: public_key|secret_key
+  send:
+    trigger: on_trace
+    sampling: 0.1
+  collect:
+    mode: webhook
+    interval: 60s
+  timeout: 30s
+`
+	reg := evalplugin.NewRegistry() // cold, as after a fresh boot
+	tester := newTester(reg, nil, nil).withSource(&pluginSourceAdapter{
+		store: yamlStore{rows: []evalplugin.PluginRecord{{
+			ID:       "abc-123",
+			Name:     "langfuse-judge",
+			SpecYAML: manifest,
+			Enabled:  true,
+		}}},
+	})
+
+	rec, ok := tester.resolve(context.Background(), "langfuse-judge")
+	if !ok {
+		t.Fatal("resolve by name missed a plugin that exists only in the store")
+	}
+	if rec.Plugin == nil || rec.Plugin.Metadata.Name != "langfuse-judge" {
+		t.Fatalf("resolved the wrong record: %+v", rec.Plugin)
+	}
+	// The endpoint has to survive the decode, otherwise the probe
+	// would run against an empty URL and report a bogus message.
+	if got := rec.Plugin.Spec.Service.Endpoint; got != "https://cloud.langfuse.com" {
+		t.Errorf("endpoint = %q, want https://cloud.langfuse.com", got)
+	}
+
+	// Resolving by the row id must work through the same path.
+	if _, ok := tester.resolve(context.Background(), "abc-123"); !ok {
+		t.Error("resolve by db id missed a store-only plugin")
+	}
+}
+
+// yamlStore is a PluginStore whose rows carry real manifests, which is
+// what a Postgres row looks like. List() is live because the adapter's
+// name-keyed Lookup scans it.
+type yamlStore struct{ rows []evalplugin.PluginRecord }
+
+func (s yamlStore) List(_ context.Context, _ string) ([]evalplugin.PluginRecord, error) {
+	return s.rows, nil
+}
+func (s yamlStore) Get(_ context.Context, id string) (*evalplugin.PluginRecord, error) {
+	for i := range s.rows {
+		if s.rows[i].ID == id {
+			return &s.rows[i], nil
+		}
+	}
+	return nil, evalplugin.ErrPluginNotFound
+}
+func (s yamlStore) Save(_ context.Context, _ *evalplugin.PluginRecord) error { return nil }
+func (s yamlStore) Delete(_ context.Context, _ string) error                 { return nil }
+
 func TestPluginTester_MissingReturnsError(t *testing.T) {
 	reg := evalplugin.NewRegistry()
 	tester := newTester(reg, nil, nil)

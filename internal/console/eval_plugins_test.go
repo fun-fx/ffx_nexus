@@ -104,8 +104,12 @@ func TestPluginTest_FailureSurfacesTypedMessage(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/eval/plugins/langfuse-judge/test", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("want 502, got %d (%s)", rec.Code, rec.Body.String())
+	// A failed probe must come back as 200 with ok=false. Answering
+	// 5xx here let reverse proxies swap our JSON for their own error
+	// page — Cloudflare returned branded "Error code 502" HTML, so the
+	// operator saw an ingress complaint instead of the real reason.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 so proxies cannot replace the body, got %d (%s)", rec.Code, rec.Body.String())
 	}
 	var body struct {
 		OK      bool   `json:"ok"`

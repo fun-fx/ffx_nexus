@@ -49,7 +49,7 @@ func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
 	if t == nil || t.reg == nil {
 		return Result{}, errors.New("plugin registry not initialised")
 	}
-	rec, ok := t.resolve(ref)
+	rec, ok := t.resolve(ctx, ref)
 	if !ok {
 		return Result{}, fmt.Errorf("plugin %q not found", ref)
 	}
@@ -76,27 +76,77 @@ func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
 	return rResult, nil
 }
 
-// resolve looks the plugin up by registry-map key (metadata.name) and,
-// if that misses, by the db row id. It is safe when source is nil
-// (e.g. unit tests), in which case only the name path is exercised.
-func (t *PluginTester) resolve(ref string) (evalplugin.Record, bool) {
+// resolve looks the plugin up by registry-map key (metadata.name),
+// then by name in the database, then by database row id. It is safe
+// when source is nil (e.g. unit tests), in which case only the
+// registry path is exercised.
+//
+// The database paths matter because the registry is only populated at
+// boot (LoadFromDir + LoadFromStore). A plugin an operator creates
+// through the console is written straight to Postgres, so it is
+// absent from the registry until the pod restarts. Resolving it from
+// the store keeps "create, then press Test" working on the same page
+// load instead of reporting `plugin "…" not found`.
+func (t *PluginTester) resolve(ctx context.Context, ref string) (evalplugin.Record, bool) {
 	if rec, ok := t.reg.Lookup(ref); ok {
 		return rec, true
 	}
 	if t.source == nil {
 		return evalplugin.Record{}, false
 	}
-	if rec, err := t.source.Get(context.Background(), ref); err == nil {
-		// Re-resolve by canonical name so the registry's snapshot
-		// copy stays the source of truth (avoids subtle drift
-		// between DB and in-memory after a live edit).
-		if rec != nil && rec.ID != "" {
-			if canonical, ok := t.reg.Lookup(rec.Name); ok {
-				return canonical, true
-			}
+	// Lookup is name-keyed and already falls back to the store, which
+	// is how a just-created plugin resolves.
+	if rec, err := t.source.Lookup(ctx, ref); err == nil {
+		if out, ok := t.fromStoreRecord(rec); ok {
+			return out, true
+		}
+	}
+	// Get is id-keyed; kept so a caller holding the UUID still works.
+	if rec, err := t.source.Get(ctx, ref); err == nil {
+		if out, ok := t.fromStoreRecord(rec); ok {
+			return out, true
 		}
 	}
 	return evalplugin.Record{}, false
+}
+
+// fromStoreRecord turns a persisted row into a Record. It prefers the
+// row's own manifest, which is what lets a plugin created since the
+// last registry load resolve at all. When the row carries no manifest
+// it re-keys on metadata.name in the registry, preserving the older
+// behaviour for rows that only round-trip an id and a name.
+func (t *PluginTester) fromStoreRecord(rec *evalplugin.PluginRecord) (evalplugin.Record, bool) {
+	if rec == nil {
+		return evalplugin.Record{}, false
+	}
+	if out, ok := recordFromStore(rec); ok {
+		return out, true
+	}
+	if rec.Name != "" {
+		if canonical, ok := t.reg.Lookup(rec.Name); ok {
+			return canonical, true
+		}
+	}
+	return evalplugin.Record{}, false
+}
+
+// recordFromStore decodes a persisted plugin row into the same
+// Record shape the registry hands out, so callers downstream of
+// resolve() cannot tell whether the plugin came from the in-memory
+// merge or straight from Postgres.
+func recordFromStore(rec *evalplugin.PluginRecord) (evalplugin.Record, bool) {
+	if rec == nil || strings.TrimSpace(rec.SpecYAML) == "" {
+		return evalplugin.Record{}, false
+	}
+	p, err := evalplugin.Decode([]byte(rec.SpecYAML))
+	if err != nil {
+		return evalplugin.Record{}, false
+	}
+	return evalplugin.Record{
+		Plugin:  p,
+		Source:  evalplugin.Source{Kind: evalplugin.SourceDatabase, Ref: rec.ID},
+		Enabled: rec.Enabled,
+	}, true
 }
 
 func newTester(reg *evalplugin.Registry,

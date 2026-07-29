@@ -2,6 +2,7 @@ package evalplugin
 
 import (
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -339,6 +340,116 @@ func TestRegistryEnabledFiltersAndSorts(t *testing.T) {
 	if len(enabled) != 1 || enabled[0].Plugin.Metadata.Name != "a-plugin" {
 		t.Fatalf("expected only a-plugin enabled, got %+v", enabled)
 	}
+}
+
+// TestRegistryEnabledForOrgKeepsTenantsApart is the guard on the
+// tenant boundary. The registry is process-wide, so dispatching the
+// unfiltered Enabled() set would forward one org's prompts and
+// completions to another org's vendor account.
+func TestRegistryEnabledForOrgKeepsTenantsApart(t *testing.T) {
+	r := NewRegistry()
+	shared := mustDecode(t, goodPlugin)
+	shared.Metadata.Name = "cluster-wide"
+	mine := mustDecode(t, goodPlugin)
+	mine.Metadata.Name = "acme-only"
+	theirs := mustDecode(t, goodPlugin)
+	theirs.Metadata.Name = "globex-only"
+	r.Merge([]Record{
+		{Plugin: shared, Source: Source{Kind: SourceHelm}, Enabled: true},
+		{Plugin: mine, Source: Source{Kind: SourceDatabase}, Enabled: true, OrgID: "acme"},
+		{Plugin: theirs, Source: Source{Kind: SourceDatabase}, Enabled: true, OrgID: "globex"},
+	})
+
+	got := names(r.EnabledForOrg("acme"))
+	want := []string{"acme-only", "cluster-wide"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("acme sees %v, want %v", got, want)
+	}
+	for _, n := range got {
+		if n == "globex-only" {
+			t.Fatal("acme must never see globex's plugin")
+		}
+	}
+	// An org with no plugins of its own still inherits cluster-wide.
+	if got := names(r.EnabledForOrg("initech")); !reflect.DeepEqual(got, []string{"cluster-wide"}) {
+		t.Fatalf("initech sees %v, want [cluster-wide]", got)
+	}
+}
+
+// TestRegistrySameNameInTwoOrgsCoexist covers the keying change: with a
+// name-only key, the second org's install overwrote the first's.
+func TestRegistrySameNameInTwoOrgsCoexist(t *testing.T) {
+	r := NewRegistry()
+	acme := mustDecode(t, strings.Replace(goodPlugin,
+		"endpoint: https://api.smith.langchain.com",
+		"endpoint: https://acme.example", 1))
+	globex := mustDecode(t, strings.Replace(goodPlugin,
+		"endpoint: https://api.smith.langchain.com",
+		"endpoint: https://globex.example", 1))
+	r.Merge([]Record{
+		{Plugin: acme, Source: Source{Kind: SourceDatabase}, Enabled: true, OrgID: "acme"},
+		{Plugin: globex, Source: Source{Kind: SourceDatabase}, Enabled: true, OrgID: "globex"},
+	})
+	for org, wantHost := range map[string]string{
+		"acme":   "acme.example",
+		"globex": "globex.example",
+	} {
+		rec, ok := r.LookupForOrg(org, "langsmith-judge")
+		if !ok {
+			t.Fatalf("%s: lookup missed", org)
+		}
+		if !strings.Contains(rec.Plugin.Spec.Service.Endpoint, wantHost) {
+			t.Errorf("%s resolved to %s, want %s", org, rec.Plugin.Spec.Service.Endpoint, wantHost)
+		}
+	}
+}
+
+// TestRegistryOrgOverrideShadowsClusterWide keeps an override from
+// doubling the send: the org's own row replaces the inherited plugin of
+// the same name instead of dispatching to both.
+func TestRegistryOrgOverrideShadowsClusterWide(t *testing.T) {
+	r := NewRegistry()
+	r.Merge([]Record{
+		{Plugin: mustDecode(t, goodPlugin), Source: Source{Kind: SourceHelm}, Enabled: true},
+		{Plugin: mustDecode(t, strings.Replace(goodPlugin,
+			"endpoint: https://api.smith.langchain.com",
+			"endpoint: https://acme.example", 1)),
+			Source: Source{Kind: SourceDatabase}, Enabled: true, OrgID: "acme"},
+	})
+	got := r.EnabledForOrg("acme")
+	if len(got) != 1 {
+		t.Fatalf("expected the override to shadow cluster-wide, got %d entries", len(got))
+	}
+	if !strings.Contains(got[0].Plugin.Spec.Service.Endpoint, "acme.example") {
+		t.Errorf("override lost: endpoint %s", got[0].Plugin.Spec.Service.Endpoint)
+	}
+}
+
+// TestRegistryRemoveIsOrgScoped protects the inherited plugin when one
+// org deletes its same-named row.
+func TestRegistryRemoveIsOrgScoped(t *testing.T) {
+	r := NewRegistry()
+	r.Merge([]Record{
+		{Plugin: mustDecode(t, goodPlugin), Source: Source{Kind: SourceHelm}, Enabled: true},
+		{Plugin: mustDecode(t, goodPlugin), Source: Source{Kind: SourceDatabase}, Enabled: true, OrgID: "acme"},
+	})
+	if !r.Remove("acme", "langsmith-judge") {
+		t.Fatal("Remove reported nothing deleted")
+	}
+	if _, ok := r.LookupForOrg("", "langsmith-judge"); !ok {
+		t.Error("deleting acme's row evicted the cluster-wide plugin")
+	}
+	if got := names(r.EnabledForOrg("acme")); !reflect.DeepEqual(got, []string{"langsmith-judge"}) {
+		t.Errorf("acme should fall back to cluster-wide, got %v", got)
+	}
+}
+
+func names(recs []Record) []string {
+	out := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, rec.Plugin.Metadata.Name)
+	}
+	return out
 }
 
 func mustDecode(t *testing.T, raw string) *Plugin {
