@@ -19,28 +19,56 @@ sidecar or the SLM judge infrastructure by default — those are
 preserved for back-compat as the "local backend implementations" of
 the plugin contract.
 
-## Quickstart — install the LangSmith plugin in 5 minutes
+### Plugins do not need an eval profile
 
-1. Create a LangSmith API key in your LangChain account.
-2. Store it in K8s:
+An enabled plugin receives traces on its own. Eval profiles configure the
+in-process evaluators; the plugin evaluator is appended to whatever the
+profile set produced, so installing a plugin is sufficient and creating a
+profile changes nothing about it. Two things do gate it: the plugin must
+be **enabled**, and its `spec.send.sampling` roll must pass.
+
+Dispatch is also scoped to the trace's organisation — see
+[Cluster-wide vs per-org](#cluster-wide-vs-per-org).
+
+## Quickstart — Langfuse in 5 minutes
+
+Langfuse is the adapter to start with: it is the one wired end to end,
+and it self-hosts.
+
+1. In Langfuse → **Project settings → API keys**, create a key pair. You
+   need both the public key (`pk-lf-…`) and the secret key (`sk-lf-…`).
+2. Store them in a Secret:
 
    ```bash
-   kubectl create secret generic langsmith-api-key \
-     --from-literal=key=$LANGSMITH_API_KEY
+   kubectl create secret generic langfuse-creds -n <namespace> \
+     --from-literal=public_key=$LANGFUSE_PUBLIC_KEY \
+     --from-literal=secret_key=$LANGFUSE_SECRET_KEY
    ```
 
-3. Apply the bundled ConfigMap:
+3. Project the Secret into the pod, because Nexus reads plugin
+   credentials from the environment:
 
-   ```bash
-   kubectl apply -f deploy/helm/nexus/templates/eval-plugins/langsmith-judge.yaml
+   ```yaml
+   # values.yaml
+   envFrom:
+     - secretRef:
+         name: langfuse-creds
    ```
 
-4. In the Nexus console → **Admin → Eval → Plugins**, enable the
-   `langsmith-judge` row.
+4. In the Nexus console → **Eval → Plugins**, create a Langfuse plugin
+   (the preset fills in the endpoint and the `public_key|secret_key`
+   key ref), then press **Test**. A pass means the endpoint *and* the key
+   pair are good; anything else prints the vendor's own message.
+5. Enable the row.
 
-Traces sampled at 10% (= `spec.send.sampling`) are forwarded to
-LangSmith; evaluation results come back via webhook (`mode: webhook`)
-or 60s polling and are persisted to `eval_scores`.
+Traces are then forwarded at the manifest's `spec.send.sampling` rate as
+OTLP spans, and Langfuse-computed scores come back via webhook
+(`mode: webhook`) or polling and are persisted to `eval_scores`.
+
+If Langfuse stays empty, check the gateway logs for
+`plugin dispatch failed` — dispatch errors are logged with the vendor's
+response, since a rejected send is otherwise indistinguishable from a
+vendor with nothing to report.
 
 ## YAML schema (v1alpha1)
 
@@ -86,10 +114,11 @@ spec:
 | `metadata.name`            | yes       | DNS-style, lowercase, ≤ 64 chars, kebab-case. Reserved words rejected. |
 | `spec.service.type`        | yes       | Closed enum — see top row. Adds fail-fast protection against typos. |
 | `spec.service.endpoint`    | yes       | URL of the upstream service.                                    |
-| `spec.service.auth.secretRef` | one of two | Reference to K8s Secret or `eval_credentials` key ref.        |
+| `spec.service.auth.secretRef` | one of two | Kubernetes Secret name. Resolved from the environment — see [Credentials](#credentials). |
+| `spec.service.auth.keyRef` | one of two | Pipe-separated key names inside the Secret, in vendor order (Langfuse: `public_key\|secret_key`). |
 | `spec.service.auth.inlineKey` | never    | Forbidden; secrets never appear in source-controlled YAML.     |
 | `spec.send.trigger`        | yes       | `on_trace` today. `scheduled`/`manual` are reserved.            |
-| `spec.send.sampling`       | yes       | `[0, 1]`. Use ≤ 0.1 by default to keep egress bounded.          |
+| `spec.send.sampling`       | yes       | `[0, 1]`, and now actually enforced per plugin. Use ≤ 0.1 by default to keep egress and vendor cost bounded. |
 | `spec.send.payload`        | yes       | Map of strings; each value is a Go-text/template.               |
 | `spec.send.redact`         | no        | Only `pii` is accepted today; runs existing heuristic, replaces hits with `[REDACTED:<kind>]`. |
 | `spec.collect.mode`        | yes       | `webhook` recommended for LangSmith/Langfuse/Datadog.           |
@@ -292,6 +321,12 @@ Creating, editing, or deleting a plugin through the console updates
 the registry immediately, so the dispatcher picks up the change on the
 next trace instead of at the next pod restart.
 
+Polling follows within 30 seconds. The collector reconciles its poll
+goroutines against the registry on that cadence, so a `mode: poll` plugin
+created in the console starts collecting on its own; deleting one stops
+its poller. Previously the poller set was captured once at boot, which
+meant a console-created plugin never polled until the pod restarted.
+
 ## Why the Test button never returns 5xx
 
 `POST /api/eval/plugins/{name}/test` answers **200 with
@@ -320,17 +355,60 @@ For new installs (v0.7+) the runtime **does not seed
 still default to 100% sampling so fresh installs have working eval
 coverage out of the box.
 
+## Credentials
+
+`spec.service.auth.secretRef` names a Kubernetes Secret and
+`auth.keyRef` names the keys inside it, pipe-separated and **in the
+order the vendor expects them**. Langfuse takes two, as public key then
+secret key:
+
+```yaml
+auth:
+  secretRef: langfuse-creds
+  keyRef: public_key|secret_key
+```
+
+Nexus ships no Kubernetes client, so it cannot read a Secret through the
+API server. Credentials are resolved from the process environment
+instead, and the chart's `envFrom` is what puts them there. For each key
+the lookup order is:
+
+1. `NEXUS_PLUGIN_SECRET_<SECRETREF>_<KEY>`, e.g.
+   `NEXUS_PLUGIN_SECRET_LANGFUSE_CREDS_PUBLIC_KEY`. Prefer this once more
+   than one plugin is installed — it cannot collide.
+2. The bare key name, e.g. `PUBLIC_KEY`, which is what projecting the
+   Secret with `envFrom: [{secretRef: {name: langfuse-creds}}]` produces.
+
+Both forms upper-case the name and fold non-alphanumerics to `_`.
+
+A plugin that declares an auth block and whose keys do not resolve
+**fails dispatch and says so in the logs**. It does not fall back to an
+unauthenticated request: every vendor rejects those, and the rejection is
+invisible from Nexus, which reads as "the plugin works but the vendor has
+no data". A manifest with no auth block at all still dispatches, so
+self-hosted collectors that need no credential keep working.
+
+Press **Test** after wiring the Secret. For Langfuse the probe reads one
+score off the authenticated API, so it verifies the endpoint, the key
+pair and the API version together. Other vendors' probes only check that
+the host answers HTTP.
+
 ## Adapters currently shipped
 
-| `service.type` | Adapter status | Notes |
-|-----------------|----------------|-------|
-| `langsmith`     | Stable (v0.7)  | First reference plugin. |
-| `langfuse`      | Stable (v0.7.1)| OSS / self-host friendly; recommended default for self-hosted customers. |
-| `datadog`       | Beta           | Hex→decimal trace_id rewrite required (see adapter docs). |
-| `braintrust`    | Beta           | OTLP traces accepted. |
-| `arize`         | Beta           | AX remote-evaluator endpoints. |
-| `otel`          | Beta           | Direct OTLP `gen_ai.evaluation.result` to an OTel collector. |
-| `webhook`       | Stable         | Generic JSON forwarder to the admin-defined URL. |
+| `service.type` | Send | Collect | Notes |
+|-----------------|------|---------|-------|
+| `langfuse`      | Authenticated | Authenticated | OTLP/JSON to `/api/public/otel/v1/traces` with Basic auth; polls `/api/public/v3/scores`. OSS / self-host friendly, and the recommended default. |
+| `langsmith`     | Unauthenticated | Heartbeat only | Posts an OTLP envelope but sends no API key, so a real LangSmith project rejects it. Needs the same credential wiring Langfuse now has. |
+| `datadog`       | Unauthenticated | Heartbeat only | Also needs `DD-API-KEY`/`DD-APPLICATION-KEY` wiring. Hex→decimal trace_id rewrite required. |
+| `braintrust`    | Unauthenticated | Heartbeat only | OTLP traces accepted; no auth wired. |
+| `arize`         | Unauthenticated | Heartbeat only | AX remote-evaluator endpoints; no auth wired. |
+| `otel`          | Beta | Heartbeat only | Direct OTLP `gen_ai.evaluation.result` to a collector. Usually needs no credential, so this one works as-is. |
+| `webhook`       | Beta | Heartbeat only | Generic JSON forwarder to the admin-defined URL. |
+
+Only `langfuse` and `otel` are expected to deliver data to a real vendor
+today. The credential plumbing (`external.Target`) is shared, so wiring
+the remaining vendors is a matter of setting each one's auth header and
+correcting its endpoint — not new infrastructure.
 
 DeepEval/Confident AI, WhyLabs, RagaAI are **not** supported as
 drop-in adapters (their SDKs are Python-only and don't expose a

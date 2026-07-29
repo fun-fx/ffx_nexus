@@ -267,9 +267,20 @@ extraEnv: []
 #   value: "true"
 
 # Mount extra env from existing ConfigMaps/Secrets.
+#
+# This is also how eval-plugin credentials reach Nexus. A plugin
+# manifest's `spec.service.auth.secretRef` names a Secret and `keyRef`
+# names the keys inside it; Nexus reads them from the environment, so the
+# Secret has to be projected here. For
+#   auth: { secretRef: langfuse-creds, keyRef: public_key|secret_key }
+# either project the Secret directly (its keys arrive as PUBLIC_KEY and
+# SECRET_KEY), or set NEXUS_PLUGIN_SECRET_LANGFUSE_CREDS_PUBLIC_KEY and
+# NEXUS_PLUGIN_SECRET_LANGFUSE_CREDS_SECRET_KEY explicitly, which is the
+# form to prefer once more than one plugin is installed because it
+# cannot collide. See docs/eval-plugins.md.
 envFrom: []
 # - secretRef:
-#     name: my-extra-secret
+#     name: langfuse-creds
 
 resources:
   requests:

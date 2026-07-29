@@ -268,6 +268,25 @@ func min(a, b int) int {
 // `attributes`/`key`/`value`/`string_value`, etc.); the collector
 // unmarshals them as Protobuf JSON and treats them as ordinary spans.
 func otlpEnvelopeFromTraces(traces []Trace) map[string]any {
+	return otlpEnvelope(traces, nil)
+}
+
+// OTLPEnvelope renders traces into the OTLP/JSON
+// ExportTraceServiceRequest shape (`{"resourceSpans":[…]}`) that every
+// OTLP/HTTP receiver accepts. It is exported so eval-plugin adapters
+// speaking OTLP (Langfuse's /api/public/otel/v1/traces) reuse this
+// attribute mapping instead of hand-rolling a second one that drifts.
+//
+// extraAttributes are merged onto every span as string attributes.
+// Adapters use it to carry prompt/completion content, which this
+// envelope deliberately omits: the first-party exporter ships only
+// metadata, so anything sensitive has to be opted in by the caller
+// after it has passed the plugin's redaction step.
+func OTLPEnvelope(traces []Trace, extraAttributes map[string]string) map[string]any {
+	return otlpEnvelope(traces, extraAttributes)
+}
+
+func otlpEnvelope(traces []Trace, extraAttributes map[string]string) map[string]any {
 	resourceSpans := []map[string]any{}
 	for _, t := range traces {
 		attrs := filterNil([]map[string]any{
@@ -300,6 +319,13 @@ func otlpEnvelopeFromTraces(traces []Trace) map[string]any {
 			kv("nexus.top_p", floatToString(t.TopP)),
 			kv("nexus.max_tokens", intToString(t.MaxTokens)),
 		})
+		// Sorted so the emitted envelope is byte-stable, which keeps
+		// adapter tests from depending on Go's map iteration order.
+		for _, k := range sortedKeys(extraAttributes) {
+			if pair := kv(k, extraAttributes[k]); pair != nil {
+				attrs = append(attrs, pair)
+			}
+		}
 		// OTLP requires trace_id (32 hex chars) + span_id (16 hex chars)
 		// to be hex-encoded strings with no separators. Nexus upstream
 		// IDs are usually UUIDs (`xxxxxxxx-xxxx-...`) when they come

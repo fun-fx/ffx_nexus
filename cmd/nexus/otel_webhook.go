@@ -15,14 +15,16 @@ import (
 	"errors"
 	"io"
 	"net/http"
+
+	"github.com/ffxnexus/nexus/internal/evaluators/external"
 )
 
-func otelTransmit(ctx context.Context, endpoint string, payload map[string]any) error {
+func otelTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
 	body, ct, err := jsonBody(payload)
 	if err != nil {
 		return &adapterError{vendor: "otel", code: "encode", err: err}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tgt.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return &adapterError{vendor: "otel", code: "prepare", err: err}
 	}
@@ -43,18 +45,18 @@ func otelTransmit(ctx context.Context, endpoint string, payload map[string]any) 
 	return nil
 }
 
-func otelFetch(ctx context.Context, endpoint string) ([]json.RawMessage, error) {
+func otelFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
 	// OTLP does not expose a pull-API for evaluation results; this
 	// path is reserved for future expansion.
 	return nil, nil
 }
 
-func webhookTransmit(ctx context.Context, endpoint string, payload map[string]any) error {
+func webhookTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
 	body, ct, err := jsonBody(payload)
 	if err != nil {
 		return &adapterError{vendor: "webhook", code: "encode", err: err}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tgt.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return &adapterError{vendor: "webhook", code: "prepare", err: err}
 	}
@@ -76,6 +78,6 @@ func webhookTransmit(ctx context.Context, endpoint string, payload map[string]an
 	return nil
 }
 
-func webhookFetch(ctx context.Context, endpoint string) ([]json.RawMessage, error) {
+func webhookFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
 	return nil, nil
 }

@@ -2,6 +2,8 @@ package external
 
 import (
 	"context"
+	"log/slog"
+	"math/rand/v2"
 	"sync"
 
 	"github.com/ffxnexus/nexus/internal/evalplugin"
@@ -17,6 +19,7 @@ import (
 type MultiEvaluator struct {
 	reg        *evalplugin.Registry
 	dispatcher *Dispatcher
+	log        *slog.Logger
 
 	mu         sync.RWMutex
 	attachOnce sync.Once
@@ -27,6 +30,16 @@ type MultiEvaluator struct {
 // LoadFromStore) before Evaluate() runs.
 func NewMultiEvaluator(reg *evalplugin.Registry, dispatcher *Dispatcher) *MultiEvaluator {
 	return &MultiEvaluator{reg: reg, dispatcher: dispatcher}
+}
+
+// SetLogger attaches a logger for dispatch failures. Strongly
+// recommended: a plugin whose credentials or endpoint are wrong fails
+// on every trace, and without a logger the only symptom is that the
+// vendor dashboard stays empty.
+func (m *MultiEvaluator) SetLogger(l *slog.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.log = l
 }
 
 // Name implements evals.Evaluator. UI surfaces report "external
@@ -44,19 +57,40 @@ func (m *MultiEvaluator) Evaluate(ctx context.Context, t observability.Trace) ([
 	// set would ship this org's prompts and completions to another
 	// org's vendor account.
 	enabled := m.reg.EnabledForOrg(t.OrgID)
+	m.mu.RLock()
+	log := m.log
+	m.mu.RUnlock()
 	for _, rec := range enabled {
 		if !sampleTrace(float64(rec.Plugin.Spec.Send.Sampling)) {
 			continue
 		}
-		_ = m.dispatcher.Dispatch(ctx, t, rec.Plugin)
+		if err := m.dispatcher.Dispatch(ctx, t, rec.Plugin); err != nil && log != nil {
+			// Never fail the trace: eval dispatch is best-effort and
+			// must not affect the gateway. But it has to be *visible* —
+			// discarding this error is what made a plugin that rejected
+			// every request look like a plugin with nothing to say.
+			log.Warn("plugin dispatch failed",
+				"plugin", rec.Plugin.Metadata.Name,
+				"service_type", string(rec.Plugin.Spec.Service.Type),
+				"trace_id", t.TraceID,
+				"err", err)
+		}
 	}
 	return nil, nil
 }
 
-// sampleTrace is the per-plugin sample gate. It rolls inside the
-// goroutine so each Enabled plugin has independent probability —
-// doubling all enabled at sampling=0.1 means 19% probability the
-// trace is sent to *any* given plugin, not 0.1.
+// sampleTrace is the per-plugin sample gate. It rolls once per plugin
+// so each enabled plugin samples independently: two plugins at
+// sampling=0.1 each see ~10% of traces rather than sharing one roll.
+//
+// This used to return true for any fraction above zero, deferring to a
+// gate in worker.collectEvaluators that never applied — the plugin
+// evaluator is appended outside that function. The effect was that
+// `sampling: 0.1` forwarded 100% of traces, which is a vendor bill and
+// a rate limit rather than a cosmetic bug.
+//
+// math/rand/v2's top-level source is safe for concurrent use, which
+// matters because Evaluate runs on every eval worker goroutine.
 func sampleTrace(p float64) bool {
 	if p >= 1 {
 		return true
@@ -64,5 +98,5 @@ func sampleTrace(p float64) bool {
 	if p <= 0 {
 		return false
 	}
-	return true // hot-path gate lives in worker.collectEvaluators
+	return rand.Float64() < p
 }
