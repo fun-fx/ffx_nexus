@@ -412,10 +412,29 @@ export interface PluginTestResult {
   latency_ms?: number;
 }
 
-export async function testEvalPlugin(id: string): Promise<PluginTestResult> {
-  const res = await fetch(`/api/eval/plugins/${id}/test`, { method: "POST" });
-  const data = jsonOrError<PluginTestResult>(res);
-  return data;
+export async function testEvalPlugin(ref: string): Promise<PluginTestResult> {
+  // `ref` is whichever identity the operator is looking at — the
+  // server route accepts both the canonical metadata.name (e.g.
+  // "langfuse-judge") and the database row id. The form always
+  // passes the name; the route's UUID-tolerant lookup keeps us safe
+  // if a stale id leaks through from older code paths.
+  const res = await fetch(`/api/eval/plugins/${encodeURIComponent(ref)}/test`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    // Surface the message body verbatim so the result reads like a
+    // real probe outcome instead of a generic HTTP error.
+    const message =
+      (data as { message?: string }).message ||
+      (data as { error?: string }).error ||
+      `HTTP ${res.status}`;
+    // Returning a shaped failure keeps the per-row result UI on
+    // the happy path — no need to thread the error through a
+    // separate lane just because the probe failed.
+    return { ok: false, message };
+  }
+  return jsonOrError<PluginTestResult>(res);
 }
 
 /** Send a synthetic webhook payload to a plugin's inbox. Backed by the

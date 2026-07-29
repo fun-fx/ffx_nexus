@@ -460,4 +460,90 @@ describe("<Eval /> admin toggle profile flow", () => {
     expect(screen.queryByText(/Change configuration/i)).toBeNull();
     expect(screen.queryByText(/Evaluators/i)).toBeNull();
   });
+
+  it("clicking Test on a plugin row renders the probe outcome inline", async () => {
+    const probeCalls: string[] = [];
+    const pluginRows = [
+      {
+        id: "row-1",
+        name: "langfuse-judge",
+        spec_yaml: ["apiVersion: nexus.io/v1alpha1",
+          "kind: EvalPlugin",
+          "metadata:",
+          "  name: langfuse-judge",
+          "spec:",
+          "  service:",
+          "    type: langfuse",
+          "    endpoint: https://cloud.langfuse.com",
+          "    auth:",
+          "      secretRef: langfuse-creds",
+          "      keyRef: public_key|secret_key",
+          "  send:",
+          "    trigger: on_trace",
+          "    sampling: 0.1",
+          "  collect:",
+          "    mode: webhook",
+          "    interval: 60s",
+          "  timeout: 30s"].join("\n"),
+        enabled: true,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (url.endsWith("/api/me")) {
+          return new Response(JSON.stringify(adminMe), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/config")) {
+          return new Response(JSON.stringify(buildBundle({})), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/profiles")) {
+          return new Response(JSON.stringify({ profiles: [] }), { status: 200 });
+        }
+        if (url.includes("/api/eval/plugins/") && url.endsWith("/test")) {
+          probeCalls.push(url);
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              message: "langfuse endpoint reachable.",
+              latency_ms: 42,
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/api/eval/plugins")) {
+          if (method === "POST") {
+            return new Response("{}", { status: 201 });
+          }
+          if (method === "GET") {
+            return new Response(JSON.stringify({ plugins: pluginRows }), { status: 200 });
+          }
+        }
+        return new Response("{}", { status: 200 });
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={qc}>
+          <Eval />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+    await waitFor(() => screen.getByText("Evaluators"));
+    // The plugin row should be present before we attempt to click.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Test/ })).toBeInTheDocument(),
+    );
+    const testBtn = await screen.findByRole("button", { name: /Test/ });
+    fireEvent.click(testBtn);
+    await waitFor(() =>
+      expect(screen.getByTestId("plugin-test-langfuse-judge").textContent).toMatch(/reachable/),
+    );
+    // URL must carry the plugin's metadata.name, not the row's UUID.
+    expect(probeCalls.find((u) => u.includes("/langfuse-judge/test"))).toBeTruthy();
+  });
 });
