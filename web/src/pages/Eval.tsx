@@ -451,7 +451,7 @@ function EvaluatorsCard({
   for (const p of plugins) {
     const parsed = safeParsePlugin(p.spec_yaml ?? "");
     const isRowTesting =
-      !!testM.isPending && testM.variables === p.id;
+      !!testM.isPending && testM.variables === p.name;
     const isRowToggling =
       !!pluginToggleM.isPending && pluginToggleM.variables?.id === p.id;
     rows.push({
@@ -461,13 +461,38 @@ function EvaluatorsCard({
       enabled: p.enabled,
       source: "plugin",
       rec: p,
-      detail: (
-        <div className="muted small">
-          <Chip tone="info">{parsed.type ?? "—"}</Chip>{" "}
-          <Chip tone="neutral">sample {parsed.sampling ?? "—"}</Chip>{" "}
-          <Chip tone="neutral">{parsed.mode ?? "—"}</Chip>
-        </div>
-      ),
+      detail: (() => {
+        const lastTest =
+          !isRowTesting && testM.variables === p.name ? testM.data : undefined;
+        const lastTestErr =
+          !isRowTesting && testM.variables === p.name && testM.error
+            ? (testM.error as Error).message
+            : undefined;
+        return (
+          <div className="muted small">
+            <Chip tone="info">{parsed.type ?? "—"}</Chip>{" "}
+            <Chip tone="neutral">sample {parsed.sampling ?? "—"}</Chip>{" "}
+            <Chip tone="neutral">{parsed.mode ?? "—"}</Chip>
+            {lastTest ? (
+              <span
+                className={`plugin-row-test ${lastTest.ok ? "ok" : "err"}`}
+                data-testid={`plugin-test-${p.name}`}
+              >
+                {" "}
+                {lastTest.ok ? "✓" : "✗"} {lastTest.message}
+                {typeof lastTest.latency_ms === "number"
+                  ? ` (${lastTest.latency_ms}ms)`
+                  : ""}
+              </span>
+            ) : null}
+            {lastTestErr ? (
+              <span className="plugin-row-test err" data-testid={`plugin-test-${p.name}`}>
+                {" "}✗ {lastTestErr}
+              </span>
+            ) : null}
+          </div>
+        );
+      })(),
       action: isAdmin ? (
         <div className="env-driven-cell">
           <LabelToggle
@@ -482,7 +507,7 @@ function EvaluatorsCard({
           <button
             type="button"
             className="btn-ghost btn-small"
-            onClick={() => p.id && testM.mutate(p.id)}
+            onClick={() => testM.mutate(p.name)}
             disabled={!p.enabled || isRowTesting}
           >
             {isRowTesting ? "Testing…" : "Test"}

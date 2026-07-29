@@ -586,17 +586,17 @@ export function PluginListCard({
               !!testM.isPending && testM.variables === p.id;
             return (
               <PluginRow
-                key={p.id}
+                key={p.id ?? p.name}
                 rec={p}
                 onToggle={() => p.id && toggleM.mutate({ id: p.id, enabled: !p.enabled })}
                 onDelete={() => p.id && deleteM.mutate(p.id)}
                 onEdit={() => onEdit(p)}
-                onTest={() => p.id && testM.mutate(p.id)}
+                onTest={() => testM.mutate(p.name)}
                 testResult={
-                  !isRowTesting && testM.variables === p.id ? testM.data : undefined
+                  !isRowTesting && testM.variables === p.name ? testM.data : undefined
                 }
                 testError={
-                  !isRowTesting && testM.variables === p.id && testM.error
+                  !isRowTesting && testM.variables === p.name && testM.error
                     ? (testM.error as Error).message
                     : undefined
                 }

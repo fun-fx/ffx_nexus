@@ -338,7 +338,12 @@ func main() {
 		erc.AttachPluginRegistry(pluginReg)
 		consoleSrvHandler.SetEvalPlugins(pluginSourceAdapter{reg: pluginReg, store: erc.PluginStore()})
 		consoleSrvHandler.SetPluginCollector(collector)
-		consoleSrvHandler.SetPluginTester(newTester(pluginReg, dispatcher, collector))
+		// The source adapter gives the Tester a way to resolve plugin
+		// row ids (UUIDs) in addition to metadata.name. Built ad-hoc
+		// here so we don't take a second dump of the same dependency
+		// into the test handler closure.
+		srcAdapter := &pluginSourceAdapter{reg: pluginReg, store: erc.PluginStore()}
+		consoleSrvHandler.SetPluginTester(newTester(pluginReg, dispatcher, collector).withSource(srcAdapter))
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
 	// secret takes effect without restarting the gateway.

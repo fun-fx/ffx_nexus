@@ -36,8 +36,28 @@ type PluginWebhookReceiver interface {
 
 // EvalPluginTester is an optional dependency for the test-send
 // admin route. nil means the route answers 503.
+//
+// The `ref` argument is whichever path placeholder the operator
+// supplied — the canonical metadata.name in the YAML manifest, or
+// the row's database id. Implementations must resolve both forms
+// before dispatching so the front-end never needs to know which
+// identity the registry uses internally.
+//
+// Result.OK is true when the underlying vendor probe succeeded.
+// Result.Message is the human-readable status the operator should
+// see next to the plugin row (e.g. "Auth accepted by Langfuse in
+// 124 ms" or the SDK error text on failure).
 type EvalPluginTester interface {
-	Test(name string) error
+	Test(ctx context.Context, ref string) (Result, error)
+}
+
+// Result is the typed outcome of a PluginTester.Test call. The HTTP
+// route emits this struct verbatim, so any change here should be
+// mirrored on the client (PluginTestResult in web/src/api.ts).
+type Result struct {
+	OK        bool   `json:"ok"`
+	Message   string `json:"message"`
+	LatencyMs int64  `json:"latency_ms,omitempty"`
 }
 
 // evalPluginBody is the wire shape the frontend speaks. We intentionally
@@ -174,15 +194,40 @@ func (s *Server) pluginWebhook(w http.ResponseWriter, r *http.Request) {
 // underlying tester is responsible for choosing the cheapest
 // authenticated request (LangSmith /api/v1/info, etc.) and
 // returning a single error if anything in the chain is broken.
+//
+// The HTTP path placeholder is `{ref}` so the operator can drop in
+// either the plugin's stable metadata.name ("langfuse-judge") or
+// the database id assigned at Save. We resolve both into a single
+// registry lookup and surface the friendly message that the vendor
+// probe returned. The response shape (PluginTestResult) matches the
+// TypeScript client interface exactly so the UI never has to guess
+// which keys are present.
 func (s *Server) pluginTest(w http.ResponseWriter, r *http.Request, _ core.User) {
 	if s.pluginTester == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "plugin tester not wired"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok":      false,
+			"message": "plugin tester not wired",
+		})
 		return
 	}
-	name := chi.URLParam(r, "name")
-	if err := s.pluginTester.Test(name); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+	ref := chi.URLParam(r, "name")
+	res, err := s.pluginTester.Test(r.Context(), ref)
+	if err != nil {
+		// Always surface a typed response so the React mutation can
+		// render either `testResult.ok=false + message` or
+		// `testError` — we use the former so the result text shows up
+		// next to the plugin row instead of in the global
+		// "Last error" lane, matching what operators expect from
+		// other plugin editors.
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"ok":      false,
+			"message": err.Error(),
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         res.OK,
+		"message":    res.Message,
+		"latency_ms": res.LatencyMs,
+	})
 }
