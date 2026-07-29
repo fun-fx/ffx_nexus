@@ -6,6 +6,7 @@ import {
   deleteEvalPlugin,
   fetchEvalPlugins,
   patchEvalPlugin,
+  pingEvalPluginWebhook,
   testEvalPlugin,
   type PluginTestResult,
 } from "../api";
@@ -638,6 +639,27 @@ function PluginRow({
   busyTest: boolean;
 }) {
   const parsed = useMemo(() => safeParse(rec.spec_yaml), [rec.spec_yaml]);
+  // Inbound webhook URL that vendors should POST score records to.
+  // Computed lazily so it adapts to whatever origin the console is
+  // mounted under (custom hosted tenants don't have to hard-code
+  // their domain in the manifest).
+  const webhookUrl = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return `${window.location.origin}/api/eval/plugins/${encodeURIComponent(rec.name)}/webhook`;
+  }, [rec.name]);
+  const [showWebhook, setShowWebhook] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const pingM = useMutation({
+    mutationFn: () =>
+      pingEvalPluginWebhook(rec.name, {
+        name: "smoke",
+        score: 1.0,
+        label: "pass",
+        explanation: "smoke test from the console UI",
+        trace_id: `smoke-${Date.now()}`,
+      }),
+  });
+  const canPing = parsed.mode === "webhook" || parsed.mode === "sync";
   return (
     <article className="plugin-row" data-testid={`plugin-row-${rec.id}`}>
       <div className="plugin-row-head">
@@ -669,6 +691,26 @@ function PluginRow({
           </button>
           <button
             type="button"
+            className="btn-ghost btn-small"
+            onClick={() => setShowWebhook((v) => !v)}
+            aria-expanded={showWebhook}
+            data-testid={`plugin-webhook-toggle-${rec.name}`}
+          >
+            {showWebhook ? "Hide URL" : "Webhook URL"}
+          </button>
+          {canPing ? (
+            <button
+              type="button"
+              className="btn-ghost btn-small"
+              onClick={() => pingM.mutate()}
+              disabled={pingM.isPending}
+              data-testid={`plugin-webhook-ping-${rec.name}`}
+            >
+              {pingM.isPending ? "Sending…" : "Send test score"}
+            </button>
+          ) : null}
+          <button
+            type="button"
             className="btn-ghost btn-small row-action-danger"
             onClick={() => {
               if (window.confirm(`Delete plugin ${rec.name}?`)) onDelete();
@@ -679,6 +721,46 @@ function PluginRow({
           </button>
         </div>
       </div>
+      {showWebhook ? (
+        <div className="plugin-webhook-box" data-testid={`plugin-webhook-${rec.name}`}>
+          <p className="muted small">
+            Vendors POST score records to:
+          </p>
+          <code className="plugin-webhook-url">{webhookUrl}</code>
+          <div className="plugin-webhook-actions">
+            <button
+              type="button"
+              className="btn-ghost btn-small"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(webhookUrl);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1500);
+                } catch {
+                  setCopied(false);
+                }
+              }}
+            >
+              {copied ? "Copied!" : "Copy URL"}
+            </button>
+          </div>
+          {pingM.data ? (
+            <p
+              className={`plugin-row-test ${pingM.data.ok ? "ok" : "err"}`}
+              data-testid={`plugin-webhook-ping-result-${rec.name}`}
+            >
+              {pingM.data.ok
+                ? `Inbound accepted (${pingM.data.accepted ?? 1} score).`
+                : `Inbound failed: ${pingM.data.message ?? "unknown error"}`}
+            </p>
+          ) : null}
+          {pingM.error ? (
+            <p className="plugin-row-test err">
+              Inbound failed: {(pingM.error as Error).message}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {testResult ? (
         <p className={`plugin-row-test ${testResult.ok ? "ok" : "err"}`}>
           {testResult.ok ? "Connection OK" : "Connection failed"} — {testResult.message}

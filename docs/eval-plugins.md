@@ -115,6 +115,127 @@ before being written to `eval_scores`:
 SQL query can segment plugin-sourced scores from heuristics or legacy
 rows.
 
+### Inbound webhook contract (`mode: webhook`)
+
+When the plugin declares `collect.mode: webhook`, the vendor must
+POST evaluation results back to Nexus at:
+
+```
+POST /api/eval/plugins/<metadata.name>/webhook
+```
+
+The body is one of:
+
+- a single OTel-shaped JSON object, or
+- a JSON array of objects (batched deliveries are accepted and
+  processed up to 1 000 per request).
+
+The collector then applies `spec.collect.mapping` (JSONPath-less;
+flat key lookup is enough for the OTel wire shape) and writes one
+`eval_scores` row per object. A score is *passed* when the numeric
+`score >= 0.5`, OR when the `label` is `pass`/`true`/`1`. Any other
+label forces *failed*.
+
+Minimum payload fields the collector honours:
+
+```json
+{
+  "name":        "answer-relevance",
+  "score":        0.83,
+  "label":       "pass",
+  "explanation": "Output addresses the user's question.",
+  "trace_id":    "0a1b2c3d4e5f"
+}
+```
+
+Below is how each first-class vendor maps these fields to the
+OTel-aligned column model. The defaults in the manifest are already
+tuned for these vendors, so most operators only need to set them
+when their vendor uses keys not listed here.
+
+#### Langfuse (cloud)
+
+Langfuse's "Webhooks" feature (Settings → Webhooks → Create a
+Webhook) accepts our URL above. Pick **Score created** as the
+event, and the body your team receives is an array of score
+objects with this shape:
+
+```json
+[
+  {
+    "id": "<score uuid>",
+    "traceId": "0a1b2c3d4e5f",
+    "name": "answer-relevance",
+    "value": 0.83,
+    "comment": "Output addresses the user's question.",
+    "dataType": "NUMERIC"
+  }
+]
+```
+
+The default `spec.collect.mapping` (`name → name`,
+`score → value`, `explanation → comment`,
+`trace_id → traceId`) handles this **without override**.
+
+#### LangSmith
+
+LangSmith's "Webhook" automation sends evaluation results in their
+native feedback shape:
+
+```json
+{
+  "run_id": "0a1b2c3d4e5f",
+  "key":    "answer-relevance",
+  "score":  0.83,
+  "value":  "pass",
+  "comment":"Output addresses the user's question."
+}
+```
+
+The bundled `langsmith-judge` manifest already sets
+`trace_id → run_id` and `label → value`.
+
+#### Custom HTTPS vendor
+
+For anything outside the first-class list, use `service.type:
+webhook` and author `spec.collect.mapping` directly. The collector
+accepts any flat JSON object whose keys match the OTel-side names
+above.
+
+#### Quick verification from the UI
+
+The "Test" button (`POST /api/eval/plugins/<name>/test`) confirms
+the outbound side works — but it does **not** confirm the inbound
+webhook. To smoke-test the inbound side from a workstation:
+
+```bash
+curl -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"answer-relevance","score":0.9,"label":"pass","explanation":"smoke","trace_id":"smoke-trace"}' \
+  https://<nexus>/api/eval/plugins/<plugin-name>/webhook
+```
+
+A `202 Accepted` response means Nexus queued the score; check the
+`/eval` page a moment later — heuristic/legacy/plugin rows share
+the same evaluator table, so the score will appear under
+"plugin:<name>".
+
+#### Operational note
+
+The collector route is **unauthenticated by design** because
+vendors don't have Nexus bearer tokens. To keep the inbound
+endpoint safe in production:
+
+1. Front the cluster with an ingress that requires an
+   `X-Nexus-Webhook-Token` header for `/api/eval/plugins/*/webhook`.
+2. Rotate the token via the same pattern as your plugin
+   `secretRef`s (Kubernetes Secret + `secretKeyRef`).
+
+Sigv4-style signature verification is deliberately not part of
+the in-process handler — vendors vary too much and adding per-
+vendor verification logic into the Nexus binary would couple us
+to that vendor's signature format.
+
 ## Helm rendering
 
 A single ConfigMap aggregates all plugin YAMLs declared under
