@@ -7,6 +7,7 @@ import {
   patchEvalConfig,
   patchEvalProfile,
   patchEvalPlugin,
+  deleteEvalPlugin,
   testEvalPlugin,
   type EvalConfigSnapshot,
   type EvalPluginRecord,
@@ -355,8 +356,12 @@ function EvaluatorsCard({
       patchEvalPlugin(id, { enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["eval-plugins"] }),
   });
+  const pluginDeleteM = useMutation({
+    mutationFn: (id: string) => deleteEvalPlugin(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["eval-plugins"] }),
+  });
   const testM = useMutation({
-    mutationFn: (id: string) => testEvalPlugin(id),
+    mutationFn: (ref: string) => testEvalPlugin(ref),
   });
 
   // One row per evaluator instance: built-in heuristics, legacy
@@ -508,7 +513,7 @@ function EvaluatorsCard({
             type="button"
             className="btn-ghost btn-small"
             onClick={() => testM.mutate(p.name)}
-            disabled={!p.enabled || isRowTesting}
+            disabled={isRowTesting}
           >
             {isRowTesting ? "Testing…" : "Test"}
           </button>
@@ -519,6 +524,29 @@ function EvaluatorsCard({
           >
             Edit
           </button>
+          {p.id ? (
+            <button
+              type="button"
+              className="btn-ghost btn-small danger"
+              data-testid={`plugin-delete-${p.name}`}
+              disabled={
+                !!pluginDeleteM.isPending && pluginDeleteM.variables === p.id
+              }
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    `Delete the plugin "${p.name}"? Traces will no longer be sent to it.`,
+                  )
+                )
+                  return;
+                if (p.id) pluginDeleteM.mutate(p.id);
+              }}
+            >
+              {!!pluginDeleteM.isPending && pluginDeleteM.variables === p.id
+                ? "Deleting…"
+                : "Delete"}
+            </button>
+          ) : null}
         </div>
       ) : null,
     });

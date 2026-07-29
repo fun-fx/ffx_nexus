@@ -71,6 +71,11 @@ type Server struct {
 }
 
 // SetAllowSignup toggles public self-service registration (member role only).
+// SetBuildTag (on *Server) is kept as a small wrapper for callers
+// that prefer the OO style; it forwards to the package-level
+// helper used by writeJSON.
+func (s *Server) SetBuildTag(tag string) { SetBuildTag(tag) }
+
 func (s *Server) SetAllowSignup(allow bool) { s.allowSignup = allow }
 
 // SetSSO configures the OIDC client used by /api/auth/sso/*. A nil or
@@ -616,8 +621,33 @@ func callerCanSee(p gateway.ConsoleUserProvider, caller core.User) bool {
 	}
 }
 
+// responseBuildTag is read by writeJSON and written into the
+// X-Nexus-Build header on every JSON response. The default
+// ("dev") matches the build pipeline's local default; the linker
+// overrides it for release builds via -X main.nexusBuildTag=…
+var responseBuildTag = "dev"
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	// Tag every response from this binary so an intervening CDN /
+	// ingress / WAF that rewrites the body is detectable from the
+	// client. If the response from the operator's console doesn't
+	// carry this header, the body has been replaced before it
+	// reached the browser — typically an authentication proxy
+	// returning a login page, or a CDN error page that is HTML.
+	w.Header().Set("X-Nexus-Source", "nexus-console")
+	w.Header().Set("X-Nexus-Build", responseBuildTag)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// SetBuildTag overrides the package-level responseBuildTag with
+// a value supplied by the caller (cmd/nexus/main.go reads it from
+// the linker-injected -X main.nexusBuildTag=…). Empty input is
+// ignored so the dev default remains stable.
+func SetBuildTag(tag string) {
+	if tag == "" {
+		return
+	}
+	responseBuildTag = tag
 }

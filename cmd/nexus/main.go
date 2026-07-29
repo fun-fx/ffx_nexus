@@ -32,6 +32,13 @@ import (
 	"github.com/ffxnexus/nexus/internal/semcache"
 )
 
+// nexusBuildTag is the build identity stamped into the X-Nexus-Build
+// response header so operators can verify the running binary matches
+// what their source-control UI surfaces. The CD pipeline overrides
+// this via `-ldflags "-X main.nexusBuildTag=<commit-sha>"`; locally
+// built binaries keep the "dev" placeholder.
+var nexusBuildTag = "dev"
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := config.Load()
@@ -280,6 +287,12 @@ func main() {
 
 	// Console server.
 	consoleSrvHandler := console.NewServer(hub, reader, store, log)
+	// Stamp every JSON response from this binary with the build
+	// identity passed by the build pipeline. Operators inspect
+	// the X-Nexus-Build response header in their browser devtools
+	// when an upstream proxy rewrites the body — missing header
+	// means the gateway/CDN is replacing Nexus's response.
+	consoleSrvHandler.SetBuildTag(nexusBuildTag)
 	consoleSrvHandler.SetAllowSignup(cfg.AllowSignup)
 	consoleSrvHandler.SetGatewayProxy(cfg.GatewayAddr)
 	consoleSrvHandler.SetPublicGatewayURL(cfg.PublicGatewayURL)
