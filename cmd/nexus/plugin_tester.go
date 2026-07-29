@@ -136,12 +136,15 @@ func genericProbe(ctx context.Context, endpoint string) error {
 	}
 	req.Header.Set("User-Agent", "nexus-eval-plugin-tester/1.0 (+https://nexus)")
 	req.Header.Set("Accept", "application/json, text/plain;q=0.9, */*;q=0.5")
-	resp, err := httpClientForPlugins().Do(req)
+	resp, err := httpClientForPluginsTest().Do(req)
 	if err != nil {
 		// Network-layer failure (DNS, TCP, TLS, timeout). Carry the
 		// endpoint into the message so the operator can match it
 		// against their ingress / NetworkPolicy without grepping
-		// the Nexus logs.
+		// the Nexus logs. The 8-second probe timeout is intentionally
+		// short so this returns well inside the Cloudflare tunnel's
+		// ~60-second response deadline (Retry-After:60; cf-ray:-HKG
+		// 5xx pages observed when a vendor hangs).
 		return fmt.Errorf("probe %s failed at transport layer: %w", endpoint, err)
 	}
 	defer resp.Body.Close()

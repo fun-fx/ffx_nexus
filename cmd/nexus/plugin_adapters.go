@@ -9,10 +9,28 @@ import (
 )
 
 // httpClientForPlugins returns a shared HTTP client for plugin
-// adapters. We keep one per process so the connection pool can be
-// reused across dispatcher/collector goroutines.
+// adapters used for real production traffic (dispatcher uploads
+// of trace packets, collector polls/webhooks). The 30s ceiling
+// matches the typical SLA of vendor APIs so a slow vendor
+// doesn't truncate a payload mid-flight.
 func httpClientForPlugins() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
+}
+
+// httpClientForPluginsTest returns the client used by the admin
+// "Test" button's probe. The probe returns a single HTTP status
+// that an operator's eyes look at; it doesn't move a payload. It
+// must terminate *fast* because the request is synchronous and
+// is served back through the Cloudflare → tunnel → /api/eval/...
+// chain. Cloudflare's tunnel response deadline in our deployment
+// is ~60s (observed via `Retry-After: 60` on a stalled probe that
+// hit the deadline). If our probe ran for 30s, there would be
+// only 30s left for the JSON encoder, the tunnel retransmit, and
+// the browser render. Capping the probe at 8s keeps the entire
+// request inside the tunnel's deadline while still leaving a
+// generous window for legitimate slow-but-successful responses.
+func httpClientForPluginsTest() *http.Client {
+	return &http.Client{Timeout: 8 * time.Second}
 }
 
 // registerPluginAdapters wires the supported service-type adapters

@@ -338,6 +338,14 @@ func main() {
 		if err := pluginReg.LoadFromStore(ctx, erc.PluginStore(), ""); err != nil {
 			log.Warn("load plugins from db failed", "err", err)
 		}
+		// Dispatcher / collector do real production work and need the
+		// regular 30s window so a slow vendor doesn't truncate a
+		// trace packet. Only the Test button uses a short-timeout
+		// client (see httpClientForPluginsTest below) so its probe
+		// finishes well inside the tunnel's 60-second response
+		// deadline — otherwise an outage at the probe endpoint
+		// surfaces as Cloudflare's 502 HTML page rather than a
+		// typed {ok:false,…} JSON result.
 		dispatcher := external.NewDispatcher(pluginReg, httpClientForPlugins())
 		collector := external.NewCollector(pluginReg, stack.SinkForPlugins(), httpClientForPlugins())
 		registerPluginAdapters(dispatcher, collector)

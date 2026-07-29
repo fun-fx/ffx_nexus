@@ -142,6 +142,11 @@ func joinEndpoint(endpoint, path string) string {
 // it lets an operator verify their secret ref + endpoint before
 // enabling the plugin; it does not write any score rows.
 func PingLangsmith(ctx context.Context, endpoint string) error {
+	// Both the context deadline (5s) and the test client's net
+	// timeout (8s) bound this probe. The shorter wins — the 5s
+	// context ceiling keeps us well inside the Cloudflare tunnel's
+	// ~60s response deadline (Retry-After:60 on cf-ray:-HKG 5xx
+	// pages in production observed when a vendor hangs).
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	url := joinEndpoint(endpoint, "/api/v1/info")
@@ -149,7 +154,7 @@ func PingLangsmith(ctx context.Context, endpoint string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := httpClientForPlugins().Do(req)
+	resp, err := httpClientForPluginsTest().Do(req)
 	if err != nil {
 		return err
 	}
