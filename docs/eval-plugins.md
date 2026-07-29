@@ -267,13 +267,44 @@ absorbs every `.yaml`/`.yml` file at startup.
 
 Two precedence layers exist:
 
-1. **Cluster-wide** (this ConfigMap approach). Admin installs once;
-   every org sees the plugin.
-2. **Per-org** (subject for Phase B). Admin REST endpoint
-   `POST /api/eval/plugins` records a plugin in `eval_plugins` and
-   the loader absorbs both sources. When the same `metadata.name`
-   appears in both, **Helm (cluster-wide) wins** so admins can
-   guarantee a baseline.
+1. **Cluster-wide** (this ConfigMap approach, and DB rows written with
+   an empty `org_id`). Admin installs once; every org inherits the
+   plugin.
+2. **Per-org**. The admin REST endpoint `POST /api/eval/plugins`
+   records a plugin in `eval_plugins` under the caller's org.
+
+The runtime registry is keyed by `(org_id, metadata.name)`, so:
+
+- Two orgs may install the same `metadata.name` without overwriting
+  each other.
+- Dispatch is scoped to the trace's org. A trace is only ever sent to
+  its own org's plugins plus the cluster-wide ones — never to another
+  tenant's vendor account. This is enforced by
+  `Registry.EnabledForOrg`; `Registry.Enabled` spans every tenant and
+  is reserved for tenant-agnostic work such as the result poller.
+- When an org installs a plugin under a name that also exists
+  cluster-wide, the org's row **shadows** the inherited one rather
+  than adding a second send.
+- Within one scope, a Helm-sourced record still beats a DB record of
+  the same name, so admins can guarantee a baseline.
+
+Creating, editing, or deleting a plugin through the console updates
+the registry immediately, so the dispatcher picks up the change on the
+next trace instead of at the next pod restart.
+
+## Why the Test button never returns 5xx
+
+`POST /api/eval/plugins/{name}/test` answers **200 with
+`{"ok": false, "message": "..."}`** when the probe fails. A failed
+probe is a *result*, not a transport failure.
+
+This matters in production: when the endpoint returned 502 for a
+failed probe, Cloudflare treated it as an origin gateway failure and
+replaced the JSON body with its own branded "Error code 502" HTML
+page. The console then reported `auth or ingress likely intercepted
+the request`, and the real reason was never visible. Keeping the
+status at 200 guarantees the typed body survives every proxy in front
+of the console.
 
 ## Migration from `slm_judge` / `remote_eval`
 

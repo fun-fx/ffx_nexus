@@ -39,7 +39,11 @@ func (m *MultiEvaluator) Name() string { return "external" }
 // plugins return results out-of-band (sync, poll, or webhook);
 // either way the sink write happens in a Collector.
 func (m *MultiEvaluator) Evaluate(ctx context.Context, t observability.Trace) ([]evals.Score, error) {
-	enabled := m.reg.Enabled()
+	// Scope to the trace's org: the registry is process-wide and holds
+	// every tenant's plugins, so dispatching the unfiltered Enabled()
+	// set would ship this org's prompts and completions to another
+	// org's vendor account.
+	enabled := m.reg.EnabledForOrg(t.OrgID)
 	for _, rec := range enabled {
 		if !sampleTrace(float64(rec.Plugin.Spec.Send.Sampling)) {
 			continue
