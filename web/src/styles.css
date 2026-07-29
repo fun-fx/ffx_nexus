@@ -2618,6 +2618,31 @@ a:hover {
   color: #fca5a5;
 }
 
+.plugin-webhook-box {
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  margin-top: 10px;
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plugin-webhook-url {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 6px 8px;
+  border-radius: 6px;
+  word-break: break-all;
+  color: #cbd5e1;
+}
+
+.plugin-webhook-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* Plugin page legacy header — used only at /eval/plugins (kept for the
  * deep-link back-compat page that admin may still hit during a stale
  * browser tab session). */
