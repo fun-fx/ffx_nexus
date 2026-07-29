@@ -19,9 +19,15 @@ RUN go mod download
 COPY . .
 # Overlay the freshly built dashboard assets for the go:embed in web/embed.go.
 COPY --from=web /web/dist ./web/dist
+# Inject the source commit into the binary so the X-Nexus-Build
+# header on every response tells the operator where their binary
+# came from. SOURCE_COMMIT is wired by the CD pipeline; the ARG has
+# a fallback ("dev") so a local `docker build .` still produces a
+# usable binary.
+ARG SOURCE_COMMIT=dev
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X main.nexusBuildTag=${SOURCE_COMMIT}" \
     -o /out/nexus \
     ./cmd/nexus
 
