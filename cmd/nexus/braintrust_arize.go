@@ -17,10 +17,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+
+	"github.com/ffxnexus/nexus/internal/evaluators/external"
 )
 
-func braintrustTransmit(ctx context.Context, endpoint string, payload map[string]any) error {
-	url := joinEndpoint(endpoint, "/v1/project_logs/nexus/feedback")
+func braintrustTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
+	url := joinEndpoint(tgt.Endpoint, "/v1/project_logs/nexus/feedback")
 	body, ct, err := jsonBody(payload)
 	if err != nil {
 		return &adapterError{vendor: "braintrust", code: "encode", err: err}
@@ -46,12 +48,12 @@ func braintrustTransmit(ctx context.Context, endpoint string, payload map[string
 	return nil
 }
 
-func braintrustFetch(ctx context.Context, endpoint string) ([]json.RawMessage, error) {
+func braintrustFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
 	return nil, nil
 }
 
-func arizeTransmit(ctx context.Context, endpoint string, payload map[string]any) error {
-	url := joinEndpoint(endpoint, "/v1/span_annotations")
+func arizeTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
+	url := joinEndpoint(tgt.Endpoint, "/v1/span_annotations")
 	body, ct, err := jsonBody(payload)
 	if err != nil {
 		return &adapterError{vendor: "arize", code: "encode", err: err}
@@ -77,6 +79,6 @@ func arizeTransmit(ctx context.Context, endpoint string, payload map[string]any)
 	return nil
 }
 
-func arizeFetch(ctx context.Context, endpoint string) ([]json.RawMessage, error) {
+func arizeFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
 	return nil, nil
 }

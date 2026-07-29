@@ -3,6 +3,7 @@ package external
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/ffxnexus/nexus/internal/evalplugin"
@@ -91,10 +92,13 @@ func TestRenderPayloadTemplate(t *testing.T) {
 
 func TestDispatcherDispatchesViaRegisteredAdapter(t *testing.T) {
 	d := NewDispatcher(nil, nil)
+	d.SetSecretResolver(stubResolver{creds: Credentials{Values: []string{"pk", "sk"}}})
 	called := false
+	var gotTarget Target
 	d.Register(evalplugin.ServiceLangSmith,
-		func(ctx context.Context, endpoint string, payload map[string]any) error {
+		func(ctx context.Context, tgt Target, payload map[string]any) error {
 			called = true
+			gotTarget = tgt
 			return nil
 		})
 	p := &evalplugin.Plugin{
@@ -117,6 +121,86 @@ func TestDispatcherDispatchesViaRegisteredAdapter(t *testing.T) {
 	if !called {
 		t.Fatal("expected registered adapter to be called")
 	}
+	if got, _, ok := gotTarget.Auth.Pair(); !ok || got != "pk" {
+		t.Errorf("adapter received no credentials (%q, ok=%v); an adapter that "+
+			"cannot authenticate is why every vendor call used to 401", got, ok)
+	}
+	if gotTarget.Endpoint != "https://api.smith.langchain.com" {
+		t.Errorf("Endpoint = %q", gotTarget.Endpoint)
+	}
+}
+
+// A manifest that declares auth must not fall back to sending an
+// unauthenticated request: the vendor rejects it out of sight, which
+// reads as "the plugin works but the vendor has no data".
+func TestDispatchFailsWhenAuthDeclaredButNoResolver(t *testing.T) {
+	d := NewDispatcher(nil, nil)
+	d.Register(evalplugin.ServiceLangfuse,
+		func(ctx context.Context, tgt Target, payload map[string]any) error {
+			t.Fatal("adapter must not be called without credentials")
+			return nil
+		})
+	p := &evalplugin.Plugin{
+		APIVersion: evalplugin.PluginAPIVersion,
+		Kind:       evalplugin.PluginKind,
+		Metadata:   evalplugin.PluginMetadata{Name: "langfuse-judge"},
+		Spec: evalplugin.PluginSpec{
+			Service: evalplugin.ServiceSpec{
+				Type:     evalplugin.ServiceLangfuse,
+				Endpoint: "https://cloud.langfuse.com",
+				Auth:     evalplugin.AuthSpec{SecretRef: "langfuse-creds", KeyRef: "public_key|secret_key"},
+			},
+			Send:    evalplugin.SendSpec{Trigger: "on_trace", Sampling: 1},
+			Collect: evalplugin.CollectSpec{Mode: "poll"},
+		},
+	}
+	err := d.Dispatch(context.Background(), observability.Trace{}, p)
+	if !errors.Is(err, ErrNoSecretResolver) {
+		t.Fatalf("err = %v, want ErrNoSecretResolver", err)
+	}
+}
+
+// A manifest with no auth block still dispatches: self-hosted
+// collectors that need no credential must keep working.
+func TestDispatchWithoutAuthNeedsNoResolver(t *testing.T) {
+	d := NewDispatcher(nil, nil)
+	called := false
+	d.Register(evalplugin.ServiceOTel,
+		func(ctx context.Context, tgt Target, payload map[string]any) error {
+			called = true
+			if !tgt.Auth.Empty() {
+				t.Error("expected empty credentials")
+			}
+			return nil
+		})
+	p := &evalplugin.Plugin{
+		APIVersion: evalplugin.PluginAPIVersion,
+		Kind:       evalplugin.PluginKind,
+		Metadata:   evalplugin.PluginMetadata{Name: "otel-local"},
+		Spec: evalplugin.PluginSpec{
+			Service: evalplugin.ServiceSpec{
+				Type:     evalplugin.ServiceOTel,
+				Endpoint: "http://otel-collector:4318/v1/traces",
+			},
+			Send:    evalplugin.SendSpec{Trigger: "on_trace", Sampling: 1},
+			Collect: evalplugin.CollectSpec{Mode: "webhook"},
+		},
+	}
+	if err := d.Dispatch(context.Background(), observability.Trace{}, p); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if !called {
+		t.Fatal("expected adapter to be called")
+	}
+}
+
+type stubResolver struct {
+	creds Credentials
+	err   error
+}
+
+func (s stubResolver) Resolve(context.Context, evalplugin.AuthSpec) (Credentials, error) {
+	return s.creds, s.err
 }
 
 func TestDispatcherRejectsUnknownServiceType(t *testing.T) {

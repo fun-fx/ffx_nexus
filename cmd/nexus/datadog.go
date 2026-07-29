@@ -20,9 +20,11 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/ffxnexus/nexus/internal/evaluators/external"
 )
 
-func datadogTransmit(ctx context.Context, endpoint string, payload map[string]any) error {
+func datadogTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
 	// Datadog's evals endpoint wants decimal trace_id/span_id. We
 	// scan the payload for any hex-shaped string and convert in
 	// place. This is best-effort: callers should keep trace_id
@@ -31,7 +33,7 @@ func datadogTransmit(ctx context.Context, endpoint string, payload map[string]an
 	if err != nil {
 		return &adapterError{vendor: "datadog", code: "convert", err: err}
 	}
-	url := joinEndpoint(endpoint, "/api/v1/llm-obs/v1/evaluations")
+	url := joinEndpoint(tgt.Endpoint, "/api/v1/llm-obs/v1/evaluations")
 	body, ct, err := jsonBody(converted)
 	if err != nil {
 		return &adapterError{vendor: "datadog", code: "encode", err: err}
@@ -91,7 +93,7 @@ func convertIfHex(s string) (string, error) {
 	return strconv.FormatUint(n, 10), nil
 }
 
-func datadogFetch(ctx context.Context, endpoint string) ([]json.RawMessage, error) {
+func datadogFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
 	// Phase G beta: collector heartbeat — Datadog doesn't expose a
 	// "consume evals I previously sent" REST; the in-product flow is
 	// the other way around. The webhook collector path is the

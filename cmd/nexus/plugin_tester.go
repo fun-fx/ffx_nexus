@@ -28,6 +28,12 @@ type PluginTester struct {
 	source *pluginSourceAdapter // for db-id lookups; nil-safe
 	d      *external.Dispatcher
 	c      *external.Collector
+	// secrets resolves the plugin's auth block so a probe can exercise
+	// the vendor's authenticated surface. Without it a probe only
+	// proves the host answers HTTP, which is how a plugin with wrong
+	// credentials reported "endpoint reachable" while every real
+	// dispatch was being rejected.
+	secrets external.SecretResolver
 }
 
 // Result wraps console.Result so we don't import-loop on console
@@ -65,6 +71,12 @@ func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
 			OK:      rErr == nil,
 			Message: langSmithMessage(rErr),
 		}
+	case evalplugin.ServiceLangfuse:
+		rErr = t.probeLangfuse(ctx, rec.Plugin)
+		rResult = Result{
+			OK:      rErr == nil,
+			Message: langfuseMessage(rErr),
+		}
 	default:
 		rErr = genericProbe(ctx, rec.Plugin.Spec.Service.Endpoint)
 		rResult = Result{
@@ -74,6 +86,61 @@ func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
 	}
 	rResult.LatencyMs = time.Since(start).Milliseconds()
 	return rResult, nil
+}
+
+// probeLangfuse verifies the endpoint *and* the credentials by reading
+// one score off the authenticated API. A plain unauthenticated GET
+// against the host would pass even with an invalid key, which is
+// precisely the false positive this avoids.
+func (t *PluginTester) probeLangfuse(ctx context.Context, p *evalplugin.Plugin) error {
+	auth := p.Spec.Service.Auth
+	if auth.SecretRef == "" && auth.KeyRef == "" {
+		return errors.New("no auth configured: Langfuse requires a public key and a secret key")
+	}
+	if t.secrets == nil {
+		return external.ErrNoSecretResolver
+	}
+	creds, err := t.secrets.Resolve(ctx, auth)
+	if err != nil {
+		return err
+	}
+	pub, secret, ok := creds.Pair()
+	if !ok {
+		return errors.New("resolved only one credential: set auth.keyRef to both keys, " +
+			"e.g. keyRef: public_key|secret_key")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	url := joinEndpoint(p.Spec.Service.Endpoint, langfuseScoresPath) + "?limit=1"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.SetBasicAuth(pub, secret)
+	resp, err := httpClientForPluginsTest().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+		return fmt.Errorf("credentials rejected (%s): check the public/secret key pair "+
+			"and that they belong to this Langfuse project", resp.Status)
+	case resp.StatusCode == http.StatusNotFound:
+		return fmt.Errorf("scores API not found (%s): this Langfuse version predates "+
+			"the v3 scores API", resp.Status)
+	case resp.StatusCode/100 != 2:
+		return fmt.Errorf("unexpected status %s", resp.Status)
+	}
+	return nil
+}
+
+func langfuseMessage(err error) string {
+	if err == nil {
+		return "Langfuse authenticated: endpoint and API keys verified."
+	}
+	return "Langfuse probe failed: " + err.Error()
 }
 
 // resolve looks the plugin up by registry-map key (metadata.name),
@@ -162,6 +229,15 @@ func newTester(reg *evalplugin.Registry,
 // constructed; nil is acceptable (e.g. in unit tests).
 func (t *PluginTester) withSource(src *pluginSourceAdapter) *PluginTester {
 	t.source = src
+	return t
+}
+
+// withSecrets attaches the credential resolver so vendor probes can
+// exercise an authenticated endpoint. nil is acceptable, in which case
+// those probes report ErrNoSecretResolver rather than passing on a
+// weaker unauthenticated check.
+func (t *PluginTester) withSecrets(r external.SecretResolver) *PluginTester {
+	t.secrets = r
 	return t
 }
 

@@ -59,10 +59,11 @@ func TestEvaluateStaysInsideTenantBoundary(t *testing.T) {
 	var mu sync.Mutex
 	var contacted []string
 	d := NewDispatcher(reg, nil)
-	d.Register(evalplugin.ServiceLangfuse, func(_ context.Context, endpoint string, _ map[string]any) error {
+	d.SetSecretResolver(stubResolver{creds: Credentials{Values: []string{"pk", "sk"}}})
+	d.Register(evalplugin.ServiceLangfuse, func(_ context.Context, tgt Target, _ map[string]any) error {
 		mu.Lock()
 		defer mu.Unlock()
-		contacted = append(contacted, endpoint)
+		contacted = append(contacted, tgt.Endpoint)
 		return nil
 	})
 

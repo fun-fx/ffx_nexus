@@ -31,6 +31,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ffxnexus/nexus/internal/evaluators/external"
 )
 
 // langsmithTransmit sends the rendered payload as an OTLP/JSON
@@ -38,13 +40,13 @@ import (
 // resource scope per trace, one scope span carrying the
 // gen_ai.input.messages / gen_ai.output.messages fields.
 // Production-grade OTLP protobuf ingestion lives in a follow-up PR.
-func langsmithTransmit(ctx context.Context, endpoint string, payload map[string]any) error {
+func langsmithTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
 	envelope := langsmithEnvelope(payload)
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		return &adapterError{vendor: "langsmith", code: "encode", err: err}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, joinEndpoint(endpoint, "/otel/v1/traces"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, joinEndpoint(tgt.Endpoint, "/otel/v1/traces"), bytes.NewReader(body))
 	if err != nil {
 		return &adapterError{vendor: "langsmith", code: "prepare", err: err}
 	}
@@ -106,8 +108,8 @@ func langsmithEnvelope(payload map[string]any) map[string]any {
 // scores come back via the automation-rule webhook. The collector
 // uses this path to verify the endpoint is alive and report the
 // plugin's last-seen timestamp into metrics.
-func langsmithFetch(ctx context.Context, endpoint string) ([]json.RawMessage, error) {
-	url := joinEndpoint(endpoint, "/api/v1/info")
+func langsmithFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
+	url := joinEndpoint(tgt.Endpoint, "/api/v1/info")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, &adapterError{vendor: "langsmith", code: "prepare", err: err}

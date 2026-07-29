@@ -28,10 +28,11 @@ import (
 )
 
 // TransmitFunc is the per-vendor send hook implemented by adapters.
-// It receives a fully-rendered payload (after redaction) plus the
-// endpoint URL the caller registered for the plugin. Adapters
-// translate the payload into the vendor's wire shape and POST it.
-type TransmitFunc func(ctx context.Context, endpoint string, payload map[string]any) error
+// It receives the fully-rendered payload (after redaction) plus a
+// Target carrying the endpoint, the resolved credentials, the manifest
+// and the trace. Adapters translate that into the vendor's wire shape
+// and POST it.
+type TransmitFunc func(ctx context.Context, tgt Target, payload map[string]any) error
 
 // Dispatcher fans out traces to plugin transmittters and decodes any
 // inline results (collect.mode == "sync"). Async results are routed
@@ -42,6 +43,7 @@ type Dispatcher struct {
 	reg      *evalplugin.Registry
 	client   *http.Client
 	transmit map[evalplugin.ServiceType]TransmitFunc
+	secrets  SecretResolver
 }
 
 // NewDispatcher builds a Dispatcher. callers must Register all
@@ -55,6 +57,16 @@ func NewDispatcher(reg *evalplugin.Registry, httpClient *http.Client) *Dispatche
 		client:   httpClient,
 		transmit: make(map[evalplugin.ServiceType]TransmitFunc),
 	}
+}
+
+// SetSecretResolver wires the resolver used to turn a manifest's
+// spec.service.auth into concrete credentials. Without it, plugins
+// that declare auth fail dispatch with ErrNoSecretResolver rather than
+// sending an unauthenticated request the vendor will reject.
+func (d *Dispatcher) SetSecretResolver(r SecretResolver) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.secrets = r
 }
 
 // Register attaches an outbound transmit function for a service type.
@@ -114,6 +126,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, t observability.Trace, p *eva
 	}
 	d.mu.Lock()
 	fn := d.transmit[p.Spec.Service.Type]
+	resolver := d.secrets
 	d.mu.Unlock()
 	if fn == nil {
 		return fmt.Errorf("no adapter registered for service.type=%s", p.Spec.Service.Type)
@@ -125,7 +138,16 @@ func (d *Dispatcher) Dispatch(ctx context.Context, t observability.Trace, p *eva
 	if err := redactPayload(rendered, t, p.Spec.Send.Redact); err != nil {
 		return fmt.Errorf("redact payload: %w", err)
 	}
-	return fn(ctx, p.Spec.Service.Endpoint, rendered)
+	creds, err := resolveAuth(ctx, resolver, p)
+	if err != nil {
+		return fmt.Errorf("resolve auth for plugin %s: %w", p.Metadata.Name, err)
+	}
+	return fn(ctx, Target{
+		Endpoint: p.Spec.Service.Endpoint,
+		Auth:     creds,
+		Plugin:   p,
+		Trace:    t,
+	}, rendered)
 }
 
 // renderPayload applies the user's Go text/template to each value in

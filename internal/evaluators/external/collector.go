@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,7 +19,11 @@ import (
 // CollectFunc is the per-vendor result-fetcher implemented by
 // adapters. It is called once per polling tick; the returned
 // JSON.RawMessage is fed through Apply to produce an evals.Score.
-type CollectFunc func(ctx context.Context, endpoint string) ([]json.RawMessage, error)
+//
+// Adapters receive the same Target as TransmitFunc, minus a trace
+// (polling is not tied to one), because reading results back needs the
+// vendor credentials just as much as writing does.
+type CollectFunc func(ctx context.Context, tgt Target) ([]json.RawMessage, error)
 
 // Collector drives the "collect" side of each plugin. It runs a
 // background goroutine per polling-mode plugin and exposes the
@@ -35,6 +40,12 @@ type Collector struct {
 	collects map[evalplugin.ServiceType]CollectFunc
 	sink     evals.Sink
 	client   *http.Client
+	secrets  SecretResolver
+	log      *slog.Logger
+	// running tracks the poll goroutine per plugin name so the
+	// supervisor can start pollers for plugins created after boot and
+	// stop them once the plugin is deleted or disabled.
+	running map[string]context.CancelFunc
 }
 
 // NewCollector builds a Collector. The sink is the same instance
@@ -49,7 +60,22 @@ func NewCollector(reg *evalplugin.Registry, sink evals.Sink, httpClient *http.Cl
 		sink:     sink,
 		client:   httpClient,
 		collects: make(map[evalplugin.ServiceType]CollectFunc),
+		running:  make(map[string]context.CancelFunc),
 	}
+}
+
+// SetSecretResolver wires credential resolution for the polling path.
+func (c *Collector) SetSecretResolver(r SecretResolver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.secrets = r
+}
+
+// SetLogger attaches a logger so poll and sink failures are visible.
+func (c *Collector) SetLogger(l *slog.Logger) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.log = l
 }
 
 // Register attaches a CollectFunc for a vendor. Mirrors
@@ -65,26 +91,69 @@ func (c *Collector) Register(t evalplugin.ServiceType, fn CollectFunc) {
 // receivers don't need a goroutine — they listen on the configured
 // HTTP routes from the console mux.
 func (c *Collector) Run(ctx context.Context) error {
-	enabled := c.reg.Enabled()
-	for _, rec := range enabled {
-		if rec.Plugin.Spec.Collect.Mode != "poll" {
+	// The registry is filled at boot but also mutated at runtime when an
+	// operator creates or deletes a plugin in the console. Re-scanning
+	// keeps polling in step with that: a one-shot scan meant a plugin
+	// created after startup never had a poller until the pod restarted.
+	c.syncPollers(ctx)
+	ticker := time.NewTicker(pollSupervisorInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			c.syncPollers(ctx)
+		}
+	}
+}
+
+// pollSupervisorInterval is how often Run reconciles running pollers
+// against the registry. Short enough that a newly installed plugin
+// starts collecting promptly, long enough to be free of consequence.
+const pollSupervisorInterval = 30 * time.Second
+
+// syncPollers starts a poll goroutine for every enabled poll-mode
+// plugin that lacks one, and cancels goroutines whose plugin is gone.
+func (c *Collector) syncPollers(ctx context.Context) {
+	wanted := make(map[string]*evalplugin.Plugin)
+	for _, rec := range c.reg.Enabled() {
+		if rec.Plugin == nil || rec.Plugin.Spec.Collect.Mode != "poll" {
 			continue
 		}
-		interval := rec.Plugin.Spec.Collect.Interval.Std()
+		wanted[rec.Plugin.Metadata.Name] = rec.Plugin
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for name, cancel := range c.running {
+		if _, keep := wanted[name]; !keep {
+			cancel()
+			delete(c.running, name)
+		}
+	}
+	for name, p := range wanted {
+		if _, active := c.running[name]; active {
+			continue
+		}
+		interval := p.Spec.Collect.Interval.Std()
 		if interval <= 0 {
 			interval = 60 * time.Second
 		}
-		go c.runPoll(ctx, rec.Plugin, interval)
+		pollCtx, cancel := context.WithCancel(ctx)
+		c.running[name] = cancel
+		go c.runPoll(pollCtx, p, interval)
 	}
-	<-ctx.Done()
-	return nil
 }
 
 func (c *Collector) runPoll(ctx context.Context, p *evalplugin.Plugin, interval time.Duration) {
 	c.mu.Lock()
 	fn := c.collects[p.Spec.Service.Type]
+	resolver := c.secrets
 	c.mu.Unlock()
 	if fn == nil {
+		c.logf("plugin poll has no adapter", "plugin", p.Metadata.Name,
+			"service_type", string(p.Spec.Service.Type))
 		return
 	}
 	t := time.NewTicker(interval)
@@ -94,13 +163,34 @@ func (c *Collector) runPoll(ctx context.Context, p *evalplugin.Plugin, interval 
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			payloads, err := fn(ctx, p.Spec.Service.Endpoint)
+			creds, err := resolveAuth(ctx, resolver, p)
 			if err != nil {
+				c.logf("plugin poll auth failed", "plugin", p.Metadata.Name, "err", err)
+				continue
+			}
+			payloads, err := fn(ctx, Target{
+				Endpoint: p.Spec.Service.Endpoint,
+				Auth:     creds,
+				Plugin:   p,
+			})
+			if err != nil {
+				// Swallowing this is what made a misconfigured plugin
+				// look like a plugin with nothing to report.
+				c.logf("plugin poll failed", "plugin", p.Metadata.Name, "err", err)
 				continue
 			}
 			c.applyAll(ctx, p, payloads)
 		}
 	}
+}
+
+// logf emits a warning when a logger is wired, and is a no-op
+// otherwise so tests can construct a bare Collector.
+func (c *Collector) logf(msg string, args ...any) {
+	if c.log == nil {
+		return
+	}
+	c.log.Warn(msg, args...)
 }
 
 // applyAll converts each fetched JSON record into a Score and
@@ -125,7 +215,10 @@ func (c *Collector) applyAll(ctx context.Context, p *evalplugin.Plugin, payloads
 	if len(scores) == 0 {
 		return
 	}
-	_ = c.sink.WriteScores(ctx, scores)
+	if err := c.sink.WriteScores(ctx, scores); err != nil {
+		c.logf("plugin score write failed", "plugin", p.Metadata.Name,
+			"count", len(scores), "err", err)
+	}
 }
 
 // Webhook processes a single inbound HTTP request from an external

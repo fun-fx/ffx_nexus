@@ -349,7 +349,20 @@ func main() {
 		dispatcher := external.NewDispatcher(pluginReg, httpClientForPlugins())
 		collector := external.NewCollector(pluginReg, stack.SinkForPlugins(), httpClientForPlugins())
 		registerPluginAdapters(dispatcher, collector)
+		// Credentials come from the environment (the chart projects
+		// vendor Secrets in via envFrom); see plugin_secrets.go for the
+		// lookup order. Without a resolver, any plugin declaring auth
+		// fails dispatch loudly instead of sending an unauthenticated
+		// request the vendor silently rejects.
+		pluginSecrets := newEnvSecretResolver()
+		dispatcher.SetSecretResolver(pluginSecrets)
+		collector.SetSecretResolver(pluginSecrets)
+		collector.SetLogger(log)
 		multiEval := external.NewMultiEvaluator(pluginReg, dispatcher)
+		// Dispatch failures are best-effort but must not be invisible:
+		// a wrong key or endpoint otherwise looks identical to a vendor
+		// that simply has no results yet.
+		multiEval.SetLogger(log)
 		evalWorker.SetPluginEvaluator(multiEval)
 		go func() {
 			if err := collector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -364,7 +377,10 @@ func main() {
 		// here so we don't take a second dump of the same dependency
 		// into the test handler closure.
 		srcAdapter := &pluginSourceAdapter{reg: pluginReg, store: erc.PluginStore()}
-		consoleSrvHandler.SetPluginTester(newTester(pluginReg, dispatcher, collector).withSource(srcAdapter))
+		consoleSrvHandler.SetPluginTester(
+			newTester(pluginReg, dispatcher, collector).
+				withSource(srcAdapter).
+				withSecrets(pluginSecrets))
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
 	// secret takes effect without restarting the gateway.
