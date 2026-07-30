@@ -11,8 +11,8 @@
 //
 // The schema is intentionally narrow. Most production deployments will
 // use the closed `spec.service.type` enum (langsmith, langfuse,
-// datadog, braintrust, arize, otel, webhook); only power users need to
-// drop down to vendor-specific JSONPath mapping in `spec.collect`.
+// datadog, braintrust, arize, otel_collector); only power users need to
+// drop down to vendor-specific flat-key mapping in `spec.collect`.
 package evalplugin
 
 import (
@@ -121,8 +121,13 @@ var validServiceType = map[ServiceType]struct{}{
 	ServiceCollector:      {},
 }
 
-// ResultMapping is a single JSONPath → canonical field translation.
-// All translations land in the OTel-aligned shape defined by
+// ResultMapping is a flat-key → canonical field translation.
+// Authors give the *source key* on the vendor's wire format (e.g.
+// "comment", "traceId", "value"); the dispatcher looks up each key
+// in the parsed JSON object directly. JSONPath syntax (`$.key`)
+// was retired: the plan's "JSONPath-shaped pickString with
+// truthful flat-lookup semantics" closeout landed here. All
+// translations land in the OTel-aligned shape defined by
 // `gen_ai.evaluation.result` (name, score.value, score.label,
 // explanation) regardless of the upstream vendor's wording. Fields are
 // optional — adapters provide defaults if a mapping is absent.

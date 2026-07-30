@@ -237,6 +237,47 @@ Go back to <http://localhost:8091> and look at:
 | Run the same prompt in dev vs prod | Repeat at the prod ingress URL; same trace shape |
 | Onboard a teammate on shared prod | [`onboarding.md`](onboarding.md) — VPN, BYOK, virtual key, Cursor |
 
+### 6.1 Plug in an external evaluation service (5 steps, no kubectl / no helm)
+
+> **Why this section exists.** Prior to this release, plugging in Langfuse
+> or LangSmith required a Kubernetes Secret, a Helm overlay file, and a
+> console-side restart. The console-key path (added in PR #171, hardened
+> in #173) replaces that with five symmetric UI steps. Nothing about
+> this requires cluster-admin — every operator with plugin-edit permission
+> can do it.
+
+1. Open **Console → Eval → Plugins** and click **New plugin**. Pick
+   `service.type` (e.g. `langfuse`, `langsmith`, `arize_phoenix`,
+   `confident_ai`) from the dropdown. The vendor defaults fill in the
+   remaining fields automatically.
+2. Set `spec.service.endpoint` to your vendor URL
+   (`https://cloud.langfuse.com`, `https://api.smith.langchain.com`,
+   etc.). The Test button (right side of the row) returns 200 OK when
+   the endpoint is reachable — this exercises the *transport* but
+   not the credentials yet.
+3. Click **Keys** in the row. The modals lists every keyRef the
+   manifest declared (Langfuse wants `public_key|secret_key`;
+   LangSmith wants `api_key`). Paste the values; click **Save**. The
+   values never leave the gateway process — they live in the
+   `consoleKeyResolver`, not on disk and not in Helm.
+4. Click **Test** again. You now get the structured `PluginTestResult`
+   body back: `{"ok":true,"message":"auth ok"}` on success, or a
+   vendor-specific error (`status_401`, `unauthorized`, etc.) on
+   failure. The previous 502-from-Cloudflare failure mode (where the
+   tunnel swallowed the underlying error and replaced it with HTML)
+   is fixed by returning HTTP 200 with `ok:false` instead.
+5. Flip the **Enabled** toggle. The plugin now ships every enabled
+   trace to the vendor via OTLP/HTTP or vendor-native /v1/* endpoints.
+   Eval scores come back through the **Webhook URL** rendered at the
+   top of the row — point your vendor's webhook UI at that URL and
+   the score lands in `eval_scores` within one request.
+
+> **No restart needed.** Steps 3-4 are immediate: the plugin
+> re-registers in the in-memory `evalplugin.Registry` on every Save,
+> and the dispatcher re-evaluates org-scoped plugin enablement on
+> the next request. Hot-reload was a precondition for the GUI to
+> expose the "Keys" affordance; see PR #171 / cmd/nexus/plugin_keys.go.
+
 ### 6a. Add Prometheus + Grafana (one command)
 
 Bring up an end-to-end observability stack — Nexus gateway + Prometheus +

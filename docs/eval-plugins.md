@@ -93,15 +93,15 @@ spec:
       metadata: { app: nexus, env: "{{ .env }}" }
     redact: [pii]                 # heuristic_PII pass → mask before send
   collect:
-    mode: webhook                 # sync | webhook | poll
+    mode: webhook                 # webhook | poll
     interval: 60s                 # only when mode=poll
-    mapping:                      # JSONPath → OTel-aligned attrs
-      name:        "$.key"
-      score:       "$.score"
-      label:       "$.value"
-      explanation: "$.comment"
-      trace_id:    "$.trace_id"
-      metric:      "$.metric"
+    mapping:                      # flat-key remap, NOT JSONPath
+      name:        "key"          # source field name (without $.)
+      score:       "score"
+      label:       "value"
+      explanation: "comment"
+      trace_id:    "trace_id"
+      metric:      "metric"
   timeout: 30s
 ```
 
@@ -121,9 +121,9 @@ spec:
 | `spec.send.sampling`       | yes       | `[0, 1]`, and now actually enforced per plugin. Use ≤ 0.1 by default to keep egress and vendor cost bounded. |
 | `spec.send.payload`        | yes       | Map of strings; each value is a Go-text/template.               |
 | `spec.send.redact`         | no        | Only `pii` is accepted today; runs existing heuristic, replaces hits with `[REDACTED:<kind>]`. |
-| `spec.collect.mode`        | yes       | `webhook` recommended for LangSmith/Langfuse/Datadog.           |
+| `spec.collect.mode`        | yes       | `webhook` (recommended) — vendor pushes to Nexus via a URL Nexus renders in the UI. `poll` available; `sync` was retired (the inline path is now the OTel-native `gen_ai.evaluation.result` event, Add-C). |
 | `spec.collect.interval`    | when poll | Polling cadence when webhook is unavailable.                    |
-| `spec.collect.mapping`     | yes       | JSONPath map. Adapters provide defaults; you only override when the vendor uses nonstandard keys. |
+| `spec.collect.mapping`     | yes       | Flat-key map. Each value is the *source key* on the vendor's wire format (e.g. `key`, `value`, `comment`). Do NOT prefix with `$.` — Nexus does flat-lookup, not JSONPath. Adapters provide defaults; you only override when the vendor uses nonstandard keys. |
 | `spec.timeout`             | no        | Default 30s.                                                    |
 
 ### Result model — OTel-aligned

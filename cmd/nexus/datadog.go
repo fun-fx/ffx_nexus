@@ -43,6 +43,12 @@ func datadogTransmit(ctx context.Context, tgt external.Target, payload map[strin
 		return &adapterError{vendor: "datadog", code: "prepare", err: err}
 	}
 	req.Header.Set("Content-Type", ct)
+	if key := tgt.Auth.Primary(); key != "" {
+		// Datadog LLMObs accepts `DD-API-KEY` on /api/v1/llm-obs/*.
+		// Bearer is their newer mechanism for /api/unstable/llm-obs
+		// paths and we don't hit those yet.
+		req.Header.Set("DD-API-KEY", key)
+	}
 	resp, err := httpClientForPlugins().Do(req)
 	if err != nil {
 		return &adapterError{vendor: "datadog", code: "send", err: err}

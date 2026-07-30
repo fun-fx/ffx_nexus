@@ -24,7 +24,7 @@ export type ServiceKind =
 
 export type Trigger = "on_trace" | "scheduled" | "manual";
 
-export type CollectMode = "sync" | "webhook" | "poll";
+export type CollectMode = "webhook" | "poll";
 
 export type Redact = "" | "pii";
 
@@ -473,7 +473,9 @@ export function parseYamlToForm(yaml: string): PluginFormState {
       const k = m[1];
       const v = cleanYamlScalar(m[2]);
       if (k === "mode") {
-        if (v === "sync" || v === "webhook" || v === "poll") out.collect.mode = v;
+        // sync was retired; re-mapped legacy manifests to webhook.
+        if (v === "sync") out.collect.mode = "webhook";
+        else if (v === "webhook" || v === "poll") out.collect.mode = v;
       } else if (k === "interval") out.collect.interval = v;
       else if (k === "mapping") {
         if (v.length > 0) {
