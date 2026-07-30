@@ -18,11 +18,16 @@ import (
 // This test pins:
 //
 //   - root key `resourceSpans`
-//   - one `resource_spans` per inbound Nexus Trace
+//   - one `resourceSpans` entry per inbound Nexus Trace
 //   - per-resource: a `service.name="nexus"` attribute
 //   - per-scope name `ffx_nexus`
-//   - per-span: trace_id + span_id (16-hex-span from trace id)
-//   - per-attribute protobuf-JSON `"key":..., "value":{"string_value":...}`
+//   - per-span: traceId + spanId (16-hex-span from trace id)
+//   - per-attribute protobuf-JSON `"key":..., "value":{"stringValue":...}`
+//
+// The spelling is load-bearing: receivers with a hand-written OTLP/JSON
+// parser match only the lowerCamelCase names, and they answer 200 for a
+// batch they then discard. Asserting the exact keys is what keeps a
+// silently-dropped export from passing as a green test.
 func TestOTLPEnvelopeExportTraceServiceRequest(t *testing.T) {
 	traces := []Trace{
 		{
@@ -68,26 +73,31 @@ func TestOTLPEnvelopeExportTraceServiceRequest(t *testing.T) {
 		t.Errorf("resourceSpans count = %d, want %d", len(rs), len(traces))
 	}
 
-	// First span sanity check: trace_id round-trips, span_id is 16-hex.
+	// First span sanity check: traceId round-trips, spanId is 16-hex.
 	first := rs[0].(map[string]any)
-	ssi, _ := first["scope_spans"].([]any)
+	ssi, _ := first["scopeSpans"].([]any)
 	if len(ssi) != 1 {
-		t.Fatalf("scope_spans len = %d, want 1", len(ssi))
+		t.Fatalf("scopeSpans len = %d, want 1", len(ssi))
 	}
 	spansi, _ := ssi[0].(map[string]any)["spans"].([]any)
 	if len(spansi) != 1 {
 		t.Fatalf("spans len = %d, want 1", len(spansi))
 	}
 	span := spansi[0].(map[string]any)
-	if span["trace_id"] != traces[0].TraceID {
-		t.Errorf("trace_id = %v, want %s", span["trace_id"], traces[0].TraceID)
+	if span["traceId"] != traces[0].TraceID {
+		t.Errorf("traceId = %v, want %s", span["traceId"], traces[0].TraceID)
 	}
-	if span["span_id"] != "abcdef0123456789" {
-		t.Errorf("span_id = %v, want %s (first 16 hex of trace id)", span["span_id"], "abcdef0123456789")
+	if span["spanId"] != "abcdef0123456789" {
+		t.Errorf("spanId = %v, want %s (first 16 hex of trace id)", span["spanId"], "abcdef0123456789")
+	}
+	for _, k := range []string{"startTimeUnixNano", "endTimeUnixNano"} {
+		if _, ok := span[k]; !ok {
+			t.Errorf("span missing %s: %#v", k, span)
+		}
 	}
 
 	// At least one attribute is the proto JSON
-	// {"key":..., "value":{"string_value":...}}.
+	// {"key":..., "value":{"stringValue":...}}.
 	attrsi, _ := span["attributes"].([]any)
 	if len(attrsi) == 0 {
 		t.Fatalf("attributes empty")
@@ -100,15 +110,15 @@ func TestOTLPEnvelopeExportTraceServiceRequest(t *testing.T) {
 	if !ok {
 		t.Errorf("first attr value not nested map: %#v", firstAttr)
 	}
-	if _, ok := val["string_value"]; !ok {
-		t.Errorf("first attr value missing string_value: %#v", val)
+	if _, ok := val["stringValue"]; !ok {
+		t.Errorf("first attr value missing stringValue: %#v", val)
 	}
 
-	// Second span carries parent_span_id.
+	// Second span carries parentSpanId.
 	second := rs[1].(map[string]any)
-	secondSpans := second["scope_spans"].([]any)[0].(map[string]any)["spans"].([]any)
-	if secondSpans[0].(map[string]any)["parent_span_id"] != "abcdef0123456789" {
-		t.Errorf("parent_span_id missing on second span")
+	secondSpans := second["scopeSpans"].([]any)[0].(map[string]any)["spans"].([]any)
+	if secondSpans[0].(map[string]any)["parentSpanId"] != "abcdef0123456789" {
+		t.Errorf("parentSpanId missing on second span")
 	}
 }
 
@@ -183,20 +193,17 @@ func TestOTLPEnvelopeParentSpanIDHexShape(t *testing.T) {
 		ErrorType:     "no_api_key",
 		Timestamp:     time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC),
 	}})
-	spans := envelope["resourceSpans"].([]map[string]any)[0]["scope_spans"].([]map[string]any)[0]["spans"].([]map[string]any)
-	spans[0]["parent_span_id"] = "f4b86a08bbe44974" // expected after hexSpanID
 	raw, _ := json.Marshal(envelope)
 	var rt map[string]any
 	if err := json.Unmarshal(raw, &rt); err != nil {
 		t.Fatalf("envelope round-trip: %v/%s", err, raw)
 	}
-	parentStr, _ := rt["resourceSpans"].([]any)[0].(map[string]any)["scope_spans"].([]any)[0].(map[string]any)["spans"].([]any)[0].(map[string]any)["parent_span_id"].(string)
+	parentStr, _ := rt["resourceSpans"].([]any)[0].(map[string]any)["scopeSpans"].([]any)[0].(map[string]any)["spans"].([]any)[0].(map[string]any)["parentSpanId"].(string)
 	if len(parentStr) != 16 {
-		t.Errorf("parent_span_id len = %d, want 16", len(parentStr))
+		t.Errorf("parentSpanId len = %d, want 16 (%q)", len(parentStr), parentStr)
 	}
-	// Verify strips dashes — the test is the canonical check.
-	parent := spans[0]["parent_span_id"].(string)
-	if parent != "f4b86a08bbe44974" {
-		t.Errorf("parent_span_id after strip = %q, want f4b86a08bbe44974", parent)
+	// The UUID's dashes come out, and the first 16 hex digits remain.
+	if parentStr != "f4b86a08bbe4497c" {
+		t.Errorf("parentSpanId = %q, want f4b86a08bbe4497c", parentStr)
 	}
 }

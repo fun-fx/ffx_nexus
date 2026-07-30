@@ -82,9 +82,8 @@ func TestOTLPRecorderRoundTrip(t *testing.T) {
 	// `lastBodies` has 2 envelopes. We scan them all and assert both
 	// trace ids made it into the envelope in some order.
 	//
-	// OTLP uses snake_case JSON keys (`scope_spans`, `resource_spans`,
-	// `trace_id`, …) so we decode into a `map[string]any` instead of a
-	// Go struct to avoid a json tag schema duplicate.
+	// We decode into a `map[string]any` rather than a Go struct so this
+	// assertion does not duplicate the envelope's json tag schema.
 	seenTraceIDs := map[string]bool{}
 	scopeNames := map[string]int{}
 	for _, body := range lastBodies {
@@ -97,9 +96,9 @@ func TestOTLPRecorderRoundTrip(t *testing.T) {
 			continue
 		}
 		rs, _ := rsAny[0].(map[string]any)
-		ssAny, _ := rs["scope_spans"].([]any)
+		ssAny, _ := rs["scopeSpans"].([]any)
 		if len(ssAny) == 0 {
-			t.Fatalf("scope_spans empty; body=%s", body)
+			t.Fatalf("scopeSpans empty; body=%s", body)
 		}
 		ss, _ := ssAny[0].(map[string]any)
 		scope := ss["scope"].(map[string]any)
@@ -107,7 +106,7 @@ func TestOTLPRecorderRoundTrip(t *testing.T) {
 		spans, _ := ss["spans"].([]any)
 		for _, sAny := range spans {
 			s, _ := sAny.(map[string]any)
-			if id, ok := s["trace_id"].(string); ok {
+			if id, ok := s["traceId"].(string); ok {
 				seenTraceIDs[id] = true
 			}
 		}

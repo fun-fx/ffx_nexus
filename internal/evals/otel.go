@@ -12,8 +12,8 @@ import (
 // the OTel GenAI semantic conventions:
 //
 //	{
-//	  "trace_id":        "<32-hex>",
-//	  "span_id":         "<16-hex>",
+//	  "traceId":         "<32-hex>",
+//	  "spanId":          "<16-hex>",
 //	  "name":            "gen_ai.evaluation",
 //	  "events": [{
 //	    "timeUnixNano":  "<ns>",
@@ -61,9 +61,15 @@ func OTLPEvaluationEvent(traceID string, score Score) map[string]any {
 	}
 	now := time.Now().UnixNano()
 	return map[string]any{
-		"name":     "gen_ai.evaluation",
-		"trace_id": stripDashes_OTLP(spanTrace),
-		"span_id":  spanID,
+		"name": "gen_ai.evaluation",
+		// lowerCamelCase per the protobuf JSON mapping. The rest of this
+		// envelope was already camelCase; these two were not, and a
+		// receiver that only matches the spec spelling drops the span
+		// while still answering 200.
+		"traceId":           stripDashes_OTLP(spanTrace),
+		"spanId":            spanID,
+		"startTimeUnixNano": now,
+		"endTimeUnixNano":   now,
 		"events": []map[string]any{
 			{
 				"timeUnixNano": fmt.Sprintf("%d", now),

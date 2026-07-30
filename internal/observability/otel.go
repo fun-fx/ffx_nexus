@@ -21,7 +21,7 @@ import (
 //
 //	{
 //	  "resourceSpans": [
-//	    { "resource": {"attributes":[...]}, "scope_spans":[ { "scope": ..., "spans":[ ... ] } ] },
+//	    { "resource": {"attributes":[...]}, "scopeSpans":[ { "scope": ..., "spans":[ ... ] } ] },
 //	    ...
 //	  ]
 //	}
@@ -263,10 +263,17 @@ func min(a, b int) int {
 
 // otlpEnvelopeFromTraces returns a minimal ExportTraceServiceRequest
 // carrying the given Nexus traces. Each trace maps to a single OTLP
-// span under one ResourceSpans bucket, keyed by `replica_id`. Field
-// names follow the OTLP/JSON spec directly (`trace_id`, `span_id`,
-// `attributes`/`key`/`value`/`string_value`, etc.); the collector
-// unmarshals them as Protobuf JSON and treats them as ordinary spans.
+// span under one ResourceSpans bucket, keyed by `replica_id`.
+//
+// Field names use the lowerCamelCase form the protobuf JSON mapping
+// specifies (`traceId`, `spanId`, `startTimeUnixNano`,
+// `value.stringValue`, …). This is not cosmetic. Receivers built on
+// protojson accept the snake_case proto field names as well, but ones
+// with a hand-written parser only match the camelCase spelling — and
+// they answer 200 for a batch they then silently discard, because the
+// HTTP response only acknowledges that the envelope was queued.
+// Langfuse behaves exactly that way: snake_case spans were accepted
+// and never stored.
 func otlpEnvelopeFromTraces(traces []Trace) map[string]any {
 	return otlpEnvelope(traces, nil)
 }
@@ -347,12 +354,12 @@ func otlpEnvelope(traces []Trace, extraAttributes map[string]string) map[string]
 			traceID32 = traceID32 + padding[:32-len(traceID32)]
 		}
 		span := map[string]any{
-			"trace_id":             traceID32,
-			"span_id":              spanID,
-			"name":                 "gen_ai." + stringOr(t.OperationName, "chat"),
-			"start_time_unix_nano": int64Or(t.Timestamp.UnixNano(), 0),
-			"end_time_unix_nano":   int64Or(t.Timestamp.Add(time.Duration(t.LatencyMs)*time.Millisecond).UnixNano(), 0),
-			"attributes":           attrs,
+			"traceId":           traceID32,
+			"spanId":            spanID,
+			"name":              "gen_ai." + stringOr(t.OperationName, "chat"),
+			"startTimeUnixNano": int64Or(t.Timestamp.UnixNano(), 0),
+			"endTimeUnixNano":   int64Or(t.Timestamp.Add(time.Duration(t.LatencyMs)*time.Millisecond).UnixNano(), 0),
+			"attributes":        attrs,
 		}
 		// Parent linkage: OTLP shape is parent_span_id on the child
 		// span, not a SpanLink — emit one only when ParentID is present.
@@ -362,7 +369,7 @@ func otlpEnvelope(traces []Trace, extraAttributes map[string]string) map[string]
 		// a UX-side parent link to a request UUID would cause the
 		// whole batch to fail with HTTP 400 from the OTLP receiver.
 		if t.ParentID != "" {
-			span["parent_span_id"] = hexSpanID(stripDashes(t.ParentID))
+			span["parentSpanId"] = hexSpanID(stripDashes(t.ParentID))
 		}
 		// Resource attributes: bucket-by replica; the receiver fans
 		// out metrics+traces into per-replica groups downstream.
@@ -377,7 +384,7 @@ func otlpEnvelope(traces []Trace, extraAttributes map[string]string) map[string]
 			"resource": map[string]any{
 				"attributes": resourceAttrs,
 			},
-			"scope_spans": []map[string]any{
+			"scopeSpans": []map[string]any{
 				{
 					"scope": map[string]any{
 						"name":    "ffx_nexus",
@@ -463,7 +470,7 @@ func kv(k, v string) map[string]any {
 	}
 	return map[string]any{
 		"key":   k,
-		"value": map[string]any{"string_value": v},
+		"value": map[string]any{"stringValue": v},
 	}
 }
 
