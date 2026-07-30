@@ -32,6 +32,9 @@ func braintrustTransmit(ctx context.Context, tgt external.Target, payload map[st
 		return &adapterError{vendor: "braintrust", code: "prepare", err: err}
 	}
 	req.Header.Set("Content-Type", ct)
+	if key := tgt.Auth.Primary(); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := httpClientForPlugins().Do(req)
 	if err != nil {
 		return &adapterError{vendor: "braintrust", code: "send", err: err}
@@ -63,6 +66,9 @@ func arizeTransmit(ctx context.Context, tgt external.Target, payload map[string]
 		return &adapterError{vendor: "arize", code: "prepare", err: err}
 	}
 	req.Header.Set("Content-Type", ct)
+	if key := tgt.Auth.Primary(); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := httpClientForPlugins().Do(req)
 	if err != nil {
 		return &adapterError{vendor: "arize", code: "send", err: err}

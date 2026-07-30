@@ -51,13 +51,18 @@ func langsmithTransmit(ctx context.Context, tgt external.Target, payload map[str
 		return &adapterError{vendor: "langsmith", code: "prepare", err: err}
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if key := tgt.Auth.Primary(); key != "" {
+		// LangSmith ingests with `Authorization: Bearer <api-key>`.
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := httpClientForPlugins().Do(req)
 	if err != nil {
 		return &adapterError{vendor: "langsmith", code: "send", err: err}
 	}
 	defer resp.Body.Close()
+	respBody := resp.Body
 	if resp.StatusCode/100 != 2 {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		snippet, _ := io.ReadAll(io.LimitReader(respBody, 256))
 		return &adapterError{
 			vendor: "langsmith",
 			code:   fmt.Sprintf("status_%d", resp.StatusCode),
@@ -113,6 +118,9 @@ func langsmithFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, &adapterError{vendor: "langsmith", code: "prepare", err: err}
+	}
+	if key := tgt.Auth.Primary(); key != "" {
+		req.Header.Set("x-api-key", key)
 	}
 	resp, err := httpClientForPlugins().Do(req)
 	if err != nil {

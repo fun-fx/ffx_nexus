@@ -4,7 +4,7 @@
 //
 // Plugins are config-only: the dispatcher never inlines the vendor's
 // SDK. Each adapter is a small encoding-only layer (HTTP send +
-// optional JSONPath decode for sync results). Polling and webhook
+// optional flat-key decode for sync results). Polling and webhook
 // collection are handled by Collector, which feeds results back into
 // the registry through Sink writers.
 package external
@@ -34,10 +34,10 @@ import (
 // and POST it.
 type TransmitFunc func(ctx context.Context, tgt Target, payload map[string]any) error
 
-// Dispatcher fans out traces to plugin transmittters and decodes any
-// inline results (collect.mode == "sync"). Async results are routed
-// through a Collector instance — the dispatcher itself doesn't poll
-// or accept webhooks.
+// Dispatcher fans out traces to plugin transmittters. Async results
+// are routed through a Collector instance — the dispatcher itself
+// doesn't poll or accept webhooks. The historical "sync" inline
+// result path was retired (see validate.go's validCollectMode).
 type Dispatcher struct {
 	mu       sync.Mutex
 	reg      *evalplugin.Registry
@@ -269,7 +269,7 @@ func isEmailChar(c byte) bool {
 
 // Apply writes an externally-produced score (incoming webhook /
 // polled fetch) into the standard sink. Adapters call this once
-// they have decoded the JSONPath mapping back into the canonical
+// they have decoded the flat-key mapping back into the canonical
 // OTel shape.
 func Apply(raw json.RawMessage, mapping evalplugin.ResultMapping, pluginName string) (evals.Score, error) {
 	var parsed map[string]any

@@ -962,8 +962,10 @@ on the worker goroutine.
 All incoming eval scores are normalised to the OTel GenAI semantic
 convention `gen_ai.evaluation.result`
 (`name`, `score.value`, `score.label`, `explanation`, `response.id`). Per-vendor
-JSONPath mapping (`spec.collect.mapping`) handles the wire-shape differences;
-results are written to `eval_scores` with `evaluator = "plugin:<name>"` so a
+flat-key mapping (`spec.collect.mapping`) handles the wire-shape
+differences — each value is the *source key* on the vendor's wire format
+(do NOT prefix with `$.`); JSONPath syntax was retired. Results
+are written to `eval_scores` with `evaluator = "plugin:<name>"` so a
 single SQL `GROUP BY evaluator` separates plugin scores from heuristic /
 legacy ones.
 

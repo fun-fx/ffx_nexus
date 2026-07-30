@@ -161,7 +161,7 @@ func makeHeuristicRecord(name, metric string) evalplugin.Record {
 					Trigger:  "on_trace",
 					Sampling: evalplugin.SamplingFraction(1.0),
 				},
-				Collect: evalplugin.CollectSpec{Mode: "sync"},
+				Collect: evalplugin.CollectSpec{Mode: "webhook"},
 			},
 		},
 		Source:  evalplugin.Source{Kind: evalplugin.SourceHelm},

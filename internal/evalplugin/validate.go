@@ -21,12 +21,19 @@ var validTrigger = map[string]struct{}{
 	"manual":    {},
 }
 
-// validCollectMode enumerates the legal Collect.Mode values. Sync is
-// only legal when the upstream service actually returns a JSON body
-// inline (helicones/v1request-score shape) — the adapter enforces the
-// constraint at dispatch time.
+// validCollectMode enumerates the legal Collect.Mode values.
+//
+// Sync mode was retired: it described an inline response from the
+// vendor's POST. No first-class vendor on the supported set returns
+// eval scores inline — LangSmith, Langfuse, Datadog, Braintrust,
+// Arize Phoenix, Confident AI, OTLP collectors, and webhooks all
+// need either a polling reverse channel or a webhook push. The
+// "inline" ingest path is the OTLP-native `gen_ai.evaluation.result`
+// event emit (Add-C), which is platform-side and does not depend on
+// `collect.mode: sync`. Authors who previously wrote `mode: sync`
+// should switch to `mode: webhook` and configure the vendor's
+// webhook push — see docs/eval-plugins.md.
 var validCollectMode = map[string]struct{}{
-	"sync":    {},
 	"webhook": {},
 	"poll":    {},
 }
@@ -87,9 +94,9 @@ var knownAPIVersions = map[string]struct{}{
 //                   are interpretation-explained.
 //   - anything else: fail.
 //
-// Validation order matters: cheap checks first, expensive JSONPath
-// checks last. We do not JSONPath-parse mapping expressions here —
-// adapters decode them lazily — to avoid pulling an extra dependency
+// Validation order matters: cheap checks first, expensive mapping
+// checks last. We do not parse mapping expressions here — adapters
+// decode them lazily — to avoid pulling an extra dependency
 // into the hot path.
 func Validate(p *Plugin) error {
 	if p == nil {

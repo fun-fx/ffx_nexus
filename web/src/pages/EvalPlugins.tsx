@@ -313,7 +313,6 @@ function FormMode({
           >
             <option value="webhook">webhook — vendor pushes to Nexus</option>
             <option value="poll">poll — Nexus pulls every N seconds</option>
-            <option value="sync">sync — inline response (rare)</option>
           </select>
         </FieldRow>
         <FieldRow label="Interval (poll mode only)">
@@ -675,7 +674,7 @@ function PluginRow({
         trace_id: `smoke-${Date.now()}`,
       }),
   });
-  const canPing = parsed.mode === "webhook" || parsed.mode === "sync";
+  const canPing = parsed.mode === "webhook";
   return (
     <article className="plugin-row" data-testid={`plugin-row-${rec.id}`}>
       <div className="plugin-row-head">

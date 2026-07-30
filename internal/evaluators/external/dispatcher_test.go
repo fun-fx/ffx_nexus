@@ -212,7 +212,7 @@ func TestDispatcherRejectsUnknownServiceType(t *testing.T) {
 		Spec: evalplugin.PluginSpec{
 			Service: evalplugin.ServiceSpec{Type: "unsupported-type", Endpoint: "https://x"},
 			Send:    evalplugin.SendSpec{Sampling: 1},
-			Collect: evalplugin.CollectSpec{Mode: "sync"},
+			Collect: evalplugin.CollectSpec{Mode: "webhook"},
 		},
 	}
 	if err := d.Dispatch(context.Background(), observability.Trace{}, p); err == nil {

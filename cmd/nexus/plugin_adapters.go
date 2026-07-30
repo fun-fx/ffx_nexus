@@ -50,15 +50,41 @@ func registerPluginAdapters(d *external.Dispatcher, c *external.Collector) {
 	d.Register(evalplugin.ServiceDatadog, datadogTransmit)
 	c.Register(evalplugin.ServiceDatadog, datadogFetch)
 
-	// Generic OTLP / webhook receivers delegate to Send + receive.
-	d.Register(evalplugin.ServiceOTel, otelTransmit)
-	c.Register(evalplugin.ServiceOTel, otelFetch)
-	d.Register(evalplugin.ServiceWebhook, webhookTransmit)
-	c.Register(evalplugin.ServiceWebhook, webhookFetch)
+	// ServiceCollector collapses the old `ServiceOTel` +
+	// `ServiceWebhook` split: a single adapter driven by
+	// spec.collect.transport ("otel" | "webhook" | "raw").
+	//
+	// We keep ServiceOTel + ServiceWebhook registered as
+	// back-compat aliases — old v1alpha1 manifests shipped with
+	// either spelling, and we don't want a "service.type otel"
+	// install to watch its collector silently disappear after the
+	// operator upgrades to a chart that only knows about
+	// otel_collector.
+	d.Register(evalplugin.ServiceCollector, collectorTransmit)
+	c.Register(evalplugin.ServiceCollector, collectorFetch)
+	d.Register(evalplugin.ServiceOTel, collectorTransmit)
+	c.Register(evalplugin.ServiceOTel, collectorFetch)
+	d.Register(evalplugin.ServiceWebhook, collectorTransmit)
+	c.Register(evalplugin.ServiceWebhook, collectorFetch)
 
 	// Braintrust + Arize Phase G — same shape, different endpoint.
 	d.Register(evalplugin.ServiceBraintrust, braintrustTransmit)
 	c.Register(evalplugin.ServiceBraintrust, braintrustFetch)
 	d.Register(evalplugin.ServiceArize, arizeTransmit)
 	c.Register(evalplugin.ServiceArize, arizeFetch)
+
+	// Confident AI + Arize Phoenix (v1alpha2) — both speak OTLP with
+	// Basic/Bearer auth variants. Confident AI is DeepEval-native;
+	// Arize Phoenix is the open-source alternative.
+	d.Register(evalplugin.ServiceConfidentAI, confidentAITransmit)
+	c.Register(evalplugin.ServiceConfidentAI, confidentAIFetch)
+	d.Register(evalplugin.ServiceArizePhoenix, arizePhoenixTransmit)
+	c.Register(evalplugin.ServiceArizePhoenix, arizePhoenixFetch)
+
+	// ServiceCollector envelopes the same wire-level transmit logic
+	// as ServiceOTel; the difference is the v1alpha2 manifest carries
+	// spec.collect.transport, which downstream collectors use to pick
+	// spans from the envelope by attribute.
+	d.Register(evalplugin.ServiceCollector, collectorTransmit)
+	c.Register(evalplugin.ServiceCollector, collectorFetch)
 }
