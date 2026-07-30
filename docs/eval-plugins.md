@@ -120,7 +120,7 @@ spec:
 | `spec.send.trigger`        | yes       | `on_trace` today. `scheduled`/`manual` are reserved.            |
 | `spec.send.sampling`       | yes       | `[0, 1]`, and now actually enforced per plugin. Use ≤ 0.1 by default to keep egress and vendor cost bounded. |
 | `spec.send.payload`        | yes       | Map of strings; each value is a Go-text/template.               |
-| `spec.send.redact`         | no        | Only `pii` is accepted today; runs existing heuristic, replaces hits with `[REDACTED:<kind>]`. |
+| `spec.send.redact`         | no        | Only `pii` is accepted today; masks email-shaped spans in every string field of the rendered payload as `[REDACTED:email]`, using the same conservative pattern as the heuristic PII evaluator. A bare `@` in prose is left alone. |
 | `spec.collect.mode`        | yes       | `webhook` (recommended) — vendor pushes to Nexus via a URL Nexus renders in the UI. `poll` available; `sync` was retired (the inline path is now the OTel-native `gen_ai.evaluation.result` event, Add-C). |
 | `spec.collect.interval`    | when poll | Polling cadence when webhook is unavailable.                    |
 | `spec.collect.mapping`     | yes       | Flat-key map. Each value is the *source key* on the vendor's wire format (e.g. `key`, `value`, `comment`). Do NOT prefix with `$.` — Nexus does flat-lookup, not JSONPath. Adapters provide defaults; you only override when the vendor uses nonstandard keys. |
