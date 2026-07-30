@@ -449,13 +449,22 @@ func main() {
 			}
 		}()
 		erc.AttachPluginRegistry(pluginReg)
-		consoleSrvHandler.SetEvalPlugins(pluginSourceAdapter{reg: pluginReg, store: erc.PluginStore()})
+		consoleSrvHandler.SetEvalPlugins(pluginSourceAdapter{
+			reg: pluginReg, store: erc.PluginStore(), log: log,
+		})
+		// Backstop for the registry: admin writes update it in place, and
+		// a write that fails to land leaves no trace beyond a vendor
+		// dashboard that stays empty. Re-deriving it from the store on a
+		// timer bounds that to one interval and gives a second replica a
+		// path to plugins installed through the first.
+		go runPluginRegistryReconcile(ctx, pluginReg, erc.PluginStore(),
+			pluginReconcileInterval, log)
 		consoleSrvHandler.SetPluginCollector(collector)
 		// The source adapter gives the Tester a way to resolve plugin
 		// row ids (UUIDs) in addition to metadata.name. Built ad-hoc
 		// here so we don't take a second dump of the same dependency
 		// into the test handler closure.
-		srcAdapter := &pluginSourceAdapter{reg: pluginReg, store: erc.PluginStore()}
+		srcAdapter := &pluginSourceAdapter{reg: pluginReg, store: erc.PluginStore(), log: log}
 		consoleSrvHandler.SetPluginTester(
 			newTester(pluginReg, dispatcher, collector).
 				withSource(srcAdapter).
