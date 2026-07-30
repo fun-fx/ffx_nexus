@@ -71,7 +71,11 @@ func newEvalRuntimeController(
 	routingStatsStore string,
 	profileStore evals.ProfileStore,
 	resolver *evals.Resolver,
+	pluginStore evalplugin.PluginStore,
 ) *evalRuntimeController {
+	if pluginStore == nil {
+		pluginStore = evalplugin.NewMemoryStore(nil)
+	}
 	return &evalRuntimeController{
 		cfg:               cfg,
 		worker:            worker,
@@ -84,7 +88,7 @@ func newEvalRuntimeController(
 		scoreStore:        scoreStore,
 		traceStore:        traceStore,
 		routingStatsStore: routingStatsStore,
-		pluginStore:       evalplugin.NewMemoryStore(nil),
+		pluginStore:       pluginStore,
 	}
 }
 
@@ -92,7 +96,8 @@ func newEvalRuntimeController(
 // admin REST can CRUD plugins against the same backing store the
 // registry reads on boot.
 //
-// In single-binary deployments (no Postgres/ClickHouse) the store is
+// With Postgres the store is evalplugin.PostgresStore, so installs
+// survive a restart. In single-binary deployments (no Postgres) it is
 // the in-process MemoryStore; rows are lost on restart but the
 // cluster-wide Helm-installed plugins still load from
 // /etc/nexus/eval-plugins/.

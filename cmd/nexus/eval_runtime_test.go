@@ -74,9 +74,9 @@ func TestSeedProfilesFromConfig_PurgeLegacyProfiles(t *testing.T) {
 		&evals.EvalProfile{ID: "tenant-langfuse", Kind: evals.ProfileKind("external")},
 	)
 	c := &evalRuntimeController{
-		cfg:               config.Config{EvalPluginOnly: true, PurgeLegacyProfilesOnBoot: true},
-		profileStore:      store,
-		worker:            nil, // we don't exercise the worker; controller guards nil.
+		cfg:          config.Config{EvalPluginOnly: true, PurgeLegacyProfilesOnBoot: true},
+		profileStore: store,
+		worker:       nil, // we don't exercise the worker; controller guards nil.
 	}
 	profiles, err := c.SeedProfilesFromConfig(context.Background())
 	if err != nil {
@@ -102,9 +102,9 @@ func TestSeedProfilesFromConfig_PurgeOptInGate(t *testing.T) {
 		&evals.EvalProfile{ID: "default-remote", Kind: evals.ProfileRemoteEval},
 	)
 	c := &evalRuntimeController{
-		cfg:               config.Config{EvalPluginOnly: true, PurgeLegacyProfilesOnBoot: false},
-		profileStore:      store,
-		worker:            nil,
+		cfg:          config.Config{EvalPluginOnly: true, PurgeLegacyProfilesOnBoot: false},
+		profileStore: store,
+		worker:       nil,
 	}
 	if _, err := c.SeedProfilesFromConfig(context.Background()); err != nil {
 		t.Fatalf("SeedProfilesFromConfig: %v", err)

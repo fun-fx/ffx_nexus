@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,9 @@ import (
 type stubKeys struct {
 	mu   sync.Mutex
 	data map[string]map[string]string
+	// saveErr simulates a vault write that fails, which is what the
+	// handler must surface instead of reporting a successful save.
+	saveErr error
 }
 
 func newStubKeys() *stubKeys { return &stubKeys{data: make(map[string]map[string]string)} }
@@ -41,9 +45,12 @@ func (s *stubKeys) Get(plugin string) (map[string]string, bool) {
 	return out, true
 }
 
-func (s *stubKeys) Set(plugin string, kv map[string]string) {
+func (s *stubKeys) Set(plugin string, kv map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.saveErr != nil {
+		return s.saveErr
+	}
 	c := make(map[string]string, len(kv))
 	for k, v := range kv {
 		if v != "" {
@@ -52,12 +59,13 @@ func (s *stubKeys) Set(plugin string, kv map[string]string) {
 	}
 	if len(c) == 0 {
 		delete(s.data, plugin)
-		return
+		return nil
 	}
 	s.data[plugin] = c
+	return nil
 }
 
-func (s *stubKeys) Clear(plugin string) { s.Set(plugin, nil) }
+func (s *stubKeys) Clear(plugin string) error { return s.Set(plugin, nil) }
 func (s *stubKeys) Has(plugin string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -312,6 +320,24 @@ func TestPutPluginKeys_NoKeysReturns400(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("want 400 for empty keys, got %d", rec.Code)
+	}
+}
+
+// Reporting a save that only reached memory as a success is what let a
+// rolling update silently unconfigure a plugin the console still showed
+// as enabled.
+func TestPutPluginKeys_PersistenceFailureReturns500(t *testing.T) {
+	_, mux, keys := newKeysTestServer(t, "langfuse-judge", langfuseManifest)
+	keys.saveErr = errors.New("connection refused")
+	body := bytes.NewReader([]byte(`{"keys":{"public_key":"pk","secret_key":"sk"}}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/eval/plugins/langfuse-judge/keys", body)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 when the keys cannot be persisted, got %d", rec.Code)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("connection refused")) {
+		t.Errorf("response should carry the persistence failure: %s", rec.Body.String())
 	}
 }
 

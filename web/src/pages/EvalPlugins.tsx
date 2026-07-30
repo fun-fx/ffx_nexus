@@ -290,9 +290,9 @@ function FormMode({
             <strong>Keys</strong> button on the plugin row. Use{" "}
             <code>key1|key2</code> for two-token auth (Langfuse), or a
             single key name (LangSmith, Datadog, Confident AI,
-            Arize Phoenix, …). Values are stored in the Nexus
-            process only — never on disk, never in any Kubernetes
-            Secret, and wiped when the pod restarts.
+            Arize Phoenix, …). Values are encrypted with the Nexus
+            master key and stored in the control-plane database, so
+            they survive a deploy; no Kubernetes Secret is involved.
           </p>
         </FieldRow>
       </Section>

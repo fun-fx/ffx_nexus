@@ -100,6 +100,14 @@ func main() {
 				"migrations/postgres/006_eval_scores.sql",
 				"migrations/postgres/007_eval_scores_model.sql",
 				"migrations/postgres/008_onboarded_at.sql",
+				// 009-011 shipped with the eval-plugin work but were
+				// never added here, so eval_plugins never existed and
+				// the runtime silently fell back to an in-memory
+				// plugin store: every rolling update uninstalled every
+				// console-installed plugin and dropped its keys.
+				"migrations/postgres/009_eval_plugins.sql",
+				"migrations/postgres/010_eval_scores_kind.sql",
+				"migrations/postgres/011_eval_plugin_keys.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {
@@ -343,11 +351,18 @@ func main() {
 		// and the env-var default profiles still run).
 		var profileStore evals.ProfileStore = evals.NewMemoryStore(nil)
 		var resolver *evals.Resolver
+		// A plugin install must outlive the pod that accepted it, so
+		// the plugin store is Postgres wherever a control plane exists
+		// and only degrades to memory in the zero-dependency build.
+		var pluginStore evalplugin.PluginStore
+		var keyVault pluginKeyVault
 		if store != nil {
 			profileStore = newProfileStoreFromCore(store)
 			resolver = evals.NewResolver(evals.NewStoreSecretLookup(store, "default"))
+			pluginStore = evalplugin.NewPostgresStore(store.Pool())
+			keyVault = store
 		}
-		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore, profileStore, resolver)
+		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore, profileStore, resolver, pluginStore)
 		consoleSrvHandler.SetEvalConfig(erc, erc)
 		erc.SeedProfilesFromConfig(ctx)
 		if resolver != nil {
@@ -375,6 +390,9 @@ func main() {
 		if err := pluginReg.LoadFromStore(ctx, erc.PluginStore(), ""); err != nil {
 			log.Warn("load plugins from db failed", "err", err)
 		}
+		if n := len(pluginReg.All()); n > 0 {
+			log.Info("eval plugins loaded", "count", n, "durable", pluginStore != nil)
+		}
 		// Dispatcher / collector do real production work and need the
 		// regular 30s window so a slow vendor doesn't truncate a
 		// trace packet. Only the Test button uses a short-timeout
@@ -387,11 +405,17 @@ func main() {
 		collector := external.NewCollector(pluginReg, stack.SinkForPlugins(), httpClientForPlugins())
 		registerPluginAdapters(dispatcher, collector)
 		// Credentials come from the in-product console-key UX (the
-		// Plugin Keys panel). The chart no longer projects vendor
+		// Plugin Keys panel), cached in memory and persisted encrypted
+		// in eval_plugin_keys. The chart no longer projects vendor
 		// Secrets into the pod, so envSecretResolver is deprecated;
 		// consoleKeyResolver is the sole active surface. See
 		// plugin_keys.go and plugin_secrets.go.
-		pluginSecrets := newConsoleKeyResolver()
+		pluginSecrets := newConsoleKeyResolver(keyVault)
+		if n, err := pluginSecrets.Hydrate(ctx); err != nil {
+			log.Warn("load stored plugin keys failed", "err", err)
+		} else if n > 0 {
+			log.Info("plugin keys restored", "plugins", n)
+		}
 		dispatcher.SetSecretResolver(pluginSecrets)
 		collector.SetSecretResolver(pluginSecrets)
 		collector.SetLogger(log)
