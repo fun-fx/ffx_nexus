@@ -121,7 +121,15 @@ export const DEFAULT_PLUGIN_TEMPLATE: PluginFormState = {
 export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormState }> = {
   langfuse: {
     label: "Langfuse (cloud)",
-    form: DEFAULT_PLUGIN_TEMPLATE,
+    form: {
+      ...DEFAULT_PLUGIN_TEMPLATE,
+      service: {
+        ...DEFAULT_PLUGIN_TEMPLATE.service,
+        kind: "langfuse",
+        endpoint: "https://cloud.langfuse.com",
+        keyRef: "public_key|secret_key",
+      },
+    },
   },
   langfuse_selfhost: {
     label: "Langfuse (self-host)",

@@ -1,5 +1,17 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+// Langfuse region → base URL table. Editable through the Region
+// dropdown when Service kind = "langfuse". Kept here (not in the
+// generic plugin preset list) because only Langfuse currently
+// publishes hosted per-region endpoints; everyone else is a single
+// global URL.
+const langfuseRegionURLs: Record<string, string> = {
+  eu: "https://cloud.langfuse.com",
+  us: "https://us.cloud.langfuse.com",
+  jp: "https://jp.cloud.langfuse.com",
+  hipaa: "https://hipaa.cloud.langfuse.com",
+};
 import {
   type EvalPluginRecord,
   createEvalPlugin,
@@ -228,6 +240,44 @@ function FormMode({
             placeholder="https://cloud.langfuse.com"
           />
         </FieldRow>
+        {form.service.kind === "langfuse" && (
+          <FieldRow label="Region (cloud)">
+            <select
+              className="input"
+              value={
+                form.service.endpoint.replace(/^https?:\/\//, "").endsWith(
+                  "us.cloud.langfuse.com",
+                )
+                  ? "us"
+                  : form.service.endpoint.replace(/^https?:\/\//, "").endsWith(
+                        "jp.cloud.langfuse.com",
+                      )
+                    ? "jp"
+                    : form.service.endpoint.replace(/^https?:\/\//, "").endsWith(
+                          "hipaa.cloud.langfuse.com",
+                        )
+                      ? "hipaa"
+                      : "eu"
+              }
+              onChange={(e) => {
+                const regionURL = langfuseRegionURLs[e.target.value];
+                if (regionURL) updateService({ endpoint: regionURL });
+              }}
+            >
+              <option value="eu">EU — cloud.langfuse.com (default)</option>
+              <option value="us">US — us.cloud.langfuse.com</option>
+              <option value="jp">JP — jp.cloud.langfuse.com</option>
+              <option value="hipaa">HIPAA — hipaa.cloud.langfuse.com</option>
+            </select>
+            <p className="muted tiny">
+              The endpoint above drives every Langfuse API call. If you
+              see <code>credentials rejected (401)</code> on Test, the
+              project and its keys almost always belong to a different
+              region than this one — switch the region dropdown here,
+              paste new keys, retry.
+            </p>
+          </FieldRow>
+        )}
         <FieldRow label="Auth — keyRef (keys to enter in the Keys modal)">
           <input
             className="input"
