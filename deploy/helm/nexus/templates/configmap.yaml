@@ -90,6 +90,12 @@ data:
        external EvalPlugins (LangSmith, Langfuse, Datadog, Confident AI, …). */}}
   NEXUS_EVAL_PLUGIN_ONLY: {{ .Values.config.evalPluginOnly | default false | quote }}
 
+  {{- /* Destructive companion: paired with NEXUS_EVAL_PLUGIN_ONLY, hard-deletes
+       the well-known seed rows (default-pii, default-completeness,
+       default-judge, default-remote) on every boot. The two-flag gate keeps
+       seed-suppression and row-deletion as separable intentional actions. */}}
+  NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT: {{ .Values.config.purgeLegacyProfilesOnBoot | default false | quote }}
+
   {{- /* Semantic cache */}}
   NEXUS_SEMANTIC_CACHE_ENABLED: {{ .Values.config.semanticCache.enabled | quote }}
   {{- with .Values.config.semanticCache.ttl }}

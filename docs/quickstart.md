@@ -137,8 +137,15 @@ Quality-aware routing and trace history in Overview still need ClickHouse.
 the Helm chart) to suppress seeding of the built-in heuristic profiles (PII, Completeness) and
 the legacy `slm_judge` / `remote_eval` profiles. Scoring then comes exclusively from external
 EvalPlugins configured in the console (LangSmith, Langfuse, Datadog, Confident AI, …). The
-toggle is non-destructive — rows already in the profile store are not deleted. Drop them in
-the console if you want a clean slate on the next boot.
+toggle alone is non-destructive — rows already in the profile store are not deleted.
+
+For a clean slate on every boot, opt into the destructive companion: set
+`NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT=true` (or `config.purgeLegacyProfilesOnBoot: true`)
+alongside `NEXUS_EVAL_PLUGIN_ONLY=true`. The controller then hard-deletes the four well-known
+seed rows (`default-pii`, `default-completeness`, `default-judge`, `default-remote`) on every
+boot, and the console surfaces a danger-tone banner. Confirm your EvalPlugins cover PII
+detection before flipping this on — the deleted `default-pii` row leaves no fallback if the
+plugin does not catch the violation.
 
 > **Tip:** the manual path uses the binary's upstream defaults (`:8080`/`:8081`).
 > If you arrived here from the one-line installer at the top of this page, your

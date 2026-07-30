@@ -217,12 +217,35 @@ in the Helm chart). The runtime controller then skips seeding:
 - the legacy `default-judge` (local Ollama / vLLM) and
   `default-remote` (Python sidecar) profiles.
 
-Scoring becomes a pure plugin-driven pipeline. The flag is
-**non-destructive**: rows already in the profile store are not
-removed. Drop them in the console if you want a clean slate on
-the next boot. The console's *Eval* page also surfaces a banner
-("Plugin-only eval mode") on any pod started with this flag so the
-seam is visible without grepping the pod's environment.
+Scoring becomes a pure plugin-driven pipeline. The console's *Eval*
+page also surfaces a banner ("Plugin-only eval mode") so the seam
+is visible without grepping the pod's environment.
+
+#### Destructive companion (`NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT`)
+
+The flag above is **non-destructive** by itself — it skips seeding,
+but rows already in the profile store from a prior boot are
+untouched. To converge the cluster on a clean plugin-only set
+without manual console cleanup, opt into the destructive
+companion:
+
+```
+NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT=true   # + NEXUS_EVAL_PLUGIN_ONLY=true
+# Helm equivalent:  config.purgeLegacyProfilesOnBoot: true
+```
+
+When both flags are on the controller hard-deletes the four
+well-known seed rows (`default-pii`, `default-completeness`,
+`default-judge`, `default-remote`) from the profile store on every
+boot. The console's *Eval* page surfaces a danger-tone banner so
+admins can correlate after-the-fact deletions with their explicit
+config change.
+
+**Caution**: the rows deleted include `default-pii`. Operators who
+flip on the destructive flag without a plugin that covers PII
+detection (e.g. Confident AI adversarial-quality, Langfuse score
+with PII rule) will let traces go unscored for personally
+identifiable information. Confirm coverage first.
 
 ### PrimeIntellect mental bridge — local vs hosted
 
