@@ -51,7 +51,16 @@ type EvalConfigSnapshot struct {
 	// surface "this cluster only scores via plugins" in the
 	// console without gutting the existing store contents.
 	PluginOnly      bool     `json:"plugin_only"`
-	RestartRequired []string `json:"restart_required"`
+	// PurgeLegacyProfilesOnBoot is the *destructive* companion
+	// flag. Paired with PluginOnly it tells the controller to
+	// hard-delete the four well-known default rows
+	// (default-pii, default-completeness, default-judge,
+	// default-remote) on each boot. The console surfaces a
+	// persistent banner whenever this is on so admins can
+	// correlate after-the-fact deletions with their explicit
+	// config change.
+	PurgeLegacyProfilesOnBoot bool `json:"purge_legacy_profiles_on_boot"`
+	RestartRequired           []string `json:"restart_required"`
 }
 
 type EvalConfigPatch struct {

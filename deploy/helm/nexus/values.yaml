@@ -95,6 +95,16 @@ config:
   # them through the console if needed.
   evalPluginOnly: false
 
+  # Destructive companion to evalPluginOnly. When both are true
+  # the runtime controller hard-deletes the well-known seed rows
+  # (default-pii, default-completeness, default-judge,
+  # default-remote) from the profile store on every boot. The
+  # cluster converges on a plugin-only profile set without manual
+  # console cleanup. Operators flipping this on must ensure an
+  # external EvalPlugin covers PII detection or traces will go
+  # unscored for personally identifiable information.
+  purgeLegacyProfilesOnBoot: false
+
   # Semantic cache (requires Redis + an embeddings endpoint).
   semanticCache:
     enabled: false

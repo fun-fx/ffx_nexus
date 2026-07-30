@@ -110,16 +110,32 @@ func (c *evalRuntimeController) PluginStore() evalplugin.PluginStore {
 // Returns the profiles that were inserted; the caller pushes them
 // through Worker.ReplaceProfiles so the next evaluate() call uses
 // them. Idempotent: re-running on a populated store inserts nothing.
+// On plugin-only runs with
+// NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT=true the four well-known
+// default rows — default-pii, default-completeness, default-judge,
+// default-remote — are hard-deleted from the store on each boot so
+// the cluster converges on a plugin-only profile set without manual
+// console cleanup. The two-flag gate (EvalPluginOnly = seed skip,
+// PurgeLegacyProfilesOnBoot = legacy row deletion) keeps them as
+// separate intentional actions — flipping only EvalPluginOnly
+// leaves historical rows intact.
 func (c *evalRuntimeController) SeedProfilesFromConfig(ctx context.Context) ([]evals.EvalProfile, error) {
-	if c.profileStore == nil || c.worker == nil {
+	if c.profileStore == nil {
 		return nil, nil
+	}
+	if c.cfg.EvalPluginOnly && c.cfg.PurgeLegacyProfilesOnBoot {
+		if err := c.purgeLegacySeededProfiles(ctx); err != nil {
+			return nil, err
+		}
 	}
 	existing, err := c.profileStore.List(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	if len(existing) > 0 {
+	if c.worker != nil {
 		c.worker.ReplaceProfiles(existing)
+	}
+	if len(existing) > 0 {
 		return existing, nil
 	}
 	seeded := envVarSeedProfiles(c.cfg)
@@ -128,8 +144,36 @@ func (c *evalRuntimeController) SeedProfilesFromConfig(ctx context.Context) ([]e
 			return nil, err
 		}
 	}
-	c.worker.ReplaceProfiles(seeded)
+	if c.worker != nil {
+		c.worker.ReplaceProfiles(seeded)
+	}
 	return seeded, nil
+}
+
+// purgeLegacySeededProfiles removes the four well-known seed rows
+// — default-pii, default-completeness, default-judge, default-remote
+// — from the profile store. Called by SeedProfilesFromConfig when
+// both NEXUS_EVAL_PLUGIN_ONLY and
+// NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT are set.
+//
+// Operators that flip the destructive flag on under the assumption
+// that an upstream plugin covers PII / completeness detection never
+// need to clean the rows up themselves — every subsequent boot
+// calls this until the rows are gone. The deletes are idempotent at
+// the store layer (Delete returns nil on missing) so re-running on
+// a fresh store is also safe.
+//
+// Each id must match the seed string exactly. Operators that
+// copy-renamed a default-* row don't get a stray-naming-convention
+// surprise when they flip the flag on.
+func (c *evalRuntimeController) purgeLegacySeededProfiles(ctx context.Context) error {
+	wells := []string{"default-pii", "default-completeness", "default-judge", "default-remote"}
+	for _, id := range wells {
+		if err := c.profileStore.Delete(ctx, id); err != nil {
+			return fmt.Errorf("purge legacy profile %q: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // envVarSeedProfiles builds the default profile set from NEXUS_EVAL_*
@@ -476,6 +520,7 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 	// console can render a banner ("plugin-only mode") without
 	// having to keep its own copy of the env var.
 	snap.PluginOnly = c.cfg.EvalPluginOnly
+	snap.PurgeLegacyProfilesOnBoot = c.cfg.PurgeLegacyProfilesOnBoot
 
 	if c.modelRouter != nil {
 		w := c.modelRouter.Weights()

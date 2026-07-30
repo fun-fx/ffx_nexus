@@ -49,6 +49,7 @@ function buildBundle(o: Overrides) {
     score_persisted: true,
     routing_stats_store: "clickhouse",
     plugin_only: false,
+    purge_legacy_profiles_on_boot: false,
     restart_required: [],
   };
 }
@@ -668,6 +669,22 @@ describe("<Eval /> plugin-only banner", () => {
     renderWithBundle(build(false));
     await waitFor(() => {
       expect(screen.queryByText(/Plugin-only eval mode/i)).toBeNull();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(/purged on boot/i)).toBeNull();
+    });
+  });
+
+  it("shows destructive banner when purge_legacy_profiles_on_boot=true", async () => {
+    renderWithBundle({ ...build(true), purge_legacy_profiles_on_boot: true });
+    expect(await screen.findByText(/purged on boot/i)).toBeTruthy();
+    expect(await screen.findByText(/default-pii/)).toBeTruthy();
+  });
+
+  it("does not show destructive banner when purge_legacy_profiles_on_boot=false", async () => {
+    renderWithBundle(build(true));
+    await waitFor(() => {
+      expect(screen.queryByText(/purged on boot/i)).toBeNull();
     });
   });
 

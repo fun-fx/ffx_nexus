@@ -23,9 +23,9 @@ Closed adapter shapes today: langsmith, langfuse, datadog, braintrust, arize, co
 
 Mental bridge: **PrimeIntellect hosted-mode (`prime eval --hosted`)**.
 
-## PII Heuristic Must Remain Default-On
+## PII Heuristic — Conditional Default
 
-The legacy `heuristic_pii` evaluator is the only local analogue of Confident AI / DeepEval's adversarial-quality-bar metric. Do not turn heuristic_pii off if an external plugin is enabled — the heuristic runs before egress (redacts the trace), the plugin runs after (sees a redacted copy but never the original prompt).
+The legacy `heuristic_pii` evaluator is the only local analogue of Confident AI / DeepEval's adversarial-quality-bar metric. The rule: heuristic_pii seeds by default unless every eval in the cluster is external. When `NEXUS_EVAL_PLUGIN_ONLY=true` AND `NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT=true`, the controller treats the cluster as plugin-only and trusts the operator's plugin choice to cover PII detection. When the plugin-only flag is alone (no purge), heuristic_pii is *not re-seeded* but historical rows survive untouched — the operator pulls them via the console when their external coverage is ready. The destructive companion flag is the explicit "I'm sure my plugin handles PII" acknowledgement.
 
 ## Tracing Convention
 
@@ -41,4 +41,8 @@ When adding new metric or vendor capacity: a new evaluator kind is either **in-p
 
 ## Plugin-Only Boot (`NEXUS_EVAL_PLUGIN_ONLY`)
 
-Operators who want *every* eval to leave the cluster — Langfuse, LangSmith, Confident AI, Datadog, Arize Phoenix, a private OTLP collector — flip the pod-level flag `NEXUS_EVAL_PLUGIN_ONLY=true` (or `config.evalPluginOnly: true` in the Helm chart). The runtime controller's `envVarSeedProfiles` then skips seeding the built-in heuristic profiles (PII / Completeness) and the legacy `slm_judge` / `remote_eval` defaults. The flag is non-destructive: existing rows in the profile store are not removed. The console's *Eval* page surfaces a "Plugin-only eval mode" banner so the seam is visible without grepping pod env. Do not silently revert to seeding-on-by-default — tenant demand is for plugin-only clusters, and removing the gate breaks that workflow.
+Operators who want *every* eval to leave the cluster — Langfuse, LangSmith, Confident AI, Datadog, Arize Phoenix, a private OTLP collector — flip the pod-level flag `NEXUS_EVAL_PLUGIN_ONLY=true` (or `config.evalPluginOnly: true` in the Helm chart). The runtime controller's `envVarSeedProfiles` then skips seeding the built-in heuristic profiles (PII / Completeness) and the legacy `slm_judge` / `remote_eval` defaults. The console's *Eval* page surfaces a "Plugin-only eval mode" banner so the seam is visible without grepping pod env. Do not silently revert to seeding-on-by-default — tenant demand is for plugin-only clusters, and removing the gate breaks that workflow.
+
+## Destructive Companion: `NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT`
+
+A separate opt-in, `NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT=true` (Helm `config.purgeLegacyProfilesOnBoot: true`), plugged alongside `NEXUS_EVAL_PLUGIN_ONLY=true`, hard-deletes the four well-known seed rows (`default-pii`, `default-completeness`, `default-judge`, `default-remote`) from the profile store on every boot. Use it when the operator has external PII / completeness coverage (e.g. a Confident AI plugin with adversarial-quality, or a Langfuse scorer with PII rules) and wants the cluster to converge on a pure plugin set without manual console cleanup. The two-flag gate is load-bearing — flipping only `NEXUS_EVAL_PLUGIN_ONLY` leaves historical rows intact. Operators who flip on the destructive flag MUST verify an external plugin covers PII detection or traces will go unscored for personally identifiable information. The console surfaces a danger-tone banner whenever the flag is active so admins can correlate after-the-fact deletion with their explicit config change.

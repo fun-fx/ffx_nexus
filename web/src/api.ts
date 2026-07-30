@@ -231,6 +231,7 @@ export interface EvalConfigSnapshot {
   // True when NEXUS_EVAL_PLUGIN_ONLY is set on the pod that issued
   // this snapshot. Console surfaces a banner above the eval table.
   plugin_only: boolean;
+  purge_legacy_profiles_on_boot: boolean;
   restart_required: string[];
 }
 
@@ -562,6 +563,7 @@ function sanitizeEvalConfig(raw: unknown): EvalConfigSnapshot {
       load_balance: safeBool((raw as any)?.routing?.load_balance, false),
     },
     plugin_only: safeBool((raw as any)?.plugin_only, false),
+    purge_legacy_profiles_on_boot: safeBool((raw as any)?.purge_legacy_profiles_on_boot, false),
     restart_required: safeStrArr((raw as any)?.restart_required),
   };
 }
@@ -590,6 +592,7 @@ export const ZERO_EVAL: EvalConfigSnapshot = {
     load_balance: false,
   },
   plugin_only: false,
+  purge_legacy_profiles_on_boot: false,
   restart_required: [],
 };
 
