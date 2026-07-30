@@ -1,5 +1,20 @@
 package main
 
+// DEPRECATED: plugin credentials no longer flow through this path.
+//
+// The chart-rendered langfuse-creds Secret and the legacy
+// `.Values.envFrom`-projected Kubernetes Secrets that this resolver
+// read from are gone (PR cleanup in ffx_nexus_ops repository, chart
+// version 0.7.0). Plugin credentials now live exclusively in the
+// in-product console-key UX (see plugin_keys.go and
+// internal/console/eval_plugin_keys.go).
+//
+// `envSecretResolver` is kept as a compile-time artefact for one
+// release cycle so historical traces in bundle / cache that mention
+// `NEXUS_PLUGIN_SECRET_<SECRETREF>_<KEY>` continue to make sense
+// in logs. It is no longer wired in `cmd/nexus/main.go`. A future
+// release will delete this file outright.
+
 import (
 	"context"
 	"fmt"

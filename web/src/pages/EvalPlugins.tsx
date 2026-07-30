@@ -14,6 +14,7 @@ import { LabelToggle } from "../components/LabelToggle";
 import { Drawer } from "../components/Drawer";
 import { Chip } from "../components/Chip";
 import { Icon } from "../components/icons";
+import { PluginKeysModal } from "../components/PluginKeysModal";
 import {
   DEFAULT_PLUGIN_TEMPLATE,
   PLUGIN_PRESETS,
@@ -552,6 +553,12 @@ export function PluginListCard({
     (toggleM.error as Error | null) ||
     (deleteM.error as Error | null);
 
+  // Track which plugin's Keys modal is open. null == closed. We use
+  // a string state (instead of boolean per row) so exactly one modal
+  // can be open at a time. The refetch that PUT/DELETE triggers below
+  // re-renders the row with the new configured state.
+  const [keysFor, setKeysFor] = useState<string | null>(null);
+
   return (
     <div className="plugin-list-card">
       {showHeader ? (
@@ -593,6 +600,7 @@ export function PluginListCard({
                 onDelete={() => p.id && deleteM.mutate(p.id)}
                 onEdit={() => onEdit(p)}
                 onTest={() => testM.mutate(p.name)}
+                onKeys={() => setKeysFor(p.name)}
                 testResult={
                   !isRowTesting && testM.variables === p.name ? testM.data : undefined
                 }
@@ -611,6 +619,12 @@ export function PluginListCard({
       ) : null}
 
       {lastError ? <p className="error small">{lastError.message}</p> : null}
+
+      <PluginKeysModal
+        pluginName={keysFor ?? ""}
+        open={keysFor !== null}
+        onClose={() => setKeysFor(null)}
+      />
     </div>
   );
 }
@@ -621,6 +635,7 @@ function PluginRow({
   onToggle,
   onDelete,
   onTest,
+  onKeys,
   testResult,
   testError,
   busyToggle,
@@ -632,6 +647,7 @@ function PluginRow({
   onToggle: () => void;
   onDelete: () => void;
   onTest: () => void;
+  onKeys: () => void;
   testResult?: PluginTestResult;
   testError?: string;
   busyToggle: boolean;
@@ -697,6 +713,14 @@ function PluginRow({
             data-testid={`plugin-webhook-toggle-${rec.name}`}
           >
             {showWebhook ? "Hide URL" : "Webhook URL"}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            onClick={onKeys}
+            data-testid={`plugin-keys-button-${rec.name}`}
+          >
+            <Icon.keys size={12} /> Keys
           </button>
           {canPing ? (
             <button

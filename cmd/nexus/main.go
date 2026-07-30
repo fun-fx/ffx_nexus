@@ -349,12 +349,12 @@ func main() {
 		dispatcher := external.NewDispatcher(pluginReg, httpClientForPlugins())
 		collector := external.NewCollector(pluginReg, stack.SinkForPlugins(), httpClientForPlugins())
 		registerPluginAdapters(dispatcher, collector)
-		// Credentials come from the environment (the chart projects
-		// vendor Secrets in via envFrom); see plugin_secrets.go for the
-		// lookup order. Without a resolver, any plugin declaring auth
-		// fails dispatch loudly instead of sending an unauthenticated
-		// request the vendor silently rejects.
-		pluginSecrets := newEnvSecretResolver()
+		// Credentials come from the in-product console-key UX (the
+		// Plugin Keys panel). The chart no longer projects vendor
+		// Secrets into the pod, so envSecretResolver is deprecated;
+		// consoleKeyResolver is the sole active surface. See
+		// plugin_keys.go and plugin_secrets.go.
+		pluginSecrets := newConsoleKeyResolver()
 		dispatcher.SetSecretResolver(pluginSecrets)
 		collector.SetSecretResolver(pluginSecrets)
 		collector.SetLogger(log)
@@ -381,6 +381,7 @@ func main() {
 			newTester(pluginReg, dispatcher, collector).
 				withSource(srcAdapter).
 				withSecrets(pluginSecrets))
+		consoleSrvHandler.SetPluginKeys(pluginSecrets)
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
 	// secret takes effect without restarting the gateway.
