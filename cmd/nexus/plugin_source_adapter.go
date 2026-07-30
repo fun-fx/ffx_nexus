@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"github.com/ffxnexus/nexus/internal/console"
 	"github.com/ffxnexus/nexus/internal/evalplugin"
@@ -33,11 +34,37 @@ func (a pluginSourceAdapter) Save(ctx context.Context, r *evalplugin.PluginRecor
 	if a.store == nil {
 		return nil
 	}
+	// Registry entries are addressed by (org, metadata.name), so an edit
+	// that renames the plugin would merge a second entry and leave the
+	// old one still receiving traces. Capture the pre-save name while the
+	// stored row is still the previous revision.
+	var prevOrg, prevName string
+	if r != nil && strings.TrimSpace(r.ID) != "" {
+		prevOrg, prevName = a.identify(ctx, r.ID)
+	}
 	if err := a.store.Save(ctx, r); err != nil {
 		return err
 	}
 	a.mergeIntoRegistry(r)
+	if a.reg != nil && prevName != "" {
+		if _, newName := a.identifyRecord(r); newName != prevName {
+			a.reg.Remove(prevOrg, prevName)
+		}
+	}
 	return nil
+}
+
+// identifyRecord resolves the registry address of an in-memory record.
+// Mirrors identify but skips the store round-trip, for the freshly
+// written revision whose manifest we already hold.
+func (a pluginSourceAdapter) identifyRecord(r *evalplugin.PluginRecord) (orgID, name string) {
+	if r == nil {
+		return "", ""
+	}
+	if p, err := evalplugin.Decode([]byte(r.SpecYAML)); err == nil && p != nil {
+		return r.OrgID, p.Metadata.Name
+	}
+	return r.OrgID, r.Name
 }
 
 func (a pluginSourceAdapter) Delete(ctx context.Context, id string) error {

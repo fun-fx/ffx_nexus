@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -137,11 +138,19 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 		return
 	}
 	if patch.SpecYAML != nil {
-		if _, err := evalplugin.Decode([]byte(*patch.SpecYAML)); err != nil {
+		p, err := evalplugin.Decode([]byte(*patch.SpecYAML))
+		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		existing.SpecYAML = *patch.SpecYAML
+		// The registry keys on metadata.name, so a manifest rename has
+		// to travel to the name column too. Leaving it stale made the
+		// row unreachable through the by-name routes (test, keys,
+		// webhook) while the registry answered under the new name.
+		if n := strings.TrimSpace(p.Metadata.Name); n != "" {
+			existing.Name = n
+		}
 	}
 	if patch.Enabled != nil {
 		existing.Enabled = *patch.Enabled
