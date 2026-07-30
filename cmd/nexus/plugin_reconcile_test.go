@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,8 +25,10 @@ func TestReconcileLoopRepairsRegistryDrift(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	reg := evalplugin.NewRegistry()
-	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, nil))
+	// The loop logs from its own goroutine while the assertions below
+	// read the output, so the sink has to be synchronised.
+	buf := &syncBuffer{}
+	log := slog.New(slog.NewTextHandler(buf, nil))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -42,6 +45,25 @@ func TestReconcileLoopRepairsRegistryDrift(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("registry was never repaired")
+}
+
+// syncBuffer is a bytes.Buffer safe to write from a background goroutine
+// while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // TestReconcileLoopStopsWithContext keeps a shutdown from leaking a
