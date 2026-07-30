@@ -19,11 +19,18 @@ func TestOTLPEvaluationEvent_MinimalShape(t *testing.T) {
 	if got["name"] != "gen_ai.evaluation" {
 		t.Errorf("name = %v", got["name"])
 	}
-	if got["trace_id"] != "abc" {
-		t.Errorf("trace_id = %v", got["trace_id"])
+	if got["traceId"] != "abc" {
+		t.Errorf("traceId = %v", got["traceId"])
 	}
-	if got["span_id"] == "" {
-		t.Errorf("span_id should be derived from trace_id")
+	if got["spanId"] == "" {
+		t.Errorf("spanId should be derived from traceId")
+	}
+	// A span without a start time is dropped by receivers that validate
+	// the OTLP span shape, so the event never reaches the dashboard.
+	for _, k := range []string{"startTimeUnixNano", "endTimeUnixNano"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("missing %s", k)
+		}
 	}
 	events, ok := got["events"].([]map[string]any)
 	if !ok || len(events) != 1 {
@@ -70,8 +77,8 @@ func TestOTLPEvaluationEvent_LabelPassVsFail(t *testing.T) {
 func TestOTLPEvaluationEvent_FallsBackOnEmptyTraceID(t *testing.T) {
 	s := Score{TraceID: "", Metric: "m", Score: 0.5, Passed: true}
 	got := OTLPEvaluationEvent("deadbeef", s)
-	if got["trace_id"] != "deadbeef" {
-		t.Errorf("trace_id fallback = %v", got["trace_id"])
+	if got["traceId"] != "deadbeef" {
+		t.Errorf("traceId fallback = %v", got["traceId"])
 	}
 }
 
