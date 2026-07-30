@@ -13,6 +13,18 @@
  * information — round-trip is asserted by the unit tests.
  */
 
+// ServiceKind drives the form's service-type dropdown and the YAML
+// payload the editor serializes. The closed list is the intersection
+// of:
+//   - the backend's `evalplugin.validServiceType` enum (see
+//     internal/evalplugin/types.go — adding a constant there without
+//     adding it here drops the option from the console silently);
+//   - the survey-driven external evaluator targets (Confident AI's
+//     DeepEval cloud, Arize Phoenix OTLP-only, the unified
+//     otel_collector that replaced the legacy `otel` / `webhook`
+//     split).
+// Each entry maps to a preset under PLUGIN_PRESETS below — keep the
+// list and the preset registry in sync.
 export type ServiceKind =
   | "langsmith"
   | "langfuse"
@@ -20,7 +32,10 @@ export type ServiceKind =
   | "braintrust"
   | "arize"
   | "otel"
-  | "webhook";
+  | "webhook"
+  | "confident_ai"
+  | "arize_phoenix"
+  | "otel_collector";
 
 export type Trigger = "on_trace" | "scheduled" | "manual";
 
@@ -195,6 +210,220 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
         keyRef: "value",
       },
     },
+  },
+  // Survey-derived additions. These map to ServiceConfidentAI /
+  // ServiceArizePhoenix / ServiceCollector in
+  // internal/evalplugin/types.go; the editor lands on these
+  // entries when you pick "Confident AI", "Arize Phoenix", or the
+  // unified OTLP collector from the new-service dropdown.
+  confident_ai: {
+    label: "Confident AI (DeepEval cloud)",
+    form: {
+      ...DEFAULT_PLUGIN_TEMPLATE,
+      name: "confidentai-judge",
+      service: {
+        kind: "confident_ai",
+        endpoint: "https://api.confident-ai.com",
+        secretRef: "confident-ai-key",
+        keyRef: "value",
+      },
+      send: {
+        ...DEFAULT_PLUGIN_TEMPLATE.send,
+        payload: [
+          {
+            id: "p_in",
+            key: "input",
+            template: "{{ .trace.input_messages }}",
+          },
+          {
+            id: "p_out",
+            key: "output",
+            template: "{{ .trace.output_messages }}",
+          },
+          {
+            id: "p_ref",
+            key: "reference",
+            template: "{{ .trace.eval_reference }}",
+          },
+        ],
+      },
+    },
+  },
+  arize_phoenix: {
+    label: "Arize Phoenix (OTLP)",
+    form: {
+      ...DEFAULT_PLUGIN_TEMPLATE,
+      name: "arize-phoenix",
+      service: {
+        kind: "arize_phoenix",
+        endpoint: "https://phoenix.example.internal:6006",
+        secretRef: "arize-basic-auth",
+        keyRef: "value",
+      },
+      send: {
+        ...DEFAULT_PLUGIN_TEMPLATE.send,
+        payload: [
+          {
+            id: "p_in",
+            key: "input",
+            template: "{{ .trace.input_messages }}",
+          },
+          {
+            id: "p_out",
+            key: "output",
+            template: "{{ .trace.output_messages }}",
+          },
+          {
+            id: "p_ref",
+            key: "reference",
+            template: "{{ .trace.eval_reference }}",
+          },
+        ],
+      },
+    },
+  },
+  otel_collector: {
+    label: "OTLP collector (generic)",
+    form: {
+      ...DEFAULT_PLUGIN_TEMPLATE,
+      name: "otel-collector",
+      service: {
+        kind: "otel_collector",
+        endpoint: "https://otel.example.internal:4318",
+        secretRef: "otel-bearer",
+        keyRef: "value",
+      },
+      collect: {
+        mode: "webhook",
+        interval: "60s",
+        transport: "otel",
+        mapping: [
+          { id: "m1", target: "name", jpath: "name" },
+          { id: "m2", target: "score", jpath: "value" },
+          { id: "m3", target: "label", jpath: "label" },
+          { id: "m4", target: "explanation", jpath: "explanation" },
+          { id: "m5", target: "trace_id", jpath: "trace_id" },
+        ],
+      },
+    },
+  },
+  // Cloud-platform presets for the form's dropdown options that the
+  // dropdown has surfaced but didn't ship as a tile before
+  // (PR #176/#177). Keep the gallery's hotspot small so the order
+  // matches the TechSy-style list of "best of" platforms.
+  braintrust: {
+    label: "Braintrust",
+    form: {
+      ...DEFAULT_PLUGIN_TEMPLATE,
+      name: "braintrust-judge",
+      service: {
+        kind: "braintrust",
+        endpoint: "https://api.braintrust.dev",
+        secretRef: "braintrust-api-key",
+        keyRef: "value",
+      },
+      send: {
+        ...DEFAULT_PLUGIN_TEMPLATE.send,
+        payload: [
+          {
+            id: "p_in",
+            key: "input",
+            template: "{{ .trace.input_messages }}",
+          },
+          {
+            id: "p_out",
+            key: "output",
+            template: "{{ .trace.output_messages }}",
+          },
+          {
+            id: "p_ref",
+            key: "reference",
+            template: "{{ .trace.eval_reference }}",
+          },
+        ],
+      },
+    },
+  },
+  arize: {
+    label: "Arize (AX)",
+    form: {
+      ...DEFAULT_PLUGIN_TEMPLATE,
+      name: "arize-judge",
+      service: {
+        kind: "arize",
+        endpoint: "https://api.arize.com",
+        secretRef: "arize-api-key",
+        keyRef: "value",
+      },
+      send: {
+        ...DEFAULT_PLUGIN_TEMPLATE.send,
+        payload: [
+          {
+            id: "p_in",
+            key: "input",
+            template: "{{ .trace.input_messages }}",
+          },
+          {
+            id: "p_out",
+            key: "output",
+            template: "{{ .trace.output_messages }}",
+          },
+        ],
+      },
+    },
+  },
+};
+
+/**
+ * Heuristic presets are NOT real EvalPlugins in v1alpha1 — they
+ * still ride the legacy profile bootstrap (NEXUS_EVAL_PLUGIN_ONLY
+ * gates that). We surface them here so an operator can click a
+ * card and read the matching backend metric name, not so they
+ * produce a YAML manifest. The card's onClick sets a banner
+ * hint via the editor surface rather than opening the manifest
+ * drawer.
+ */
+export const HEURISTIC_PRESETS: Record<
+  string,
+  { label: string; metric: string; description: string }
+> = {
+  contains: {
+    label: "Contains",
+    metric: "contains",
+    description: "Substring / regex match against an output field (in-process).",
+  },
+  pii: {
+    label: "PII leak",
+    metric: "pii",
+    description: "Flags emails, phones, SSN-format, and card numbers in output (in-process).",
+  },
+  exact_match: {
+    label: "Exact match",
+    metric: "exact_match",
+    description: "Output vs reference equality (in-process).",
+  },
+  rouge_l: {
+    label: "ROUGE-L",
+    metric: "rouge_l",
+    description: "Longest-common-subsequence F1 against reference (in-process).",
+  },
+  hf_evaluate: {
+    label: "HuggingFace Evaluate",
+    metric: "hf_evaluate",
+    description:
+      "Wraps a HF Evaluate metric via the Python subprocess adapter — exact metric names like glue, bleurt, meteor (in-process via Python).",
+  },
+  lighteval: {
+    label: "LightEval",
+    metric: "lighteval",
+    description:
+      "LightEval's LLM-tuned successor to HF Evaluate — task names like hellaswag, arc, mmlu (in-process via Python).",
+  },
+  ragas: {
+    label: "Ragas",
+    metric: "ragas",
+    description:
+      "Ragas RAG metrics — faithfulness, answer_relevancy, context_precision (in-process via Python).",
   },
 };
 
@@ -583,6 +812,9 @@ function isServiceKind(s: string): s is ServiceKind {
     s === "braintrust" ||
     s === "arize" ||
     s === "otel" ||
-    s === "webhook"
+    s === "webhook" ||
+    s === "confident_ai" ||
+    s === "arize_phoenix" ||
+    s === "otel_collector"
   );
 }

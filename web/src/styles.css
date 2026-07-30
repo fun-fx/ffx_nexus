@@ -2424,6 +2424,113 @@ a:hover {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Plugin quickstart gallery — empty-state grid surfaced in plugin-only    */
+/* mode with NEXUS_EVAL_PLUGIN_ONLY so survey-driven targets remain         */
+/* operator-discoverable as first-class tiles, not buried behind a         */
+/* dropdown.                                                                */
+/* ---------------------------------------------------------------------- */
+
+.quickstart-gallery {
+  margin: 14px;
+  padding: 16px;
+  border-radius: var(--r-lg);
+  background: linear-gradient(
+    180deg,
+    rgba(56, 189, 248, 0.04) 0%,
+    rgba(56, 189, 248, 0.02) 100%
+  );
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.quickstart-head h3 {
+  margin: 0 0 4px;
+  font-size: var(--fs-18);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.quickstart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.quickstart-tile {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  color: var(--fg);
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quickstart-tile:hover,
+.quickstart-tile:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.08);
+  outline: none;
+}
+
+.quickstart-tile-title {
+  font-weight: 600;
+  font-size: var(--fs-14);
+}
+
+.quickstart-tile-meta code {
+  background: rgba(127, 127, 127, 0.15);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.quickstart-heuristics {
+  border-top: 1px solid rgba(127, 127, 127, 0.18);
+  padding-top: 10px;
+}
+
+.quickstart-heuristics summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: var(--fs-13);
+  color: var(--muted);
+  padding: 6px 0;
+}
+
+.quickstart-heuristics summary:hover {
+  color: var(--fg);
+}
+
+.quickstart-heuristic-list {
+  margin: 8px 0 4px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+}
+
+.quickstart-heuristic-list li {
+  font-size: var(--fs-13);
+  line-height: 1.45;
+}
+
+.quickstart-heuristic-list code {
+  background: rgba(127, 127, 127, 0.15);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------------- */
 /* Plugin form (used in PluginEditorDrawer and the merged card drawer)     */
 /* ---------------------------------------------------------------------- */
 
