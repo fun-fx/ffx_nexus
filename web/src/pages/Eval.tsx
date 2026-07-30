@@ -224,17 +224,27 @@ export function Eval() {
       <header className="page-head">
         <div>
           <div className="eyebrow">
-            <span className="dot" aria-hidden="true" /> Admin · eval & routing
+            <span className="dot" aria-hidden="true" /> Admin · eval &amp; routing
           </div>
           <h1 className="page-title">
             <GradientText as="span">Quality</GradientText> knobs
           </h1>
           <p className="page-sub">
-            Eval heuristics and routing weights. Changes apply to{" "}
-            <code>nexus-gateway</code> on the next refresh;{" "}
-            {cfg.restart_required.length === 0
-              ? "no restart required."
-              : `restart required: ${cfg.restart_required.join(", ")}.`}
+            {cfg.plugin_only
+              ? <>
+                  Scoring routed through configured <strong>Eval plugins</strong> —
+                  Langfuse, LangSmith, Datadog, Confident AI, etc. Built-in
+                  heuristics and the local judge / Python sidecar are off. Pick
+                  routing weights below; restart is only required when you
+                  change the eval worker pool.
+                </>
+              : <>
+                  Eval heuristics, plugins, and routing weights. Changes apply to{" "}
+                  <code>nexus-gateway</code> on the next refresh;{" "}
+                  {cfg.restart_required.length === 0
+                    ? "no restart required."
+                    : `restart required: ${cfg.restart_required.join(", ")}.`}
+                </>}
           </p>
         </div>
         <div className="page-stats">
@@ -256,16 +266,20 @@ export function Eval() {
               {(latency * 100).toFixed(0)}%
             </div>
           </div>
-          <div className="page-stat">
-            <div className="page-stat-label">sample rate</div>
-            <div className="page-stat-value">
-              {(cfg.eval.sample_rate * 100).toFixed(0)}%
-            </div>
-          </div>
-          <div className="page-stat">
-            <div className="page-stat-label">workers</div>
-            <div className="page-stat-value">{cfg.eval.workers}</div>
-          </div>
+          {cfg.plugin_only ? null : (
+            <>
+              <div className="page-stat">
+                <div className="page-stat-label">sample rate</div>
+                <div className="page-stat-value">
+                  {(cfg.eval.sample_rate * 100).toFixed(0)}%
+                </div>
+              </div>
+              <div className="page-stat">
+                <div className="page-stat-label">workers</div>
+                <div className="page-stat-value">{cfg.eval.workers}</div>
+              </div>
+            </>
+          )}
         </div>
       </header>
 
@@ -273,7 +287,7 @@ export function Eval() {
       <PluginOnlyBanner active={cfg.plugin_only} />
 
       <EvaluatorsCard
-        rules={heur}
+        rules={cfg.plugin_only ? undefined : heur}
         isAdmin={isAdmin}
         profileIdByKind={profileIdByKind}
         plugins={pluginsQ.data ?? []}
@@ -287,11 +301,13 @@ export function Eval() {
         onEditPlugin={(rec) =>
           setPluginDrawer({ open: true, initial: parseYamlToForm(rec.spec_yaml ?? "") })
         }
+        pluginOnly={cfg.plugin_only}
       />
       <EvalProfilesCard
         isAdmin={isAdmin}
         pendingOpenProfileId={pendingOpenProfileId}
         onPendingOpenConsumed={() => setPendingOpenProfileId(null)}
+        hidden={cfg.plugin_only}
       />
       <WeightsCard
         cfg={cfg}
@@ -339,8 +355,9 @@ function EvaluatorsCard({
   profileToggleRow,
   onCreatePlugin,
   onEditPlugin,
+  pluginOnly = false,
 }: {
-  rules: EvalRule[];
+  rules?: EvalRule[];
   isAdmin: boolean;
   profileIdByKind: Record<string, string | undefined>;
   plugins: EvalPluginRecord[];
@@ -350,6 +367,7 @@ function EvaluatorsCard({
   profileToggleRow: string | null;
   onCreatePlugin: () => void;
   onEditPlugin: (rec: EvalPluginRecord) => void;
+  pluginOnly?: boolean;
 }) {
   const qc = useQueryClient();
   const pluginToggleM = useMutation({
@@ -400,58 +418,60 @@ function EvaluatorsCard({
       };
 
   const rows: EvalRow[] = [];
-  for (const r of rules) {
-    const isLegacy = r.kind === "slm_judge" || r.kind === "remote_eval";
-    const profileId = profileIdByKind[r.kind];
-    const detail = (
-      <div className="muted small">
-        <span>{r.detail}</span>{" "}
-        {isLegacy ? (
-          <span className="hint-tag warn">legacy — migrate to plugin</span>
-        ) : null}
-      </div>
-    );
-    const action = isAdmin ? (
-      <div className="env-driven-cell">
-        <LabelToggle
-          checked={r.enabled}
-          label={`toggle ${r.metric}`}
-          disabled={profileToggleBusy && profileToggleRow === profileId}
-          onChange={(next) => profileId && onToggleProfile(profileId, next)}
-        />
-        {profileId ? (
-          <button
-            type="button"
-            className="btn-ghost btn-small"
-            onClick={() => profileId && onRequestOpenProfile(profileId)}
-          >
-            Change configuration
-          </button>
-        ) : (
-          <span className="hint-tag">default profile missing</span>
-        )}
-      </div>
-    ) : null;
-    if (isLegacy) {
-      rows.push({
-        kind: "legacy",
-        id: r.kind,
-        title: `${r.metric} (legacy)`,
-        enabled: r.enabled,
-        source: "legacy",
-        detail,
-        action,
-      });
-    } else {
-      rows.push({
-        kind: "heuristic",
-        id: r.kind,
-        title: r.metric,
-        enabled: r.enabled,
-        source: "heuristic",
-        detail,
-        action,
-      });
+  if (rules) {
+    for (const r of rules) {
+      const isLegacy = r.kind === "slm_judge" || r.kind === "remote_eval";
+      const profileId = profileIdByKind[r.kind];
+      const detail = (
+        <div className="muted small">
+          <span>{r.detail}</span>{" "}
+          {isLegacy ? (
+            <span className="hint-tag warn">legacy — migrate to plugin</span>
+          ) : null}
+        </div>
+      );
+      const action = isAdmin ? (
+        <div className="env-driven-cell">
+          <LabelToggle
+            checked={r.enabled}
+            label={`toggle ${r.metric}`}
+            disabled={profileToggleBusy && profileToggleRow === profileId}
+            onChange={(next) => profileId && onToggleProfile(profileId, next)}
+          />
+          {profileId ? (
+            <button
+              type="button"
+              className="btn-ghost btn-small"
+              onClick={() => profileId && onRequestOpenProfile(profileId)}
+            >
+              Change configuration
+            </button>
+          ) : (
+            <span className="hint-tag">default profile missing</span>
+          )}
+        </div>
+      ) : null;
+      if (isLegacy) {
+        rows.push({
+          kind: "legacy",
+          id: r.kind,
+          title: `${r.metric} (legacy)`,
+          enabled: r.enabled,
+          source: "legacy",
+          detail,
+          action,
+        });
+      } else {
+        rows.push({
+          kind: "heuristic",
+          id: r.kind,
+          title: r.metric,
+          enabled: r.enabled,
+          source: "heuristic",
+          detail,
+          action,
+        });
+      }
     }
   }
   for (const p of plugins) {
@@ -594,16 +614,19 @@ function EvaluatorsCard({
         <div>
           <h2 className="section-title">Evaluators</h2>
           <p className="muted small">
-            Heuristics run in-process;{" "}
-            <strong>plugins</strong> forward traces to Langfuse,
-            LangSmith, Datadog, etc. and pull scores back.{" "}
-            <strong>legacy</strong> rows are kept on for transparency —
-            migrate them to plugins when convenient.
+            {pluginOnly
+              ? "Every trace is scored exclusively through these plugins — Langfuse, LangSmith, Datadog, Confident AI, Arize Phoenix, etc."
+              : <>
+                  Built-in heuristics plus <strong>plugins</strong> that forward traces
+                  to Langfuse, LangSmith, Datadog, etc.{" "}
+                  <strong>legacy</strong> rows are kept on for transparency —
+                  migrate them to plugins when convenient.
+                </>}
           </p>
         </div>
         {isAdmin ? (
           <button type="button" className="btn-neon" onClick={onCreatePlugin}>
-            + Install plugin
+            {pluginOnly ? "+ Install your first plugin" : "+ Install plugin"}
           </button>
         ) : null}
       </header>
@@ -611,7 +634,11 @@ function EvaluatorsCard({
         <DataTable
           rows={rows}
           columns={cols}
-          emptyMessage="No evaluators."
+          emptyMessage={
+            plugins.length === 0
+              ? "No plugins installed yet — click Install plugin above to add one."
+              : "No evaluators."
+          }
         />
       </div>
     </section>

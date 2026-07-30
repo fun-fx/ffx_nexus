@@ -609,12 +609,12 @@ describe("<Eval /> admin toggle profile flow", () => {
 });
 
 describe("<Eval /> plugin-only banner", () => {
-  function renderWithPluginOnly(active: boolean) {
-    const bundle: EvalConfigSnapshot = {
+  function build(pluginOnly: boolean): EvalConfigSnapshot {
+    return {
       ...ZERO_EVAL,
       eval_enabled: true,
       routing_enabled: true,
-      plugin_only: active,
+      plugin_only: pluginOnly,
       eval: {
         ...ZERO_EVAL.eval,
         pii_enabled: false,
@@ -625,6 +625,9 @@ describe("<Eval /> plugin-only banner", () => {
         weights: { quality: 0.6, cost: 0.2, latency: 0.2 },
       },
     };
+  }
+
+  function renderWithBundle(bundle: EvalConfigSnapshot) {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -657,14 +660,42 @@ describe("<Eval /> plugin-only banner", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("shows banner when plugin_only=true", async () => {
-    renderWithPluginOnly(true);
+    renderWithBundle(build(true));
     expect(await screen.findByText(/Plugin-only eval mode/i)).toBeTruthy();
   });
 
   it("hides banner when plugin_only=false", async () => {
-    renderWithPluginOnly(false);
+    renderWithBundle(build(false));
     await waitFor(() => {
       expect(screen.queryByText(/Plugin-only eval mode/i)).toBeNull();
     });
   });
+
+  it("hides eval profiles card when plugin_only=true", async () => {
+    renderWithBundle(build(true));
+    await waitFor(() => {
+      expect(screen.queryByTestId("eval-profiles")).toBeNull();
+    });
+  });
+
+  it("shows eval profiles card when plugin_only=false", async () => {
+    renderWithBundle(build(false));
+    expect(await screen.findByTestId("eval-profiles")).toBeTruthy();
+  });
+
+  it("hides sample rate and workers stats when plugin_only=true", async () => {
+    renderWithBundle(build(true));
+    await waitFor(() => {
+      expect(screen.queryByText(/sample rate/i)).toBeNull();
+    });
+    expect(screen.queryByText(/^\s*workers\s*$/i)).toBeNull();
+  });
+
+  it("renders Install your first plugin CTA when plugin_only=true", async () => {
+    renderWithBundle(build(true));
+    expect(
+      await screen.findByText(/Install your first plugin/i),
+    ).toBeTruthy();
+  });
 });
+

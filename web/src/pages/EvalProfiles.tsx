@@ -168,6 +168,7 @@ export function EvalProfilesCard({
   isAdmin,
   pendingOpenProfileId,
   onPendingOpenConsumed,
+  hidden = false,
 }: {
   isAdmin: boolean;
   /**
@@ -180,6 +181,14 @@ export function EvalProfilesCard({
    */
   pendingOpenProfileId?: string | null;
   onPendingOpenConsumed?: () => void;
+  /**
+   * When true the parent has signalled "plugin-only mode" — the legacy
+   * profile card is noise in that context so we render nothing. The
+   * server still owns the rows and at boot
+   * NEXUS_EVAL_PLUGIN_ONLY=true keeps the seed path quiet too; this
+   * is purely a UI decision driven by the same snapshot flag.
+   */
+  hidden?: boolean;
 }) {
   const qc = useQueryClient();
   const profiles = useQuery({
@@ -300,6 +309,7 @@ export function EvalProfilesCard({
 
   const grouped = useMemo(() => groupProfiles(profiles.data ?? []), [profiles.data]);
 
+  if (hidden) return null;
   return (
     <section className="panel profiles-card" data-testid="eval-profiles">
       <header className="panel-head">
