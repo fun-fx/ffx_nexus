@@ -61,10 +61,11 @@ func (a pluginSourceAdapter) identifyRecord(r *evalplugin.PluginRecord) (orgID, 
 	if r == nil {
 		return "", ""
 	}
+	org := evalplugin.NormalizeOrgID(r.OrgID)
 	if p, err := evalplugin.Decode([]byte(r.SpecYAML)); err == nil && p != nil {
-		return r.OrgID, p.Metadata.Name
+		return org, p.Metadata.Name
 	}
-	return r.OrgID, r.Name
+	return org, r.Name
 }
 
 func (a pluginSourceAdapter) Delete(ctx context.Context, id string) error {
@@ -112,7 +113,7 @@ func (a pluginSourceAdapter) mergeIntoRegistry(r *evalplugin.PluginRecord) {
 		Plugin:  p,
 		Source:  evalplugin.Source{Kind: evalplugin.SourceDatabase, Ref: r.ID},
 		Enabled: r.Enabled,
-		OrgID:   r.OrgID,
+		OrgID:   evalplugin.NormalizeOrgID(r.OrgID),
 	}})
 }
 
@@ -125,10 +126,7 @@ func (a pluginSourceAdapter) identify(ctx context.Context, id string) (orgID, na
 	if err != nil || rec == nil {
 		return "", ""
 	}
-	if p, err := evalplugin.Decode([]byte(rec.SpecYAML)); err == nil && p != nil {
-		return rec.OrgID, p.Metadata.Name
-	}
-	return rec.OrgID, rec.Name
+	return a.identifyRecord(rec)
 }
 
 // Lookup resolves a plugin by metadata.name. The registry is the

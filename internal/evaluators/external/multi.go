@@ -45,6 +45,11 @@ type MultiEvaluator struct {
 
 	mu         sync.RWMutex
 	attachOnce sync.Once
+
+	// warnOrgSkipOnce guards the "plugins exist but none are in scope"
+	// warning so a permanent misconfiguration reports once per process
+	// instead of once per trace.
+	warnOrgSkipOnce sync.Once
 }
 
 // NewMultiEvaluator constructs a MultiEvaluator. The caller must
@@ -98,6 +103,23 @@ func (m *MultiEvaluator) Evaluate(ctx context.Context, t observability.Trace) ([
 	log := m.log
 	local := m.local
 	m.mu.RUnlock()
+	// An org filter that excludes every plugin used to be indistinguishable
+	// from "no plugins installed": the loop below simply did nothing. That
+	// is the shape a scope mismatch takes, and it cost a long debugging
+	// session, so say it out loud once.
+	if len(enabled) == 0 && log != nil {
+		if all := m.reg.Enabled(); len(all) > 0 {
+			m.warnOrgSkipOnce.Do(func() {
+				scopes := make([]string, 0, len(all))
+				for _, rec := range all {
+					scopes = append(scopes, rec.Plugin.Metadata.Name+"@"+orgLabel(rec.OrgID))
+				}
+				log.Warn("no eval plugins in scope for trace org: every enabled plugin is scoped to a different org",
+					"trace_org", orgLabel(t.OrgID),
+					"enabled_plugins", scopes)
+			})
+		}
+	}
 	var localScores []evals.Score
 	for _, rec := range enabled {
 		if !sampleTrace(float64(rec.Plugin.Spec.Send.Sampling)) {
@@ -144,6 +166,15 @@ func (m *MultiEvaluator) Evaluate(ctx context.Context, t observability.Trace) ([
 		}
 	}
 	return localScores, nil
+}
+
+// orgLabel renders an org id for logs, naming the empty string rather
+// than printing a blank that reads like a missing field.
+func orgLabel(orgID string) string {
+	if orgID == "" {
+		return "(cluster-wide)"
+	}
+	return orgID
 }
 
 // sampleTrace is the per-plugin sample gate. It rolls once per plugin

@@ -23,6 +23,27 @@ type PluginRecord struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// LegacyDefaultOrgID is the sentinel the console admin helpers stamp on
+// a request that carries no explicit X-Org-Id header. For most console
+// resources it is a harmless placeholder, but plugin dispatch compares
+// a record's org against the *trace's* org, which is the virtual key's
+// real org id — so a plugin stored under this sentinel matched no
+// traffic at all and was skipped without a trace of it in the logs.
+const LegacyDefaultOrgID = "default"
+
+// NormalizeOrgID maps the legacy placeholder onto the cluster-wide
+// empty string, which is the scope an operator installing a plugin from
+// the console actually means: every trace in the deployment. Applied
+// wherever a stored row becomes a registry Record, so rows written
+// before the console stopped emitting the sentinel start dispatching
+// without anyone having to rewrite them.
+func NormalizeOrgID(orgID string) string {
+	if orgID == LegacyDefaultOrgID {
+		return ""
+	}
+	return orgID
+}
+
 // PluginStore is the durable home for PluginRecord rows. Mirror of
 // evals.ProfileStore — same interface shape, swap-pg/clickhouse is
 // future PR work.
