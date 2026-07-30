@@ -38,3 +38,7 @@ Vendor-native ingest (Langfuse, LangSmith, Confident AI, Arize Phoenix, Datadog)
 ## Strict Two-Path Classification for New Eval Requests
 
 When adding new metric or vendor capacity: a new evaluator kind is either **in-process** (zero egress, runs synchronously inside the worker) or **external** (YAML manifest, OTLP send, webhook/poll collect). It cannot be both, and it cannot be neither. If the request is "do this evaluation fast and don't ship my prompts anywhere," it's heuristic. If the request is "let an external service score my traces over its own auth and quota," it's external. Choose based on the bandwidth/quality/spend trade, not on what language you want to write code in.
+
+## Plugin-Only Boot (`NEXUS_EVAL_PLUGIN_ONLY`)
+
+Operators who want *every* eval to leave the cluster — Langfuse, LangSmith, Confident AI, Datadog, Arize Phoenix, a private OTLP collector — flip the pod-level flag `NEXUS_EVAL_PLUGIN_ONLY=true` (or `config.evalPluginOnly: true` in the Helm chart). The runtime controller's `envVarSeedProfiles` then skips seeding the built-in heuristic profiles (PII / Completeness) and the legacy `slm_judge` / `remote_eval` defaults. The flag is non-destructive: existing rows in the profile store are not removed. The console's *Eval* page surfaces a "Plugin-only eval mode" banner so the seam is visible without grepping pod env. Do not silently revert to seeding-on-by-default — tenant demand is for plugin-only clusters, and removing the gate breaks that workflow.

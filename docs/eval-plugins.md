@@ -205,6 +205,25 @@ before any egress (the trace is checked first, then the plugin
 sees a redacted copy). Do not turn heuristic_pii off even if
 Langfuse or LangSmith is enabled.
 
+### Plugin-only mode (`NEXUS_EVAL_PLUGIN_ONLY`)
+
+If you want every byte of eval scoring to leave the cluster —
+Langfuse, LangSmith, Confident AI, Datadog, Arize Phoenix, a
+private OTLP collector — flip the pod-level flag
+`NEXUS_EVAL_PLUGIN_ONLY=true` (or `config.evalPluginOnly: true`
+in the Helm chart). The runtime controller then skips seeding:
+
+- the `default-pii` and `default-completeness` heuristic profiles, and
+- the legacy `default-judge` (local Ollama / vLLM) and
+  `default-remote` (Python sidecar) profiles.
+
+Scoring becomes a pure plugin-driven pipeline. The flag is
+**non-destructive**: rows already in the profile store are not
+removed. Drop them in the console if you want a clean slate on
+the next boot. The console's *Eval* page also surfaces a banner
+("Plugin-only eval mode") on any pod started with this flag so the
+seam is visible without grepping the pod's environment.
+
 ### PrimeIntellect mental bridge — local vs hosted
 
 The survey's standout vocabulary is PrimeIntellect's local /

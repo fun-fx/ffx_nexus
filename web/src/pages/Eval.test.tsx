@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { Eval } from "../pages/Eval";
+import { ZERO_EVAL, type EvalConfigSnapshot } from "../api";
 
 const adminMe = {
   id: "u1",
@@ -47,6 +48,7 @@ function buildBundle(o: Overrides) {
     trace_store: "clickhouse",
     score_persisted: true,
     routing_stats_store: "clickhouse",
+    plugin_only: false,
     restart_required: [],
   };
 }
@@ -603,5 +605,66 @@ describe("<Eval /> admin toggle profile flow", () => {
         /unexpected body|502 Bad Gateway|nginx/i,
       ),
     );
+  });
+});
+
+describe("<Eval /> plugin-only banner", () => {
+  function renderWithPluginOnly(active: boolean) {
+    const bundle: EvalConfigSnapshot = {
+      ...ZERO_EVAL,
+      eval_enabled: true,
+      routing_enabled: true,
+      plugin_only: active,
+      eval: {
+        ...ZERO_EVAL.eval,
+        pii_enabled: false,
+        completeness_enabled: false,
+      },
+      routing: {
+        ...ZERO_EVAL.routing,
+        weights: { quality: 0.6, cost: 0.2, latency: 0.2 },
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/api/me")) {
+          return new Response(JSON.stringify(adminMe), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/config")) {
+          return new Response(JSON.stringify(bundle), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/profiles")) {
+          return new Response(JSON.stringify({ profiles: [] }), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/plugins")) {
+          return new Response(JSON.stringify({ plugins: [] }), { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ThemeProvider>
+          <Eval />
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows banner when plugin_only=true", async () => {
+    renderWithPluginOnly(true);
+    expect(await screen.findByText(/Plugin-only eval mode/i)).toBeTruthy();
+  });
+
+  it("hides banner when plugin_only=false", async () => {
+    renderWithPluginOnly(false);
+    await waitFor(() => {
+      expect(screen.queryByText(/Plugin-only eval mode/i)).toBeNull();
+    });
   });
 });

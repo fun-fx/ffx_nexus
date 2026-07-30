@@ -87,6 +87,14 @@ config:
     metrics: ""
     timeout: ""
 
+  # When true, the runtime controller skips seeding the built-in
+  # heuristic profiles (PII / Completeness) and the legacy
+  # slm_judge / remote_eval defaults. Scoring comes exclusively
+  # from external EvalPlugins. The flag is non-destructive: rows
+  # already in the profile store are not deleted; admins remove
+  # them through the console if needed.
+  evalPluginOnly: false
+
   # Semantic cache (requires Redis + an embeddings endpoint).
   semanticCache:
     enabled: false
