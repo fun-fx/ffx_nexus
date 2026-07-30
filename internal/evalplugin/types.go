@@ -27,7 +27,33 @@ import (
 
 // PluginAPIVersion is the schema version manifest authors target. Today
 // only `v1alpha1` is recognised; an unknown value fails Validate().
+//
+//   - v1alpha1 is the original schema.
+//   - v1alpha2 adds support for:
+//
+//   1. ServiceType "heuristic" — in-process metric evaluators that
+//      score the trace locally instead of dispatching to an external
+//      service (Add-A).
+//   2. ServiceType "confident_ai" — DeepEval-native cloud target
+//      (add-confidentai-phoenix).
+//   3. ServiceType "arize_phoenix" — OTel-only target with no API key.
+//   4. spec.collect.transport — replaces the otel/webhook types with a
+//      single OTLP collector adapter that ships JSON or protobuf
+//      payloads (collapse-otel-webhook).
+//   5. spec.service.metric — a typed metric kind for heuristic-mode
+//      plugins (contains, pii, exact_match, rouge_l, hf_evaluate,
+//      lighteval, ragas).
+//
+//   Manifests carrying `apiVersion: nexus.io/v1alpha1` continue to be
+//   accepted; loadV1alpha2 warnings surface in the boot logs so the
+//   operator sees the new fields are usable.
 const PluginAPIVersion = "nexus.io/v1alpha1"
+
+// PluginAPIVersionV1Alpha2 is the schema version that introduces the
+// new kinds listed above. Manifests declaring it gain everything in
+// v1alpha1 plus the additions; a future v1beta will retire
+// v1alpha1 entirely.
+const PluginAPIVersionV1Alpha2 = "nexus.io/v1alpha2"
 
 // PluginKind is the constant discriminator for EvalPlugin manifests.
 const PluginKind = "EvalPlugin"
@@ -42,26 +68,57 @@ const PluginKind = "EvalPlugin"
 type ServiceType string
 
 const (
-	ServiceLangSmith  ServiceType = "langsmith"
-	ServiceLangfuse   ServiceType = "langfuse"
-	ServiceDatadog    ServiceType = "datadog"
-	ServiceBraintrust ServiceType = "braintrust"
-	ServiceArize      ServiceType = "arize"
+	ServiceLangSmith      ServiceType = "langsmith"
+	ServiceLangfuse       ServiceType = "langfuse"
+	ServiceDatadog        ServiceType = "datadog"
+	ServiceBraintrust     ServiceType = "braintrust"
+	ServiceArize          ServiceType = "arize"
+	// ServiceOTel / ServiceWebhook are the v1alpha1 OTLP / generic
+	// collectors. They continue to work in v1alpha2 manifests; new
+	// code that targets v1alpha2 should use ServiceCollector with
+	// the transport field set instead.
 	ServiceOTel       ServiceType = "otel"
 	ServiceWebhook    ServiceType = "webhook"
+	// ServiceHeuristic is the in-process metric kind. Manifests with
+	// this type declare `spec.service.metric` to pick the metric
+	// implementation (contains, pii, exact_match, rouge_l) or
+	// delegate to the Python subprocess (hf_evaluate, lighteval,
+	// ragas) for the rest.
+	ServiceHeuristic ServiceType = "heuristic"
+	// ServiceConfidentAI is Confident AI's DeepEval-native cloud
+	// target (a.k.a. DeepEval Cloud). Speaks OTLP/JSON with an
+	// optional x-confident-api-key header. Self-hosting is not the
+	// goal — the adapter assumes the cloud endpoint.
+	ServiceConfidentAI ServiceType = "confident_ai"
+	// ServiceArizePhoenix sends traces to Arize Phoenix via OTLP.
+	// Optional Basic auth (user/pass) is read through the AuthSpec.
+	// langfuse-judge users that want a self-hosted OTLP target can
+	// point ServiceCollector at the same URL; the difference is
+	// that this ServiceType has apply-on-collect filtering of
+	// non-LLM spans out of the box.
+	ServiceArizePhoenix ServiceType = "arize_phoenix"
+	// ServiceCollector is the v1alpha2 "single OTLP collector"
+	// adapter that replaces ServiceOTel and ServiceWebhook. Pick
+	// the wire shape with Spec.Collect.Transport ("json" or
+	// "otlp_http"); the auth block is unchanged.
+	ServiceCollector ServiceType = "otel_collector"
 )
 
 // validServiceType is the lookup the validator uses. It is the source
 // of truth — do not introduce a ServiceType constant without appending
 // it here.
 var validServiceType = map[ServiceType]struct{}{
-	ServiceLangSmith:  {},
-	ServiceLangfuse:   {},
-	ServiceDatadog:    {},
-	ServiceBraintrust: {},
-	ServiceArize:      {},
-	ServiceOTel:       {},
-	ServiceWebhook:    {},
+	ServiceLangSmith:      {},
+	ServiceLangfuse:       {},
+	ServiceDatadog:        {},
+	ServiceBraintrust:     {},
+	ServiceArize:          {},
+	ServiceOTel:           {},
+	ServiceWebhook:        {},
+	ServiceHeuristic:      {},
+	ServiceConfidentAI:    {},
+	ServiceArizePhoenix:   {},
+	ServiceCollector:      {},
 }
 
 // ResultMapping is a single JSONPath → canonical field translation.
@@ -95,19 +152,41 @@ type SendSpec struct {
 // the recommended default; poll is the fallback when the platform
 // doesn't support webhooks). All durations are YAML-tolerant — quoted
 // Go strings (`60s`) and bare numbers (`60` → seconds) both work.
+//
+// Transport is the wire selector for the v1alpha2 ServiceCollector
+// type: `transport: json` posts a JSON document, `transport: otlp_http`
+// posts a binary-encoded OTLP request body. Both target the same URL
+// (the manifest's spec.service.endpoint) — only the encoding differs.
+// The adapter collapses ServiceOTel + ServiceWebhook into this single
+// receiver.
 type CollectSpec struct {
-	Mode     string        `yaml:"mode" json:"mode"`
-	Interval Duration      `yaml:"interval" json:"interval"`
-	Mapping  ResultMapping `yaml:"mapping" json:"mapping"`
+	Mode      string        `yaml:"mode" json:"mode"`
+	Transport string        `yaml:"transport,omitempty" json:"transport,omitempty"`
+	Interval  Duration      `yaml:"interval" json:"interval"`
+	Mapping   ResultMapping `yaml:"mapping" json:"mapping"`
+}
+
+// MetricSpec is the heuristic-mode metric descriptor. Manifests of
+// ServiceHeuristic declare exactly one metric (Name); Args is an open
+// dict passed verbatim to the metric implementation (Python or Go).
+// The set of legal Names is closed (see ValidMetricNames) so a typo
+// fails fast at Validate time rather than silently scoring nothing.
+type MetricSpec struct {
+	Name string         `yaml:"name" json:"name"`
+	Args map[string]any `yaml:"args,omitempty" json:"args,omitempty"`
 }
 
 // ServiceSpec is the connection block. Auth is referenced, never
 // embedded — the Resolver performs the lookup per the existing
 // evals.SecretResolver contract (org/user/inline/builtin).
+//
+// Metric is used only when Type == ServiceHeuristic. It is otherwise
+// ignored by webhooks / OTLP / REST adapters.
 type ServiceSpec struct {
 	Type     ServiceType `yaml:"type" json:"type"`
 	Endpoint string      `yaml:"endpoint" json:"endpoint"`
 	Auth     AuthSpec    `yaml:"auth" json:"auth"`
+	Metric   MetricSpec  `yaml:"metric,omitempty" json:"metric,omitempty"`
 }
 
 // AuthSpec carries only references. The secret itself lives in K8s
@@ -129,11 +208,22 @@ type PluginMetadata struct {
 
 // PluginSpec is the body of an EvalPlugin manifest. It is what
 // user-authored YAML unmarshals into.
+//
+// Flags is the v1alpha2 escape hatch for deploy-time switches:
+//
+//   - "strict": reject unknown spec keys at Validate time. The default
+//     is to ignore unknown keys so a forward-port of v1alpha1 keeps
+//     loading under v1alpha2. Set strict to surface typos like
+//     `trigger: onTraces` early.
+//
+// Future flags live in this slice to avoid a YAML schema migration
+// every time we add an opt-in behaviour.
 type PluginSpec struct {
 	Service ServiceSpec `yaml:"service" json:"service"`
 	Send    SendSpec    `yaml:"send" json:"send"`
 	Collect CollectSpec `yaml:"collect" json:"collect"`
 	Timeout Duration    `yaml:"timeout" json:"timeout"`
+	Flags   []string    `yaml:"flags,omitempty" json:"flags,omitempty"`
 }
 
 // Plugin is a fully-decoded EvalPlugin manifest. Use Decode to obtain
