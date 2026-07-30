@@ -14,7 +14,13 @@ describe("pluginManifest round-trip", () => {
     expect(parsed.name).toBe(DEFAULT_PLUGIN_TEMPLATE.name);
     expect(parsed.service.kind).toBe(DEFAULT_PLUGIN_TEMPLATE.service.kind);
     expect(parsed.service.endpoint).toBe(DEFAULT_PLUGIN_TEMPLATE.service.endpoint);
-    expect(parsed.service.secretRef).toBe(DEFAULT_PLUGIN_TEMPLATE.service.secretRef);
+    // secretRef is intentionally absent from the form ever since
+    // PR-#172's console-only key model. The form state itself has
+    // no secretRef field anymore — this assertion is the regression
+    // guard against silently re-adding it.
+    expect(
+      (parsed.service as unknown as Record<string, unknown>).secretRef,
+    ).toBeUndefined();
     expect(parsed.service.keyRef).toBe(DEFAULT_PLUGIN_TEMPLATE.service.keyRef);
     expect(parsed.send.trigger).toBe(DEFAULT_PLUGIN_TEMPLATE.send.trigger);
     expect(Math.abs(parsed.send.samplingPct - DEFAULT_PLUGIN_TEMPLATE.send.samplingPct))
@@ -63,16 +69,20 @@ describe("pluginManifest round-trip", () => {
     expect(JSON.stringify(DEFAULT_PLUGIN_TEMPLATE)).toBe(before);
   });
 
-  it("emit wraps secretRef / keyRef in a nested auth: block", () => {
+  it("emit wraps keyRef in a nested auth: block", () => {
     const yaml = serializeFormToYaml(DEFAULT_PLUGIN_TEMPLATE);
     expect(yaml).toContain("    auth:\n");
-    expect(yaml).toContain("      secretRef: langfuse-creds\n");
+    // secretRef must NOT appear in the rendered output. If it does the
+    // form has been re-introduced to a deserialised legacy secretRef.
+    expect(yaml).not.toMatch(/^\s+secretRef:/m);
     expect(yaml).toContain("      keyRef: public_key|secret_key\n");
   });
 
-  it("parser accepts the legacy flat secretRef/keyRef shape", () => {
-    // `auth:` wrapper). The form must still hydrate them so the
-    // operator can edit and re-save.
+  it("parser drops the legacy flat secretRef shape silently", () => {
+    // Pre-PR-#172 manifests carry a flat `secretRef:` (no nested
+    // `auth:` wrapper). The form must still hydrate without
+    // crashing — but the dropped field becomes a no-op so the
+    // saved manifest no longer carries the legacy reference.
     const yaml = [
       "apiVersion: nexus.io/v1alpha1",
       "kind: EvalPlugin",
@@ -95,11 +105,13 @@ describe("pluginManifest round-trip", () => {
       "",
     ].join("\n");
     const parsed = parseYamlToForm(yaml);
-    expect(parsed.service.secretRef).toBe("langfuse-creds");
+    expect(
+      (parsed.service as unknown as Record<string, unknown>).secretRef,
+    ).toBeUndefined();
     expect(parsed.service.keyRef).toBe("public_key|secret_key");
   });
 
-  it("parser accepts the nested auth: shape", () => {
+  it("parser drops the legacy nested auth.secretRef shape silently", () => {
     const yaml = [
       "apiVersion: nexus.io/v1alpha1",
       "kind: EvalPlugin",
@@ -120,7 +132,9 @@ describe("pluginManifest round-trip", () => {
       "",
     ].join("\n");
     const parsed = parseYamlToForm(yaml);
-    expect(parsed.service.secretRef).toBe("langfuse-creds");
+    expect(
+      (parsed.service as unknown as Record<string, unknown>).secretRef,
+    ).toBeUndefined();
     expect(parsed.service.keyRef).toBe("public_key|secret_key");
   });
 

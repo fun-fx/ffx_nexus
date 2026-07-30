@@ -48,7 +48,9 @@ export interface PluginFormState {
   service: {
     kind: ServiceKind;
     endpoint: string;
-    secretRef: string;
+    // Note: secretRef was removed in the PR-#172 console-only key model.
+    // API keys now flow exclusively through the in-product Keys modal,
+    // mirroring how OpenAI / Groq / Mistral keys are managed.
     keyRef: string;
   };
   send: {
@@ -79,7 +81,6 @@ export const DEFAULT_PLUGIN_TEMPLATE: PluginFormState = {
   service: {
     kind: "langfuse",
     endpoint: "https://cloud.langfuse.com",
-    secretRef: "langfuse-creds",
     keyRef: "public_key|secret_key",
   },
   send: {
@@ -129,7 +130,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         ...DEFAULT_PLUGIN_TEMPLATE.service,
         endpoint: "https://langfuse.example.internal",
-        secretRef: "langfuse-creds",
         keyRef: "public_key|secret_key",
       },
     },
@@ -142,7 +142,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         kind: "langsmith",
         endpoint: "https://api.smith.langchain.com",
-        secretRef: "langsmith-api-key",
         keyRef: "value",
       },
       send: {
@@ -187,7 +186,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         kind: "datadog",
         endpoint: "https://api.datadoghq.com",
-        secretRef: "datadog-api-key",
         keyRef: "value",
       },
       collect: {
@@ -211,7 +209,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         kind: "webhook",
         endpoint: "https://hooks.example.internal/eval",
-        secretRef: "webhook-token",
         keyRef: "value",
       },
     },
@@ -229,7 +226,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         kind: "confident_ai",
         endpoint: "https://api.confident-ai.com",
-        secretRef: "confident-ai-key",
         keyRef: "value",
       },
       send: {
@@ -262,7 +258,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         kind: "arize_phoenix",
         endpoint: "https://phoenix.example.internal:6006",
-        secretRef: "arize-basic-auth",
         keyRef: "value",
       },
       send: {
@@ -295,7 +290,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         kind: "otel_collector",
         endpoint: "https://otel.example.internal:4318",
-        secretRef: "otel-bearer",
         keyRef: "value",
       },
       collect: {
@@ -324,7 +318,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         kind: "braintrust",
         endpoint: "https://api.braintrust.dev",
-        secretRef: "braintrust-api-key",
         keyRef: "value",
       },
       send: {
@@ -357,7 +350,6 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
       service: {
         kind: "arize",
         endpoint: "https://api.arize.com",
-        secretRef: "arize-api-key",
         keyRef: "value",
       },
       send: {
@@ -482,9 +474,6 @@ export function serializeFormToYaml(form: PluginFormState): string {
   lines.push(`    type: ${form.service.kind}`);
   lines.push(`    endpoint: ${form.service.endpoint.trim()}`);
   lines.push(`    auth:`);
-  if (form.service.secretRef.trim()) {
-    lines.push(`      secretRef: ${form.service.secretRef.trim()}`);
-  }
   if (form.service.keyRef.trim()) {
     lines.push(`      keyRef: ${form.service.keyRef.trim()}`);
   }
@@ -639,16 +628,22 @@ export function parseYamlToForm(yaml: string): PluginFormState {
       const v = cleanYamlScalar(m[2]);
       if (k === "type" && isServiceKind(v)) out.service.kind = v;
       else if (k === "endpoint") out.service.endpoint = v;
-      else if (k === "secretRef") out.service.secretRef = v;
+      else if (k === "secretRef") {
+        // secretRef was abandoned alongside PR #172's console-only key
+        // model. We still see them in older manifests stored in the
+        // registry; we keep parsing safely and just drop the value on
+        // the floor so the form opens cleanly without it.
+        continue;
+      }
       else if (k === "keyRef") out.service.keyRef = v;
       else if (k === "auth") {
         // Nested auth: block — descend into a depth-2 frame so the
-        // 6-space secretRef / keyRef lines below it route to the
-        // auth handler instead of leaking back to the service
-        // fields. The empty value (`auth:`) implies a block; non-
-        // empty value (`auth: { ... }`) we keep as a sibling flat
-        // shape for back-compat with any foreign manifest stored
-        // before the form rewrite.
+        // 4-space keyRef lines below it route to the auth handler
+        // instead of leaking back to the service fields. The empty
+        // value (`auth:`) implies a block; non-empty value
+        // (`auth: { ... }`) we keep as a sibling flat shape for
+        // back-compat with any foreign manifest stored before the
+        // form rewrite.
         if (v.length === 0) stack.push({ key: "auth", depth: indent });
       }
       continue;
@@ -659,7 +654,12 @@ export function parseYamlToForm(yaml: string): PluginFormState {
       if (!m) continue;
       const k = m[1];
       const v = cleanYamlScalar(m[2]);
-      if (k === "secretRef") out.service.secretRef = v;
+      if (k === "secretRef") {
+        // Same no-op as above: secretRef is dropped from old
+        // manifests silently. We don't surface the dropped key to
+        // the form because the field is no longer rendered.
+        continue;
+      }
       else if (k === "keyRef") out.service.keyRef = v;
       continue;
     }
