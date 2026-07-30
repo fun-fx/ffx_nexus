@@ -55,6 +55,17 @@ type Config struct {
 	EvalServiceTimeout time.Duration
 	PluginDir          string // directory containing Helm-mounted EvalPlugin YAMLs
 
+	// EvalPluginOnly when true suppresses the seed of built-in
+	// heuristic profiles (PII / Completeness) at boot. Operators
+	// who want *only* external plugin-driven eval (Langfuse,
+	// LangSmith, DeepEval cloud, etc.) flip this on. It is not
+	// destructive: existing rows in the profile store are left
+	// alone — the flag controls what gets inserted on an empty
+	// store, not what already exists. Operators must delete the
+	// existing built-in rows through the console if they want a
+	// pure plugin set immediately after upgrade.
+	EvalPluginOnly bool
+
 	// Quality-aware routing (Phase 4). RouteGroups maps an alias to candidate
 	// models, e.g. "fast=gpt-4o-mini,gemini-2.5-flash;smart=gpt-4o,claude-...".
 	// The built-in alias "auto" always routes across all registered models.
@@ -259,6 +270,7 @@ func Load() Config {
 		EvalServiceMetrics:     env("NEXUS_EVAL_SERVICE_METRICS", "answer_relevancy,toxicity,bias"),
 		EvalServiceTimeout:     envDuration("NEXUS_EVAL_SERVICE_TIMEOUT", 30*time.Second),
 		PluginDir:              env("NEXUS_EVAL_PLUGIN_DIR", "/etc/nexus/eval-plugins"),
+		EvalPluginOnly:         envBool("NEXUS_EVAL_PLUGIN_ONLY", false),
 		RouteGroups:            env("NEXUS_ROUTE_GROUPS", ""),
 		RouteWQuality:          envFloat("NEXUS_ROUTE_W_QUALITY", 0.6),
 		RouteWCost:             envFloat("NEXUS_ROUTE_W_COST", 0.2),

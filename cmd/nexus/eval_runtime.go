@@ -139,10 +139,16 @@ func (c *evalRuntimeController) SeedProfilesFromConfig(ctx context.Context) ([]e
 // The mapping is intentionally permissive: missing optional fields
 // short-circuit their profile rather than fail boot. Operators who
 // want every profile can layer overrides on top via the console.
+//
+// NEXUS_EVAL_PLUGIN_ONLY suppresses the heuristic PII / Completeness
+// auto-seed entirely — for installations that want *only* external
+// plugin-driven eval. The flag is non-destructive: existing rows in
+// the store are not deleted; admins delete them through the console
+// if needed.
 func envVarSeedProfiles(cfg config.Config) []evals.EvalProfile {
 	out := make([]evals.EvalProfile, 0, 2)
 
-	if cfg.JudgeBaseURL != "" && cfg.JudgeModel != "" {
+	if !cfg.EvalPluginOnly && cfg.JudgeBaseURL != "" && cfg.JudgeModel != "" {
 		out = append(out, evals.EvalProfile{
 			ID:    "default-judge",
 			Name:  "Default LLM judge (env-var, legacy)",
@@ -161,7 +167,7 @@ func envVarSeedProfiles(cfg config.Config) []evals.EvalProfile {
 		})
 	}
 
-	if cfg.EvalServiceURL != "" && len(cfg.EvalServiceMetrics) > 0 {
+	if !cfg.EvalPluginOnly && cfg.EvalServiceURL != "" && len(cfg.EvalServiceMetrics) > 0 {
 		out = append(out, evals.EvalProfile{
 			ID:    "default-remote",
 			Name:  "Default sidecar eval (env-var, legacy)",
@@ -181,7 +187,13 @@ func envVarSeedProfiles(cfg config.Config) []evals.EvalProfile {
 	// Heuristic profiles ship by default in v0.7+. They are 0-cost
 	// (in-process regex) and provide baseline coverage for every
 	// fresh install. Plugin evaluators add LLM-as-judge / framework
-	// integration on top.
+	// integration on top. NEXUS_EVAL_PLUGIN_ONLY=true opts out of
+	// this auto-seed so an installation using only external plugins
+	// (Langfuse, LangSmith, Confident AI, Arize Phoenix) doesn't
+	// double-charge traces with redundant in-process scoring.
+	if cfg.EvalPluginOnly {
+		return out
+	}
 	out = append(out, evals.EvalProfile{
 		ID:         "default-pii",
 		Name:       "PII heuristic",
@@ -459,6 +471,11 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 		snap.Eval.PIIEnabled = ps.PIIEnabled
 		snap.Eval.CompletenessEnabled = ps.CompletenessEnabled
 	}
+
+	// Surface which seeding policy this pod is running with so the
+	// console can render a banner ("plugin-only mode") without
+	// having to keep its own copy of the env var.
+	snap.PluginOnly = c.cfg.EvalPluginOnly
 
 	if c.modelRouter != nil {
 		w := c.modelRouter.Weights()

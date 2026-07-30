@@ -85,6 +85,11 @@ data:
   NEXUS_EVAL_SERVICE_TIMEOUT: {{ . | quote }}
   {{- end }}
 
+  {{- /* Plugin-only mode: skip seeded heuristic profiles (PII / Completeness).
+       Operators flipping this on want scoring to come exclusively from
+       external EvalPlugins (LangSmith, Langfuse, Datadog, Confident AI, …). */}}
+  NEXUS_EVAL_PLUGIN_ONLY: {{ .Values.config.evalPluginOnly | default false | quote }}
+
   {{- /* Semantic cache */}}
   NEXUS_SEMANTIC_CACHE_ENABLED: {{ .Values.config.semanticCache.enabled | quote }}
   {{- with .Values.config.semanticCache.ttl }}

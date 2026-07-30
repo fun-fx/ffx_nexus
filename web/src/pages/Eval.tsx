@@ -270,6 +270,7 @@ export function Eval() {
       </header>
 
       <LegacyDeprecationBanner profiles={profilesQ.data ?? []} />
+      <PluginOnlyBanner active={cfg.plugin_only} />
 
       <EvaluatorsCard
         rules={heur}
@@ -941,6 +942,30 @@ function LegacyDeprecationBanner({ profiles }: { profiles: EvalProfile[] }) {
         <a href="/eval/plugins">Eval plugins</a> (LangSmith, Langfuse,
         Datadog, …) — same functionality, no in-cluster Ollama or
         Python sidecar required.
+      </p>
+    </div>
+  );
+}
+
+// PluginOnlyBanner renders when the pod booted with
+// NEXUS_EVAL_PLUGIN_ONLY=true. The dashboard's heuristic PII /
+// Completeness rows intentionally show as "off / not seeded" and
+// the admin relies on external EvalPlugins for scoring. The banner
+// explains the seam so a downtime isn't blamed on a missing profile.
+function PluginOnlyBanner({ active }: { active: boolean }) {
+  if (!active) return null;
+  return (
+    <div className="tier-card" role="status" data-tone="info">
+      <h2 className="tier-card-title">Plugin-only eval mode</h2>
+      <p className="tier-card-desc">
+        This pod was started with{" "}
+        <code>NEXUS_EVAL_PLUGIN_ONLY=true</code>. Built-in
+        heuristic profiles (PII, Completeness) are not auto-seeded
+        and the in-cluster Ollama judge / Python sidecar stay
+        disabled. Eval scoring comes <em>only</em> from the plugins
+        below. To re-enable heuristic seeding, edit the chart's
+        <code>config.evalPluginOnly</code> value (or unset
+        <code> NEXUS_EVAL_PLUGIN_ONLY</code>) and roll the pod.
       </p>
     </div>
   );

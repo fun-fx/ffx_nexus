@@ -45,6 +45,12 @@ type EvalConfigSnapshot struct {
 		GroupsSpec  string              `json:"groups_spec"`
 		LoadBalance bool                `json:"load_balance"`
 	} `json:"routing"`
+	// PluginOnly is true when NEXUS_EVAL_PLUGIN_ONLY is set at
+	// boot — the runtime controller did not seed built-in
+	// heuristic profiles on this pod. Operators use this to
+	// surface "this cluster only scores via plugins" in the
+	// console without gutting the existing store contents.
+	PluginOnly      bool     `json:"plugin_only"`
 	RestartRequired []string `json:"restart_required"`
 }
 

@@ -133,6 +133,13 @@ Gateway: <http://localhost:8080>
 **Postgres** when `NEXUS_POSTGRES_URL` is set; otherwise they are discarded (noop sink).
 Quality-aware routing and trace history in Overview still need ClickHouse.
 
+**Plugin-only mode:** flip `NEXUS_EVAL_PLUGIN_ONLY=true` (or set `config.evalPluginOnly: true` in
+the Helm chart) to suppress seeding of the built-in heuristic profiles (PII, Completeness) and
+the legacy `slm_judge` / `remote_eval` profiles. Scoring then comes exclusively from external
+EvalPlugins configured in the console (LangSmith, Langfuse, Datadog, Confident AI, …). The
+toggle is non-destructive — rows already in the profile store are not deleted. Drop them in
+the console if you want a clean slate on the next boot.
+
 > **Tip:** the manual path uses the binary's upstream defaults (`:8080`/`:8081`).
 > If you arrived here from the one-line installer at the top of this page, your
 > Console is on <http://localhost:8091> and your Gateway on <http://localhost:8090>.
