@@ -62,6 +62,79 @@ func resultOutput(t observability.Trace) string {
 	return ""
 }
 
+// referenceFor chooses the reference (ground truth) string a
+// metric will be scored against. The lookup precedence is:
+//
+//  1. `args["reference"]` — literal string supplied in the manifest.
+//     Preserves back-compat with old manifests that wrote
+//     `args.reference: "ground truth"` instead of the new
+//     `references_from` path-style.
+//  2. `args["references_from"]` — flat-key path on the trace:
+//     - "trace.eval_reference" — Trace.EvalReference.
+//     - "trace.output_messages" — the model's reply as ref.
+//     - "trace.input_messages" — the user's prompt as ref.
+//     - "trace.metadata.<key>" — flat lookup in EvalMetadata.
+//  3. Trace.EvalReference — the canonical place to put a
+//     ground-truth value when one isn't specified per-metric.
+//  4. Trace.OutputMessages — so the metric still computes
+//     something rather than 0.0.
+func referenceFor(args map[string]any, t observability.Trace) string {
+	if args != nil {
+		if v, ok := args["reference"]; ok {
+			if s := coerceString(v); s != "" {
+				return s
+			}
+		}
+	}
+	path := stringArg(args, "references_from", "")
+	if path == "" {
+		if t.EvalReference != "" {
+			return t.EvalReference
+		}
+		return resultOutput(t)
+	}
+	switch {
+	case path == "trace.eval_reference":
+		return t.EvalReference
+	case path == "trace.output_messages":
+		return t.OutputMessages
+	case path == "trace.input_messages":
+		return t.InputMessages
+	case strings.HasPrefix(path, "trace.metadata."):
+		k := strings.TrimPrefix(path, "trace.metadata.")
+		if v, ok := t.EvalMetadata[k]; ok {
+			if s := coerceString(v); s != "" {
+				return s
+			}
+		}
+		return ""
+	default:
+		// Literal arg override (operators who want to inline the
+		// reference in the manifest as the path value itself).
+		return path
+	}
+}
+
+// coerceString accepts string-like args (string, fmt.Stringer).
+// Authors who wrote `reference: 42` to express the literal "42"
+// fall back to fmt.Sprint(v) so the metric isn't permanently
+// confused; bool args default to "" so a manifest typo like
+// `reference: true` doesn't accidentally compare against "true".
+func coerceString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case fmt.Stringer:
+		return x.String()
+	case bool:
+		return ""
+	case []byte:
+		return string(x)
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
 // traceID returns whatever the trace has by way of identifier. It
 // is always non-empty so Score rows never break the schema, even
 // when the upstream trace was synthesised by a unit test.
@@ -203,7 +276,7 @@ func boolToFloat(b bool) float64 {
 // doesn't panic.
 func evalExactMatch(_ context.Context, args map[string]any, t observability.Trace) ([]evals.Score, error) {
 	pred := stringArg(args, "prediction", resultOutput(t))
-	ref := strings.TrimSpace(stringArg(args, "reference", ""))
+	ref := strings.TrimSpace(referenceFor(args, t))
 	if ref == "" {
 		return []evals.Score{makeScore(t, "exact_match", 0.0, false, "no reference supplied")}, nil
 	}
@@ -226,7 +299,7 @@ func evalExactMatch(_ context.Context, args map[string]any, t observability.Trac
 // default.
 func evalRougeL(_ context.Context, args map[string]any, t observability.Trace) ([]evals.Score, error) {
 	pred := stringArg(args, "prediction", resultOutput(t))
-	ref := stringArg(args, "reference", "")
+	ref := referenceFor(args, t)
 	if ref == "" {
 		return []evals.Score{makeScore(t, "rouge_l", 0.0, false, "no reference supplied")}, nil
 	}
@@ -240,9 +313,9 @@ func evalRougeL(_ context.Context, args map[string]any, t observability.Trace) (
 // rougeL returns F-measure of the LCS between prediction and
 // reference. The standard ROUGE formula is:
 //
-//   R = |LCS| / |reference|
-//   P = |LCS| / |prediction|
-//   F = ((1 + β²) · R · P) / (R + β² · P)
+//	R = |LCS| / |reference|
+//	P = |LCS| / |prediction|
+//	F = ((1 + β²) · R · P) / (R + β² · P)
 //
 // Edge cases: empty prediction or reference returns 0.0.
 func rougeL(prediction, reference string, beta float64) float64 {

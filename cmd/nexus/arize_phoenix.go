@@ -15,7 +15,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,7 +42,7 @@ func arizePhoenixTransmit(ctx context.Context, tgt external.Target, payload map[
 	req.Header.Set("User-Agent", "nexus-eval-plugin/1.0 (arize_phoenix)")
 	var primary string
 	switch {
-	case hasPair(tgt.Auth):
+	case pairOK(tgt.Auth):
 		user, pass, _ := tgt.Auth.Pair()
 		req.SetBasicAuth(user, pass)
 	default:
@@ -70,6 +69,10 @@ func arizePhoenixTransmit(ctx context.Context, tgt external.Target, payload map[
 	return nil
 }
 
-func arizePhoenixFetch(_ context.Context, _ external.Target) ([]json.RawMessage, error) {
-	return nil, nil
-}
+// pairOK is a friendly wrapper around Credentials.Pair() that
+// returns true only when both halves resolved to non-empty
+// strings. Shared between confident_ai.go and arize_phoenix.go —
+// a stub function whose only job is to make the switch arm
+// readable ("Pair() returns 'ok'") rather than have to inline
+// three return-value destructuring inside the case body.
+func pairOK(c external.Credentials) bool { _, _, ok := c.Pair(); return ok }

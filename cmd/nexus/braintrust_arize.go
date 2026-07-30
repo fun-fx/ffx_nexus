@@ -13,7 +13,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -51,10 +50,6 @@ func braintrustTransmit(ctx context.Context, tgt external.Target, payload map[st
 	return nil
 }
 
-func braintrustFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
-	return nil, nil
-}
-
 func arizeTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
 	url := joinEndpoint(tgt.Endpoint, "/v1/span_annotations")
 	body, ct, err := jsonBody(payload)
@@ -83,8 +78,4 @@ func arizeTransmit(ctx context.Context, tgt external.Target, payload map[string]
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
-}
-
-func arizeFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
-	return nil, nil
 }

@@ -57,7 +57,7 @@ func (s *stubKeys) Set(plugin string, kv map[string]string) {
 	s.data[plugin] = c
 }
 
-func (s *stubKeys) Clear(plugin string)                                          { s.Set(plugin, nil) }
+func (s *stubKeys) Clear(plugin string) { s.Set(plugin, nil) }
 func (s *stubKeys) Has(plugin string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -196,9 +196,9 @@ func TestGetPluginKeys_EmptyPluginReportsNames(t *testing.T) {
 		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
 	}
 	var out struct {
-		Plugin     string `json:"plugin"`
-		Configured bool   `json:"configured"`
-		Required   []string  `json:"required_key_names"`
+		Plugin     string            `json:"plugin"`
+		Configured bool              `json:"configured"`
+		Required   []string          `json:"required_key_names"`
 		Keys       []pluginKeysEntry `json:"keys"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -242,7 +242,7 @@ func TestPutAndGetPluginKeys_RoundTrip(t *testing.T) {
 		t.Fatalf("GET want 200, got %d", getRec.Code)
 	}
 	var out struct {
-		Configured bool `json:"configured"`
+		Configured bool              `json:"configured"`
 		Keys       []pluginKeysEntry `json:"keys"`
 	}
 	if err := json.Unmarshal(getRec.Body.Bytes(), &out); err != nil {

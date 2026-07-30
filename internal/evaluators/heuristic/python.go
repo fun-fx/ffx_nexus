@@ -23,12 +23,12 @@ import (
 //
 // Why subprocess and not in-process? Two reasons:
 //
-//   1. HF Evaluate, LightEval and Ragas all import numpy and pytorch.
-//      A Nexus process that ever imports torch inflates its cold-start
-//      OOM class from ~80 MiB to >400 MiB and breaks the
-//      "ship-by-default simple" promise.
-//   2. Ragas and LightEval both currently require Python 3.10+ which
-//      pinches the binary builder's available interpreters.
+//  1. HF Evaluate, LightEval and Ragas all import numpy and pytorch.
+//     A Nexus process that ever imports torch inflates its cold-start
+//     OOM class from ~80 MiB to >400 MiB and breaks the
+//     "ship-by-default simple" promise.
+//  2. Ragas and LightEval both currently require Python 3.10+ which
+//     pinches the binary builder's available interpreters.
 //
 // Subprocess has a downside: cold-start latency (~700 ms on first
 // run when the venv is cold). For now we treat that as a one-time
@@ -42,25 +42,25 @@ import (
 //
 // Protocol:
 //
-//   request:
+//	request:
 //
-//     {"id":"<trace-id>","metric":"hf_evaluate",
-//      "args":{"name":"exact_match"},
-//      "input":"the prediction text","reference":"the reference"}
+//	  {"id":"<trace-id>","metric":"hf_evaluate",
+//	   "args":{"name":"exact_match"},
+//	   "input":"the prediction text","reference":"the reference"}
 //
-//   reply:
+//	reply:
 //
-//     {"id":"<trace-id>","value":1.0,"label":"pass","duration_ms":3}
+//	  {"id":"<trace-id>","value":1.0,"label":"pass","duration_ms":3}
 //
-//   error:
+//	error:
 //
-//     {"id":"<trace-id>","error":"name 'exact_match' is not defined"}
+//	  {"id":"<trace-id>","error":"name 'exact_match' is not defined"}
 type PythonClient struct {
-	cmd     *exec.Cmd
-	in      io.WriteCloser
-	out     *bufio.Reader
-	errs    chan error
-	done    chan struct{}
+	cmd  *exec.Cmd
+	in   io.WriteCloser
+	out  *bufio.Reader
+	errs chan error
+	done chan struct{}
 
 	// softTimeoutMs bounds per-call latency inside the subprocess
 	// (ms). Above this, the call returns an error and does not
@@ -99,12 +99,12 @@ func EvaluatePython(ctx context.Context, kind string, args map[string]any, t obs
 	defer func() { _ = client.close() }()
 
 	req := map[string]any{
-		"id":         t.TraceID,
-		"metric":     kind,
-		"name":       name,
-		"args":       args,
-		"input":      resultOutput(t),
-		"reference":  stringArg(args, "reference", t.EvalReference),
+		"id":        t.TraceID,
+		"metric":    kind,
+		"name":      name,
+		"args":      args,
+		"input":     resultOutput(t),
+		"reference": stringArg(args, "reference", t.EvalReference),
 	}
 	reqJSON, err := json.Marshal(req)
 	if err != nil {
@@ -123,8 +123,8 @@ func EvaluatePython(ctx context.Context, kind string, args map[string]any, t obs
 	defer cancel()
 
 	type result struct {
-		line  string
-		err   error
+		line string
+		err  error
 	}
 	resultCh := make(chan result, 1)
 	go func() {

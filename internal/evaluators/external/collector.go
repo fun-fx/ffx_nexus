@@ -42,6 +42,7 @@ type Collector struct {
 	client   *http.Client
 	secrets  SecretResolver
 	log      *slog.Logger
+	evSink   evals.OTLPEvaluationLogSink
 	// running tracks the poll goroutine per plugin name so the
 	// supervisor can start pollers for plugins created after boot and
 	// stop them once the plugin is deleted or disabled.
@@ -61,6 +62,7 @@ func NewCollector(reg *evalplugin.Registry, sink evals.Sink, httpClient *http.Cl
 		client:   httpClient,
 		collects: make(map[evalplugin.ServiceType]CollectFunc),
 		running:  make(map[string]context.CancelFunc),
+		evSink:   evals.NoopLogSink{},
 	}
 }
 
@@ -76,6 +78,21 @@ func (c *Collector) SetLogger(l *slog.Logger) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.log = l
+}
+
+// SetEvaluationLogSink installs the OTLP sink that every score
+// Apply() produces will be fanned out to. Leave nil to install
+// the noop sink (default). The fan-out happens after WriteScores,
+// so a sink failure cannot lose a score that's already persisted
+// to ClickHouse/Postgres; it just won't be mirrored to OTLP-aware
+// collectors.
+func (c *Collector) SetEvaluationLogSink(s evals.OTLPEvaluationLogSink) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s == nil {
+		s = evals.NoopLogSink{}
+	}
+	c.evSink = s
 }
 
 // Register attaches a CollectFunc for a vendor. Mirrors
@@ -218,7 +235,34 @@ func (c *Collector) applyAll(ctx context.Context, p *evalplugin.Plugin, payloads
 	if err := c.sink.WriteScores(ctx, scores); err != nil {
 		c.logf("plugin score write failed", "plugin", p.Metadata.Name,
 			"count", len(scores), "err", err)
+		return
 	}
+	c.fanOutEvalEvents(ctx, scores)
+}
+
+// fanOutEvalEvents sends each successfully-persisted score into
+// the OTLP sink SetEvaluationLogSink wires. Failures here cannot
+// lose a score that's already in the durable sink; they're logged
+// at warn level because the only way to reach this path is for
+// the OTLP endpoint to be down — an actionable condition.
+func (c *Collector) fanOutEvalEvents(ctx context.Context, scores []evals.Score) {
+	sink := c.evalLogSink()
+	if sink == nil {
+		return
+	}
+	for i := range scores {
+		err := sink.EmitShip(ctx, scores[i].TraceID, scores[i])
+		if err != nil {
+			c.logf("otlp evaluation event emit failed",
+				"plugin", "see_call_site", "err", err)
+		}
+	}
+}
+
+func (c *Collector) evalLogSink() evals.OTLPEvaluationLogSink {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.evSink
 }
 
 // Webhook processes a single inbound HTTP request from an external

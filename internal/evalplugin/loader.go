@@ -24,7 +24,11 @@ func (r *Registry) LoadFromFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	plugins, err := DecodeMany(raw)
+	// DecodeManyStrict runs Validate per document, so any manifest
+	// that opts into `spec.flags: [strict]` emits its unknown-field
+	// warnings immediately at boot rather than only on the next
+	// admin Save/Patch.
+	plugins, err := DecodeManyStrict(raw)
 	if err != nil {
 		return err
 	}

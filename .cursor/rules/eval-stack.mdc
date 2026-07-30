@@ -1,0 +1,40 @@
+---
+description: Two-mode mental model for Nexus's eval stack — heuristic (in-process) vs external (config-only)
+alwaysApply: true
+---
+
+# Eval Stack — Two-Mode Mental Model
+
+Nexus separates evaluation execution into exactly **two modes**. Stop adding evaluator kinds without a concrete adapter or in-process metric — candle vendor bandwidth is finite and the closed enum is a feature, not a limitation.
+
+## Mode 1 — `heuristic_metric` (in-process, deterministic, zero-egress)
+
+`spec.service.type: heuristic` runs the metric inside the gateway worker. No HTTPS call, no OTLP send, no auth block. The closed enum lives in `internal/evalplugin/types.go` (`ValidMetricNames`) and dispatches to either in-process Go metrics (`internal/evaluators/heuristic/local.go`) or a Python subprocess (`internal/evaluators/heuristic/python.go`).
+
+Closed metric names today: `contains`, `pii`, `exact_match`, `rouge_l`, `hf_evaluate`, `lighteval`, `ragas`.
+
+Mental bridge: **PrimeIntellect local-mode (`prime eval` without `--hosted`)**.
+
+## Mode 2 — `external` (config-only, OTLP send, webhook/poll collect, multi-tenant)
+
+A YAML manifest declares `spec.service.type: langfuse | langsmith | datadog | braintrust | arize | confident_ai | arize_phoenix | otel_collector | webhook`. Nexus forwards traces, vendor computes scores, scores come back through a webhook push or polling reverse channel, normalised to `gen_ai.evaluation.result` and persisted to `eval_scores`.
+
+Closed adapter shapes today: langsmith, langfuse, datadog, braintrust, arize, confident_ai, arize_phoenix, otel_collector, webhook.
+
+Mental bridge: **PrimeIntellect hosted-mode (`prime eval --hosted`)**.
+
+## PII Heuristic Must Remain Default-On
+
+The legacy `heuristic_pii` evaluator is the only local analogue of Confident AI / DeepEval's adversarial-quality-bar metric. Do not turn heuristic_pii off if an external plugin is enabled — the heuristic runs before egress (redacts the trace), the plugin runs after (sees a redacted copy but never the original prompt).
+
+## Tracing Convention
+
+Vendor-native ingest (Langfuse, LangSmith, Confident AI, Arize Phoenix, Datadog) accepts OTLP envelopes. Nexus also emits a `gen_ai.evaluation.result` OTLP envelope to `NEXUS_OTLP_LOGS_ENDPOINT` (when set) so OTLP-aware collectors can post-process without re-running the metric. See `internal/evals/otel_sink.go` and `internal/evals/otel.go`.
+
+## Strict-Mode Warnings
+
+`spec.flags: [strict]` makes `internal/evalplugin/decode.go`'s `DecodeStrict` capture unknown `spec.<key>` fields and pipe them to the operator via `evalplugin.StrictFieldSink`. main.go routes these to slog at warn level — a typo like `trigger: onTraces` (capital T) is loud at boot instead of silent.
+
+## Strict Two-Path Classification for New Eval Requests
+
+When adding new metric or vendor capacity: a new evaluator kind is either **in-process** (zero egress, runs synchronously inside the worker) or **external** (YAML manifest, OTLP send, webhook/poll collect). It cannot be both, and it cannot be neither. If the request is "do this evaluation fast and don't ship my prompts anywhere," it's heuristic. If the request is "let an external service score my traces over its own auth and quota," it's external. Choose based on the bandwidth/quality/spend trade, not on what language you want to write code in.

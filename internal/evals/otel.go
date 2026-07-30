@@ -110,6 +110,44 @@ func OTLPEvaluationEventJSON(traceID string, score Score) ([]byte, error) {
 	return json.Marshal(OTLPEvaluationEventEnvelope(traceID, score))
 }
 
+// OTLPEvaluationBatchEnvelope renders a list of scores as a single
+// OTLP/JSON resourceSpans envelope carrying one span per score.
+//
+// We deliberately use the span envelope shape rather than the
+// logRecords shape so the same OTLP receiver parser — the one
+// grade libraries' span parsers already use — can also extract
+// our evaluation events. The collector does not care about the
+// distinction between "we polled traces" and "we polled scores"
+// as long as the events have the right `event.name`
+// (`gen_ai.evaluation.result`) attribute.
+func OTLPEvaluationBatchEnvelope(scores []Score) map[string]any {
+	if len(scores) == 0 {
+		return map[string]any{"resourceSpans": []map[string]any{}}
+	}
+	spans := make([]map[string]any, 0, len(scores))
+	for _, sc := range scores {
+		spans = append(spans, OTLPEvaluationEvent(sc.TraceID, sc))
+	}
+	return map[string]any{
+		"resourceSpans": []map[string]any{
+			{
+				"resource": map[string]any{
+					"attributes": []map[string]any{
+						kvOTLP("service.name", "nexus"),
+						kvOTLP("telemetry.sdk.language", "go"),
+					},
+				},
+				"scopeSpans": []map[string]any{
+					{
+						"scope": map[string]any{"name": "nexus.eval"},
+						"spans": spans,
+					},
+				},
+			},
+		},
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers — kept here rather than in internal/observability to avoid
 // pulling that package from evals (the reverse direction is fine:
