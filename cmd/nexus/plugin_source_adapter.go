@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"github.com/ffxnexus/nexus/internal/console"
@@ -14,6 +15,7 @@ import (
 type pluginSourceAdapter struct {
 	reg   *evalplugin.Registry
 	store evalplugin.PluginStore
+	log   *slog.Logger
 }
 
 func (a pluginSourceAdapter) List(ctx context.Context, orgID string) ([]evalplugin.PluginRecord, error) {
@@ -51,7 +53,42 @@ func (a pluginSourceAdapter) Save(ctx context.Context, r *evalplugin.PluginRecor
 			a.reg.Remove(prevOrg, prevName)
 		}
 	}
+	a.reportLiveState(r)
 	return nil
+}
+
+// reportLiveState records whether the row that was just written is the
+// one the dispatcher will actually use. A stored-but-not-live plugin has
+// no other symptom: the console lists it as enabled while the vendor
+// dashboard stays empty, and nothing in the log says which of the two
+// views is the truth.
+func (a pluginSourceAdapter) reportLiveState(r *evalplugin.PluginRecord) {
+	if a.log == nil || a.reg == nil || r == nil {
+		return
+	}
+	org, name := a.identifyRecord(r)
+	live, ok := a.reg.LookupForOrg(org, name)
+	switch {
+	case !ok:
+		a.log.Warn("eval plugin stored but not live in registry: it will not receive traces until the next reconcile",
+			"plugin", name, "org", pluginOrgLabel(org))
+	case live.Enabled != r.Enabled:
+		a.log.Warn("eval plugin stored with a different enabled state than the live registry entry",
+			"plugin", name, "org", pluginOrgLabel(org),
+			"stored_enabled", r.Enabled, "live_enabled", live.Enabled)
+	default:
+		a.log.Info("eval plugin live", "plugin", name,
+			"org", pluginOrgLabel(org), "enabled", live.Enabled)
+	}
+}
+
+// pluginOrgLabel names the cluster-wide scope instead of logging a blank
+// value that reads like a missing field.
+func pluginOrgLabel(orgID string) string {
+	if orgID == "" {
+		return "(cluster-wide)"
+	}
+	return orgID
 }
 
 // identifyRecord resolves the registry address of an in-memory record.
@@ -107,14 +144,23 @@ func (a pluginSourceAdapter) mergeIntoRegistry(r *evalplugin.PluginRecord) {
 		// Handlers validate the manifest before Save, so a decode
 		// failure here means the row predates validation. Leave the
 		// registry untouched rather than dropping a good entry.
+		if a.log != nil {
+			a.log.Warn("eval plugin manifest failed strict decode; live registry unchanged",
+				"plugin", r.Name, "err", err)
+		}
 		return
 	}
-	_ = a.reg.Merge([]evalplugin.Record{{
+	discarded := a.reg.Merge([]evalplugin.Record{{
 		Plugin:  p,
 		Source:  evalplugin.Source{Kind: evalplugin.SourceDatabase, Ref: r.ID},
 		Enabled: r.Enabled,
 		OrgID:   evalplugin.NormalizeOrgID(r.OrgID),
 	}})
+	if len(discarded) > 0 && a.log != nil {
+		a.log.Warn("eval plugin not merged: a Helm-installed plugin of the same name takes precedence",
+			"plugin", p.Metadata.Name,
+			"org", pluginOrgLabel(evalplugin.NormalizeOrgID(r.OrgID)))
+	}
 }
 
 // identify resolves the registry address of a stored row. The registry

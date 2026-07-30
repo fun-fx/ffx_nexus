@@ -441,7 +441,20 @@ The runtime registry is keyed by `(org_id, metadata.name)`, so:
 
 Creating, editing, or deleting a plugin through the console updates
 the registry immediately, so the dispatcher picks up the change on the
-next trace instead of at the next pod restart.
+next trace instead of at the next pod restart. Each save logs the
+outcome — `eval plugin live` when the entry the dispatcher reads matches
+what was stored, and a warning naming the reason when it does not.
+
+That log line exists because the failure has no other symptom. A row
+that is stored but missing from the live registry looks *identical* to a
+vendor with nothing to report: the console lists the plugin as enabled,
+the Test button passes (it probes the vendor directly), and dispatch
+forwards nothing without an error. For the same reason the registry is
+re-derived from the database every minute, so drift is repaired within
+one interval instead of at the next restart — and a plugin installed
+through one replica reaches the others. A reconcile that changes
+nothing stays silent; one that moves the live set logs
+`eval plugin registry reconciled from database`.
 
 Polling follows within 30 seconds. The collector reconciles its poll
 goroutines against the registry on that cadence, so a `mode: poll` plugin
