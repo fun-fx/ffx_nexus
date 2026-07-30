@@ -60,6 +60,11 @@ export interface PluginFormState {
   collect: {
     mode: CollectMode;
     interval: string; // "60s", "1m", "60"
+    // `transport` is the v1alpha1 collect transport — `otel` for
+    // OTel/JSON envelopes, `webhook` for plain JSON, `raw` for
+    // verbatim. Kept optional because most forms leave it empty
+    // (the dispatcher defaults to JSON-incompatible-to-`webhook`).
+    transport?: "otel" | "webhook" | "raw";
     mapping: Array<{
       id: string;
       target: "name" | "score" | "label" | "explanation" | "trace_id" | "metric";
@@ -499,6 +504,9 @@ export function serializeFormToYaml(form: PluginFormState): string {
   if (form.collect.interval.trim()) {
     lines.push(`    interval: ${form.collect.interval.trim()}`);
   }
+  if (form.collect.transport) {
+    lines.push(`    transport: ${form.collect.transport}`);
+  }
   if (form.collect.mapping.length > 0) {
     const entries = form.collect.mapping
       .filter((m) => m.jpath.trim())
@@ -561,6 +569,7 @@ export function parseYamlToForm(yaml: string): PluginFormState {
       mode: seed.collect.mode,
       interval: seed.collect.interval,
       mapping: [],
+      transport: undefined,
     },
     timeout: "",
   };
@@ -706,7 +715,11 @@ export function parseYamlToForm(yaml: string): PluginFormState {
         if (v === "sync") out.collect.mode = "webhook";
         else if (v === "webhook" || v === "poll") out.collect.mode = v;
       } else if (k === "interval") out.collect.interval = v;
-      else if (k === "mapping") {
+      else if (k === "transport") {
+        if (v === "otel" || v === "webhook" || v === "raw") {
+          out.collect.transport = v;
+        }
+      } else if (k === "mapping") {
         if (v.length > 0) {
           for (const e of splitFlowEntries(v)) {
             pushMapping(out, e.k, e.v);
