@@ -36,7 +36,7 @@ func (r *Registry) LoadFromStore(ctx context.Context, store PluginStore, orgID s
 			// Carrying the row's org is what lets dispatch stay inside
 			// tenant boundaries; rows written as cluster-wide keep the
 			// empty string and are inherited by every org.
-			OrgID: rec.OrgID,
+			OrgID: NormalizeOrgID(rec.OrgID),
 		})
 	}
 	_ = r.Merge(in) // discarded records are logged at the caller layer

@@ -87,6 +87,49 @@ func TestEvaluateStaysInsideTenantBoundary(t *testing.T) {
 	}
 }
 
+// TestEvaluateDispatchesClusterWidePluginToEveryOrg pins the scope that
+// a console install now gets. A plugin stored without an explicit org is
+// cluster-wide, so it has to fire for a trace whose org is the virtual
+// key's real id. Stamping such a row with the console's "default"
+// placeholder instead made it match no traffic at all, and because the
+// dispatch loop simply found nothing to do, the failure was invisible:
+// the plugin read as enabled, Test passed, and the vendor dashboard
+// stayed empty.
+func TestEvaluateDispatchesClusterWidePluginToEveryOrg(t *testing.T) {
+	reg := evalplugin.NewRegistry()
+	reg.Merge([]evalplugin.Record{{
+		Plugin:  pluginFor(t, "langfuse-judge", "us.cloud.langfuse.com"),
+		Source:  evalplugin.Source{Kind: evalplugin.SourceDatabase},
+		Enabled: true,
+		OrgID:   evalplugin.NormalizeOrgID("default"),
+	}})
+
+	var mu sync.Mutex
+	var contacted []string
+	d := NewDispatcher(reg, nil)
+	d.SetSecretResolver(stubResolver{creds: Credentials{Values: []string{"pk", "sk"}}})
+	d.Register(evalplugin.ServiceLangfuse, func(_ context.Context, tgt Target, _ map[string]any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		contacted = append(contacted, tgt.Endpoint)
+		return nil
+	})
+
+	m := NewMultiEvaluator(reg, d)
+	// An org id shaped like the one a virtual key carries in production.
+	trace := observability.Trace{OrgID: "3f9c1e6a-0f21-4c1e-9b7a-1d2e3f4a5b6c"}
+	if _, err := m.Evaluate(context.Background(), trace); err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+
+	mu.Lock()
+	got := append([]string(nil), contacted...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "https://us.cloud.langfuse.com" {
+		t.Fatalf("cluster-wide plugin did not receive the trace, contacted=%v", got)
+	}
+}
+
 func pluginFor(t *testing.T, name, host string) *evalplugin.Plugin {
 	t.Helper()
 	raw := strings.Replace(orgScopedManifest, "PLUGIN_NAME", name, 1)

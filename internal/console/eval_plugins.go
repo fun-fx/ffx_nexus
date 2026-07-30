@@ -104,7 +104,14 @@ func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		return
 	}
 	rec := &evalplugin.PluginRecord{
-		OrgID:    orgID(r),
+		// Plugin scope is compared against the *trace's* org id, which is
+		// the virtual key's real org — never the "default" placeholder
+		// orgID() returns for a request without an explicit X-Org-Id. A
+		// row stamped with the placeholder therefore matched no traffic
+		// and was skipped silently. Absent the header, store the row as
+		// cluster-wide, which is what installing a plugin from the
+		// console means. An explicit header still scopes it to that org.
+		OrgID:    evalplugin.NormalizeOrgID(orgID(r)),
 		Name:     body.Name,
 		SpecYAML: body.SpecYAML,
 		Enabled:  body.Enabled,
