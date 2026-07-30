@@ -204,4 +204,19 @@ describe("pluginManifest survey-driven presets", () => {
       expect(HEURISTIC_PRESETS[k].metric).toBe(k);
     }
   });
+
+  it("otel_collector preset round-trips with collect.transport set", () => {
+    // `transport: otel` is what the v1alpha1 otel_collector adapter
+    // dispatcher reads; we have to make sure the form→yaml→form
+    // round trip keeps the field or the created plugin silently
+    // regresses to default behaviour.
+    const preset = PLUGIN_PRESETS["otel_collector"];
+    expect(preset).toBeDefined();
+    expect(preset.form.collect.transport).toBe("otel");
+    const yaml = serializeFormToYaml(preset.form);
+    expect(yaml).toMatch(/transport:\s*otel/);
+    const parsed = parseYamlToForm(yaml);
+    expect(parsed.collect.transport).toBe("otel");
+    expect(parsed.service.kind).toBe("otel_collector");
+  });
 });
