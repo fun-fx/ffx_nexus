@@ -228,21 +228,7 @@ function FormMode({
             placeholder="https://cloud.langfuse.com"
           />
         </FieldRow>
-        <FieldRow label="Auth — K8s Secret name">
-          <input
-            className="input"
-            value={form.service.secretRef}
-            onChange={(e) => updateService({ secretRef: e.target.value })}
-            placeholder="langfuse-creds"
-          />
-          <p className="muted tiny">
-            Reference to a Kubernetes Secret. The Secret must hold the
-            public/secret key pair (or API token) under the keys listed
-            in "keyRef" below. Plaintext values are never written into
-            the plugin record.
-          </p>
-        </FieldRow>
-        <FieldRow label="Auth — keyRef (keys inside the Secret)">
+        <FieldRow label="Auth — keyRef (keys to enter in the Keys modal)">
           <input
             className="input"
             value={form.service.keyRef}
@@ -250,8 +236,13 @@ function FormMode({
             placeholder="public_key|secret_key"
           />
           <p className="muted tiny">
-            Use <code>key1|key2</code> for two-token auth (Langfuse),
-            or a single key name (LangSmith, Datadog).
+            Names of the keys the operator will paste into the{" "}
+            <strong>Keys</strong> button on the plugin row. Use{" "}
+            <code>key1|key2</code> for two-token auth (Langfuse), or a
+            single key name (LangSmith, Datadog, Confident AI,
+            Arize Phoenix, …). Values are stored in the Nexus
+            process only — never on disk, never in any Kubernetes
+            Secret, and wiped when the pod restarts.
           </p>
         </FieldRow>
       </Section>

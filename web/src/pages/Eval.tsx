@@ -17,6 +17,7 @@ import { Chip } from "../components/Chip";
 import { GradientText } from "../components/GradientText";
 import { Icon } from "../components/icons";
 import { LabelToggle } from "../components/LabelToggle";
+import { PluginKeysModal } from "../components/PluginKeysModal";
 import { fetchMe, type EvalProfile } from "../api";
 import { EvalProfilesCard } from "./EvalProfiles";
 import {
@@ -135,6 +136,11 @@ export function Eval() {
   const [pluginDrawer, setPluginDrawer] = useState<
     { open: boolean; initial?: PluginFormState }
   >({ open: false, initial: undefined });
+
+  // Plugin-keys modal state — mirrors the EvalPlugins page modal, so the
+  // integrated EvaluatorsCard row exposes the same API key entry
+  // affordance as the standalone plugins page. `null` means closed.
+  const [pluginKeysFor, setPluginKeysFor] = useState<string | null>(null);
 
   // Lifted weight state so the upper stats bar and the slider card stay in
   // sync after `Save weights` re-normalises the row. Hooks must run on
@@ -284,7 +290,7 @@ export function Eval() {
       </header>
 
       <LegacyDeprecationBanner profiles={profilesQ.data ?? []} />
-      <PluginOnlyBanner active={cfg.plugin_only} />
+      <PluginOnlyBanner active={cfg.plugin_only} purge={cfg.purge_legacy_profiles_on_boot} />
 
       <EvaluatorsCard
         rules={cfg.plugin_only ? undefined : heur}
@@ -307,6 +313,7 @@ export function Eval() {
         onEditPlugin={(rec) =>
           setPluginDrawer({ open: true, initial: parseYamlToForm(rec.spec_yaml ?? "") })
         }
+        onKeysPlugin={(name) => setPluginKeysFor(name)}
         pluginOnly={cfg.plugin_only}
       />
       <EvalProfilesCard
@@ -346,6 +353,11 @@ export function Eval() {
           setPluginDrawer({ open: false, initial: undefined });
         }}
       />
+      <PluginKeysModal
+        pluginName={pluginKeysFor ?? ""}
+        open={pluginKeysFor !== null}
+        onClose={() => setPluginKeysFor(null)}
+      />
     </div>
   );
 }
@@ -362,6 +374,7 @@ function EvaluatorsCard({
   onCreatePlugin,
   onCreatePluginWithKind,
   onEditPlugin,
+  onKeysPlugin,
   pluginOnly = false,
 }: {
   rules?: EvalRule[];
@@ -375,6 +388,7 @@ function EvaluatorsCard({
   onCreatePlugin: () => void;
   onCreatePluginWithKind: (kind: string) => void;
   onEditPlugin: (rec: EvalPluginRecord) => void;
+  onKeysPlugin: (pluginName: string) => void;
   pluginOnly?: boolean;
 }) {
   const qc = useQueryClient();
@@ -545,6 +559,14 @@ function EvaluatorsCard({
             disabled={isRowTesting}
           >
             {isRowTesting ? "Testing…" : "Test"}
+          </button>
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            onClick={() => onKeysPlugin?.(p.name)}
+            data-testid={`plugin-keys-button-${p.name}`}
+          >
+            <Icon.keys size={12} /> Keys
           </button>
           <button
             type="button"
@@ -992,20 +1014,43 @@ function LegacyDeprecationBanner({ profiles }: { profiles: EvalProfile[] }) {
 // Completeness rows intentionally show as "off / not seeded" and
 // the admin relies on external EvalPlugins for scoring. The banner
 // explains the seam so a downtime isn't blamed on a missing profile.
-function PluginOnlyBanner({ active }: { active: boolean }) {
-  if (!active) return null;
+function PluginOnlyBanner({ active, purge }: { active: boolean; purge: boolean }) {
+  if (!active && !purge) return null;
   return (
-    <div className="tier-card" role="status" data-tone="info">
-      <h2 className="tier-card-title">Plugin-only eval mode</h2>
+    <div className="tier-card" role="status" data-tone={purge ? "danger" : "info"}>
+      <h2 className="tier-card-title">
+        {purge ? "Plugin-only mode — legacy rows purged on boot" : "Plugin-only eval mode"}
+      </h2>
       <p className="tier-card-desc">
-        This pod was started with{" "}
-        <code>NEXUS_EVAL_PLUGIN_ONLY=true</code>. Built-in
-        heuristic profiles (PII, Completeness) are not auto-seeded
-        and the in-cluster Ollama judge / Python sidecar stay
-        disabled. Eval scoring comes <em>only</em> from the plugins
-        below. To re-enable heuristic seeding, edit the chart's
-        <code>config.evalPluginOnly</code> value (or unset
-        <code> NEXUS_EVAL_PLUGIN_ONLY</code>) and roll the pod.
+        {purge ? (
+          <>
+            This pod was started with both{" "}
+            <code>NEXUS_EVAL_PLUGIN_ONLY=true</code> and{" "}
+            <code>NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT=true</code>
+            . On each boot the controller hard-deletes the well-known
+            seed rows
+            {" "}<code>default-pii</code>, <code>default-completeness</code>,
+            {" "}<code>default-judge</code>, and <code>default-remote</code> from
+            the eval profile store. This is destructive: any non-plugin
+            PII / completeness protection must come from an external
+            EvalPlugin (Langfuse, Confident AI, Datadog LLM
+            Obs.) or traces will go unscored. To stop the purge, set
+            {" "}<code>config.purgeLegacyProfilesOnBoot: false</code>{" "}
+            (or unset <code>NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT</code>)
+            and roll the pod.
+          </>
+        ) : (
+          <>
+            This pod was started with{" "}
+            <code>NEXUS_EVAL_PLUGIN_ONLY=true</code>. Built-in
+            heuristic profiles (PII, Completeness) are not auto-seeded
+            and the in-cluster Ollama judge / Python sidecar stay
+            disabled. Eval scoring comes <em>only</em> from the plugins
+            below. To re-enable heuristic seeding, edit the chart's
+            <code>config.evalPluginOnly</code> value (or unset
+            <code> NEXUS_EVAL_PLUGIN_ONLY</code>) and roll the pod.
+          </>
+        )}
       </p>
     </div>
   );

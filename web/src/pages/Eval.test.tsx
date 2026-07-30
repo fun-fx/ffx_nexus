@@ -744,5 +744,51 @@ describe("<Eval /> plugin-only banner", () => {
       expect(screen.queryByTestId("plugin-quickstart")).toBeNull();
     });
   });
+
+  it("renders the Keys button on plugin rows in the main Evaluators card", async () => {
+    // /eval's merged EvaluatorsCard previously skipped the per-row
+    // "Keys" affordance — operators had to navigate to the standalone
+    // Plugins page to paste API keys. This regression check ensures
+    // the integrated view exposes the same action.
+    const plugins = [
+      {
+        id: "langfuse-judge",
+        name: "langfuse-judge",
+        enabled: true,
+        spec_yaml: "kind: EvalPlugin\n",
+        key_summary: { configured: true, missing: [] },
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/api/me")) {
+          return new Response(JSON.stringify(adminMe), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/config")) {
+          return new Response(JSON.stringify(buildBundle({})), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/profiles")) {
+          return new Response(JSON.stringify({ profiles: [] }), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/plugins")) {
+          return new Response(JSON.stringify({ plugins }), { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={qc}>
+          <Eval />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+    expect(
+      await screen.findByTestId("plugin-keys-button-langfuse-judge"),
+    ).toBeTruthy();
+  });
 });
 
