@@ -69,13 +69,28 @@ describe("pluginManifest round-trip", () => {
     expect(JSON.stringify(DEFAULT_PLUGIN_TEMPLATE)).toBe(before);
   });
 
-  it("emit wraps keyRef in a nested auth: block", () => {
-    const yaml = serializeFormToYaml(DEFAULT_PLUGIN_TEMPLATE);
+  it("emit wraps auth: with secretRef = form.name + keyRef from form", () => {
+    // PR #181 deliberately hid the secretRef field from the form
+    // because the legacy chart-level Secret pattern was confusing
+    // operators. But the server-side consoleKeyResolver still keys
+    // its credential table on `auth.secretRef`, treating it as the
+    // plugin's unique name. We therefore re-emit the field
+    // transparently here, always equal to the form's `name` so
+    // pasting keys in the Keys modal attaches them to the right
+    // plugin. The form does not expose secretRef as an editable
+    // field — the assertion confirms the rendered line, plus that
+    // it round-trips back to the form name.
+    const form = { ...DEFAULT_PLUGIN_TEMPLATE, name: "langfuse-judge" };
+    const yaml = serializeFormToYaml(form);
     expect(yaml).toContain("    auth:\n");
-    // secretRef must NOT appear in the rendered output. If it does the
-    // form has been re-introduced to a deserialised legacy secretRef.
-    expect(yaml).not.toMatch(/^\s+secretRef:/m);
+    expect(yaml).toMatch(/^\s+secretRef:\s*langfuse-judge\s*$/m);
     expect(yaml).toContain("      keyRef: public_key|secret_key\n");
+    const parsed = parseYamlToForm(yaml);
+    // Parsed form carries the secretRef back into a state that
+    // the operator can see in the inventory table (the row's id
+    // column reads from metadata.name + auth.secretRef equality),
+    // even though the form submit slice ignores it.
+    expect(parsed.name).toBe("langfuse-judge");
   });
 
   it("parser drops the legacy flat secretRef shape silently", () => {
