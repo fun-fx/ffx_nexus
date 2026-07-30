@@ -877,14 +877,17 @@ function safeParse(raw: string): {
 export function EvalPlugins() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingForm, setEditingForm] = useState<PluginFormState | undefined>(undefined);
+  const [editingId, setEditingId] = useState<string | undefined>(undefined);
 
   function openCreate() {
     setEditingForm(undefined);
+    setEditingId(undefined);
     setEditorOpen(true);
   }
 
   function openEdit(rec: EvalPluginRecord) {
     setEditingForm(parseYamlToForm(rec.spec_yaml ?? ""));
+    setEditingId(rec.id);
     setEditorOpen(true);
   }
 
@@ -904,6 +907,7 @@ export function EvalPlugins() {
       <PluginEditorDrawer
         open={editorOpen}
         initial={editingForm}
+        editingId={editingId}
         onClose={() => setEditorOpen(false)}
         onSaved={() => {
           /* the createM mutation already invalidates the list query */
@@ -925,11 +929,20 @@ export function EvalPlugins() {
 export function PluginEditorDrawer({
   open,
   initial,
+  editingId,
   onClose,
   onSaved,
 }: {
   open: boolean;
   initial?: PluginFormState;
+  /**
+   * Database id of the row being edited. Present only on edit. When it
+   * is set we PATCH that row instead of POSTing a new one: the create
+   * handler builds a record with an empty id, and the store treats an
+   * empty id as "insert", so reusing it for edits silently forked the
+   * plugin into two rows with the same metadata.name.
+   */
+  editingId?: string;
   onClose: () => void;
   onSaved: (rec: EvalPluginRecord, form: PluginFormState) => void;
 }) {
@@ -941,11 +954,13 @@ export function PluginEditorDrawer({
 
   const submitM = useMutation({
     mutationFn: (form: PluginFormState) =>
-      createEvalPlugin({
-        name: form.name.trim(),
-        spec_yaml: serializeFormToYaml(form),
-        enabled: true,
-      }),
+      editingId
+        ? patchEvalPlugin(editingId, { spec_yaml: serializeFormToYaml(form) })
+        : createEvalPlugin({
+            name: form.name.trim(),
+            spec_yaml: serializeFormToYaml(form),
+            enabled: true,
+          }),
     onSuccess: (rec, form) => {
       qc.invalidateQueries({ queryKey: ["eval-plugins"] });
       setError(null);

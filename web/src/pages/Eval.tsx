@@ -134,7 +134,7 @@ export function Eval() {
     refetchInterval: 30_000,
   });
   const [pluginDrawer, setPluginDrawer] = useState<
-    { open: boolean; initial?: PluginFormState }
+    { open: boolean; initial?: PluginFormState; editingId?: string }
   >({ open: false, initial: undefined });
 
   // Plugin-keys modal state — mirrors the EvalPlugins page modal, so the
@@ -311,7 +311,11 @@ export function Eval() {
           }
         }}
         onEditPlugin={(rec) =>
-          setPluginDrawer({ open: true, initial: parseYamlToForm(rec.spec_yaml ?? "") })
+          setPluginDrawer({
+            open: true,
+            initial: parseYamlToForm(rec.spec_yaml ?? ""),
+            editingId: rec.id,
+          })
         }
         onKeysPlugin={(name) => setPluginKeysFor(name)}
         pluginOnly={cfg.plugin_only}
@@ -348,9 +352,12 @@ export function Eval() {
       <PluginEditorDrawer
         open={pluginDrawer.open}
         initial={pluginDrawer.initial}
-        onClose={() => setPluginDrawer({ open: false, initial: undefined })}
+        editingId={pluginDrawer.editingId}
+        onClose={() =>
+          setPluginDrawer({ open: false, initial: undefined, editingId: undefined })
+        }
         onSaved={() => {
-          setPluginDrawer({ open: false, initial: undefined });
+          setPluginDrawer({ open: false, initial: undefined, editingId: undefined });
         }}
       />
       <PluginKeysModal

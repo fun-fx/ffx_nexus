@@ -790,5 +790,85 @@ describe("<Eval /> plugin-only banner", () => {
       await screen.findByTestId("plugin-keys-button-langfuse-judge"),
     ).toBeTruthy();
   });
+
+  it("saves an edited plugin with PATCH instead of forking a second row", async () => {
+    // The editor drawer used to POST unconditionally. Because the create
+    // handler builds a record with an empty id and the store treats an
+    // empty id as "insert", pressing Save changes produced a duplicate
+    // row carrying the same metadata.name — and the operator's endpoint
+    // edit never reached the row that Test probes.
+    const specYaml = [
+      "apiVersion: nexus.io/v1alpha1",
+      "kind: EvalPlugin",
+      "metadata:",
+      "  name: langfuse-judge",
+      "spec:",
+      "  service:",
+      "    type: langfuse",
+      "    endpoint: https://cloud.langfuse.com",
+      "    auth:",
+      "      secretRef: langfuse-judge",
+      "      keyRef: public_key|secret_key",
+      "  send:",
+      "    trigger: on_trace",
+      "    sampling: 0.1",
+      "    redact: []",
+      "  collect:",
+      "    mode: webhook",
+      "",
+    ].join("\n");
+    const writes: { method: string; url: string }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method?.toUpperCase() ?? "GET";
+        if (method !== "GET") writes.push({ method, url });
+        if (url.endsWith("/api/me")) {
+          return new Response(JSON.stringify(adminMe), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/config")) {
+          return new Response(JSON.stringify(buildBundle({})), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/profiles")) {
+          return new Response(JSON.stringify({ profiles: [] }), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/plugins") && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              plugins: [
+                {
+                  id: "row-9",
+                  name: "langfuse-judge",
+                  enabled: true,
+                  spec_yaml: specYaml,
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={qc}>
+          <Eval />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(await screen.findByText("Edit"));
+    fireEvent.click(await screen.findByText("Save changes"));
+
+    await waitFor(() => {
+      expect(writes.length).toBeGreaterThan(0);
+    });
+    expect(writes).toEqual([
+      { method: "PATCH", url: "/api/eval/plugins/row-9" },
+    ]);
+  });
 });
 
