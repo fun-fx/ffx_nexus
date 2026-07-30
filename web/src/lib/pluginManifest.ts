@@ -474,6 +474,17 @@ export function serializeFormToYaml(form: PluginFormState): string {
   lines.push(`    type: ${form.service.kind}`);
   lines.push(`    endpoint: ${form.service.endpoint.trim()}`);
   lines.push(`    auth:`);
+  // secretRef is the plugin's *unique name*, not a Kubernetes
+  // Secret. The server-side consoleKeyResolver looks up keys
+  // indexed by this name. PR #181 hid the field from the form
+  // because the legacy chart-level Secret pattern was confusing,
+  // but the field is still load-bearing for credential routing.
+  // We re-emit it transparently so the form's "name" field is the
+  // single source of truth: whatever name the operator types
+  // here, the credentials they paste in the Keys modal will be
+  // attached to that name. Operators never edit the field
+  // directly.
+  lines.push(`      secretRef: ${form.name.trim()}`);
   if (form.service.keyRef.trim()) {
     lines.push(`      keyRef: ${form.service.keyRef.trim()}`);
   }
