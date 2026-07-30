@@ -479,29 +479,29 @@ coverage out of the box.
 
 ## Credentials
 
-`spec.service.auth.secretRef` names a Kubernetes Secret and
-`auth.keyRef` names the keys inside it, pipe-separated and **in the
-order the vendor expects them**. Langfuse takes two, as public key then
-secret key:
+Keys are pasted into the console — the **Keys** button on the plugin
+row — and never appear in source-controlled YAML. The manifest only
+names them:
 
 ```yaml
 auth:
-  secretRef: langfuse-creds
-  keyRef: public_key|secret_key
+  secretRef: langfuse-judge      # the plugin's own metadata.name
+  keyRef: public_key|secret_key  # key names, in the order the vendor wants
 ```
 
-Nexus ships no Kubernetes client, so it cannot read a Secret through the
-API server. Credentials are resolved from the process environment
-instead, and the chart's `envFrom` is what puts them there. For each key
-the lookup order is:
+`auth.secretRef` is no longer a Kubernetes Secret name; it is the token
+the key store is addressed by, and the console emits the plugin's
+`metadata.name` for it automatically. `auth.keyRef` is pipe-separated and
+**ordered**: Langfuse takes public key then secret key, so a swapped pair
+authenticates as nothing.
 
-1. `NEXUS_PLUGIN_SECRET_<SECRETREF>_<KEY>`, e.g.
-   `NEXUS_PLUGIN_SECRET_LANGFUSE_CREDS_PUBLIC_KEY`. Prefer this once more
-   than one plugin is installed — it cannot collide.
-2. The bare key name, e.g. `PUBLIC_KEY`, which is what projecting the
-   Secret with `envFrom: [{secretRef: {name: langfuse-creds}}]` produces.
+Pasted values are encrypted with `NEXUS_MASTER_KEY` — the same key that
+protects `provider_credentials` — and stored in `eval_plugin_keys`. Each
+pod caches them in memory after the first read, and boot warms that
+cache, so dispatch pays no per-trace database round-trip.
 
-Both forms upper-case the name and fold non-alphanumerics to `_`.
+Deployments with no control-plane database keep the keys in process
+memory only, and they have to be re-pasted after a restart.
 
 A plugin that declares an auth block and whose keys do not resolve
 **fails dispatch and says so in the logs**. It does not fall back to an
@@ -510,10 +510,23 @@ invisible from Nexus, which reads as "the plugin works but the vendor has
 no data". A manifest with no auth block at all still dispatches, so
 self-hosted collectors that need no credential keep working.
 
-Press **Test** after wiring the Secret. For Langfuse the probe reads one
+Press **Test** after pasting the keys. For Langfuse the probe reads one
 score off the authenticated API, so it verifies the endpoint, the key
 pair and the API version together. Other vendors' probes only check that
 the host answers HTTP.
+
+Langfuse keys are also **region-scoped**: a key pair issued in the US
+project returns 401 against the EU endpoint. Pick the region in the
+plugin editor rather than editing the endpoint by hand.
+
+### Durability
+
+An install and its keys both outlive the pod that accepted them:
+`eval_plugins` holds the manifest and `eval_plugin_keys` holds the
+credentials. This was not always true — both lived in process memory, so
+every rolling update silently uninstalled every console-installed plugin
+while the console kept listing it as enabled, and **Test** kept passing
+because it ran in the same process as the paste that preceded it.
 
 ## Adapters currently shipped
 

@@ -11,7 +11,7 @@ import (
 )
 
 func TestConsoleKeyResolver_SetAndGetRoundTrip(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	r.Set("langfuse-judge", map[string]string{
 		"public_key": "pk-lf-abcdef1234567890",
 		"secret_key": "sk-lf-zzzzzzzzzzzzzzzz",
@@ -30,7 +30,7 @@ func TestConsoleKeyResolver_SetAndGetRoundTrip(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_ResolveRoundTrip(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	r.Set("langfuse-judge", map[string]string{
 		"public_key": "pk-lf-abc123",
 		"secret_key": "sk-lf-xyz789",
@@ -55,7 +55,7 @@ func TestConsoleKeyResolver_ResolveRoundTrip(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_NoAuthBlock(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	creds, err := r.Resolve(context.Background(), evalplugin.AuthSpec{})
 	if err != nil {
 		t.Fatalf("self-hosted plugins should resolve to empty creds: %v", err)
@@ -66,7 +66,7 @@ func TestConsoleKeyResolver_NoAuthBlock(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_NoKeysConfigured(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	_, err := r.Resolve(context.Background(), evalplugin.AuthSpec{
 		SecretRef: "langfuse-judge",
 		KeyRef:    "public_key|secret_key",
@@ -83,7 +83,7 @@ func TestConsoleKeyResolver_NoKeysConfigured(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_PartialKeys(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	r.Set("langfuse-judge", map[string]string{
 		"public_key": "pk-lf-abc123",
 		// secret_key intentionally omitted
@@ -101,7 +101,7 @@ func TestConsoleKeyResolver_PartialKeys(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_EmptyKeyRef(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	r.Set("langfuse-judge", map[string]string{"public_key": "pk"})
 	_, err := r.Resolve(context.Background(), evalplugin.AuthSpec{
 		SecretRef: "langfuse-judge",
@@ -113,7 +113,7 @@ func TestConsoleKeyResolver_EmptyKeyRef(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_Clear(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	r.Set("langfuse-judge", map[string]string{"public_key": "pk"})
 	r.Clear("langfuse-judge")
 	if r.Has("langfuse-judge") {
@@ -129,7 +129,7 @@ func TestConsoleKeyResolver_Clear(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_SetStripsEmpties(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	r.Set("langfuse-judge", map[string]string{
 		"public_key": "pk-lf-abc",
 		"unused":     "",
@@ -144,7 +144,7 @@ func TestConsoleKeyResolver_SetStripsEmpties(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_Has(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	if r.Has("ghost") {
 		t.Errorf("Has on empty resolver must be false")
 	}
@@ -159,7 +159,7 @@ func TestConsoleKeyResolver_Has(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_ConcurrentAccess(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	var wg sync.WaitGroup
 	const goroutines = 16
 	const iters = 200
@@ -199,7 +199,7 @@ func TestConsoleKeyResolver_ConcurrentAccess(t *testing.T) {
 }
 
 func TestConsoleKeyResolver_ErrorMessagesDoNotLeakValue(t *testing.T) {
-	r := newConsoleKeyResolver()
+	r := newConsoleKeyResolver(nil)
 	// Don't set the keys; the error path should not echo plugin values.
 	_, err := r.Resolve(context.Background(), evalplugin.AuthSpec{
 		SecretRef: "langfuse-judge",

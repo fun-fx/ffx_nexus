@@ -151,9 +151,9 @@ export function PluginKeysModal({
         {!loadError && state ? (
           <>
             <p className="muted small">
-              Values are stored in the Nexus process only — never on disk and
-              never in any Kubernetes Secret. They are wiped when the pod
-              restarts, and rotation works by{" "}
+              Values are encrypted with the Nexus master key and stored in the
+              control-plane database, so they survive a restart or a deploy.
+              They are never shown again after saving; rotation works by{" "}
               <strong>pasting the new values</strong> here.
             </p>
             <ul className="plugin-keys-list">

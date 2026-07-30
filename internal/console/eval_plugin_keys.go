@@ -14,7 +14,13 @@ import (
 
 // EvalPluginKeys is the resolver interface the Plugin Keys panel
 // talks to. The concrete implementation lives in cmd/nexus (see
-// plugin_keys.go) and stores values only in process memory.
+// plugin_keys.go); it caches values in memory and persists them
+// encrypted through the control-plane store.
+//
+// Set and Clear return an error because a key that reaches memory but
+// not the database looks configured until the next rolling update
+// quietly unconfigures it. Reporting the write failure is what turns
+// that into a visible problem.
 //
 // This interface deliberately does NOT expose Get / Set / Clear with
 // key *values* to the rest of the codebase — only the console REST
@@ -24,8 +30,8 @@ import (
 // bytes.
 type EvalPluginKeys interface {
 	Get(plugin string) (map[string]string, bool)
-	Set(plugin string, kv map[string]string)
-	Clear(plugin string)
+	Set(plugin string, kv map[string]string) error
+	Clear(plugin string) error
 	Has(plugin string) bool
 }
 
@@ -254,7 +260,13 @@ func (s *Server) putPluginKeys(w http.ResponseWriter, r *http.Request, u core.Us
 		}
 	}
 
-	s.pluginKeys.Set(name, body.Keys)
+	if err := s.pluginKeys.Set(name, body.Keys); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":      false,
+			"message": err.Error(),
+		})
+		return
+	}
 	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.keys.set", rec.ID, name)
 	writeJSON(w, http.StatusOK, pluginKeysState{
 		Plugin:     name,
@@ -290,7 +302,13 @@ func (s *Server) deletePluginKeys(w http.ResponseWriter, r *http.Request, u core
 		})
 		return
 	}
-	s.pluginKeys.Clear(name)
+	if err := s.pluginKeys.Clear(name); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":      false,
+			"message": err.Error(),
+		})
+		return
+	}
 	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.keys.clear", rec.ID, name)
 	writeJSON(w, http.StatusOK, pluginKeysState{
 		Plugin:     name,
