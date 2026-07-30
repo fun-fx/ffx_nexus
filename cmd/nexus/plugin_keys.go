@@ -123,7 +123,8 @@ func (r *consoleKeyResolver) Resolve(_ context.Context, auth evalplugin.AuthSpec
 	}
 	if auth.SecretRef == "" {
 		return external.Credentials{}, errors.New(
-			"auth.secretRef is empty: paste the keys in the Plugin Keys panel")
+			"auth.secretRef is empty (operator must paste the keys against a plugin " +
+				"name that matches the saved manifest's metadata.name)")
 	}
 	keys := splitKeyRef(auth.KeyRef)
 	if len(keys) == 0 {
