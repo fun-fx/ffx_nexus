@@ -50,7 +50,7 @@ type EvalConfigSnapshot struct {
 	// heuristic profiles on this pod. Operators use this to
 	// surface "this cluster only scores via plugins" in the
 	// console without gutting the existing store contents.
-	PluginOnly      bool     `json:"plugin_only"`
+	PluginOnly bool `json:"plugin_only"`
 	// PurgeLegacyProfilesOnBoot is the *destructive* companion
 	// flag. Paired with PluginOnly it tells the controller to
 	// hard-delete the four well-known default rows
@@ -59,7 +59,7 @@ type EvalConfigSnapshot struct {
 	// persistent banner whenever this is on so admins can
 	// correlate after-the-fact deletions with their explicit
 	// config change.
-	PurgeLegacyProfilesOnBoot bool `json:"purge_legacy_profiles_on_boot"`
+	PurgeLegacyProfilesOnBoot bool     `json:"purge_legacy_profiles_on_boot"`
 	RestartRequired           []string `json:"restart_required"`
 }
 
