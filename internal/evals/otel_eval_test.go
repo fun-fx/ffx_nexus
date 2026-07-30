@@ -37,11 +37,11 @@ func TestOTLPEvaluationEvent_MinimalShape(t *testing.T) {
 		t.Fatalf("attributes shape wrong: %T", events[0]["attributes"])
 	}
 	wantKeys := map[string]bool{
-		"gen_ai.evaluation.score.name":   false,
-		"gen_ai.evaluation.score.value":  false,
-		"gen_ai.evaluation.score.label":  false,
-		"gen_ai.evaluation.explanation":  false,
-		"gen_ai.evaluation.evaluator":    false,
+		"gen_ai.evaluation.score.name":  false,
+		"gen_ai.evaluation.score.value": false,
+		"gen_ai.evaluation.score.label": false,
+		"gen_ai.evaluation.explanation": false,
+		"gen_ai.evaluation.evaluator":   false,
 	}
 	for _, attr := range attrs {
 		key, _ := attr["key"].(string)

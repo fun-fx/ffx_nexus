@@ -48,13 +48,13 @@ var validRedact = map[string]struct{}{
 // subprocess (hf_evaluate/lighteval/ragas) decisions happen during
 // dispatch — only the names matter here.
 var validMetric = map[string]struct{}{
-	"contains":     {},
-	"pii":          {},
-	"exact_match":  {},
-	"rouge_l":      {},
-	"hf_evaluate":  {},
-	"lighteval":    {},
-	"ragas":        {},
+	"contains":    {},
+	"pii":         {},
+	"exact_match": {},
+	"rouge_l":     {},
+	"hf_evaluate": {},
+	"lighteval":   {},
+	"ragas":       {},
 }
 
 // validFlag enumerates the strings that may appear in spec.flags.
@@ -67,8 +67,8 @@ var validFlag = map[string]struct{}{
 // for ServiceCollector and (for backwards compat) ServiceOTel /
 // ServiceWebhook. "" is treated as "json" by the dispatcher.
 var validTransport = map[string]struct{}{
-	"":        {},
-	"json":    {},
+	"":          {},
+	"json":      {},
 	"otlp_http": {},
 }
 
@@ -77,7 +77,7 @@ var validTransport = map[string]struct{}{
 // still supported; once v1alpha1 retires, change Validate to fail
 // rather than warn on it.
 var knownAPIVersions = map[string]struct{}{
-	PluginAPIVersion:      {}, // v1alpha1 — original schema
+	PluginAPIVersion:         {}, // v1alpha1 — original schema
 	PluginAPIVersionV1Alpha2: {}, // v1alpha2 — heu, conf, etc.
 }
 
@@ -86,12 +86,12 @@ var knownAPIVersions = map[string]struct{}{
 // API version handling
 //
 //   - empty:        fail (helps authoring — operators see "apiVersion
-//                   required" instead of "service.type unsupported").
+//     required" instead of "service.type unsupported").
 //   - v1alpha1:     recognised, validated against the v1alpha1 schema.
-//                   Heuristic metric kinds are NOT permitted.
+//     Heuristic metric kinds are NOT permitted.
 //   - v1alpha2:     recognised, validated against the v1alpha2 schema.
-//                   v1alpha1 fields continue to work; new fields
-//                   are interpretation-explained.
+//     v1alpha1 fields continue to work; new fields
+//     are interpretation-explained.
 //   - anything else: fail.
 //
 // Validation order matters: cheap checks first, expensive mapping
@@ -120,6 +120,14 @@ func Validate(p *Plugin) error {
 	}
 	if !validPluginName.MatchString(p.Metadata.Name) {
 		return fmt.Errorf("metadata.name %q does not match %s", p.Metadata.Name, validPluginName)
+	}
+
+	// strict flag (v1alpha2 only). Calls a package-level warning
+	// hook that operators can route to whatever logger suits them
+	// (klog in compose, slog in CLI). The default no-op keeps
+	// Validate pure so unit tests don't need to thread a logger.
+	if hasFlag(p.Spec.Flags, flagStrict) {
+		reportUnknownSpecFields(p.Metadata.Name, p.Spec)
 	}
 
 	if _, ok := validServiceType[p.Spec.Service.Type]; !ok {
@@ -223,4 +231,56 @@ func validateAuth(a *AuthSpec) error {
 		return errors.New("spec.service.auth requires either secretRef or keyRef")
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Strict-mode unknown-field detection (v1alpha2)
+//
+// When a manifest opts into "" or "strict" via `spec.flags`, the
+// validator emits warnings for YAML fields it doesn't know about.
+// A common authoring bug is `trigger: onTraces` (capital T) which
+// silently no-ops today; strict surfaces it at boot or admin save.
+//
+// The detection strategy is to re-decode the manifest with
+// yaml.Decoder.KnownFields(true), capture every generated
+// "field not found" error, and emit it via the package-level
+// warning hook. We intentionally do NOT make unknown fields
+// fatal — that would break every operator's v1alpha1 manifest
+// during the upgrade to v1alpha2.
+// ---------------------------------------------------------------------------
+
+// flagStrict is the only opt-in flag recognised today. Future
+// flags (e.g. "verbose-error", "dry-run") join this list when
+// they ship.
+const flagStrict = "strict"
+
+func hasFlag(flags []string, flag string) bool {
+	for _, f := range flags {
+		if strings.TrimSpace(f) == flag {
+			return true
+		}
+	}
+	return false
+}
+
+// StrictFieldSink is the warning hook Validate's strict path
+// writes into. The default no-op keeps tests and one-off CLI
+// callers from needing to thread a logger. main.go overrides it
+// during boot with a slog-backed adapter that prefixes entries
+// with the plugin name for grep-friendliness.
+var StrictFieldSink = func(plugin, field string) {
+	// default: silent. main.go installs a logger-backed funtion at
+	// boot; tests can override locally with `StrictFieldSink = ...`.
+}
+
+// reportUnknownSpecFields emits a warning for every unknown
+// `spec.<key>` field captured at decode time
+// (PluginSpec.UnknownFields). Single source of unknown-field
+// truth — the strict-mode plumbing lives entirely in
+// internal/evalplugin/decode.go so future code paths can decide
+// to call DecodeStrict() instead of Decode().
+func reportUnknownSpecFields(name string, spec PluginSpec) {
+	for _, f := range spec.UnknownFields {
+		StrictFieldSink(name, f)
+	}
 }

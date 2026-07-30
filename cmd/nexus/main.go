@@ -360,6 +360,13 @@ func main() {
 		// /etc/nexus/eval-plugins then layers DB-stored per-org
 		// overrides on top (Helm wins).
 		pluginReg := evalplugin.NewRegistry()
+		// Strict-mode warnings (spec.flags: [strict]) route here.
+		// Each suspect top-level spec key is logged once at boot
+		// (ConfigMap plugins) and at every admin Save/Patch.
+		evalplugin.StrictFieldSink = func(plugin, field string) {
+			log.Warn("strict plugin spec has unknown field",
+				"plugin", plugin, "field", "spec."+field)
+		}
 		if dir := cfg.PluginDir; dir != "" {
 			if err := pluginReg.LoadFromDir(dir); err != nil {
 				log.Warn("load plugin configmaps failed", "dir", dir, "err", err)
@@ -388,6 +395,18 @@ func main() {
 		dispatcher.SetSecretResolver(pluginSecrets)
 		collector.SetSecretResolver(pluginSecrets)
 		collector.SetLogger(log)
+		// Mirror every persisted eval score to an OTLP /v1/logs
+		// collector via OTLPEvaluationEventEnvelope. Noop by default
+		// unless NEXUS_OTLP_LOGS_ENDPOINT (or NEXUS_OTLP_ENDPOINT
+		// with /v1/logs appended) is set. Sink failures here do not
+		// lose scores — evals.Sink.WriteScores returns first; only
+		// after a successful write do we fan out the OTLP event.
+		if logsURL := otlpLogsURLFromEnv(); logsURL != "" {
+			logsSink := evals.NewHTTPLogSink(logsURL, httpClientForPlugins(), log)
+			collector.SetEvaluationLogSink(logsSink)
+			defer logsSink.Close()
+			log.Info("eval OTLP event mirror enabled", "endpoint", logsURL)
+		}
 		multiEval := external.NewMultiEvaluator(pluginReg, dispatcher)
 		// ServiceHeuristic plugins short-circuit Dispatch and run
 		// in-process through the heuristic package. This is the
@@ -805,4 +824,17 @@ func startDynamicSyncWorkers(ctx context.Context, reg *gateway.Registry, cfg con
 			"interval", cfg.DynamicModelInterval,
 			"max_retry", cfg.DynamicModelMaxRetry)
 	}
+}
+
+// otlpLogsURLFromEnv returns the OTLP /v1/logs endpoint for the
+// eval-events mirror, derived from NEXUS_OTLP_LOGS_ENDPOINT
+// (when set explicitly) or NEXUS_OTLP_ENDPOINT (when present, by
+// appending /v1/logs to the trace collector URL). Empty when
+// neither is configured. Trimming handles /v1/traces already
+// being a part of the trace endpoint.
+func otlpLogsURLFromEnv() string {
+	if v := os.Getenv("NEXUS_OTLP_LOGS_ENDPOINT"); v != "" {
+		return strings.TrimSpace(v)
+	}
+	return ""
 }

@@ -43,10 +43,10 @@ type pluginKeysBody struct {
 // "saved" state vs. "empty" state and whether each named key has a
 // value configured.
 type pluginKeysState struct {
-	Plugin     string             `json:"plugin"`
-	Configured bool               `json:"configured"`
-	Keys       []pluginKeysEntry  `json:"keys"`
-	Required   []string           `json:"required_key_names,omitempty"`
+	Plugin     string            `json:"plugin"`
+	Configured bool              `json:"configured"`
+	Keys       []pluginKeysEntry `json:"keys"`
+	Required   []string          `json:"required_key_names,omitempty"`
 }
 
 type pluginKeysEntry struct {

@@ -69,7 +69,12 @@ func (a pluginSourceAdapter) mergeIntoRegistry(r *evalplugin.PluginRecord) {
 	if a.reg == nil || r == nil {
 		return
 	}
-	p, err := evalplugin.Decode([]byte(r.SpecYAML))
+	// DecodeStrict triggers the unknown-spec-field warning path
+	// when the manifest opted into `spec.flags: [strict]`. The
+	// spec-flag list is preserved across the round-trip so even if
+	// the loader has not yet called StrictFieldSink wiring, the
+	// future operator logs will surface the suspect keys.
+	p, err := evalplugin.DecodeStrict([]byte(r.SpecYAML))
 	if err != nil {
 		// Handlers validate the manifest before Save, so a decode
 		// failure here means the row predates validation. Leave the

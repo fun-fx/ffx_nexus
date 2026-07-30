@@ -58,10 +58,17 @@ type Trace struct {
 	InputMessages  string `json:"gen_ai.input.messages,omitempty"`
 	OutputMessages string `json:"gen_ai.output.messages,omitempty"`
 
-	// RAG eval inputs (from client nexus_eval block). JSON array of context
-	// strings; persisted for async eval and trace replay.
+	// RetrievalContexts traces for async eval and trace replay. JSON
+	// array of context strings.
 	RetrievalContexts string `json:"nexus.eval.contexts,omitempty"`
 	EvalReference     string `json:"nexus.eval.reference,omitempty"`
+
+	// EvalMetadata is a vendor- or trace-level bag of metadata. The
+	// in-process heuristic metrics read it through `references_from`
+	// args — see internal/evaluators/heuristic/local.go. Plugins
+	// can also write EvalMetadata directly when fanning out a
+	// trace.
+	EvalMetadata map[string]any `json:"nexus.eval.metadata,omitempty"`
 
 	// Capture origin info for multi-node deployments. ReplicaID is set once
 	// at gateway startup from NEXUS_REPLICA_ID (or the pod hostname / a random

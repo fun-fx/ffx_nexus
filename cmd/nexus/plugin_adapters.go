@@ -37,18 +37,25 @@ func httpClientForPluginsTest() *http.Client {
 // into the dispatcher (transmit) and collector (fetch). Each adapter
 // is a small encoding-only layer — no third-party SDK ships in the
 // gateway binary.
+//
+// Vendors without a pull API (Datadog, Braintrust, Arize, Confident
+// AI, Arize Phoenix) are NOT registered for collect. The Collector
+// treats a missing CollectFunc as "no reverse channel — scores
+// come in only via the vendor's webhook push, if configured". This
+// is safer than registering a `return nil, nil` no-op, which would
+// invite future authors to copy-paste the shape and forget to wire
+// the actual fetch endpoint.
 func registerPluginAdapters(d *external.Dispatcher, c *external.Collector) {
-	// LangSmith (Phase D — reference plugin).
+	// LangSmith — webhook reverse channel + hearbeat pull probe.
 	d.Register(evalplugin.ServiceLangSmith, langsmithTransmit)
 	c.Register(evalplugin.ServiceLangSmith, langsmithFetch)
 
-	// Langfuse (Phase F — second reference plugin).
+	// Langfuse — webhook + /api/public/v3/scores polling.
 	d.Register(evalplugin.ServiceLangfuse, langfuseTransmit)
 	c.Register(evalplugin.ServiceLangfuse, langfuseFetch)
 
-	// Datadog — Phase G beta.
+	// Datadog — POST-only; webhook ingest is the only reverse channel.
 	d.Register(evalplugin.ServiceDatadog, datadogTransmit)
-	c.Register(evalplugin.ServiceDatadog, datadogFetch)
 
 	// ServiceCollector collapses the old `ServiceOTel` +
 	// `ServiceWebhook` split: a single adapter driven by
@@ -67,24 +74,14 @@ func registerPluginAdapters(d *external.Dispatcher, c *external.Collector) {
 	d.Register(evalplugin.ServiceWebhook, collectorTransmit)
 	c.Register(evalplugin.ServiceWebhook, collectorFetch)
 
-	// Braintrust + Arize Phase G — same shape, different endpoint.
+	// Braintrust + Arize Phase G — POST-only; webhook collect only.
 	d.Register(evalplugin.ServiceBraintrust, braintrustTransmit)
-	c.Register(evalplugin.ServiceBraintrust, braintrustFetch)
 	d.Register(evalplugin.ServiceArize, arizeTransmit)
-	c.Register(evalplugin.ServiceArize, arizeFetch)
 
 	// Confident AI + Arize Phoenix (v1alpha2) — both speak OTLP with
 	// Basic/Bearer auth variants. Confident AI is DeepEval-native;
-	// Arize Phoenix is the open-source alternative.
+	// Arize Phoenix is the open-source alternative. Both are
+	// POST-only; webhook collect is the reverse channel.
 	d.Register(evalplugin.ServiceConfidentAI, confidentAITransmit)
-	c.Register(evalplugin.ServiceConfidentAI, confidentAIFetch)
 	d.Register(evalplugin.ServiceArizePhoenix, arizePhoenixTransmit)
-	c.Register(evalplugin.ServiceArizePhoenix, arizePhoenixFetch)
-
-	// ServiceCollector envelopes the same wire-level transmit logic
-	// as ServiceOTel; the difference is the v1alpha2 manifest carries
-	// spec.collect.transport, which downstream collectors use to pick
-	// spans from the envelope by attribute.
-	d.Register(evalplugin.ServiceCollector, collectorTransmit)
-	c.Register(evalplugin.ServiceCollector, collectorFetch)
 }

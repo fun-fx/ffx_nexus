@@ -271,6 +271,13 @@ func isEmailChar(c byte) bool {
 // polled fetch) into the standard sink. Adapters call this once
 // they have decoded the flat-key mapping back into the canonical
 // OTel shape.
+//
+// After writing to the sink, Apply also emits the score as a
+// `gen_ai.evaluation.result` OTLP event when an EvaluationLogSink
+// has been configured via SetEvaluationLogSink. The default is a
+// no-op sink so the dispatcher's evaluated-trace hot path is
+// unchanged in deployments that haven't configured
+// NEXUS_OTLP_LOGS_ENDPOINT.
 func Apply(raw json.RawMessage, mapping evalplugin.ResultMapping, pluginName string) (evals.Score, error) {
 	var parsed map[string]any
 	if err := json.Unmarshal(raw, &parsed); err != nil {

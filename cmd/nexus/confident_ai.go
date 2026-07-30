@@ -13,7 +13,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +36,7 @@ func confidentAITransmit(ctx context.Context, tgt external.Target, payload map[s
 	req.Header.Set("Content-Type", ct)
 	var primary string
 	switch {
-	case hasPair(tgt.Auth):
+	case pairOK(tgt.Auth):
 		// DeepEval cloud's service accepts Basic auth with the
 		// project's public/secret keys.
 		user, pass, _ := tgt.Auth.Pair()
@@ -48,7 +47,7 @@ func confidentAITransmit(ctx context.Context, tgt external.Target, payload map[s
 	if primary != "" {
 		req.Header.Set("Authorization", "Bearer "+primary)
 	}
-	if !hasPair(tgt.Auth) && primary == "" {
+	if !pairOK(tgt.Auth) && primary == "" {
 		return &adapterError{
 			vendor: "confident_ai",
 			code:   "auth",
@@ -71,17 +70,4 @@ func confidentAITransmit(ctx context.Context, tgt external.Target, payload map[s
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
-}
-
-func confidentAIFetch(_ context.Context, _ external.Target) ([]json.RawMessage, error) {
-	// Confident AI ingests OTLP but exposes eval results only in
-	// the dashboard — there is no public pull API. The webhook
-	// collect path (when collect.mode == webhook) is the actual
-	// reverse channel.
-	return nil, nil
-}
-
-func hasPair(c external.Credentials) bool {
-	_, _, ok := c.Pair()
-	return ok
 }

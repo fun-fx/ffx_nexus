@@ -125,6 +125,52 @@ spec:
 | `spec.collect.interval`    | when poll | Polling cadence when webhook is unavailable.                    |
 | `spec.collect.mapping`     | yes       | Flat-key map. Each value is the *source key* on the vendor's wire format (e.g. `key`, `value`, `comment`). Do NOT prefix with `$.` — Nexus does flat-lookup, not JSONPath. Adapters provide defaults; you only override when the vendor uses nonstandard keys. |
 | `spec.timeout`             | no        | Default 30s.                                                    |
+| `spec.service.metric.name` | when type=heuristic | Closed enum: contains / pii / exact_match / rouge_l / hf_evaluate / lighteval / ragas. |
+| `spec.service.metric.path` | when type=heuristic + metric.path-style | Optional. Reserved for future extension; today the closed enum is the only contract. |
+| `spec.flags`               | no        | Array of strings. `strict` rejects unknown fields instead of silencing them. |
+
+### Heuristic metric kinds
+
+`spec.service.type: heuristic` runs the metric in-process on the
+trace Nexus already collected. The plugin is *config-only*: no HTTPS
+call, no OTLP send, no auth block. The orchestrator hands the trace
+to the matching in-process or subprocess metric and writes the
+score straight to `eval_scores`.
+
+The closed `metric.name` enum:
+
+| Name | Implementation | Notes |
+| --- | --- | --- |
+| `contains`  | In-process Go (`internal/evaluators/heuristic/local.go`) | Tests the output against a substring list (substrings from `metric.args`). |
+| `pii`       | In-process Go (regex set) | Reuses the production heuristic_pii pattern list. Stays default-on (see *Why PII must remain default-on* below). |
+| `exact_match` | In-process Go | Trivial case-insensitive string equality. |
+| `rouge_l`   | In-process Go (LCS F-measure) | Rouge-L F1 score equal to 1.0 means a perfect recall/precision match. |
+| `hf_evaluate`  | Python subprocess (`py/eval_metric.py`) | Pulls HF `evaluate==0.4.5`. Activated when `PYTHON_SUBPROCESS=1`. |
+| `lighteval`    | Python subprocess | HF LightEval harness. Activated when `PYTHON_SUBPROCESS=1`. |
+| `ragas`        | Python subprocess | Ragas RAGAS framework. Activated when `PYTHON_SUBPROCESS=1`. |
+
+The grep-shaped `references_from` example below shows how to lay
+out a heuristic plugin without an auth block, with the manifest
+hooking up a custom reference path on the trace:
+
+```yaml
+apiVersion: nexus.io/v1alpha2
+kind: EvalPlugin
+metadata:
+  name: llm-rouge-on-trace
+spec:
+  service:
+    type: heuristic
+    metric:
+      name: rouge_l
+      args:
+        references_from: trace.metadata.reference   # flat-key path on the trace
+  send:
+    trigger: on_trace
+    sampling: 0.2
+  collect:
+    mode: webhook            # the in-process branch has nothing to send back; webhook is still required for the manifest to parse.
+```
 
 ### Result model — OTel-aligned
 
@@ -143,6 +189,40 @@ before being written to `eval_scores`:
 `evaluator` column gets the value `plugin:<metadata.name>` so a single
 SQL query can segment plugin-sourced scores from heuristics or legacy
 rows.
+
+### Why PII must remain default-on
+
+The TechSy survey places Confident AI and DeepEval at the top of
+the closed vendor enum specifically because the open-source eval
+frameworks all converge on adversarial / privacy testing as a
+quality bar. The legacy `heuristic_pii` evaluator is Nexus's
+nearest local analogue. Operators removing `heuristic_pii` because
+they have a "better" external plugin is a regression — the
+plugin path doesn't run inside the gateway, only after egress —
+so a PII violation would land in `eval_scores` long after the
+prompt had been sent to the upstream model. Heuristic PII runs
+before any egress (the trace is checked first, then the plugin
+sees a redacted copy). Do not turn heuristic_pii off even if
+Langfuse or LangSmith is enabled.
+
+### PrimeIntellect mental bridge — local vs hosted
+
+The survey's standout vocabulary is PrimeIntellect's local /
+hosted split:
+
+| Prime mode | Nexus kind |
+| --- | --- |
+| `prime eval` (no `--hosted`) | `ServiceType: heuristic` (this plugin family) |
+| `prime eval --hosted`        | `ServiceType: <langfuse\|langsmith\|confident_ai\|arize_phoenix\|...>` (existing `external` plugin) |
+
+Operators new to Nexus benefit from the same mental model:
+*in-process metrics are deterministic and zero-egress;
+external plugins are config-only and ship every trace over the
+network.* Stop adding evaluator kinds without a concrete
+in-process metric or external adapter — the closed enum is a
+feature, not a limitation, because vendor bandwidth is finite
+and an open-ended enum forces every plugin to ship its own
+authentication, sampling, and observability plumbing.
 
 ### Inbound webhook contract (`mode: webhook`)
 

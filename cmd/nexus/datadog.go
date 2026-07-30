@@ -14,7 +14,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -97,12 +96,4 @@ func convertIfHex(s string) (string, error) {
 		return "", fmt.Errorf("parse hex %q: %w", s, err)
 	}
 	return strconv.FormatUint(n, 10), nil
-}
-
-func datadogFetch(ctx context.Context, tgt external.Target) ([]json.RawMessage, error) {
-	// Phase G beta: collector heartbeat — Datadog doesn't expose a
-	// "consume evals I previously sent" REST; the in-product flow is
-	// the other way around. The webhook collector path is the
-	// real ingestion channel.
-	return nil, nil
 }

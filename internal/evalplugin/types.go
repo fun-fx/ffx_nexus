@@ -29,24 +29,25 @@ import (
 // only `v1alpha1` is recognised; an unknown value fails Validate().
 //
 //   - v1alpha1 is the original schema.
+//
 //   - v1alpha2 adds support for:
 //
-//   1. ServiceType "heuristic" — in-process metric evaluators that
-//      score the trace locally instead of dispatching to an external
-//      service (Add-A).
-//   2. ServiceType "confident_ai" — DeepEval-native cloud target
-//      (add-confidentai-phoenix).
-//   3. ServiceType "arize_phoenix" — OTel-only target with no API key.
-//   4. spec.collect.transport — replaces the otel/webhook types with a
-//      single OTLP collector adapter that ships JSON or protobuf
-//      payloads (collapse-otel-webhook).
-//   5. spec.service.metric — a typed metric kind for heuristic-mode
-//      plugins (contains, pii, exact_match, rouge_l, hf_evaluate,
-//      lighteval, ragas).
+//     1. ServiceType "heuristic" — in-process metric evaluators that
+//     score the trace locally instead of dispatching to an external
+//     service (Add-A).
+//     2. ServiceType "confident_ai" — DeepEval-native cloud target
+//     (add-confidentai-phoenix).
+//     3. ServiceType "arize_phoenix" — OTel-only target with no API key.
+//     4. spec.collect.transport — replaces the otel/webhook types with a
+//     single OTLP collector adapter that ships JSON or protobuf
+//     payloads (collapse-otel-webhook).
+//     5. spec.service.metric — a typed metric kind for heuristic-mode
+//     plugins (contains, pii, exact_match, rouge_l, hf_evaluate,
+//     lighteval, ragas).
 //
-//   Manifests carrying `apiVersion: nexus.io/v1alpha1` continue to be
-//   accepted; loadV1alpha2 warnings surface in the boot logs so the
-//   operator sees the new fields are usable.
+//     Manifests carrying `apiVersion: nexus.io/v1alpha1` continue to be
+//     accepted; loadV1alpha2 warnings surface in the boot logs so the
+//     operator sees the new fields are usable.
 const PluginAPIVersion = "nexus.io/v1alpha1"
 
 // PluginAPIVersionV1Alpha2 is the schema version that introduces the
@@ -68,17 +69,17 @@ const PluginKind = "EvalPlugin"
 type ServiceType string
 
 const (
-	ServiceLangSmith      ServiceType = "langsmith"
-	ServiceLangfuse       ServiceType = "langfuse"
-	ServiceDatadog        ServiceType = "datadog"
-	ServiceBraintrust     ServiceType = "braintrust"
-	ServiceArize          ServiceType = "arize"
+	ServiceLangSmith  ServiceType = "langsmith"
+	ServiceLangfuse   ServiceType = "langfuse"
+	ServiceDatadog    ServiceType = "datadog"
+	ServiceBraintrust ServiceType = "braintrust"
+	ServiceArize      ServiceType = "arize"
 	// ServiceOTel / ServiceWebhook are the v1alpha1 OTLP / generic
 	// collectors. They continue to work in v1alpha2 manifests; new
 	// code that targets v1alpha2 should use ServiceCollector with
 	// the transport field set instead.
-	ServiceOTel       ServiceType = "otel"
-	ServiceWebhook    ServiceType = "webhook"
+	ServiceOTel    ServiceType = "otel"
+	ServiceWebhook ServiceType = "webhook"
 	// ServiceHeuristic is the in-process metric kind. Manifests with
 	// this type declare `spec.service.metric` to pick the metric
 	// implementation (contains, pii, exact_match, rouge_l) or
@@ -108,17 +109,17 @@ const (
 // of truth — do not introduce a ServiceType constant without appending
 // it here.
 var validServiceType = map[ServiceType]struct{}{
-	ServiceLangSmith:      {},
-	ServiceLangfuse:       {},
-	ServiceDatadog:        {},
-	ServiceBraintrust:     {},
-	ServiceArize:          {},
-	ServiceOTel:           {},
-	ServiceWebhook:        {},
-	ServiceHeuristic:      {},
-	ServiceConfidentAI:    {},
-	ServiceArizePhoenix:   {},
-	ServiceCollector:      {},
+	ServiceLangSmith:    {},
+	ServiceLangfuse:     {},
+	ServiceDatadog:      {},
+	ServiceBraintrust:   {},
+	ServiceArize:        {},
+	ServiceOTel:         {},
+	ServiceWebhook:      {},
+	ServiceHeuristic:    {},
+	ServiceConfidentAI:  {},
+	ServiceArizePhoenix: {},
+	ServiceCollector:    {},
 }
 
 // ResultMapping is a flat-key → canonical field translation.
@@ -229,6 +230,12 @@ type PluginSpec struct {
 	Collect CollectSpec `yaml:"collect" json:"collect"`
 	Timeout Duration    `yaml:"timeout" json:"timeout"`
 	Flags   []string    `yaml:"flags,omitempty" json:"flags,omitempty"`
+
+	// UnknownFields captures every top-level `spec.foo` that the
+	// yaml decoder didn't recognise. Validate's strict path emits
+	// these as warnings; non-strict paths ignore them. Populated
+	// by parseStrict — see ParseSpecStrict and RegisterLoader.
+	UnknownFields []string `yaml:"-" json:"-"`
 }
 
 // Plugin is a fully-decoded EvalPlugin manifest. Use Decode to obtain
