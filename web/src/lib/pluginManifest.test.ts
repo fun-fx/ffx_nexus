@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PLUGIN_TEMPLATE,
+  HEURISTIC_PRESETS,
   PLUGIN_PRESETS,
   parseYamlToForm,
   serializeFormToYaml,
@@ -157,5 +158,50 @@ describe("pluginManifest round-trip", () => {
     expect(parsed.collect.mapping.length).toBe(2);
     expect(parsed.collect.mapping[0].target).toBe("name");
     expect(parsed.collect.mapping[1].target).toBe("score");
+  });
+});
+
+describe("pluginManifest survey-driven presets", () => {
+  it("PLUGIN_PRESETS exposes every survey target", () => {
+    // The TechSy / PrimeIntellect / HF survey additions (PR #172/#174)
+    // are useless if the form dropdown can't reach them. Each must
+    // round-trip through serialize → parse cleanly. Every ServiceKind
+    // exposed in the dropdown has a matching PLUGIN_PRESETS entry.
+    for (const kind of [
+      "langfuse",
+      "langsmith",
+      "confident_ai",
+      "arize_phoenix",
+      "otel_collector",
+      "datadog",
+      "braintrust",
+      "arize",
+      "webhook",
+    ]) {
+      expect(PLUGIN_PRESETS[kind], `preset missing: ${kind}`).toBeDefined();
+      const p = PLUGIN_PRESETS[kind];
+      expect(p.form.service.kind).toBe(kind);
+      const yaml = serializeFormToYaml(p.form);
+      const parsed = parseYamlToForm(yaml);
+      expect(parsed.service.kind).toBe(kind);
+    }
+  });
+
+  it("HEURISTIC_PRESETS covers the in-process metric kind names", () => {
+    // The internal/evaluators/heuristic backend ships these metric
+    // names today. The console advertises the same set so an
+    // operator who reads the docs sees a matching tile.
+    for (const k of [
+      "contains",
+      "pii",
+      "exact_match",
+      "rouge_l",
+      "hf_evaluate",
+      "lighteval",
+      "ragas",
+    ]) {
+      expect(HEURISTIC_PRESETS[k], `heuristic missing: ${k}`).toBeDefined();
+      expect(HEURISTIC_PRESETS[k].metric).toBe(k);
+    }
   });
 });

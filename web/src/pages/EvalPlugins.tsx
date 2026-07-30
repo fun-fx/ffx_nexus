@@ -212,9 +212,12 @@ function FormMode({
             <option value="langsmith">LangSmith</option>
             <option value="datadog">Datadog LLM Obs</option>
             <option value="braintrust">Braintrust</option>
-            <option value="arize">Arize Phoenix</option>
-            <option value="otel">OpenTelemetry collector</option>
-            <option value="webhook">Generic HTTPS webhook</option>
+            <option value="arize">Arize (AX)</option>
+            <option value="confident_ai">Confident AI (DeepEval cloud)</option>
+            <option value="arize_phoenix">Arize Phoenix (OTLP)</option>
+            <option value="otel_collector">OTLP collector (generic)</option>
+            <option value="otel">OpenTelemetry collector (legacy)</option>
+            <option value="webhook">Generic HTTPS webhook (legacy)</option>
           </select>
         </FieldRow>
         <FieldRow label="Endpoint">

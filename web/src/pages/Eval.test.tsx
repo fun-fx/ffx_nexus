@@ -697,5 +697,35 @@ describe("<Eval /> plugin-only banner", () => {
       await screen.findByText(/Install your first plugin/i),
     ).toBeTruthy();
   });
+
+  it("renders quickstart gallery when plugin_only=true and no plugins installed", async () => {
+    renderWithBundle(build(true));
+    expect(
+      await screen.findByTestId("plugin-quickstart"),
+    ).toBeTruthy();
+    // Every survey-driven tile has its own test id.
+    for (const kind of [
+      "langfuse",
+      "langsmith",
+      "confident_ai",
+      "arize_phoenix",
+      "otel_collector",
+      "datadog",
+      "braintrust",
+      "arize",
+      "webhook",
+    ]) {
+      expect(
+        await screen.findByTestId(`quickstart-${kind}`),
+      ).toBeTruthy();
+    }
+  });
+
+  it("hides quickstart gallery when plugin_only=false", async () => {
+    renderWithBundle(build(false));
+    await waitFor(() => {
+      expect(screen.queryByTestId("plugin-quickstart")).toBeNull();
+    });
+  });
 });
 

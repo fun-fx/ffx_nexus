@@ -23,7 +23,7 @@ import {
   PluginEditorDrawer,
   type PluginFormState,
 } from "./EvalPlugins";
-import { parseYamlToForm } from "../lib/pluginManifest";
+import { parseYamlToForm, PLUGIN_PRESETS, HEURISTIC_PRESETS } from "../lib/pluginManifest";
 
 type EvalMetric = "heuristic_pii" | "heuristic_completeness" | "slm_judge" | "remote_eval";
 
@@ -298,6 +298,12 @@ export function Eval() {
         profileToggleBusy={profileToggleMut.isPending}
         profileToggleRow={profileToggleMut.variables?.id ?? null}
         onCreatePlugin={() => setPluginDrawer({ open: true, initial: undefined })}
+        onCreatePluginWithKind={(kind) => {
+          const preset = PLUGIN_PRESETS[kind];
+          if (preset) {
+            setPluginDrawer({ open: true, initial: preset.form });
+          }
+        }}
         onEditPlugin={(rec) =>
           setPluginDrawer({ open: true, initial: parseYamlToForm(rec.spec_yaml ?? "") })
         }
@@ -354,6 +360,7 @@ function EvaluatorsCard({
   profileToggleBusy,
   profileToggleRow,
   onCreatePlugin,
+  onCreatePluginWithKind,
   onEditPlugin,
   pluginOnly = false,
 }: {
@@ -366,6 +373,7 @@ function EvaluatorsCard({
   profileToggleBusy: boolean;
   profileToggleRow: string | null;
   onCreatePlugin: () => void;
+  onCreatePluginWithKind: (kind: string) => void;
   onEditPlugin: (rec: EvalPluginRecord) => void;
   pluginOnly?: boolean;
 }) {
@@ -640,6 +648,11 @@ function EvaluatorsCard({
               : "No evaluators."
           }
         />
+        {pluginOnly && plugins.length === 0 ? (
+          <PluginQuickStart onPickTemplate={(kind) =>
+            onCreatePluginWithKind(kind)
+          } />
+        ) : null}
       </div>
     </section>
   );
@@ -994,6 +1007,102 @@ function PluginOnlyBanner({ active }: { active: boolean }) {
         <code>config.evalPluginOnly</code> value (or unset
         <code> NEXUS_EVAL_PLUGIN_ONLY</code>) and roll the pod.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Quickstart gallery — shown only when `plugin_only=true` and the
+ * operator hasn't installed any plugin yet. Clicking a tile prefills
+ * the manifest editor with the matching preset so the operator
+ * never has to type YAML from scratch.
+ *
+ * This is the place where the survey-driven additions (Confident AI,
+ * Arize Phoenix, the generic OTLP collector) become discoverable.
+ * Without this tile grid an operator only sees the legacy 5 presets
+ * buried inside the editor and assumes Nexus is a one-vendor system.
+ */
+function PluginQuickStart({
+  onPickTemplate,
+}: {
+  onPickTemplate: (kind: string) => void;
+}) {
+  // Surface the survey-driven targets first so they're the most
+  // discoverable, then fall back to the legacy 5. Today the order
+  // matches what a TechSy-style blog writes about — cloud platforms
+  // first, framework libraries second.
+  const priority = [
+    "langfuse",
+    "langsmith",
+    "confident_ai",
+    "arize_phoenix",
+    "otel_collector",
+    "datadog",
+    "braintrust",
+    "arize",
+    "webhook",
+  ];
+  const tiles = priority
+    .filter((k) => PLUGIN_PRESETS[k] !== undefined)
+    .map((k) => {
+      const p = PLUGIN_PRESETS[k];
+      const f = p.form;
+      return {
+        kind: k,
+        label: p.label,
+        form: f,
+        summary: f.send?.payload?.[0]?.template
+          ? `pushes ${(f.send.payload ?? []).length}-field body`
+          : `endpoint ${f.service.endpoint}`,
+      };
+    });
+  return (
+    <div className="quickstart-gallery" data-testid="plugin-quickstart">
+      <header className="quickstart-head">
+        <h3>Pick a vendor to start</h3>
+        <p className="muted small">
+          The console has every backend survey target ready as a
+          preset. Click a tile to prefill the manifest editor —
+          adjust the endpoint, paste the API key in the{" "}
+          <strong>Keys</strong> modal, and Save.
+        </p>
+      </header>
+      <div className="quickstart-grid">
+        {tiles.map((t) => (
+          <button
+            key={t.kind}
+            type="button"
+            className="quickstart-tile"
+            onClick={() => onPickTemplate(t.kind)}
+            data-testid={`quickstart-${t.kind}`}
+          >
+            <div className="quickstart-tile-title">{t.label}</div>
+            <div className="quickstart-tile-meta muted small">
+              <code>{t.form.service.kind}</code> · {t.summary}
+            </div>
+          </button>
+        ))}
+      </div>
+      <details className="quickstart-heuristics">
+        <summary>
+          Or wire in an in-process heuristic
+        </summary>
+        <p className="muted small">
+          Heuristic metrics run on the gateway worker itself — the
+          dispatch path skips the network and never leaves the
+          cluster. Today only a subset is backend-wired; the rest
+          surface here as documentation while the dispatcher learns
+          each new metric name.
+        </p>
+        <ul className="quickstart-heuristic-list">
+          {Object.entries(HEURISTIC_PRESETS).map(([k, m]) => (
+            <li key={k}>
+              <strong>{m.label}</strong> <code>{m.metric}</code>
+              <span className="muted small"> — {m.description}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
     </div>
   );
 }
