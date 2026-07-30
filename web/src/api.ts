@@ -903,6 +903,98 @@ export async function fetchAudit(q: AuditQuery = {}): Promise<AuditEntry[]> {
   return Array.isArray(data) ? data : [];
 }
 
+// PluginKeysState is the GET response shape for
+// /api/eval/plugins/{name}/keys: which keys exist (by manifest),
+// which of them have a value, and whether anything is configured at
+// all. Values themselves are NEVER returned — the UI only sees
+// names + booleans, so DevTools and log lines stay safe to share.
+export interface PluginKeysState {
+  plugin: string;
+  configured: boolean;
+  required_key_names?: string[];
+  keys: PluginKeysEntry[];
+}
+
+export interface PluginKeysEntry {
+  name: string;
+  set: boolean;
+}
+
+// PluginKeysWriteResult mirrors the response of PUT /keys.
+export type PluginKeysWriteResult = PluginKeysState;
+
+// PluginKeysError is the typed failure shape returned by the server
+// with HTTP 4xx/5xx (e.g. { ok: false, message: "...not wired..." }).
+export interface PluginKeysErrorEnvelope {
+  ok?: false;
+  message?: string;
+  error?: string;
+}
+
+export async function fetchPluginKeys(name: string): Promise<PluginKeysState> {
+  const res = await fetch(`/api/eval/plugins/${encodeURIComponent(name)}/keys`, {
+    credentials: "same-origin",
+  });
+  // 503 / 404 / other: shape may be the typed { ok, message } envelope
+  // or go-chi default { error }. We map both into the same Error text.
+  let parsed: unknown = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    parsed = null;
+  }
+  if (!res.ok) {
+    const env = parsed as PluginKeysErrorEnvelope | null;
+    throw new Error(
+      env?.message || env?.error || `HTTP ${res.status} on GET /keys`,
+    );
+  }
+  return parsed as PluginKeysState;
+}
+
+export async function putPluginKeys(
+  name: string,
+  keys: Record<string, string>,
+): Promise<PluginKeysWriteResult> {
+  const res = await fetch(`/api/eval/plugins/${encodeURIComponent(name)}/keys`, {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keys }),
+  });
+  if (!res.ok) {
+    let env: PluginKeysErrorEnvelope | null = null;
+    try {
+      env = (await res.json()) as PluginKeysErrorEnvelope;
+    } catch {
+      env = null;
+    }
+    throw new Error(
+      env?.message || env?.error || `HTTP ${res.status} on PUT /keys`,
+    );
+  }
+  return (await res.json()) as PluginKeysWriteResult;
+}
+
+export async function deletePluginKeys(name: string): Promise<PluginKeysWriteResult> {
+  const res = await fetch(`/api/eval/plugins/${encodeURIComponent(name)}/keys`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    let env: PluginKeysErrorEnvelope | null = null;
+    try {
+      env = (await res.json()) as PluginKeysErrorEnvelope;
+    } catch {
+      env = null;
+    }
+    throw new Error(
+      env?.message || env?.error || `HTTP ${res.status} on DELETE /keys`,
+    );
+  }
+  return (await res.json()) as PluginKeysWriteResult;
+}
+
 // connectLive opens the live trace WebSocket. The backend pushes a full Trace
 // object per gateway request; we map it to the summary shape used by the table.
 export function connectLive(onTrace: (t: TraceSummary) => void): WebSocket {

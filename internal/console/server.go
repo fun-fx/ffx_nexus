@@ -61,6 +61,7 @@ type Server struct {
 	evalPlugins      EvalPluginSource       // eval-plugin store (Phase B)
 	pluginCollector  PluginWebhookReceiver  // eval-plugin webhook sink (Phase C)
 	pluginTester     EvalPluginTester       // eval-plugin test-send (Phase D)
+	pluginKeys       EvalPluginKeys         // in-process plugin key resolver (console keys)
 	loginLim         *limiter.IPLimiter     // per-IP rate limit for /api/auth/login
 	registerLim      *limiter.IPLimiter     // per-IP rate limit for /api/auth/register
 	ssoLim           *limiter.IPLimiter     // per-IP rate limit for /api/auth/sso/*
@@ -153,6 +154,14 @@ func (s *Server) SetPluginCollector(c PluginWebhookReceiver) {
 // up and ready.
 func (s *Server) SetPluginTester(t EvalPluginTester) {
 	s.pluginTester = t
+}
+
+// SetPluginKeys wires the resolver that the Plugin Keys panel talks
+// to. nil means the GET/PUT/DELETE /api/eval/plugins/{name}/keys
+// routes answer 503 — set this from main.go before the panel is open
+// to operators in production.
+func (s *Server) SetPluginKeys(k EvalPluginKeys) {
+	s.pluginKeys = k
 }
 
 // NewServer builds the console server. reader and store may be nil.
@@ -264,6 +273,17 @@ func (s *Server) Mux() http.Handler {
 		// traces.
 		if s.pluginTester != nil {
 			r.Post("/eval/plugins/{name}/test", s.requireAdmin(s.pluginTest))
+		}
+
+		// Plugin Keys panel: lets admins paste per-vendor API keys into
+		// the console instead of dropping a Helm chart-managed Secret.
+		// All three handlers (GET/PUT/DELETE) are admin-only and require
+		// the resolver to be wired; failing gracefully with 503 keeps
+		// the route discoverable rather than returning a generic 404.
+		if s.pluginKeys != nil {
+			r.Get("/eval/plugins/{name}/keys", s.requireAdmin(s.getPluginKeys))
+			r.Put("/eval/plugins/{name}/keys", s.requireAdmin(s.putPluginKeys))
+			r.Delete("/eval/plugins/{name}/keys", s.requireAdmin(s.deletePluginKeys))
 		}
 
 		// User management (admin only).
