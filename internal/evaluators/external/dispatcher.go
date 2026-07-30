@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"text/template"
@@ -222,49 +223,31 @@ func redactPayload(payload map[string]any, _ observability.Trace, kinds []string
 	return nil
 }
 
+// reRedactEmail mirrors internal/evals/heuristics.go's reEmail. The
+// pattern is duplicated rather than imported because internal/evals
+// depends on this package, and RE2 gives us a single linear pass with
+// no backtracking — which matters because this runs on whole prompts.
+var reRedactEmail = regexp.MustCompile(`[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`)
+
 // redactPII masks the cheap-to-detect patterns. The full regex-set
 // lives in internal/evals/heuristics.go; duplicating here keeps the
 // dispatcher independent of the worker import graph so it can be
 // loaded in unit tests without spinning the gateway.
+//
+// This replaced a hand-rolled scanner that walked '@' positions in the
+// input while searching for the next one in the partially-masked
+// output. Once those two indices diverged the replacement became a
+// no-op and the position stopped advancing, so any prompt that merely
+// mentioned '@' as prose — "reference files using the @ symbol" — span
+// forever at full CPU inside the eval worker, holding the goroutine
+// with no error to report. Anchoring on a regex keeps the pass bounded
+// by construction, and only masks spans that actually look like an
+// address instead of mangling a bare '@'.
 func redactPII(s string) string {
-	out := s
-	atIdx := strings.Index(s, "@")
-	for atIdx > 0 && atIdx < len(s)-1 {
-		// Replace the email-shape substring with [REDACTED:email].
-		// We backtrack to the nearest whitespace/punctuation.
-		start := atIdx - 1
-		for start > 0 && isEmailChar(s[start-1]) {
-			start--
-		}
-		end := atIdx + 1
-		for end < len(s) && isEmailChar(s[end]) {
-			end++
-		}
-		out = strings.Replace(out, s[start:end], "[REDACTED:email]", 1)
-		// Look for the next '@' in the (already-masked) string.
-		next := strings.Index(out[start:], "@")
-		if next < 0 {
-			break
-		}
-		atIdx = start + next
+	if !strings.Contains(s, "@") {
+		return s
 	}
-	return out
-}
-
-func isEmailChar(c byte) bool {
-	switch {
-	case c >= 'a' && c <= 'z':
-		return true
-	case c >= 'A' && c <= 'Z':
-		return true
-	case c >= '0' && c <= '9':
-		return true
-	}
-	switch c {
-	case '.', '_', '%', '+', '-':
-		return true
-	}
-	return false
+	return reRedactEmail.ReplaceAllString(s, "[REDACTED:email]")
 }
 
 // Apply writes an externally-produced score (incoming webhook /

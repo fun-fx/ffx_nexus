@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/ffxnexus/nexus/internal/observability"
@@ -60,15 +61,23 @@ func (b *scoreBag) take() []Score {
 //
 // `bound` zero means "no fan-out cap". Caller passes w.workerCount
 // which the runtime controller keeps small (default = 4).
+// An evaluator that never returns used to cost a worker permanently:
+// wg.Wait blocked forever, the trace produced no scores and no error,
+// and with the pool exhausted every later trace queued behind it in
+// silence. The wait is now bounded by ctx, so a stuck evaluator costs
+// one leaked goroutine and one warning that names it, instead of the
+// whole eval pipeline going dark until the next restart.
 func (w *Worker) runEvaluators(ctx context.Context, t observability.Trace, evals []Evaluator, bag *scoreBag) {
 	if len(evals) == 0 {
 		return
 	}
+	outstanding := newPendingSet(evals)
 	wg := sync.WaitGroup{}
 	for _, e := range evals {
 		wg.Add(1)
 		go func(ev Evaluator) {
 			defer wg.Done()
+			defer outstanding.done(ev.Name())
 			s, err := ev.Evaluate(ctx, t)
 			if err != nil {
 				w.log.Warn("evaluator failed", "evaluator", ev.Name(), "trace_id", t.TraceID, "err", err)
@@ -77,5 +86,55 @@ func (w *Worker) runEvaluators(ctx context.Context, t observability.Trace, evals
 			bag.add(s)
 		}(e)
 	}
-	wg.Wait()
+
+	joined := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-ctx.Done():
+		w.log.Warn("evaluators did not return before the deadline; continuing without their scores",
+			"evaluators", outstanding.names(), "trace_id", t.TraceID, "err", ctx.Err())
+	}
+}
+
+// pendingSet tracks which evaluators have not finished yet so a
+// deadline warning can name them. Without the names the operator sees
+// a timeout and still has to guess which backend hung.
+type pendingSet struct {
+	mu      sync.Mutex
+	pending map[string]int
+}
+
+func newPendingSet(evals []Evaluator) *pendingSet {
+	p := &pendingSet{pending: make(map[string]int, len(evals))}
+	for _, e := range evals {
+		p.pending[e.Name()]++
+	}
+	return p
+}
+
+func (p *pendingSet) done(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pending[name] <= 1 {
+		delete(p.pending, name)
+		return
+	}
+	p.pending[name]--
+}
+
+// names returns the still-running evaluators in a stable order so the
+// warning reads the same way across occurrences.
+func (p *pendingSet) names() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, 0, len(p.pending))
+	for name := range p.pending {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
