@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/evalplugin"
 	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/evaluators/external"
+	"github.com/ffxnexus/nexus/internal/evaluators/heuristic"
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/gateway/providers"
 	"github.com/ffxnexus/nexus/internal/guardrails"
@@ -38,6 +40,34 @@ import (
 // this via `-ldflags "-X main.nexusBuildTag=<commit-sha>"`; locally
 // built binaries keep the "dev" placeholder.
 var nexusBuildTag = "dev"
+
+// heuristicLocalEvaluator is the bridge between
+// external.LocalEvaluator and internal/evaluators/heuristic. The
+// heuristic package exposes a single Evaluate(...) function; we
+// route hf_evaluate / lighteval / ragas through it as well by way
+// of dispatch on metricName. The wrapper is intentionally a thin
+// adapter so future metrics can be added without changing
+// multi.go or main.go's wiring.
+type heuristicLocalEvaluator struct{}
+
+func (heuristicLocalEvaluator) Evaluate(
+	ctx context.Context,
+	metricName string,
+	args map[string]any,
+	t observability.Trace,
+) ([]evals.Score, error) {
+	// hf_evaluate / lighteval / ragas are also accepted here; they
+	// share the same dispatch-key surface. EvaluatePython is a
+	// no-op (returns errPythonNotWired) when PYTHON_SUBPROCESS=1 is
+	// not set, so a vanilla build doesn't fail at runtime.
+	switch metricName {
+	case "contains", "pii", "exact_match", "rouge_l":
+		return heuristic.Evaluate(ctx, metricName, args, t)
+	case "hf_evaluate", "lighteval", "ragas":
+		return heuristic.EvaluatePython(ctx, metricName, args, t)
+	}
+	return nil, fmt.Errorf("heuristic metric %q is not registered", metricName)
+}
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -359,6 +389,12 @@ func main() {
 		collector.SetSecretResolver(pluginSecrets)
 		collector.SetLogger(log)
 		multiEval := external.NewMultiEvaluator(pluginReg, dispatcher)
+		// ServiceHeuristic plugins short-circuit Dispatch and run
+		// in-process through the heuristic package. This is the
+		// only place that imports internal/evaluators/heuristic,
+		// keeping the multi.go evaluator interface free of any
+		// concrete metric implementation.
+		multiEval.SetLocalEvaluator(heuristicLocalEvaluator{})
 		// Dispatch failures are best-effort but must not be invisible:
 		// a wrong key or endpoint otherwise looks identical to a vendor
 		// that simply has no results yet.
