@@ -20,6 +20,14 @@ preserved for back-compat as the "local backend implementations" of
 the plugin contract, and `NEXUS_EVAL_PLUGIN_ONLY=true` refuses them
 outright (see *Plugin-only mode* below).
 
+### Plugins score traces, not models
+
+A plugin's input is a trace that already happened. To measure a **model
+against a dataset** instead, see
+[`docs/model-benchmarks.md`](model-benchmarks.md) — that runs on an
+external platform too, but it is launched by an operator rather than by
+traffic, and its results land on `benchmark_runs`.
+
 ### Plugins do not need an eval profile
 
 An enabled plugin receives traces on its own. Eval profiles configure the

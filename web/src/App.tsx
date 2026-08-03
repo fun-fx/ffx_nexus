@@ -12,6 +12,7 @@ import { Keys } from "./pages/Keys";
 import { Users } from "./pages/Users";
 import { Credentials } from "./pages/Credentials";
 import { Eval } from "./pages/Eval";
+import { Benchmarks } from "./pages/Benchmarks";
 import { Audit } from "./pages/Audit";
 import { Playground } from "./pages/Playground";
 
@@ -48,6 +49,7 @@ export function App() {
               path="eval/plugins"
               element={<Navigate to="/eval?focus=plugins" replace />}
             />
+                <Route path="eval/benchmarks" element={<Benchmarks />} />
                 <Route path="users" element={<Users />} />
                 <Route path="keys" element={<Keys />} />
                 <Route path="credentials" element={<Credentials />} />

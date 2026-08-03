@@ -18,9 +18,16 @@ const NAV: NavItem[] = [
   { to: "/keys", label: "Keys", icon: "keys", group: "Workspace" },
   { to: "/credentials", label: "Credentials", icon: "shield", group: "Workspace" },
   { to: "/eval", label: "Eval", icon: "sparkles", group: "Admin" },
+  { to: "/eval/benchmarks", label: "Benchmarks", icon: "chart", group: "Admin" },
   { to: "/audit", label: "Audit", icon: "list", group: "Admin" },
   { to: "/users", label: "Users", icon: "users", group: "Admin" },
 ];
+
+// A row whose path is a prefix of another row's must match exactly, or
+// both light up while the nested page is open.
+function matchExactly(to: string): boolean {
+  return to === "/" || NAV.some((n) => n.to !== to && n.to.startsWith(to + "/"));
+}
 
 export function Sidebar() {
   const [user, setUser] = useState<User | null>(null);
@@ -60,7 +67,7 @@ export function Sidebar() {
                   <NavLink
                     key={it.to}
                     to={it.to}
-                    end={it.to === "/"}
+                    end={matchExactly(it.to)}
                     className={({ isActive }) =>
                       "sidebar-item" + (isActive ? " is-active" : "")
                     }

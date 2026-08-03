@@ -946,6 +946,15 @@ In **v0.7** Nexus ships with three first-class evaluator kinds:
   collector, or any HTTPS endpoint via the generic `webhook` adapter. See
   [`docs/eval-plugins.md`](docs/eval-plugins.md) for the schema reference.
 
+Alongside those, **model benchmarks** answer the other question — not "how
+good was this trace" but "how good is this model at this task". An operator
+picks a model and a dataset in `/eval/benchmarks`, and PrimeIntellect runs
+the dataset and its scoring code on their own infrastructure; Nexus launches
+the run, polls it, and stores the aggregate. Pointing the provider's inference
+back through this gateway makes the score describe what Nexus actually serves,
+routing and cache included. See
+[`docs/model-benchmarks.md`](docs/model-benchmarks.md).
+
 Legacy `slm_judge` (Ollama-in-cluster) and `remote_eval` (Python sidecar with
 DeepEval/RAGAS) evaluators are still supported for back-compat but are no
 longer seeded automatically — opt in via the existing eval-profile endpoints

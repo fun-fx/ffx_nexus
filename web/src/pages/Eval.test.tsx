@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -98,7 +99,9 @@ function renderEval(
   const utils = render(
     <ThemeProvider>
       <QueryClientProvider client={qc}>
-        <Eval />
+        <MemoryRouter>
+          <Eval />
+        </MemoryRouter>
       </QueryClientProvider>
     </ThemeProvider>,
   );
@@ -338,7 +341,9 @@ describe("<Eval /> admin toggle profile flow", () => {
     render(
       <ThemeProvider>
         <QueryClientProvider client={qc}>
-          <Eval />
+          <MemoryRouter>
+            <Eval />
+          </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
     );
@@ -396,7 +401,9 @@ describe("<Eval /> admin toggle profile flow", () => {
     render(
       <ThemeProvider>
         <QueryClientProvider client={qc}>
-          <Eval />
+          <MemoryRouter>
+            <Eval />
+          </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
     );
@@ -453,7 +460,9 @@ describe("<Eval /> admin toggle profile flow", () => {
     render(
       <ThemeProvider>
         <QueryClientProvider client={qc}>
-          <Eval />
+          <MemoryRouter>
+            <Eval />
+          </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
     );
@@ -531,7 +540,9 @@ describe("<Eval /> admin toggle profile flow", () => {
     render(
       <ThemeProvider>
         <QueryClientProvider client={qc}>
-          <Eval />
+          <MemoryRouter>
+            <Eval />
+          </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
     );
@@ -592,7 +603,9 @@ describe("<Eval /> admin toggle profile flow", () => {
     render(
       <ThemeProvider>
         <QueryClientProvider client={qc}>
-          <Eval />
+          <MemoryRouter>
+            <Eval />
+          </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
     );
@@ -652,7 +665,9 @@ describe("<Eval /> plugin-only banner", () => {
     render(
       <QueryClientProvider client={qc}>
         <ThemeProvider>
-          <Eval />
+          <MemoryRouter>
+            <Eval />
+          </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>,
     );
@@ -782,7 +797,9 @@ describe("<Eval /> plugin-only banner", () => {
     render(
       <ThemeProvider>
         <QueryClientProvider client={qc}>
-          <Eval />
+          <MemoryRouter>
+            <Eval />
+          </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
     );
@@ -855,7 +872,9 @@ describe("<Eval /> plugin-only banner", () => {
     render(
       <ThemeProvider>
         <QueryClientProvider client={qc}>
-          <Eval />
+          <MemoryRouter>
+            <Eval />
+          </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
     );
