@@ -64,13 +64,32 @@ type Result struct {
 }
 
 // PluginManualFirer is the admin REST face of
-// ExternalScheduler.FireManual. The console calls it when an admin
-// presses the "Run now" button on a manual-trigger plugin. The
-// returned count tells the UI how many buffered traces (if any)
-// were flushed; for manual plugins the buffer is normally empty
-// because inline traces are not enqueued.
+// ExternalScheduler.FireManual / FireScheduled. The console calls it
+// when an admin presses the "Run now" button on a manual- or
+// scheduled-trigger plugin. The returned count tells the UI how many
+// buffered traces (if any) were flushed; for manual plugins the
+// buffer is normally empty because inline traces are not enqueued.
 type PluginManualFirer interface {
 	FireManual(ctx context.Context, pluginName, trigger string) (int, error)
+	FireScheduled(ctx context.Context, pluginName, trigger string) (int, error)
+}
+
+// pluginFireBody is the JSON contract the console sends when it
+// presses "Run now". `Trigger` is an optional audit tag the operator
+// can attach; the server falls back to "<admin-email>@<RFC3339>" when
+// the field is empty so the audit log line still identifies the
+// caller without any extra clicks in the UI.
+type pluginFireBody struct {
+	Trigger string `json:"trigger,omitempty"`
+}
+
+// pluginFireResponse is what /fire returns. `ok` is false when the
+// plugin is missing, disabled, or has the wrong Send.Trigger for the
+// endpoint that was hit (e.g. /scheduled against a manual plugin).
+type pluginFireResponse struct {
+	OK      bool   `json:"ok"`
+	Count   int    `json:"count"`
+	Message string `json:"message"`
 }
 
 // evalPluginBody is the wire shape the frontend speaks. We intentionally
@@ -290,20 +309,24 @@ func (s *Server) pluginTest(w http.ResponseWriter, r *http.Request, _ core.User)
 // influence what gets sent; it exists so the operator can leave a
 // note like `manual: weekly-smoke-run` that will appear in the
 // scheduler's structured log line.
+//
+// The optional `?which=scheduled` query parameter switches the
+// handler to the scheduled-trigger path. The body/schema stay the
+// same; only the underlying PluginManualFirer method differs so the
+// console can share one button-per-row UX across the two trigger
+// shapes.
 func (s *Server) pluginFireManual(w http.ResponseWriter, r *http.Request, user core.User) {
 	if s.pluginManualFirer == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"ok":      false,
-			"message": "manual-fire not wired",
+		writeJSON(w, http.StatusServiceUnavailable, pluginFireResponse{
+			OK:      false,
+			Message: "manual-fire not wired",
 		})
 		return
 	}
 	ref := chi.URLParam(r, "name")
 	trigger := ""
 	if r.Body != nil {
-		var body struct {
-			Trigger string `json:"trigger"`
-		}
+		var body pluginFireBody
 		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
 		trigger = body.Trigger
 	}
@@ -312,18 +335,52 @@ func (s *Server) pluginFireManual(w http.ResponseWriter, r *http.Request, user c
 		// the operator can correlate runs without typing.
 		trigger = user.Email + "@" + time.Now().UTC().Format(time.RFC3339)
 	}
-	count, err := s.pluginManualFirer.FireManual(r.Context(), ref, trigger)
+	mode := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("which")))
+	var (
+		count int
+		err   error
+	)
+	switch mode {
+	case "scheduled":
+		count, err = s.pluginManualFirer.FireScheduled(r.Context(), ref, trigger)
+	default:
+		count, err = s.pluginManualFirer.FireManual(r.Context(), ref, trigger)
+	}
+	// The two error paths diverge on purpose: a manual-mode error is
+	// a domain message the UI surfaces inline (the button stays in
+	// place, count rounds to 0, no retry needed). A scheduled-mode
+	// error usually means "this plugin is not actually a scheduled
+	// plugin" — operator misused the affordance — so we surface a
+	// 4xx so the typed JSON body survives Cloudflare's rewriting
+	// while still letting the console render the message.
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":      false,
-			"message": err.Error(),
-			"count":   count,
+		status := http.StatusOK
+		if mode == "scheduled" {
+			status = http.StatusBadRequest
+		}
+		writeJSON(w, status, pluginFireResponse{
+			OK:      false,
+			Count:   count,
+			Message: err.Error(),
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"message": fmt.Sprintf("manual fire for %q drained %d traces", ref, count),
-		"count":   count,
+	writeJSON(w, http.StatusOK, pluginFireResponse{
+		OK:      true,
+		Count:   count,
+		Message: fmt.Sprintf("%s fire for %q drained %d traces", modeOrManual(mode), ref, count),
 	})
+}
+
+// modeOrManual turns the `?which=` query value into a human label
+// for the success message. Empty string falls back to "manual" so the
+// default (no query) endpoint still reads as "manual fire" in the
+// console's status line.
+func modeOrManual(mode string) string {
+	switch mode {
+	case "scheduled":
+		return "scheduled"
+	default:
+		return "manual"
+	}
 }

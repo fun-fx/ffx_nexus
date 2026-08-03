@@ -273,11 +273,11 @@ func (s *Scheduler) Enqueue(p *evalplugin.Plugin, t observability.Trace) error {
 	return nil
 }
 
-// FireManual drains a plugin's buffer (if any) and returns the count
-// of traces that were dispatched. nil plugin or unknown name yields
-// (0, nil) so the REST handler can render "no traces collected yet"
-// without failing. The trigger string is recorded for audit; it does
-// not alter what gets sent.
+// FireManual drains a manual-trigger plugin's buffer (if any) and
+// returns the count of traces that were dispatched. nil plugin or
+// unknown name yields (0, nil) so the REST handler can render "no
+// traces collected yet" without failing. The trigger string is
+// recorded for audit; it does not alter what gets sent.
 //
 // FireManual is the manual-firer's admin-REST entry point. It exists
 // even though manual plugins have an empty buffer by design: it lets
@@ -293,13 +293,54 @@ func (s *Scheduler) FireManual(ctx context.Context, p *evalplugin.Plugin, trigge
 	s.mu.Lock()
 	buf := s.bufferFor(p.Metadata.Name)
 	s.mu.Unlock()
+	count := s.drainAll(ctx, p, buf)
+	s.logf("manual eval plugin fire", "plugin", p.Metadata.Name, "count", count, "trigger", trigger)
+	return count, nil
+}
+
+// FireScheduled drains a scheduled-trigger plugin's buffer
+// immediately, skipping the next interval tick. Useful when an
+// operator wants to push buffered traces through the vendor right
+// away without waiting for `spec.collect.interval` to elapse.
+//
+// The trigger string only changes the audit log line — it does not
+// affect which traces get shipped or in what order. Callers that pass
+// a non-scheduled plugin here get ErrNotScheduled so the REST handler
+// can return a 4xx with a precise message instead of silently
+// rejecting the input.
+func (s *Scheduler) FireScheduled(ctx context.Context, p *evalplugin.Plugin, trigger string) (int, error) {
+	if p == nil {
+		return 0, nil
+	}
+	if p.Spec.Send.Trigger != evalplugin.TriggerScheduled {
+		return 0, ErrNotScheduled
+	}
+	s.mu.Lock()
+	buf := s.bufferFor(p.Metadata.Name)
+	s.mu.Unlock()
+	count := s.drainAll(ctx, p, buf)
+	s.logf("scheduled eval plugin fire", "plugin", p.Metadata.Name, "count", count, "trigger", trigger)
+	return count, nil
+}
+
+// ErrNotScheduled is returned when FireScheduled is invoked with a
+// plugin whose Send.Trigger is not `scheduled` (e.g. an `on_trace`
+// plugin: the buffer is empty by design and the inline path already
+// forwarded every trace).
+var ErrNotScheduled = errors.New("plugin trigger is not scheduled")
+
+// drainAll pops the entire buffer until empty, dispatching each
+// trace through s.dispatch. Used by both FireManual and FireScheduled
+// — the only difference between those two is the trigger-string guard
+// and the audit log line.
+func (s *Scheduler) drainAll(ctx context.Context, p *evalplugin.Plugin, buf *pluginBuffer) int {
 	count := 0
 	for {
 		s.mu.Lock()
 		el := buf.ll.Front()
 		if el == nil {
 			s.mu.Unlock()
-			break
+			return count
 		}
 		buf.ll.Remove(el)
 		s.mu.Unlock()
@@ -308,7 +349,7 @@ func (s *Scheduler) FireManual(ctx context.Context, p *evalplugin.Plugin, trigge
 			continue
 		}
 		if err := s.dispatch(ctx, t, p); err != nil {
-			s.warnf("manual dispatch failed",
+			s.warnf("eval plugin dispatch failed",
 				"plugin", p.Metadata.Name,
 				"trace_id", t.TraceID,
 				"err", err)
@@ -316,8 +357,6 @@ func (s *Scheduler) FireManual(ctx context.Context, p *evalplugin.Plugin, trigge
 		}
 		count++
 	}
-	s.logf("manual eval plugin fire", "plugin", p.Metadata.Name, "count", count, "trigger", trigger)
-	return count, nil
 }
 
 // DroppedReports returns how many traces were dropped per plugin since

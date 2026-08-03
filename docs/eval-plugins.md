@@ -633,7 +633,7 @@ button on its row in the *Evaluators* card (and on the legacy
 mounted in `internal/console/eval_plugins.go:pluginFireManual`:
 
 ```http
-POST /api/eval/plugins/manual-judge/fire
+POST /api/eval/plugins/manual-judge/fire?which=manual
 Content-Type: application/json
 
 {"trigger": "weekly-bake-off-2025-10-31"}     ← optional audit tag
@@ -645,20 +645,45 @@ The response includes the count and the audit tag the worker used:
 {
   "ok": true,
   "count": 17,
-  "message": "manual eval plugin fire (trigger=weekly-bake-off-2025-10-31)"
+  "message": "manual fire for \"manual-judge\" drained 17 traces"
 }
 ```
+
+### Scheduled trigger UX (console)
+
+A plugin with `spec.send.trigger: scheduled` shows a neon **Flush
+now** button on its row. Where the **Run now** button on *manual*
+plugins is the only way to ship anything, the **Flush now** button
+on *scheduled* plugins is the operator escape hatch from a long
+`spec.collect.interval` — they bypass the next tick and ship any
+buffered traces right now:
+
+```http
+POST /api/eval/plugins/batch-judge/fire?which=scheduled
+Content-Type: application/json
+
+{"trigger": "interval-bypass-2025-10-31"}
+```
+
+The server's behaviour diverges along `which`:
+
+- `which=manual` (default) — drains an empty buffer; `count` is
+  usually 0 because inline traces are never enqueued for manual
+  plugins. A non-zero count means an admin flipped the trigger while
+  the buffer was non-empty. Firer errors return `200 {ok:false}` so
+  the typed JSON envelope survives reverse proxies.
+- `which=scheduled` — drains whatever the per-plugin buffer held.
+  Firer errors return `400 {ok:false}` because the most common
+  failure is "plugin is not actually a scheduled-trigger plugin",
+  which is operator misuse — the typed 4xx is enough feedback.
 
 Refresh behaviour: the response does not include per-trace outcomes
 because the dispatch path is async — the buffer is drained into the
 dispatcher's queue and the rest of the dispatch lifecycle is
 identifiable by the structured `log.Info("manual eval plugin fire", ...)`
-line. The row chip reads `manual` (warn tone) so the operator can spot
-which plugins still need a push.
-
-`scheduled` plugins do not surface a Run-now button: their flushing
-is on the `spec.collect.interval` and the only knob is to wait (or
-to short-circuit the interval by flipping the trigger).
+or `log.Info("scheduled eval plugin fire", ...)` line. The row chip
+reads `manual` (warn tone) or `scheduled` (warn tone) so the operator
+can spot which plugins still need a push.
 
 ### Durability
 

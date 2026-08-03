@@ -125,7 +125,90 @@ func TestSchedulerStopJoinsGoroutines(t *testing.T) {
 	}
 }
 
-// --- fixtures -------------------------------------------------------------
+// TestSchedulerFireScheduledRejectsNonScheduled: FireScheduled must
+// refuse anything that isn't actually a scheduled-trigger plugin.
+// This is the mirror of FireManual's guard — without it, an operator
+// could press the scheduled-flush button on an on_trace plugin and
+// silently see "drained 0 traces" with no indication that their
+// input was wrong. Returning ErrNotScheduled keeps the typed error
+// path consistent with FireManual.
+func TestSchedulerFireScheduledRejectsNonScheduled(t *testing.T) {
+	var counter int32
+	sched := NewScheduler(countingDispatchFn(&counter), SchedulerConfig{})
+	defer sched.Stop()
+
+	// on_trace plugin: buffered traces go out inline, never enqueued.
+	reg := newTestRegistry(t, onTracePlugin("inline-only"))
+	p := mustPluginByName(t, reg, "inline-only")
+
+	_, err := sched.FireScheduled(context.Background(), p, "interval-bypass")
+	if !errors.Is(err, ErrNotScheduled) {
+		t.Fatalf("err = %v; want ErrNotScheduled", err)
+	}
+	if got := atomic.LoadInt32(&counter); got != 0 {
+		t.Errorf("dispatched %d traces; want 0 — guard failed", got)
+	}
+}
+
+// TestSchedulerFireScheduledDrainsBuffer: with a scheduled plugin
+// that already has buffered traces (likely because of a recent
+// dispatch failure holding them up), FireScheduled must drain the
+// buffer through dispatch synchronously — without waiting for the
+// next tick on `spec.collect.interval`. This is the operational
+// escape hatch.
+func TestSchedulerFireScheduledDrainsBuffer(t *testing.T) {
+	var counter int32
+	sched := NewScheduler(countingDispatchFn(&counter), SchedulerConfig{})
+	defer sched.Stop()
+
+	// Push a couple of traces directly into the buffer for the
+	// plugin so we don't have to drive the scheduled flush goroutine
+	// just to fill it. The same `Enqueue` API the dispatcher uses
+	// on the hot path.
+	reg := newTestRegistry(t, scheduledPlugin("batch-me", time.Hour))
+	p := mustPluginByName(t, reg, "batch-me")
+	for i := 0; i < 3; i++ {
+		if err := sched.Enqueue(p, observability.Trace{TraceID: "t-" + string(rune('a'+i))}); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+	count, err := sched.FireScheduled(context.Background(), p, "interval-bypass")
+	if err != nil {
+		t.Fatalf("FireScheduled: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("count = %d; want 3", count)
+	}
+	if got := atomic.LoadInt32(&counter); got != 3 {
+		t.Errorf("dispatched %d traces; want 3", got)
+	}
+	// A second fire on an empty buffer counts 0 — not an error. This
+	// is the contract the admin REST endpoint relies on for idempotency.
+	count, err = sched.FireScheduled(context.Background(), p, "second-call")
+	if err != nil {
+		t.Fatalf("second FireScheduled: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("second count = %d; want 0 on empty buffer", count)
+	}
+}
+
+// TestSchedulerFireScheduledOnNilPlugin: the contract is the same as
+// FireManual: nil plugin is a no-op (returns 0, nil), so a typo'd
+// plugin name in the admin REST endpoint renders as "0 traces
+// drained" rather than a 5xx. Operators have done this by accident
+// often enough that we keep the policy even across plumbing changes.
+func TestSchedulerFireScheduledOnNilPlugin(t *testing.T) {
+	sched := NewScheduler(countingDispatchFn(new(int32)), SchedulerConfig{})
+	defer sched.Stop()
+	count, err := sched.FireScheduled(context.Background(), nil, "noop")
+	if err != nil {
+		t.Fatalf("err = %v; want nil on nil plugin", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d; want 0", count)
+	}
+}
 
 func scheduledPlugin(name string, ivl time.Duration) string {
 	return `apiVersion: nexus.io/v1alpha1

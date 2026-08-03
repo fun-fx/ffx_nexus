@@ -1196,8 +1196,28 @@ export async function fireEvalPluginManual(
   name: string,
   trigger?: string,
 ): Promise<ManualFireResult> {
+  return fireEvalPluginWhich(name, "manual", trigger);
+}
+
+export async function fireEvalPluginScheduled(
+  name: string,
+  trigger?: string,
+): Promise<ManualFireResult> {
+  return fireEvalPluginWhich(name, "scheduled", trigger);
+}
+
+// fireEvalPluginWhich factors the duplicated fetch/decoding path so
+// both modes share the same envelope-aware error helper. `which`
+// arrives at the backend as `?which=<mode>`; the route picks
+// FireManual or FireScheduled accordingly.
+async function fireEvalPluginWhich(
+  name: string,
+  which: "manual" | "scheduled",
+  trigger?: string,
+): Promise<ManualFireResult> {
+  const qs = `?which=${which}`;
   const res = await fetch(
-    `/api/eval/plugins/${encodeURIComponent(name)}/fire`,
+    `/api/eval/plugins/${encodeURIComponent(name)}/fire${qs}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
