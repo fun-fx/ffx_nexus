@@ -17,6 +17,7 @@ import (
 
 	nexus "github.com/ffxnexus/nexus"
 	"github.com/ffxnexus/nexus/internal/balancer"
+	"github.com/ffxnexus/nexus/internal/benchmark"
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/console"
 	"github.com/ffxnexus/nexus/internal/core"
@@ -106,6 +107,7 @@ func main() {
 				"migrations/postgres/009_eval_plugins.sql",
 				"migrations/postgres/010_eval_scores_kind.sql",
 				"migrations/postgres/011_eval_plugin_keys.sql",
+				"migrations/postgres/012_benchmark_runs.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := st.Migrate(ctx, string(schema)); err != nil {
@@ -468,6 +470,24 @@ func main() {
 				withSource(srcAdapter).
 				withSecrets(pluginSecrets))
 		consoleSrvHandler.SetPluginKeys(pluginSecrets)
+
+		// Model benchmarks. These need Postgres for the run records and
+		// the same vault for the provider token; nothing from the eval
+		// worker itself, but they are wired here because this is where
+		// the key resolver exists. Without Postgres the console routes
+		// answer 503 with that explanation.
+		if store != nil {
+			benchRunner := benchmark.NewRunner(store, store,
+				benchmarkTokens{keys: pluginSecrets}, cfg.PublicGatewayURL, log)
+			consoleSrvHandler.SetBenchmarks(benchRunner)
+			// A run outlives any request, so settlement has to be
+			// driven from the background rather than from whoever
+			// happens to have the page open.
+			go benchRunner.Poll(ctx, benchmarkPollInterval)
+			log.Info("model benchmarks enabled",
+				"provider", benchmark.ProviderPrime,
+				"gateway_routing", benchRunner.GatewayRoutingAvailable())
+		}
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
 	// secret takes effect without restarting the gateway.

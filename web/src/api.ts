@@ -1035,3 +1035,146 @@ export function connectLive(onTrace: (t: TraceSummary) => void): WebSocket {
   };
   return ws;
 }
+
+// --- Model benchmarks (PrimeIntellect hosted evaluations) -------------
+//
+// A benchmark measures a model against a dataset on an external
+// platform, so unlike an eval plugin there is no trace involved and a
+// run takes minutes to hours. The console launches one and then watches
+// the row settle.
+
+export interface BenchmarkRun {
+  id: string;
+  org_id: string;
+  provider: string;
+  external_id: string;
+  name: string;
+  environments: string[];
+  model: string;
+  num_examples: number;
+  rollouts: number;
+  via_gateway: boolean;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  external_status?: string;
+  avg_score: number | null;
+  min_score: number | null;
+  max_score: number | null;
+  total_samples: number | null;
+  metrics?: unknown;
+  viewer_url?: string;
+  error?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface BenchmarkListResponse {
+  runs: BenchmarkRun[];
+  /** False when NEXUS_PUBLIC_GATEWAY_URL is unset, so the form must
+   *  not offer to route the provider's inference back through us. */
+  gateway_routing_available: boolean;
+  /** Server-side cap on num_examples × rollouts. */
+  max_total_samples: number;
+}
+
+export interface BenchmarkModel {
+  id: string;
+  name: string;
+  provider: string;
+  pricing: { prompt: number; completion: number };
+}
+
+export interface LaunchBenchmarkBody {
+  name?: string;
+  environments: string[];
+  model: string;
+  num_examples?: number;
+  rollouts?: number;
+  timeout_minutes?: number;
+  via_gateway?: boolean;
+}
+
+export async function fetchBenchmarks(): Promise<BenchmarkListResponse> {
+  const res = await fetch("/api/eval/benchmarks");
+  if (!res.ok) {
+    return { runs: [], gateway_routing_available: false, max_total_samples: 0 };
+  }
+  const data = await jsonOrError<BenchmarkListResponse>(res);
+  return {
+    runs: Array.isArray(data.runs) ? data.runs : [],
+    gateway_routing_available: Boolean(data.gateway_routing_available),
+    max_total_samples: data.max_total_samples ?? 0,
+  };
+}
+
+export async function launchBenchmark(
+  body: LaunchBenchmarkBody,
+): Promise<BenchmarkRun> {
+  const res = await fetch("/api/eval/benchmarks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrError<BenchmarkRun>(res);
+}
+
+export async function cancelBenchmark(id: string): Promise<void> {
+  const res = await fetch(`/api/eval/benchmarks/${id}/cancel`, {
+    method: "POST",
+  });
+  await jsonOrError<{ ok: boolean }>(res);
+}
+
+export async function deleteBenchmark(id: string): Promise<void> {
+  const res = await fetch(`/api/eval/benchmarks/${id}`, { method: "DELETE" });
+  await jsonOrError<{ ok: boolean }>(res);
+}
+
+export async function fetchBenchmarkLogs(id: string): Promise<string> {
+  const res = await fetch(`/api/eval/benchmarks/${id}/logs`);
+  const data = await jsonOrError<{ logs: string }>(res);
+  return data.logs ?? "";
+}
+
+/** Forces a poll pass. The server also polls on a timer; this exists so
+ *  an operator watching a long run does not have to wait for the tick. */
+export async function refreshBenchmarks(): Promise<number> {
+  const res = await fetch("/api/eval/benchmarks/refresh", { method: "POST" });
+  const data = await jsonOrError<{ updated: number }>(res);
+  return data.updated ?? 0;
+}
+
+export async function fetchBenchmarkModels(): Promise<BenchmarkModel[]> {
+  const res = await fetch("/api/eval/benchmarks/models");
+  const data = await jsonOrError<{ models: BenchmarkModel[] }>(res);
+  return Array.isArray(data.models) ? data.models : [];
+}
+
+export interface BenchmarkCredentialState {
+  provider: string;
+  configured: boolean;
+}
+
+export async function fetchBenchmarkCredential(): Promise<BenchmarkCredentialState> {
+  const res = await fetch("/api/eval/benchmarks/credential");
+  if (!res.ok) return { provider: "primeintellect", configured: false };
+  return jsonOrError<BenchmarkCredentialState>(res);
+}
+
+export async function saveBenchmarkCredential(apiKey: string): Promise<void> {
+  const res = await fetch("/api/eval/benchmarks/credential", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+  await jsonOrError<{ ok: boolean }>(res);
+}
+
+export async function clearBenchmarkCredential(): Promise<void> {
+  const res = await fetch("/api/eval/benchmarks/credential", {
+    method: "DELETE",
+  });
+  await jsonOrError<{ ok: boolean }>(res);
+}

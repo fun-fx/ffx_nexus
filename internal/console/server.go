@@ -62,6 +62,7 @@ type Server struct {
 	pluginCollector  PluginWebhookReceiver  // eval-plugin webhook sink (Phase C)
 	pluginTester     EvalPluginTester       // eval-plugin test-send (Phase D)
 	pluginKeys       EvalPluginKeys         // in-process plugin key resolver (console keys)
+	benchmarks       BenchmarkRunner        // model-level benchmark runs; nil without Postgres
 	loginLim         *limiter.IPLimiter     // per-IP rate limit for /api/auth/login
 	registerLim      *limiter.IPLimiter     // per-IP rate limit for /api/auth/register
 	ssoLim           *limiter.IPLimiter     // per-IP rate limit for /api/auth/sso/*
@@ -285,6 +286,27 @@ func (s *Server) Mux() http.Handler {
 			r.Put("/eval/plugins/{name}/keys", s.requireAdmin(s.putPluginKeys))
 			r.Delete("/eval/plugins/{name}/keys", s.requireAdmin(s.deletePluginKeys))
 		}
+
+		// Benchmark runs: a model measured against a dataset by an
+		// external platform. Admin-only throughout — a launch spends
+		// money at the provider, and a gateway-routed one mints a key
+		// that lets their sandbox call us.
+		//
+		// Static segments are registered before "/{id}" so a path like
+		// /models is never captured as a run identifier.
+		r.Route("/eval/benchmarks", func(r chi.Router) {
+			r.Get("/", s.requireAdmin(s.listBenchmarks))
+			r.Post("/", s.requireAdmin(s.launchBenchmark))
+			r.Get("/models", s.requireAdmin(s.benchmarkModels))
+			r.Post("/refresh", s.requireAdmin(s.refreshBenchmarks))
+			r.Get("/credential", s.requireAdmin(s.getBenchmarkCredential))
+			r.Put("/credential", s.requireAdmin(s.putBenchmarkCredential))
+			r.Delete("/credential", s.requireAdmin(s.deleteBenchmarkCredential))
+			r.Get("/{id}", s.requireAdmin(s.getBenchmark))
+			r.Delete("/{id}", s.requireAdmin(s.deleteBenchmark))
+			r.Post("/{id}/cancel", s.requireAdmin(s.cancelBenchmark))
+			r.Get("/{id}/logs", s.requireAdmin(s.benchmarkLogs))
+		})
 
 		// User management (admin only).
 		r.Get("/users", s.requireAdmin(s.listUsers))

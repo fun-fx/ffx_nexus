@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchEvalConfig,
@@ -251,6 +252,11 @@ export function Eval() {
                     ? "no restart required."
                     : `restart required: ${cfg.restart_required.join(", ")}.`}
                 </>}
+          </p>
+          <p className="hint">
+            Scoring here judges traffic that already happened. To measure a{" "}
+            <strong>model against a dataset</strong> instead, see{" "}
+            <Link to="/eval/benchmarks">Benchmarks</Link>.
           </p>
         </div>
         <div className="page-stats">

@@ -2848,3 +2848,162 @@ a:hover {
   font-size: 11px;
   padding: 1px 6px;
 }
+
+/* --- Model benchmarks page ------------------------------------------ */
+
+.btn-small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.benchmarks-page .panel {
+  margin-bottom: 16px;
+}
+
+.bench-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+
+.bench-alert.is-err {
+  border-color: color-mix(in oklab, var(--err, #f87171) 45%, transparent);
+  color: var(--err, #f87171);
+}
+
+.bench-alert > span:first-of-type {
+  flex: 1;
+}
+
+.bench-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  background: color-mix(in oklab, var(--panel-2) 80%, transparent);
+  color: inherit;
+  font: inherit;
+}
+
+.bench-input:focus-visible {
+  outline: none;
+  border-color: var(--accent-3, #7dd3fc);
+}
+
+.bench-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.bench-credential-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.bench-credential-row .bench-input {
+  max-width: 420px;
+}
+
+.bench-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 16px;
+  padding: 4px 14px 12px;
+}
+
+.bench-field-wide {
+  grid-column: 1 / -1;
+}
+
+.bench-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0 14px 12px;
+}
+
+.bench-check input {
+  margin-top: 3px;
+}
+
+.bench-check-sub {
+  display: block;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.bench-submit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.bench-help {
+  padding: 0 14px 14px;
+  font-size: 12px;
+  color: var(--muted-2);
+}
+
+.bench-help summary {
+  cursor: pointer;
+}
+
+.bench-help ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  line-height: 1.6;
+}
+
+.bench-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bench-run-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bench-run-sub {
+  font-size: 11px;
+}
+
+.bench-env-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.bench-env {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--panel-2) 70%, transparent);
+}
+
+.bench-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.bench-logs {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
