@@ -242,39 +242,65 @@ function FormMode({
         </FieldRow>
         {form.service.kind === "langfuse" && (
           <FieldRow label="Region (cloud)">
-            <select
-              className="input"
-              value={
-                form.service.endpoint.replace(/^https?:\/\//, "").endsWith(
-                  "us.cloud.langfuse.com",
-                )
-                  ? "us"
-                  : form.service.endpoint.replace(/^https?:\/\//, "").endsWith(
-                        "jp.cloud.langfuse.com",
-                      )
-                    ? "jp"
-                    : form.service.endpoint.replace(/^https?:\/\//, "").endsWith(
-                          "hipaa.cloud.langfuse.com",
-                        )
-                      ? "hipaa"
-                      : "eu"
+            {(() => {
+              // When the endpoint was edited away from a hosted URL (e.g.
+              // a self-host install), the region dropdown is meaningless
+              // and selecting anything would silently overwrite the
+              // operator's URL. Surface that as an explicit "no match"
+              // state instead.
+              const host = form.service.endpoint.replace(/^https?:\/\//, "");
+              const matchedRegion = Object.entries(langfuseRegionURLs).find(([, url]) =>
+                url.replace(/^https?:\/\//, "") === host,
+              )?.[0];
+              if (!matchedRegion) {
+                return (
+                  <select
+                    className="input"
+                    value=""
+                    onChange={(e) => {
+                      const regionURL = langfuseRegionURLs[e.target.value];
+                      if (regionURL) updateService({ endpoint: regionURL });
+                    }}
+                  >
+                    <option value="">— endpoint is not a hosted region —</option>
+                    {Object.entries(langfuseRegionURLs).map(([key, url]) => (
+                      <option key={key} value={key}>
+                        {key.toUpperCase()} — {url}
+                      </option>
+                    ))}
+                  </select>
+                );
               }
-              onChange={(e) => {
-                const regionURL = langfuseRegionURLs[e.target.value];
-                if (regionURL) updateService({ endpoint: regionURL });
-              }}
-            >
-              <option value="eu">EU — cloud.langfuse.com (default)</option>
-              <option value="us">US — us.cloud.langfuse.com</option>
-              <option value="jp">JP — jp.cloud.langfuse.com</option>
-              <option value="hipaa">HIPAA — hipaa.cloud.langfuse.com</option>
-            </select>
+              return (
+                <select
+                  className="input"
+                  value={matchedRegion}
+                  onChange={(e) => {
+                    const regionURL = langfuseRegionURLs[e.target.value];
+                    if (regionURL) updateService({ endpoint: regionURL });
+                  }}
+                >
+                  {Object.entries(langfuseRegionURLs).map(([key, url]) => (
+                    <option key={key} value={key}>
+                      {key.toUpperCase()} — {url}
+                    </option>
+                  ))}
+                </select>
+              );
+            })()}
             <p className="muted tiny">
-              The endpoint above drives every Langfuse API call. If you
-              see <code>credentials rejected (401)</code> on Test, the
-              project and its keys almost always belong to a different
-              region than this one — switch the region dropdown here,
-              paste new keys, retry.
+              {form.service.endpoint.replace(/^https?:\/\//, "").endsWith(
+                "cloud.langfuse.com",
+              ) ||
+              [
+                "us.cloud.langfuse.com",
+                "jp.cloud.langfuse.com",
+                "hipaa.cloud.langfuse.com",
+              ].some((h) =>
+                form.service.endpoint.replace(/^https?:\/\//, "").endsWith(h),
+              )
+                ? "The endpoint above drives every Langfuse API call. If you see credentials rejected (401) on Test, the project and its keys almost always belong to a different region than this one — switch the region dropdown here, paste new keys, retry."
+                : "This preset is self-hosted. Pick a region only if your URL is one of the hosted endpoints above; otherwise leave it untouched."}
             </p>
           </FieldRow>
         )}
@@ -978,6 +1004,11 @@ export function PluginEditorDrawer({
       testId="plugin-editor-drawer"
     >
       {!initial ? (
+        // Pick a preset and entirely remount the form so it picks up that
+        // preset's defaults — including endpoint and any region controls.
+        // Without the `key` change the form is mounted once and the
+        // preset state is purely visual, which is why self-host used to
+        // look identical to cloud on the very first install.
         <div className="plugin-form-presets">
           <p className="muted small">Start from a preset:</p>
           <div className="chip-row">
@@ -996,6 +1027,7 @@ export function PluginEditorDrawer({
       ) : null}
 
       <PluginForm
+        key={preset}
         initial={initial ?? PLUGIN_PRESETS[preset]?.form ?? DEFAULT_PLUGIN_TEMPLATE}
         onCancel={onClose}
         onSaved={(_rec, form) => submitM.mutate(form)}
