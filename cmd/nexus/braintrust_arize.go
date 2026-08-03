@@ -14,11 +14,60 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/ffxnexus/nexus/internal/evaluators/external"
 )
+
+// PingBraintrust verifies the Braintrust project is reachable AND
+// the resolved API key is accepted by `GET /v1/projects`. Braintrust
+// returns 401 with an empty body when the bearer is wrong, which is
+// why we narrowly check the status code instead of treating any 2xx
+// as success.
+//
+// Earlier releases ran this through genericProbe, which only proved
+// the host answered TCP. PR #195 closed the same false-positive for
+// LangSmith — these four probes apply the same pattern to the rest
+// of the live vendor list so that "Test passes" means "credentials
+// verified" everywhere, not "host alive."
+func PingBraintrust(ctx context.Context, endpoint, key string) error {
+	if strings.TrimSpace(endpoint) == "" {
+		return errors.New("endpoint not configured")
+	}
+	if strings.TrimSpace(key) == "" {
+		return errors.New("no Braintrust credential resolved: paste a " +
+			"Braintrust API key")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	url := joinEndpoint(endpoint, "/v1/projects")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build probe request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := httpClientForPluginsTest().Do(req)
+	if err != nil {
+		return fmt.Errorf("probe %s failed at transport layer: %w", url, err)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("credentials rejected (%s): check the Braintrust "+
+			"API key; %s", resp.Status, strings.TrimSpace(string(snippet)))
+	case resp.StatusCode/100 != 2:
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("unexpected status %s from %s: %s",
+			resp.Status, url, strings.TrimSpace(string(snippet)))
+	}
+	return nil
+}
 
 func braintrustTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
 	url := joinEndpoint(tgt.Endpoint, "/v1/project_logs/nexus/feedback")

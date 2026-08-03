@@ -19,9 +19,59 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/ffxnexus/nexus/internal/evaluators/external"
 )
+
+// PingDatadog verifies the resolved DD-API-KEY is accepted by
+// `/api/v1/validate`. Datadog returns 200 with `{"valid":true}` for
+// a good key and 403 for a bad one without making a real LLM Obs
+// call. The probe also doubles as a region check: if the operator
+// pointed us at a non-Datadog host (e.g. a leftover `us3` slug from
+// a webhook URL they meant as a different vendor), the call fails at
+// the transport layer rather than silently passing.
+//
+// Earlier releases used genericProbe here, which returned *endpoint
+// reachable* against a 403-only host — exactly the shape PR #195
+// closed for LangSmith and that this PR closes for the rest of the
+// live vendor list.
+func PingDatadog(ctx context.Context, endpoint, key string) error {
+	if strings.TrimSpace(endpoint) == "" {
+		return errors.New("endpoint not configured")
+	}
+	if strings.TrimSpace(key) == "" {
+		return errors.New("no Datadog credential resolved: paste a " +
+			"DD-API-KEY")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	url := joinEndpoint(endpoint, "/api/v1/validate")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build probe request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("DD-API-KEY", key)
+	resp, err := httpClientForPluginsTest().Do(req)
+	if err != nil {
+		return fmt.Errorf("probe %s failed at transport layer: %w", url, err)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("DD-API-KEY rejected (%s): rotate the key in "+
+			"Datadog → Org Settings → API Keys; %s",
+			resp.Status, strings.TrimSpace(string(snippet)))
+	case resp.StatusCode/100 != 2:
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("unexpected status %s from %s: %s",
+			resp.Status, url, strings.TrimSpace(string(snippet)))
+	}
+	return nil
+}
 
 func datadogTransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
 	// Datadog's evals endpoint wants decimal trace_id/span_id. We
