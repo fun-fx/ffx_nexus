@@ -220,18 +220,25 @@ describe("pluginManifest survey-driven presets", () => {
     // The internal/evaluators/heuristic backend ships these metric
     // names today. The console advertises the same set so an
     // operator who reads the docs sees a matching tile.
-    for (const k of [
-      "contains",
-      "pii",
-      "exact_match",
-      "rouge_l",
-      "hf_evaluate",
-      "lighteval",
-      "ragas",
-    ]) {
+    for (const k of ["contains", "pii", "exact_match", "rouge_l"]) {
       expect(HEURISTIC_PRESETS[k], `heuristic missing: ${k}`).toBeDefined();
       expect(HEURISTIC_PRESETS[k].metric).toBe(k);
     }
+  });
+
+  it("HEURISTIC_PRESETS advertises no metric the backend refuses", () => {
+    // hf_evaluate / lighteval / ragas needed a Python subprocess in
+    // the Nexus pod and were removed from validMetric. A tile for one
+    // of them would hand the operator a manifest that fails to save.
+    for (const k of ["hf_evaluate", "lighteval", "ragas"]) {
+      expect(HEURISTIC_PRESETS[k], `retired metric still offered: ${k}`).toBeUndefined();
+    }
+    expect(Object.keys(HEURISTIC_PRESETS).sort()).toEqual([
+      "contains",
+      "exact_match",
+      "pii",
+      "rouge_l",
+    ]);
   });
 
   it("otel_collector preset round-trips with collect.transport set", () => {

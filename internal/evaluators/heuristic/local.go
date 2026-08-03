@@ -30,12 +30,12 @@
 // whether the score came from a vendor webhook or from a Go regex
 // on the same worker.
 //
-// Layout note. The Python wrappers (hf_evaluate / lighteval /
-// ragas) live in internal/evaluators/heuristic/python.go because
-// the subprocess protocol is different from the in-process
-// implementations here. Operationally they share the MetricSpec
-// Name key so a single plugin manifest selects either path via
-// spec.service.metric.name.
+// Every metric here is pure Go and runs on the calling goroutine, so a
+// heuristic plugin costs no egress and no compute Nexus has to host.
+// The HuggingFace Evaluate / LightEval / Ragas wrappers that used to
+// sit beside this file ran a Python subprocess in the Nexus pod and
+// were removed for that reason; those metrics belong behind an
+// external plugin now.
 package heuristic
 
 import (
@@ -164,9 +164,6 @@ func Evaluate(ctx context.Context, name string, args map[string]any, t observabi
 	case "rouge_l":
 		return evalRougeL(ctx, args, t)
 	default:
-		// hf_evaluate / lighteval / ragas dispatch out-of-band
-		// (subprocess); returning an error here is a guard against
-		// a future kind arriving and being routed to in-process.
 		return nil, fmt.Errorf("heuristic %q is not in-process", name)
 	}
 }

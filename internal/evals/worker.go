@@ -69,6 +69,15 @@ type Worker struct {
 	// the plaintext is gone once Evaluate() finishes.
 	secretResolver SecretResolver
 
+	// pluginOnly mirrors NEXUS_EVAL_PLUGIN_ONLY. When set, the two
+	// evaluator kinds that need scoring compute Nexus would have to run
+	// or host — the LLM-as-judge and the Python sidecar — are refused
+	// wherever they can be wired: at construction, per trace, and at
+	// runtime reconfiguration. The flag used to skip profile seeding
+	// only, which meant a deployment could report plugin-only while
+	// still calling an in-cluster judge on every sampled trace.
+	pluginOnly bool
+
 	ch     chan observability.Trace
 	done   chan struct{}
 	closed chan struct{}
@@ -91,6 +100,10 @@ type Options struct {
 	Workers         int     // concurrent eval goroutines
 	BufferSize      int
 	EvalTimeout     time.Duration
+	// PluginOnly refuses every evaluator kind that needs eval compute
+	// Nexus owns (LLM-as-judge, Python eval sidecar), leaving only
+	// config-only plugins and the zero-egress Go heuristics.
+	PluginOnly bool
 	// MetricsRecorder, if non-nil, receives RecordQualityScore calls so eval
 	// results feed the Prometheus nexus_eval_quality_score gauge as well as
 	// the clickhouse/pg sink. Optional; nil = no metric propagation.
@@ -111,6 +124,17 @@ func NewWorker(opts Options, log *slog.Logger) *Worker {
 	if opts.Sink == nil {
 		opts.Sink = NoopSink{}
 	}
+	// Plugin-only and a pre-built judge slice are contradictory inputs.
+	// Honour the flag rather than the slice so the invariant "no
+	// Nexus-hosted eval compute" holds for the whole struct, and say so
+	// once instead of failing silently on every trace.
+	if opts.PluginOnly && len(opts.Judges) > 0 {
+		if log != nil {
+			log.Warn("eval plugin-only mode: dropping pre-built judges",
+				"count", len(opts.Judges))
+		}
+		opts.Judges = nil
+	}
 
 	w := &Worker{
 		judges:          opts.Judges,
@@ -126,6 +150,7 @@ func NewWorker(opts Options, log *slog.Logger) *Worker {
 		workerCount:     opts.Workers,
 		evalTimeout:     opts.EvalTimeout,
 		metricsRecorder: opts.MetricsRecorder,
+		pluginOnly:      opts.PluginOnly,
 		ch:              make(chan observability.Trace, opts.BufferSize),
 		done:            make(chan struct{}),
 		closed:          make(chan struct{}),
@@ -306,6 +331,15 @@ func (w *Worker) collectEvaluators(
 			continue
 		case ProfileHeuristicCompleteness:
 			evs = append(evs, CompletenessEvaluator{})
+			continue
+		}
+		// Everything past this point is a judge or sidecar profile, so
+		// it points at scoring compute Nexus has to run or host. Under
+		// plugin-only that is exactly what the deployment opted out of,
+		// and a profile created through the console must not be able to
+		// bring it back. Refusing before the secret lookup also keeps
+		// us from fetching a credential we will not use.
+		if w.pluginOnly {
 			continue
 		}
 		// Profiles that need an LLM resolution short-circuit when

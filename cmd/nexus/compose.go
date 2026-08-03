@@ -164,40 +164,64 @@ func buildEvalWorker(cfg config.Config, chRec *observability.CHRecorder, store *
 			"hint", "set NEXUS_CLICKHOUSE_URL or NEXUS_POSTGRES_URL for persistence")
 	}
 
-	var judges []evals.Evaluator
-	if judge := evals.NewSLMJudge(evals.JudgeConfig{
-		BaseURL: cfg.JudgeBaseURL,
-		Model:   cfg.JudgeModel,
-		APIKey:  cfg.JudgeAPIKey,
-	}); judge != nil {
-		judges = append(judges, judge)
-		log.Info("eval SLM judge enabled", "model", cfg.JudgeModel, "sample_rate", cfg.EvalSampleRate)
-	} else {
-		log.Info("eval SLM judge disabled (set NEXUS_JUDGE_BASE_URL); heuristics still run")
-	}
-	if remote := evals.NewRemoteEvaluator(evals.RemoteConfig{
-		BaseURL: cfg.EvalServiceURL,
-		Metrics: splitCSV(cfg.EvalServiceMetrics),
-		Timeout: cfg.EvalServiceTimeout,
-	}); remote != nil {
-		judges = append(judges, remote)
-		log.Info("external eval service enabled", "url", cfg.EvalServiceURL, "metrics", cfg.EvalServiceMetrics)
-	} else {
-		log.Info("external eval service disabled (set NEXUS_EVAL_SERVICE_URL)")
-	}
-
-	worker := evals.NewWorker(evals.Options{
-		Judges:          judges,
+	opts := evals.Options{
 		Sink:            sink,
-		JudgeBaseURL:    cfg.JudgeBaseURL,
-		JudgeModel:      cfg.JudgeModel,
-		JudgeAPIKey:     cfg.JudgeAPIKey,
-		RemoteURL:       cfg.EvalServiceURL,
-		RemoteMetrics:   splitCSV(cfg.EvalServiceMetrics),
-		RemoteTimeout:   cfg.EvalServiceTimeout,
 		JudgeSampleRate: cfg.EvalSampleRate,
 		Workers:         cfg.EvalWorkers,
-	}, log)
+		PluginOnly:      cfg.EvalPluginOnly,
+	}
+
+	// Plugin-only means Nexus scores nothing it has to run or host, so
+	// the judge and the Python sidecar are not wired at all — not even
+	// as inert settings the console could later switch on. The env vars
+	// commonly outlive the decision (a values file keeps pointing at
+	// ollama and eval-service), so name what was ignored: a silent skip
+	// here reads exactly like a working judge in the boot log.
+	if cfg.EvalPluginOnly {
+		var ignored []any
+		if cfg.JudgeBaseURL != "" {
+			ignored = append(ignored, "judge_base_url", cfg.JudgeBaseURL)
+		}
+		if cfg.EvalServiceURL != "" {
+			ignored = append(ignored, "eval_service_url", cfg.EvalServiceURL)
+		}
+		if len(ignored) > 0 {
+			log.Warn("eval plugin-only mode: ignoring in-cluster eval compute settings",
+				append(ignored, "hint", "remove these values or unset NEXUS_EVAL_PLUGIN_ONLY")...)
+		} else {
+			log.Info("eval plugin-only mode: no in-cluster eval compute configured")
+		}
+	} else {
+		opts.JudgeBaseURL = cfg.JudgeBaseURL
+		opts.JudgeModel = cfg.JudgeModel
+		opts.JudgeAPIKey = cfg.JudgeAPIKey
+		opts.RemoteURL = cfg.EvalServiceURL
+		opts.RemoteMetrics = splitCSV(cfg.EvalServiceMetrics)
+		opts.RemoteTimeout = cfg.EvalServiceTimeout
+
+		if judge := evals.NewSLMJudge(evals.JudgeConfig{
+			BaseURL: cfg.JudgeBaseURL,
+			Model:   cfg.JudgeModel,
+			APIKey:  cfg.JudgeAPIKey,
+		}); judge != nil {
+			opts.Judges = append(opts.Judges, judge)
+			log.Info("eval SLM judge enabled", "model", cfg.JudgeModel, "sample_rate", cfg.EvalSampleRate)
+		} else {
+			log.Info("eval SLM judge disabled (set NEXUS_JUDGE_BASE_URL); heuristics still run")
+		}
+		if remote := evals.NewRemoteEvaluator(evals.RemoteConfig{
+			BaseURL: cfg.EvalServiceURL,
+			Metrics: splitCSV(cfg.EvalServiceMetrics),
+			Timeout: cfg.EvalServiceTimeout,
+		}); remote != nil {
+			opts.Judges = append(opts.Judges, remote)
+			log.Info("external eval service enabled", "url", cfg.EvalServiceURL, "metrics", cfg.EvalServiceMetrics)
+		} else {
+			log.Info("external eval service disabled (set NEXUS_EVAL_SERVICE_URL)")
+		}
+	}
+
+	worker := evals.NewWorker(opts, log)
 	log.Info("eval worker enabled", "score_store", scoreKind, "trace_store", traceStore)
 	return worker
 }

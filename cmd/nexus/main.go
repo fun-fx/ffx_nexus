@@ -42,12 +42,16 @@ import (
 var nexusBuildTag = "dev"
 
 // heuristicLocalEvaluator is the bridge between
-// external.LocalEvaluator and internal/evaluators/heuristic. The
-// heuristic package exposes a single Evaluate(...) function; we
-// route hf_evaluate / lighteval / ragas through it as well by way
-// of dispatch on metricName. The wrapper is intentionally a thin
-// adapter so future metrics can be added without changing
-// multi.go or main.go's wiring.
+// external.LocalEvaluator and internal/evaluators/heuristic. Every
+// metric behind it is pure Go and runs on the worker goroutine, so a
+// heuristic plugin costs no egress and no hosted compute — that is
+// the property that lets it coexist with config-only evals.
+//
+// The HuggingFace Evaluate, LightEval and Ragas metrics used to be
+// routed here through a Python subprocess. They were removed: those
+// libraries need eval compute inside the Nexus pod, which is the
+// dependency the plugin model exists to avoid. Use an external plugin
+// for those metrics instead.
 type heuristicLocalEvaluator struct{}
 
 func (heuristicLocalEvaluator) Evaluate(
@@ -56,15 +60,9 @@ func (heuristicLocalEvaluator) Evaluate(
 	args map[string]any,
 	t observability.Trace,
 ) ([]evals.Score, error) {
-	// hf_evaluate / lighteval / ragas are also accepted here; they
-	// share the same dispatch-key surface. EvaluatePython is a
-	// no-op (returns errPythonNotWired) when PYTHON_SUBPROCESS=1 is
-	// not set, so a vanilla build doesn't fail at runtime.
 	switch metricName {
 	case "contains", "pii", "exact_match", "rouge_l":
 		return heuristic.Evaluate(ctx, metricName, args, t)
-	case "hf_evaluate", "lighteval", "ragas":
-		return heuristic.EvaluatePython(ctx, metricName, args, t)
 	}
 	return nil, fmt.Errorf("heuristic metric %q is not registered", metricName)
 }

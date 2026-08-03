@@ -42,8 +42,7 @@ import (
 //     single OTLP collector adapter that ships JSON or protobuf
 //     payloads (collapse-otel-webhook).
 //     5. spec.service.metric — a typed metric kind for heuristic-mode
-//     plugins (contains, pii, exact_match, rouge_l, hf_evaluate,
-//     lighteval, ragas).
+//     plugins (contains, pii, exact_match, rouge_l).
 //
 //     Manifests carrying `apiVersion: nexus.io/v1alpha1` continue to be
 //     accepted; loadV1alpha2 warnings surface in the boot logs so the
@@ -82,9 +81,9 @@ const (
 	ServiceWebhook ServiceType = "webhook"
 	// ServiceHeuristic is the in-process metric kind. Manifests with
 	// this type declare `spec.service.metric` to pick the metric
-	// implementation (contains, pii, exact_match, rouge_l) or
-	// delegate to the Python subprocess (hf_evaluate, lighteval,
-	// ragas) for the rest.
+	// implementation (contains, pii, exact_match, rouge_l). Every one
+	// of them is pure Go: a heuristic plugin never leaves the process
+	// and never needs eval compute Nexus has to host.
 	ServiceHeuristic ServiceType = "heuristic"
 	// ServiceConfidentAI is Confident AI's DeepEval-native cloud
 	// target (a.k.a. DeepEval Cloud). Speaks OTLP/JSON with an
@@ -174,7 +173,7 @@ type CollectSpec struct {
 
 // MetricSpec is the heuristic-mode metric descriptor. Manifests of
 // ServiceHeuristic declare exactly one metric (Name); Args is an open
-// dict passed verbatim to the metric implementation (Python or Go).
+// dict passed verbatim to the metric implementation.
 // The set of legal Names is closed (see ValidMetricNames) so a typo
 // fails fast at Validate time rather than silently scoring nothing.
 type MetricSpec struct {

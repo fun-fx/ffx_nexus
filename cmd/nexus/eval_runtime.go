@@ -344,6 +344,18 @@ func (c *evalRuntimeController) SaveEvalProfile(ctx context.Context, p *evals.Ev
 	if c.profileStore == nil {
 		return nil
 	}
+	// A judge or sidecar profile scores nothing under plugin-only, and
+	// storing one would leave an enabled row in the console that never
+	// produces a score — the failure mode this whole change exists to
+	// remove. Refuse it at the write instead.
+	if p != nil && c.worker != nil && c.worker.PluginOnly() {
+		switch p.Kind {
+		case evals.ProfileSLMJudge, evals.ProfileRemoteEval:
+			return fmt.Errorf(
+				"eval plugin-only mode is on: %q profiles need eval compute in the cluster "+
+					"(use an eval plugin, or unset NEXUS_EVAL_PLUGIN_ONLY)", p.Kind)
+		}
+	}
 	if err := c.profileStore.Save(ctx, p); err != nil {
 		return err
 	}
@@ -566,6 +578,17 @@ func (c *evalRuntimeController) Apply(patch console.EvalConfigPatch) (console.Ev
 	// rejects them, so this is defense-in-depth for direct API callers.
 	// Only judge-side wiring (BaseURL / Model / API key / SampleRate /
 	// sidecar URL / metrics) flows through here.
+	// Under plugin-only the judge and the sidecar are not wired, so a
+	// patch that sets either would be accepted and then do nothing.
+	// Fail it loudly instead: an operator who wants that compute back
+	// has to turn the flag off, which is a deployment decision rather
+	// than a console toggle.
+	if c.worker.PluginOnly() && patchTouchesEvalCompute(patch) {
+		return console.EvalConfigSnapshot{}, fmt.Errorf(
+			"eval plugin-only mode is on: judge and eval-service settings are not configurable " +
+				"(unset NEXUS_EVAL_PLUGIN_ONLY to run eval compute in the cluster)")
+	}
+
 	if patch.SampleRate != nil {
 		c.worker.SetJudgeSampleRate(*patch.SampleRate)
 	}
@@ -644,4 +667,16 @@ func (c *evalRuntimeController) Apply(patch console.EvalConfigPatch) (console.Ev
 	}
 
 	return c.buildSnapshot(), nil
+}
+
+// patchTouchesEvalCompute reports whether the patch would wire the LLM
+// judge or the Python eval sidecar. The API key counts: it only matters
+// alongside a judge, and accepting it under plugin-only would store a
+// credential for a path that never runs.
+func patchTouchesEvalCompute(patch console.EvalConfigPatch) bool {
+	return patch.JudgeBaseURL != nil ||
+		patch.JudgeModel != nil ||
+		patch.JudgeAPIKey != nil ||
+		patch.EvalServiceURL != nil ||
+		patch.EvalServiceMetrics != nil
 }
