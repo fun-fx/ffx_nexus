@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -59,6 +61,16 @@ type Result struct {
 	OK        bool   `json:"ok"`
 	Message   string `json:"message"`
 	LatencyMs int64  `json:"latency_ms,omitempty"`
+}
+
+// PluginManualFirer is the admin REST face of
+// ExternalScheduler.FireManual. The console calls it when an admin
+// presses the "Run now" button on a manual-trigger plugin. The
+// returned count tells the UI how many buffered traces (if any)
+// were flushed; for manual plugins the buffer is normally empty
+// because inline traces are not enqueued.
+type PluginManualFirer interface {
+	FireManual(ctx context.Context, pluginName, trigger string) (int, error)
 }
 
 // evalPluginBody is the wire shape the frontend speaks. We intentionally
@@ -265,5 +277,53 @@ func (s *Server) pluginTest(w http.ResponseWriter, r *http.Request, _ core.User)
 		"ok":         res.OK,
 		"message":    res.Message,
 		"latency_ms": res.LatencyMs,
+	})
+}
+
+// pluginFireManual drains a manual-trigger plugin's per-plugin
+// buffer and dispatches whatever was sitting in it via the shared
+// Dispatcher. Inline traces are *not* enqueued for manual plugins,
+// so the normal return is (0, nil); non-zero counts mean an admin
+// previously flipped the trigger while the buffer was non-empty.
+//
+// The `trigger` field in the body is logged for audit but does not
+// influence what gets sent; it exists so the operator can leave a
+// note like `manual: weekly-smoke-run` that will appear in the
+// scheduler's structured log line.
+func (s *Server) pluginFireManual(w http.ResponseWriter, r *http.Request, user core.User) {
+	if s.pluginManualFirer == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok":      false,
+			"message": "manual-fire not wired",
+		})
+		return
+	}
+	ref := chi.URLParam(r, "name")
+	trigger := ""
+	if r.Body != nil {
+		var body struct {
+			Trigger string `json:"trigger"`
+		}
+		_ = json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body)
+		trigger = body.Trigger
+	}
+	if trigger == "" {
+		// Default audit tag: the user's login plus the wall clock so
+		// the operator can correlate runs without typing.
+		trigger = user.Email + "@" + time.Now().UTC().Format(time.RFC3339)
+	}
+	count, err := s.pluginManualFirer.FireManual(r.Context(), ref, trigger)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      false,
+			"message": err.Error(),
+			"count":   count,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": fmt.Sprintf("manual fire for %q drained %d traces", ref, count),
+		"count":   count,
 	})
 }

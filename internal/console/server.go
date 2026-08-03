@@ -47,29 +47,30 @@ type CatalogSource interface {
 // WebSocket feed, routing stats, and (when a store is configured)
 // key/credential management.
 type Server struct {
-	hub              *Hub
-	reader           *observability.Reader  // may be nil when ClickHouse is not configured
-	store            *core.Store            // may be nil when Postgres is not configured
-	routes           RouteStatsSource       // may be nil when routing is disabled
-	catalog          CatalogSource          // may be nil when the gateway is not co-located
-	reload           func(context.Context)  // may be nil when no hot-reload hook is wired
-	allowSignup      bool                   // public POST /api/auth/register
-	sso              *ssoClient             // OIDC client; nil when SSO is not configured
-	evalConfigSrc    EvalConfigSource       // nil when eval worker is disabled
-	evalConfigApply  EvalConfigApplier      // nil when eval worker is disabled
-	evalProfiles     EvalProfileSource      // PR #135: profile CRUD store
-	evalPlugins      EvalPluginSource       // eval-plugin store (Phase B)
-	pluginCollector  PluginWebhookReceiver  // eval-plugin webhook sink (Phase C)
-	pluginTester     EvalPluginTester       // eval-plugin test-send (Phase D)
-	pluginKeys       EvalPluginKeys         // in-process plugin key resolver (console keys)
-	benchmarks       BenchmarkRunner        // model-level benchmark runs; nil without Postgres
-	loginLim         *limiter.IPLimiter     // per-IP rate limit for /api/auth/login
-	registerLim      *limiter.IPLimiter     // per-IP rate limit for /api/auth/register
-	ssoLim           *limiter.IPLimiter     // per-IP rate limit for /api/auth/sso/*
-	gatewayProxy     *httputil.ReverseProxy // optional /v1/* → co-located gateway
-	publicGatewayURL string                 // optional public gateway base for UI copy
-	log              *slog.Logger
-	up               websocket.Upgrader
+	hub               *Hub
+	reader            *observability.Reader  // may be nil when ClickHouse is not configured
+	store             *core.Store            // may be nil when Postgres is not configured
+	routes            RouteStatsSource       // may be nil when routing is disabled
+	catalog           CatalogSource          // may be nil when the gateway is not co-located
+	reload            func(context.Context)  // may be nil when no hot-reload hook is wired
+	allowSignup       bool                   // public POST /api/auth/register
+	sso               *ssoClient             // OIDC client; nil when SSO is not configured
+	evalConfigSrc     EvalConfigSource       // nil when eval worker is disabled
+	evalConfigApply   EvalConfigApplier      // nil when eval worker is disabled
+	evalProfiles      EvalProfileSource      // PR #135: profile CRUD store
+	evalPlugins       EvalPluginSource       // eval-plugin store (Phase B)
+	pluginCollector   PluginWebhookReceiver  // eval-plugin webhook sink (Phase C)
+	pluginTester      EvalPluginTester       // eval-plugin test-send (Phase D)
+	pluginManualFirer PluginManualFirer      // admin-driven drain for manual-trigger plugins
+	pluginKeys        EvalPluginKeys         // in-process plugin key resolver (console keys)
+	benchmarks        BenchmarkRunner        // model-level benchmark runs; nil without Postgres
+	loginLim          *limiter.IPLimiter     // per-IP rate limit for /api/auth/login
+	registerLim       *limiter.IPLimiter     // per-IP rate limit for /api/auth/register
+	ssoLim            *limiter.IPLimiter     // per-IP rate limit for /api/auth/sso/*
+	gatewayProxy      *httputil.ReverseProxy // optional /v1/* → co-located gateway
+	publicGatewayURL  string                 // optional public gateway base for UI copy
+	log               *slog.Logger
+	up                websocket.Upgrader
 }
 
 // SetAllowSignup toggles public self-service registration (member role only).
@@ -155,6 +156,15 @@ func (s *Server) SetPluginCollector(c PluginWebhookReceiver) {
 // up and ready.
 func (s *Server) SetPluginTester(t EvalPluginTester) {
 	s.pluginTester = t
+}
+
+// SetPluginManualFirer wires the manual-trigger admin REST route.
+// When a plugin's spec.send.trigger is `manual`, the dispatcher does
+// not forward inline traces; instead the operator invokes this
+// surface to drain whatever buffer exists (typically empty) plus
+// trigger the configured vendor path immediately.
+func (s *Server) SetPluginManualFirer(f PluginManualFirer) {
+	s.pluginManualFirer = f
 }
 
 // SetPluginKeys wires the resolver that the Plugin Keys panel talks
@@ -274,6 +284,16 @@ func (s *Server) Mux() http.Handler {
 		// traces.
 		if s.pluginTester != nil {
 			r.Post("/eval/plugins/{name}/test", s.requireAdmin(s.pluginTest))
+		}
+
+		// Manual-fire: triggers an immediate drain-and-dispatch for
+		// plugins whose spec.send.trigger is `manual`. The dispatcher
+		// does not forward inline traces for manual plugins, so this
+		// is the only way to actually exercise such a plugin against
+		// the gateway. Admin-only because the call may create a real
+		// vendor run that costs money.
+		if s.pluginManualFirer != nil {
+			r.Post("/eval/plugins/{name}/fire", s.requireAdmin(s.pluginFireManual))
 		}
 
 		// Plugin Keys panel: lets admins paste per-vendor API keys into

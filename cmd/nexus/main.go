@@ -442,7 +442,32 @@ func main() {
 		// a wrong key or endpoint otherwise looks identical to a vendor
 		// that simply has no results yet.
 		multiEval.SetLogger(log)
+		// Scheduler handles `scheduled` and `manual` Send.Trigger
+		// values so MultiEvaluator no longer acts as if every plugin
+		// were `on_trace`. The prior bug — the dispatcher ignoring
+		// the trigger field — meant operators who selected
+		// `scheduled` or `manual` for cost reasons still shipped every
+		// trace to the vendor instantly.
+		schedulerCfg := external.SchedulerConfig{
+			MaxBufferPerPlugin: 4096,
+			SweepInterval:      15 * time.Second,
+		}
+		scheduler := external.NewScheduler(dispatcher.Dispatch, schedulerCfg)
+		scheduler.AttachLogger(log)
+		multiEval.SetScheduler(scheduler)
+		scheduler.Start(ctx, pluginReg)
+		defer scheduler.Stop()
 		evalWorker.SetPluginEvaluator(multiEval)
+		// Manual-fire admin REST: backs the "Run now" button on
+		// manual-trigger plugins. The shim looks up the plugin in
+		// the registry by metadata.name because the scheduler
+		// can't tell which name corresponds to which registered
+		// plugin (its schedule map only carries the ones with a
+		// goroutine, which excludes manual plugins).
+		consoleSrvHandler.SetPluginManualFirer(&schedulerShim{
+			s:   scheduler,
+			reg: pluginReg,
+		})
 		go func() {
 			if err := collector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Warn("plugin collector stopped", "err", err)

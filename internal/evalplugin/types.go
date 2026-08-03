@@ -145,12 +145,36 @@ type ResultMapping struct {
 // without inspecting the trace payload twice (privacy). Sampling is a
 // 0–1 fraction; the tolerant UnmarshalYAML on SamplingFraction also
 // accepts percent strings and bare integers for convenience.
+//
+// Trigger controls when the dispatcher fires for a given trace:
+//
+//   - TriggerOnTrace  : every trace is forwarded inline. This was the
+//     only behavior prior to PR-XXX (the dispatcher used to act as if
+//     TriggerOnTrace regardless of the manifest value).
+//   - TriggerScheduled : traces are buffered and forwarded in a batch
+//     on a periodic interval (Spec.Collect.Interval). The buffer is
+//     plugin-scoped, bounded, and drained atomically.
+//   - TriggerManual  : traces are *not* forwarded inline; the plugin
+//     is fired only when an admin POSTs to the manual-fire admin REST
+//     endpoint, which drains the same buffer immediately.
+//
+// The set of legal values lives in validate.go (validTrigger) —
+// introducing a constant here avoids string-literal comparisons in
+// the dispatch hot path.
 type SendSpec struct {
 	Trigger  string            `yaml:"trigger" json:"trigger"`
 	Sampling SamplingFraction  `yaml:"sampling" json:"sampling"`
 	Payload  map[string]string `yaml:"payload" json:"payload"`
 	Redact   []string          `yaml:"redact" json:"redact"`
 }
+
+// Trigger constants. The string values are also the legal values for
+// SendSpec.Trigger (validate.go's validTrigger enforces this).
+const (
+	TriggerOnTrace   = "on_trace"
+	TriggerScheduled = "scheduled"
+	TriggerManual    = "manual"
+)
 
 // CollectSpec describes how results come back. The three modes trade
 // trivial deployment (sync) for symmetry with vendor APIs (webhook is

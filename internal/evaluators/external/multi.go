@@ -2,6 +2,7 @@ package external
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
@@ -37,11 +38,23 @@ type LocalEvaluator interface {
 // they return is fed forward alongside any synchronous plugin
 // results so the worker can persist them in the same evals.Sink
 // write batch as other sources.
+//
+// Send.Trigger branches the per-trace path:
+//
+//   - on_trace: parser: Dispatch is called inline.
+//   - scheduled: parser: MultiEvaluator hands the trace to the
+//     Scheduler, which buffers it and dispatches batches on the
+//     plugin's Collect.Interval. Buffer overflow returns
+//     ErrBufferFull, which the worker logs and continues past.
+//   - manual: parser: traces are dropped at parse time; the plugin
+//     fires only when an admin POSTs to the manual-fire admin REST
+//     endpoint.
 type MultiEvaluator struct {
 	reg        *evalplugin.Registry
 	dispatcher *Dispatcher
 	local      LocalEvaluator
 	log        *slog.Logger
+	scheduler  *Scheduler
 
 	mu         sync.RWMutex
 	attachOnce sync.Once
@@ -77,6 +90,17 @@ func (m *MultiEvaluator) SetLogger(l *slog.Logger) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.log = l
+}
+
+// SetScheduler attaches the per-plugin buffer/flush handler used for
+// scheduled and manual triggers. nil is allowed (the dispatcher
+// falls back to on_trace semantics for every plugin) and is what
+// tests expect until they specifically want to exercise the
+// trigger branches.
+func (m *MultiEvaluator) SetScheduler(s *Scheduler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scheduler = s
 }
 
 // Name implements evals.Evaluator. UI surfaces report "external
@@ -153,7 +177,7 @@ func (m *MultiEvaluator) Evaluate(ctx context.Context, t observability.Trace) ([
 			localScores = append(localScores, scores...)
 			continue
 		}
-		if err := m.dispatcher.Dispatch(ctx, t, rec.Plugin); err != nil && log != nil {
+		if err := m.dispatchForwarded(ctx, t, rec, log); err != nil && log != nil {
 			// Never fail the trace: eval dispatch is best-effort and
 			// must not affect the gateway. But it has to be *visible* —
 			// discarding this error is what made a plugin that rejected
@@ -161,11 +185,60 @@ func (m *MultiEvaluator) Evaluate(ctx context.Context, t observability.Trace) ([
 			log.Warn("plugin dispatch failed",
 				"plugin", rec.Plugin.Metadata.Name,
 				"service_type", string(rec.Plugin.Spec.Service.Type),
+				"trigger", rec.Plugin.Spec.Send.Trigger,
 				"trace_id", t.TraceID,
 				"err", err)
 		}
 	}
 	return localScores, nil
+}
+
+// dispatchForwarded routes the (ctx, t, plugin) tuple to either
+// the inline Dispatch call (on_trace) or the Scheduler
+// (scheduled/manual). Returning nil-error means "queued"; the
+// scheduler's own logger is responsible for surfacing its own
+// failures. Returning errors here would force every trace through
+// the parent worker log path, which would inflate the log volume
+// for a transient backend; the in-scheduler logger is already
+// wired for both.
+func (m *MultiEvaluator) dispatchForwarded(ctx context.Context, t observability.Trace, rec evalplugin.Record, log *slog.Logger) error {
+	m.mu.RLock()
+	scheduler := m.scheduler
+	m.mu.RUnlock()
+	trigger := rec.Plugin.Spec.Send.Trigger
+	switch trigger {
+	case evalplugin.TriggerOnTrace:
+		return m.dispatcher.Dispatch(ctx, t, rec.Plugin)
+	case evalplugin.TriggerScheduled:
+		if scheduler == nil {
+			if log != nil {
+				log.Warn("scheduled plugin dispatched as on_trace: no scheduler wired",
+					"plugin", rec.Plugin.Metadata.Name)
+			}
+			return m.dispatcher.Dispatch(ctx, t, rec.Plugin)
+		}
+		if err := scheduler.Enqueue(rec.Plugin, t); err != nil {
+			if errors.Is(err, ErrBufferFull) {
+				if log != nil {
+					log.Warn("scheduled plugin buffer full; trace dropped",
+						"plugin", rec.Plugin.Metadata.Name,
+						"trace_id", t.TraceID)
+				}
+				return nil
+			}
+			return err
+		}
+		return nil
+	case evalplugin.TriggerManual:
+		// Manual plugins do not enqueue inline traces; the admin REST
+		// endpoint drives them. Acknowledge silently so the worker
+		// does not see an error here.
+		return nil
+	default:
+		// Validate already rejected unknown values; this branch is
+		// defensive only.
+		return m.dispatcher.Dispatch(ctx, t, rec.Plugin)
+	}
 }
 
 // orgLabel renders an org id for logs, naming the empty string rather
