@@ -52,8 +52,13 @@ func langsmithTransmit(ctx context.Context, tgt external.Target, payload map[str
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if key := tgt.Auth.Primary(); key != "" {
-		// LangSmith ingests with `Authorization: Bearer <api-key>`.
-		req.Header.Set("Authorization", "Bearer "+key)
+		// LangSmith's OTLP ingest expects the LangChain API key in the
+		// `x-api-key` header (not `Authorization: Bearer`). Sending the
+		// wrong header is silently rejected with a 401 *after* the
+		// envelope reaches the vendor, which is why the previous
+		// "Authorization: Bearer" form never showed up in a project
+		// even though the request looked live in our logs.
+		req.Header.Set("x-api-key", key)
 	}
 	resp, err := httpClientForPlugins().Do(req)
 	if err != nil {
@@ -151,12 +156,26 @@ func joinEndpoint(endpoint, path string) string {
 // PingLangsmith is the admin REST "test send" helper. Operationally
 // it lets an operator verify their secret ref + endpoint before
 // enabling the plugin; it does not write any score rows.
-func PingLangsmith(ctx context.Context, endpoint string) error {
-	// Both the context deadline (5s) and the test client's net
-	// timeout (8s) bound this probe. The shorter wins — the 5s
-	// context ceiling keeps us well inside the Cloudflare tunnel's
-	// ~60s response deadline (Retry-After:60 on cf-ray:-HKG 5xx
-	// pages in production observed when a vendor hangs).
+//
+// The probe attaches the resolved API key in `x-api-key` when one is
+// available. A plain unauthenticated GET against /api/v1/info used
+// to return nil regardless of HTTP status — which is why "Test"
+// passed with no key, the wrong key, or against a host that 401'd
+// everything. The status code is now treated as part of the answer,
+// and the resolved key is presented to the vendor so a 401 against
+// an authenticated request is a real failure rather than a
+// connectivity false-positive.
+//
+// `Authorization: Bearer` is used by the LangSmith UI for browser
+// cookies and does not authenticate /api/v1/info; sending it was a
+// second reason traces never landed in a real project even when
+// keys were pasted.
+func PingLangsmith(ctx context.Context, endpoint, apiKey string) error {
+	// The 5s deadline is shorter than the test client's net timeout
+	// (8s) so the context cancellation wins — keeps a hung vendor
+	// inside the Cloudflare tunnel's ~60s response budget, which we
+	// have observed as "Retry-After:60" 5xx pages in production
+	// (cf-ray:-HKG).
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	url := joinEndpoint(endpoint, "/api/v1/info")
@@ -164,10 +183,19 @@ func PingLangsmith(ctx context.Context, endpoint string) error {
 	if err != nil {
 		return err
 	}
+	if key := strings.TrimSpace(apiKey); key != "" {
+		req.Header.Set("x-api-key", key)
+	}
 	resp, err := httpClientForPluginsTest().Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("langsmith probe: HTTP %d from %s: %s",
+			resp.StatusCode, url, strings.TrimSpace(string(snippet)))
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }

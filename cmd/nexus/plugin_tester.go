@@ -34,6 +34,12 @@ type PluginTester struct {
 	// credentials reported "endpoint reachable" while every real
 	// dispatch was being rejected.
 	secrets external.SecretResolver
+
+	// langSmithLastKey is the credential the most recent LangSmith
+	// probe carried, if any. The test-result message reflects it so
+	// the operator can tell "connectivity + valid key" apart from
+	// "connectivity only".
+	langSmithLastKey string
 }
 
 // Result wraps console.Result so we don't import-loop on console
@@ -66,10 +72,10 @@ func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
 	)
 	switch rec.Plugin.Spec.Service.Type {
 	case evalplugin.ServiceLangSmith:
-		rErr = PingLangsmith(ctx, rec.Plugin.Spec.Service.Endpoint)
+		rErr = t.probeLangsmith(ctx, rec.Plugin)
 		rResult = Result{
 			OK:      rErr == nil,
-			Message: langSmithMessage(rErr),
+			Message: langSmithMessage(rErr, t.probeLangsmithCarriedKey()),
 		}
 	case evalplugin.ServiceLangfuse:
 		rErr = t.probeLangfuse(ctx, rec.Plugin)
@@ -88,10 +94,42 @@ func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
 	return rResult, nil
 }
 
-// probeLangfuse verifies the endpoint *and* the credentials by reading
-// one score off the authenticated API. A plain unauthenticated GET
-// against the host would pass even with an invalid key, which is
-// precisely the false positive this avoids.
+// probeLangsmith verifies both connectivity *and* the resolved
+// credential. It mirrors probeLangfuse's shape: pull the secret out
+// of the vault, attach it in the header the vendor's REST docs ask
+// for (`x-api-key` for LangSmith), and treat a 2xx as the only
+// acceptable answer.
+//
+// The earlier probe ignored the HTTP status and ignored the side
+// effect of pasting no key — both of which let "Test" pass against
+// a 401-only host. That is the failure mode this fix replaces.
+func (t *PluginTester) probeLangsmith(ctx context.Context, p *evalplugin.Plugin) error {
+	auth := p.Spec.Service.Auth
+	if auth.SecretRef == "" && auth.KeyRef == "" {
+		return errors.New("no auth configured: LangSmith requires a LangChain API key")
+	}
+	if t.secrets == nil {
+		return external.ErrNoSecretResolver
+	}
+	creds, err := t.secrets.Resolve(ctx, auth)
+	if err != nil {
+		return err
+	}
+	t.langSmithLastKey = creds.Primary()
+	return PingLangsmith(ctx, p.Spec.Service.Endpoint, t.langSmithLastKey)
+}
+
+// probeLangsmithCarriedKey returns whatever key the most recent probe
+// attached. The Test-result message uses it to tell the operator
+// whether the request actually carried a credential rather than a
+// bare connectivity check.
+func (t *PluginTester) probeLangsmithCarriedKey() string {
+	if t == nil {
+		return ""
+	}
+	return t.langSmithLastKey
+}
+
 func (t *PluginTester) probeLangfuse(ctx context.Context, p *evalplugin.Plugin) error {
 	auth := p.Spec.Service.Auth
 	if auth.SecretRef == "" && auth.KeyRef == "" {
@@ -292,9 +330,15 @@ func genericProbe(ctx context.Context, endpoint string) error {
 	return nil
 }
 
-func langSmithMessage(err error) string {
+func langSmithMessage(err error, carriedKey string) string {
 	if err == nil {
-		return "Auth accepted by LangSmith."
+		// The vendor returned 2xx while presenting the resolved key —
+		// distinguish that from a bare connectivity pass since
+		// operators have asked us, repeatedly, which one happened.
+		if carriedKey != "" {
+			return "Auth accepted by LangSmith."
+		}
+		return "LangSmith endpoint reachable (no key attached — Test cannot confirm credentials)."
 	}
 	return fmt.Sprintf("LangSmith probe failed: %v", err)
 }
