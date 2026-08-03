@@ -624,10 +624,10 @@ because it ran in the same process as the paste that preceded it.
 |-----------------|------|---------|-------|
 | `langfuse`      | Basic (`public_key\|secret_key`) | Poll (real scores) + webhook | OTLP/JSON to `/api/public/otel/v1/traces`; polls `/api/public/v3/scores`. Cloud or self-host. The recommended default and the only adapter verified end-to-end against a live vendor account. |
 | `langsmith`     | `x-api-key` (LangChain API key) | Webhook (poll = liveness only) | OTLP/JSON to `/otel/v1/traces`; survivability check on `/api/v1/info` requires a 2xx. **Live-vendor verified end-to-end**: the previous `Authorization: Bearer` form was silently 401'd by LangSmith, which is why the test button used to pass with no key — fixed in PR #195. Self-hosted LangSmith uses the same headers but with `https://<host>/api/v1` as the base URL. |
-| `confident_ai`  | Basic pair, or single key | Webhook | Confident AI / DeepEval Cloud. Refuses to send when neither a pair nor a single key resolves, rather than posting anonymously. |
-| `arize_phoenix` | `Bearer` (optional) | Webhook | Self-hostable OTLP target; auth is optional because a local Phoenix usually has none. |
-| `datadog`       | `DD-API-KEY` | Webhook | Rewrites hex trace ids to decimal, which Datadog requires. |
-| `braintrust`    | `Authorization: Bearer` | Webhook | OTLP traces. |
+| `confident_ai`  | Basic pair, or single key | Webhook | Confident AI / DeepEval Cloud. Refuses to send when neither a pair nor a single key resolves, rather than posting anonymously. **Test** now reaches `GET /v1/projects` with the resolved credential; 401/403 surfaces as `credentials rejected (...)` rather than the previous `endpoint reachable` false-positive. |
+| `arize_phoenix` | `Bearer` (optional) | Webhook | Self-hostable OTLP target; auth is optional because a local Phoenix usually has none. **Test** sends a `GET /v1/traces` (Phoenix returns 405 Method Not Allowed for non-POST; that is the cheapest live signal) with Basic/Bearer/empty depending on what the operator configured. |
+| `datadog`       | `DD-API-KEY` | Webhook | Rewrites hex trace ids to decimal, which Datadog requires. **Test** hits `GET /api/v1/validate` with the resolved DD-API-KEY; 403 surfaces as `DD-API-KEY rejected (...)`. |
+| `braintrust`    | `Authorization: Bearer` | Webhook | OTLP traces. **Test** hits `GET /v1/projects` with Bearer; 401 surfaces as `credentials rejected (...)`. |
 | `arize`         | `Authorization: Bearer` | Webhook | Arize AX remote-evaluator endpoints. |
 | `otel_collector` | Whatever the collector wants | Webhook | v1alpha2 adapter; pick the wire shape with `collect.transport`. Supersedes `otel` and `webhook`. |
 | `otel`, `webhook` | — | Webhook | v1alpha1 names, both routed to the `otel_collector` adapter. |
@@ -636,9 +636,10 @@ because it ran in the same process as the paste that preceded it.
 Every adapter reads its credential from the same `external.Target`, so
 "the key is wired" is true across the table. What is *not* uniform is
 verification: only `langfuse` has been driven end-to-end against a real
-vendor project. For the others, treat a passing **Test** as evidence the
-endpoint is reachable and the key is accepted, not that scores render the
-way you expect on the vendor's dashboard.
+vendor project for *score collection*. For the others, treat a passing
+**Test** as evidence the host *and* the resolved credential are
+accepted — score rendering on the vendor dashboard still requires
+following that vendor's onboarding steps.
 
 WhyLabs and RagaAI have no adapter: their SDKs are Python-only and
 neither exposes a generic "attach a score to this trace id" HTTP

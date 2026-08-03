@@ -17,11 +17,65 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/ffxnexus/nexus/internal/evaluators/external"
 )
 
 const confidentAIOTLPPath = "/v1/otel/traces"
+
+// PingConfidentAI verifies the Confident AI (DeepEval cloud) endpoint
+// is reachable and the resolved credential is accepted by the
+// vendor. We hit `/v1/projects` because it is the cheapest endpoint
+// that distinguishes "host alive" from "credentials good", and the
+// vendor returns 401 when the API key pair is wrong rather than 200
+// with an empty body. The same probe path works for both Bearer and
+// Basic auth shapes — Confident AI is happy with either as long as
+// `Authorization` carries the right value.
+//
+// Earlier releases passed plugins through genericProbe, which did not
+// attach the credential and ignored the HTTP status. That is exactly
+// the false-positive shape PR #195 closed for LangSmith.
+func PingConfidentAI(ctx context.Context, endpoint, primary, secondary string) error {
+	if strings.TrimSpace(endpoint) == "" {
+		return errors.New("endpoint not configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	url := joinEndpoint(endpoint, "/v1/projects")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build probe request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	switch {
+	case primary != "" && secondary != "":
+		req.SetBasicAuth(primary, secondary)
+	case primary != "":
+		req.Header.Set("Authorization", "Bearer "+primary)
+	default:
+		return errors.New("no Confident AI credential resolved: paste a " +
+			"single API key (Bearer) or a public|secret key pair (Basic)")
+	}
+	resp, err := httpClientForPluginsTest().Do(req)
+	if err != nil {
+		return fmt.Errorf("probe %s failed at transport layer: %w", url, err)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("credentials rejected (%s): check the API key "+
+			"(Bearer) or public/secret key pair (Basic); %s",
+			resp.Status, strings.TrimSpace(string(snippet)))
+	case resp.StatusCode/100 != 2:
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("unexpected status %s from %s: %s",
+			resp.Status, url, strings.TrimSpace(string(snippet)))
+	}
+	return nil
+}
 
 func confidentAITransmit(ctx context.Context, tgt external.Target, payload map[string]any) error {
 	body, ct, err := jsonBody(payload)

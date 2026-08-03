@@ -40,6 +40,35 @@ type PluginTester struct {
 	// the operator can tell "connectivity + valid key" apart from
 	// "connectivity only".
 	langSmithLastKey string
+	// braintrustLastKey mirrors langSmithLastKey for the Braintrust
+	// probe. A single Bearer value is the only shape Braintrust
+	// accepts on /v1/projects; recording it lets the result message
+	// distinguish "Auth accepted" from "endpoint reachable".
+	braintrustLastKey string
+	// datadogLastKey mirrors the same pattern for Datadog's
+	// /api/v1/validate probe (DD-API-KEY header).
+	datadogLastKey string
+	// confidentLastPair records the (primary, secondary) we sent for
+	// Confident AI; both hold the Bearer path when only one token is
+	// present, both hold Basic when a public|secret pair is present.
+	confidentLastPair confidentPair
+	// arizePhoenixLastPair records what we carried for the Arize
+	// Phoenix probe — same shape as Confident AI but Phoenix also
+	// allows the unauthenticated self-host case (both fields empty).
+	arizePhoenixLastPair confidentPair
+}
+
+// confidentPair records what credential a vendor probe attached so
+// the result message can distinguish "Auth accepted" from
+// "endpoint reachable (no key attached)". For vendors that accept
+// either a single key (Bearer) or a pair (Basic) — Confident AI and
+// Arize Phoenix — exactly one of the two paths is filled in per
+// probe. For self-hosted Phoenix with no auth, both fields are
+// empty (that is also a valid configuration).
+type confidentPair struct {
+	primary   string
+	secondary string
+	hasAny    bool
 }
 
 // Result wraps console.Result so we don't import-loop on console
@@ -57,6 +86,19 @@ type Result = console.Result
 //     configured endpoint).
 //  3. return a Result with the elapsed latency in milliseconds so
 //     the operator can spot a slow egress response at a glance.
+//
+// Verified thresholds (last live check on 2026-08-03) for the four
+// remaining live-vendor probes added by the same fix as PR #195:
+//
+//	langSmithCarriedKey() -> "Auth accepted by LangSmith." on 2xx
+//	braintrustKey held in t.braintrustLastKey, attaches Bearer on /v1/projects
+//	datadogKey held in t.datadogLastKey, attaches DD-API-KEY on /api/v1/validate
+//	confidentAIPrimary/Secondary held in t.confidentLastPair, ping attaches Basic/Bearer
+//	arizePhoenixPrimary/Secondary held in t.arizePhoenixLastPair, ping attaches Basic/Bearer on /v1/traces
+//
+// Earlier Releases routed these four vendors to genericProbe,
+// returning a bare connectivity result; the failures of that
+// shortcut are documented in the individual Ping* funcs.
 func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
 	if t == nil || t.reg == nil {
 		return Result{}, errors.New("plugin registry not initialised")
@@ -82,6 +124,30 @@ func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
 		rResult = Result{
 			OK:      rErr == nil,
 			Message: langfuseMessage(rErr),
+		}
+	case evalplugin.ServiceConfidentAI:
+		rErr = t.probeConfidentAI(ctx, rec.Plugin)
+		rResult = Result{
+			OK:      rErr == nil,
+			Message: confidentAIMessage(rErr, t.probeConfidentAICarried()),
+		}
+	case evalplugin.ServiceBraintrust:
+		rErr = t.probeBraintrust(ctx, rec.Plugin)
+		rResult = Result{
+			OK:      rErr == nil,
+			Message: braintrustMessage(rErr, t.probeBraintrustCarriedKey()),
+		}
+	case evalplugin.ServiceArizePhoenix:
+		rErr = t.probeArizePhoenix(ctx, rec.Plugin)
+		rResult = Result{
+			OK:      rErr == nil,
+			Message: arizePhoenixMessage(rErr, t.probeArizePhoenixCarried()),
+		}
+	case evalplugin.ServiceDatadog:
+		rErr = t.probeDatadog(ctx, rec.Plugin)
+		rResult = Result{
+			OK:      rErr == nil,
+			Message: datadogMessage(rErr, t.probeDatadogCarriedKey()),
 		}
 	default:
 		rErr = genericProbe(ctx, rec.Plugin.Spec.Service.Endpoint)
@@ -179,6 +245,136 @@ func langfuseMessage(err error) string {
 		return "Langfuse authenticated: endpoint and API keys verified."
 	}
 	return "Langfuse probe failed: " + err.Error()
+}
+
+// probeConfidentAI pulls the resolved credential and hands it to
+// PingConfidentAI. Either Bearer (single key) or Basic (pair) is
+// recorded in t.confidentLastPair so the result message can confirm
+// what was actually carried. We refuse nothing — if the operator
+// configured auth but the vault failed to resolve it, PingConfidentAI
+// itself returns the descriptive error.
+func (t *PluginTester) probeConfidentAI(ctx context.Context, p *evalplugin.Plugin) error {
+	auth := p.Spec.Service.Auth
+	if auth.SecretRef == "" && auth.KeyRef == "" {
+		return errors.New("no auth configured: Confident AI requires an " +
+			"API key or a public|secret key pair")
+	}
+	if t.secrets == nil {
+		return external.ErrNoSecretResolver
+	}
+	creds, err := t.secrets.Resolve(ctx, auth)
+	if err != nil {
+		return err
+	}
+	primary, secondary, _ := creds.Pair()
+	if primary == "" {
+		primary = creds.Primary()
+	}
+	t.confidentLastPair = confidentPair{primary: primary, secondary: secondary}
+	if primary != "" || secondary != "" {
+		t.confidentLastPair.hasAny = true
+	}
+	return PingConfidentAI(ctx, p.Spec.Service.Endpoint, primary, secondary)
+}
+
+func (t *PluginTester) probeConfidentAICarried() confidentPair {
+	if t == nil {
+		return confidentPair{}
+	}
+	return t.confidentLastPair
+}
+
+// probeBraintrust pulls the resolved bearer and hands it to
+// PingBraintrust. The carried-key is recorded so the result message
+// tells the operator whether we actually presented credentials.
+func (t *PluginTester) probeBraintrust(ctx context.Context, p *evalplugin.Plugin) error {
+	auth := p.Spec.Service.Auth
+	if auth.SecretRef == "" && auth.KeyRef == "" {
+		return errors.New("no auth configured: Braintrust requires an API key")
+	}
+	if t.secrets == nil {
+		return external.ErrNoSecretResolver
+	}
+	creds, err := t.secrets.Resolve(ctx, auth)
+	if err != nil {
+		return err
+	}
+	key := creds.Primary()
+	if key == "" {
+		return errors.New("resolved only an empty credential for Braintrust")
+	}
+	t.braintrustLastKey = key
+	return PingBraintrust(ctx, p.Spec.Service.Endpoint, key)
+}
+
+func (t *PluginTester) probeBraintrustCarriedKey() string {
+	if t == nil {
+		return ""
+	}
+	return t.braintrustLastKey
+}
+
+// probeArizePhoenix handles three configs: unauthenticated self-host
+// (both empty), Basic (space_id|api_key pair), Bearer (single key).
+// Whatever bearer we attach is recorded for the result message.
+func (t *PluginTester) probeArizePhoenix(ctx context.Context, p *evalplugin.Plugin) error {
+	auth := p.Spec.Service.Auth
+	if auth.SecretRef == "" && auth.KeyRef == "" {
+		// Self-host without auth is allowed.
+		t.arizePhoenixLastPair = confidentPair{}
+		return PingArizePhoenix(ctx, p.Spec.Service.Endpoint, "", "")
+	}
+	if t.secrets == nil {
+		return external.ErrNoSecretResolver
+	}
+	creds, err := t.secrets.Resolve(ctx, auth)
+	if err != nil {
+		return err
+	}
+	primary, secondary, _ := creds.Pair()
+	if primary == "" {
+		primary = creds.Primary()
+	}
+	t.arizePhoenixLastPair = confidentPair{primary: primary, secondary: secondary}
+	if primary != "" || secondary != "" {
+		t.arizePhoenixLastPair.hasAny = true
+	}
+	return PingArizePhoenix(ctx, p.Spec.Service.Endpoint, primary, secondary)
+}
+
+func (t *PluginTester) probeArizePhoenixCarried() confidentPair {
+	if t == nil {
+		return confidentPair{}
+	}
+	return t.arizePhoenixLastPair
+}
+
+// probeDatadog pulls a single DD-API-KEY and hands it to PingDatadog.
+func (t *PluginTester) probeDatadog(ctx context.Context, p *evalplugin.Plugin) error {
+	auth := p.Spec.Service.Auth
+	if auth.SecretRef == "" && auth.KeyRef == "" {
+		return errors.New("no auth configured: Datadog requires a DD-API-KEY")
+	}
+	if t.secrets == nil {
+		return external.ErrNoSecretResolver
+	}
+	creds, err := t.secrets.Resolve(ctx, auth)
+	if err != nil {
+		return err
+	}
+	key := creds.Primary()
+	if key == "" {
+		return errors.New("resolved only an empty credential for Datadog")
+	}
+	t.datadogLastKey = key
+	return PingDatadog(ctx, p.Spec.Service.Endpoint, key)
+}
+
+func (t *PluginTester) probeDatadogCarriedKey() string {
+	if t == nil {
+		return ""
+	}
+	return t.datadogLastKey
 }
 
 // resolve looks the plugin up by registry-map key (metadata.name),
@@ -352,4 +548,51 @@ func genericMessage(kind string, err error) string {
 		return fmt.Sprintf("%s endpoint reachable.", kind)
 	}
 	return fmt.Sprintf("%s probe failed: %v", kind, err)
+}
+
+// confidentAIMessage mirrors langSmithMessage — the operator needs
+// to know whether the "Test" pass came from a real credential check
+// or whether the resolver yielded nothing. carriedAny == false means
+// no credential was carried (host answered in some unspecified
+// shape); true means we attached Basic or Bearer.
+func confidentAIMessage(err error, carried confidentPair) string {
+	if err == nil {
+		if carried.hasAny {
+			return "Confident AI authenticated: endpoint and API keys verified."
+		}
+		return "Confident AI endpoint reachable (no key attached — Test cannot confirm credentials)."
+	}
+	return fmt.Sprintf("Confident AI probe failed: %v", err)
+}
+
+func braintrustMessage(err error, carriedKey string) string {
+	if err == nil {
+		if carriedKey != "" {
+			return "Braintrust authenticated: endpoint and API key verified."
+		}
+		return "Braintrust endpoint reachable (no key attached — Test cannot confirm credentials)."
+	}
+	return fmt.Sprintf("Braintrust probe failed: %v", err)
+}
+
+func arizePhoenixMessage(err error, carried confidentPair) string {
+	if err == nil {
+		switch {
+		case carried.hasAny:
+			return "Arize Phoenix authenticated: endpoint and credentials verified."
+		default:
+			return "Arize Phoenix endpoint reachable (no auth configured — fine for self-host; hosted Phoenix requires a credential)."
+		}
+	}
+	return fmt.Sprintf("Arize Phoenix probe failed: %v", err)
+}
+
+func datadogMessage(err error, carriedKey string) string {
+	if err == nil {
+		if carriedKey != "" {
+			return "Datadog authenticated: endpoint and DD-API-KEY verified."
+		}
+		return "Datadog endpoint reachable (no key attached — Test cannot confirm credentials)."
+	}
+	return fmt.Sprintf("Datadog probe failed: %v", err)
 }
