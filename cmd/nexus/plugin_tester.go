@@ -86,14 +86,15 @@ type Result = console.Result
 //     configured endpoint).
 //  3. return a Result with the elapsed latency in milliseconds so
 //     the operator can spot a slow egress response at a glance.
+//
 // Verified thresholds (last live check on 2026-08-03) for the four
 // remaining live-vendor probes added by the same fix as PR #195:
 //
-//   langSmithCarriedKey() -> "Auth accepted by LangSmith." on 2xx
-//   braintrustKey held in t.braintrustLastKey, attaches Bearer on /v1/projects
-//   datadogKey held in t.datadogLastKey, attaches DD-API-KEY on /api/v1/validate
-//   confidentAIPrimary/Secondary held in t.confidentLastPair, ping attaches Basic/Bearer
-//   arizePhoenixPrimary/Secondary held in t.arizePhoenixLastPair, ping attaches Basic/Bearer on /v1/traces
+//	langSmithCarriedKey() -> "Auth accepted by LangSmith." on 2xx
+//	braintrustKey held in t.braintrustLastKey, attaches Bearer on /v1/projects
+//	datadogKey held in t.datadogLastKey, attaches DD-API-KEY on /api/v1/validate
+//	confidentAIPrimary/Secondary held in t.confidentLastPair, ping attaches Basic/Bearer
+//	arizePhoenixPrimary/Secondary held in t.arizePhoenixLastPair, ping attaches Basic/Bearer on /v1/traces
 //
 // Earlier Releases routed these four vendors to genericProbe,
 // returning a bare connectivity result; the failures of that
