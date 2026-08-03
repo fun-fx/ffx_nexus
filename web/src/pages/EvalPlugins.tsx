@@ -45,6 +45,15 @@ import {
 // shape without taking a direct dependency on the manifest module.
 export type { PluginFormState };
 
+// Voice-of-the-vendor: where each vendor will POST score records so
+// they land in the Nexus collector. Renders before install so the
+// operator can copy it into their LangSmith automation rule (or any
+// generic webhook target) right away. SSR-safe — falls back to "".
+function incomingWebhookUrl(name: string): string {
+  if (typeof window === "undefined") return "";
+  return `${window.location.origin}/api/eval/plugins/${encodeURIComponent(name)}/webhook`;
+}
+
 /**
  * Form-mode plugin editor.
  *
@@ -321,6 +330,62 @@ function FormMode({
             they survive a deploy; no Kubernetes Secret is involved.
           </p>
         </FieldRow>
+        {form.service.kind === "langsmith" && (
+          // LangSmith's REST API has no "give me back the scores I
+          // sent" endpoint. The path back from the vendor runs
+          // through an automation rule the operator creates in
+          // smith.langchain.com — without it traces land but no
+          // scores ever return to Nexus. Sketch the body shape
+          // here so the operator has the exact contract to type
+          // into the LangSmith UI when they create the rule.
+          <div
+            className="langsmith-automation-guide"
+            data-testid="langsmith-automation-guide"
+          >
+            <p className="muted tiny">
+              LangSmith will receive traces at <code>/otel/v1/traces</code>
+              {" "}with the API key you paste in the Keys modal. To bring
+              score results back to Nexus, add one Automation rule in
+              your LangSmith project:
+            </p>
+            <ol className="langsmith-automation-steps">
+              <li>
+                Open <code>smith.langchain.com</code> → your project →
+                <strong> Automations</strong> → <strong>+ New</strong>.
+              </li>
+              <li>
+                Trigger: <strong>“On a run finish”</strong> (or
+                <em>“On a feedback created”</em>).
+              </li>
+              <li>
+                Action: <strong>POST to webhook</strong> — URL:
+                <code
+                  className="langsmith-automation-url"
+                  data-testid="incoming-webhook-url"
+                >
+                  {incomingWebhookUrl(form.name || "<plugin-name>")}
+                </code>
+              </li>
+              <li>
+                Body (the contract Nexus already accepts):
+                <pre
+                  className="langsmith-automation-body"
+                  data-testid="automation-rule-body"
+                >{`{
+  "name":     "<run name>",
+  "trace_id": "<trace id from the run>",
+  "score":    <0 .. 1>,
+  "explanation": "<optional rationale>"
+}`}</pre>
+              </li>
+            </ol>
+            <p className="muted tiny">
+              The webhook URL above mirrors the one shown under{" "}
+              <strong>Manage → Inbound webhook</strong> after install —
+              both go to the same handler.
+            </p>
+          </div>
+        )}
       </Section>
 
       <Section title="Send — how traces are forwarded">

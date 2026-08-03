@@ -3007,3 +3007,53 @@ a:hover {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* In-form guide shown when plugin kind = langsmith. Walks the
+ * operator through the one Automation rule they must add in
+ * smith.langchain.com before scores flow back into Nexus. */
+.langsmith-automation-guide {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--panel-2) 70%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent-2) 35%, transparent);
+}
+
+.langsmith-automation-guide p {
+  margin: 0 0 6px 0;
+}
+
+.langsmith-automation-steps {
+  margin: 6px 0 6px 18px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.langsmith-automation-steps li {
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.langsmith-automation-url {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-1);
+  font-family: var(--mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.langsmith-automation-body {
+  margin: 6px 0 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--panel-1);
+  font-family: var(--mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 12px;
+  white-space: pre;
+  overflow-x: auto;
+}

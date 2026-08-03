@@ -645,3 +645,70 @@ neither exposes a generic "attach a score to this trace id" HTTP
 endpoint. Promptfoo and DeepEval-as-a-library are development-time
 tools that run in CI rather than services a gateway can post to — use
 `confident_ai` for the hosted DeepEval path.
+
+## LangSmith automation rule
+
+> **Why this section exists.** LangSmith delivers traces to Nexus just
+> fine — the issue is the *return path*. LangSmith's REST API has no
+> generic "give me back the scores I generated" endpoint, so without an
+> Automation rule the vendor simply keeps its output to itself and
+> Nexus renders an empty traces page.
+
+The console's LangSmith plugin drawer renders the same checklist
+inline while you are installing, so you do not have to come back to
+this document for every new project. The rest of this section is for
+operators who want the full write-up.
+
+### Step 1 — install the plugin
+
+Create a key in [smith.langchain.com → Settings → API
+Keys](https://smith.langchain.com/settings). In Nexus install the
+`langsmith` preset, paste the key into the **Keys** modal on the
+plugin row, and click **Test**. The probe returns "Auth accepted by
+LangSmith." only if `/api/v1/info` answers 2xx with `x-api-key`
+attached (PR #195). Earlier releases used `Authorization: Bearer`,
+which LangSmith silently 401s.
+
+### Step 2 — create one Automation rule
+
+In [smith.langchain.com](https://smith.langchain.com) open your
+project and choose **Automations → + New**, then set:
+
+- **Trigger**: *On a run finish* (or *On a feedback created* if you
+  prefer to score once reviewers have approved the run).
+- **Action**: *POST to webhook*.
+- **URL**: `${NEXUS_PUBLIC}/api/eval/plugins/${PLUGIN_NAME}/webhook`.
+
+  The drawer fills that value in for you as you type the plugin name;
+  the same URL is shown under **Manage → Inbound webhook** after
+  install, so the two ends cannot drift.
+- **Body** — the contract Nexus already accepts is:
+
+  ```json
+  {
+    "name":        "<run name>",
+    "trace_id":    "<trace id from the run>",
+    "score":       <0 .. 1>,
+    "explanation": "<optional rationale>"
+  }
+  ```
+
+### Step 3 — verify the round trip
+
+Send a single request through Nexus, watch its trace id surface in
+LangSmith, then re-enter Nexus → **Traces** and confirm a score
+arrived a few seconds after the run finish. If the trace is present
+but the score never lands, the Automation rule is missing — the
+LangSmith plugin is otherwise wired correctly.
+
+### Things that look like a bug but aren't
+
+- **Test passes without a key.** That was a real bug until PR #195;
+  today the probe attaches the key from the Keys modal and refuses
+  any non-2xx.
+- **Manual runs tarry several minutes.** That is a LangSmith feature
+  for batch scoring; the rule fires at the end of the run, not on
+  each token.
+- **Different project than the dropshot key.** API keys are scoped
+  per project; an automation rule in project A cannot read score
+  events from project B.
