@@ -623,7 +623,7 @@ because it ran in the same process as the paste that preceded it.
 | `service.type` | Auth sent | Collect | Notes |
 |-----------------|------|---------|-------|
 | `langfuse`      | Basic (`public_key\|secret_key`) | Poll (real scores) + webhook | OTLP/JSON to `/api/public/otel/v1/traces`; polls `/api/public/v3/scores`. Cloud or self-host. The recommended default and the only adapter verified end-to-end against a live vendor account. |
-| `langsmith`     | `Authorization: Bearer` | Webhook (poll = liveness only) | Sends an OTLP envelope. LangSmith has no "give me back the scores I sent" API, so poll mode only pings `/api/v1/info` to report liveness — scores must arrive through an automation-rule webhook. |
+| `langsmith`     | `x-api-key` (LangChain API key) | Webhook (poll = liveness only) | OTLP/JSON to `/otel/v1/traces`; survivability check on `/api/v1/info` requires a 2xx. **Live-vendor verified end-to-end**: the previous `Authorization: Bearer` form was silently 401'd by LangSmith, which is why the test button used to pass with no key — fixed in PR #195. Self-hosted LangSmith uses the same headers but with `https://<host>/api/v1` as the base URL. |
 | `confident_ai`  | Basic pair, or single key | Webhook | Confident AI / DeepEval Cloud. Refuses to send when neither a pair nor a single key resolves, rather than posting anonymously. |
 | `arize_phoenix` | `Bearer` (optional) | Webhook | Self-hostable OTLP target; auth is optional because a local Phoenix usually has none. |
 | `datadog`       | `DD-API-KEY` | Webhook | Rewrites hex trace ids to decimal, which Datadog requires. |
