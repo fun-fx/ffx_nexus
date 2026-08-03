@@ -18,6 +18,7 @@ import {
   deleteEvalPlugin,
   fetchEvalPlugins,
   fireEvalPluginManual,
+  fireEvalPluginScheduled,
   patchEvalPlugin,
   pingEvalPluginWebhook,
   testEvalPlugin,
@@ -703,11 +704,31 @@ export function PluginListCard({
     },
   });
 
+  const flushM = useMutation({
+    // The scheduled variant: bypasses `spec.collect.interval` and
+    // sends the buffered traces right now. Errors typically mean
+    // "the plugin is not actually scheduled-trigger" — the server
+    // returns a typed 400 so the row stays put with the message
+    // surfaced inline.
+    mutationFn: ({
+      name,
+      tag,
+    }: {
+      name: string;
+      tag?: string;
+    }) => fireEvalPluginScheduled(name, tag),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["eval-plugins"] });
+      console.log(`scheduled flush: drained ${data.count} trace(s)`);
+    },
+  });
+
   const lastError =
     (testM.error as Error | null) ||
     (toggleM.error as Error | null) ||
     (deleteM.error as Error | null) ||
-    (fireM.error as Error | null);
+    (fireM.error as Error | null) ||
+    (flushM.error as Error | null);
 
   // Track which plugin's Keys modal is open. null == closed. We use
   // a string state (instead of boolean per row) so exactly one modal
@@ -750,7 +771,38 @@ export function PluginListCard({
               !!testM.isPending && testM.variables === p.id;
             const isRowFiring =
               !!fireM.isPending && fireM.variables?.name === p.name;
+            const isRowFlushing =
+              !!flushM.isPending && flushM.variables?.name === p.name;
             const parsedSpec = safeParse(p.spec_yaml);
+            // The button on each row maps to one of three dispatchers:
+            // manual → fireM, scheduled → flushM. We treat the row's
+            // "fired just now" pair as the one that the operator last
+            // pressed, ignoring the other mutation's latched state so
+            // an old flush error doesn't reappear when someone presses
+            // "Run now" on a manual row.
+            const firedName =
+              parsedSpec.trigger === "scheduled"
+                ? flushM.variables?.name
+                : fireM.variables?.name;
+            const isRowFirePending =
+              (parsedSpec.trigger === "scheduled" && isRowFlushing) ||
+              (parsedSpec.trigger !== "scheduled" && isRowFiring);
+            const fireResult =
+              firedName === p.name
+                ? parsedSpec.trigger === "scheduled"
+                  ? flushM.data
+                  : fireM.data
+                : undefined;
+            const fireError =
+              firedName === p.name
+                ? (() => {
+                    const err =
+                      parsedSpec.trigger === "scheduled"
+                        ? flushM.error
+                        : fireM.error;
+                    return err ? (err as Error).message : undefined;
+                  })()
+                : undefined;
             return (
               <PluginRow
                 key={p.id ?? p.name}
@@ -761,7 +813,11 @@ export function PluginListCard({
                 onEdit={() => onEdit(p)}
                 onTest={() => testM.mutate(p.name)}
                 onKeys={() => setKeysFor(p.name)}
-                onFire={() => fireM.mutate({ name: p.name })}
+                onFire={() =>
+                  parsedSpec.trigger === "scheduled"
+                    ? flushM.mutate({ name: p.name })
+                    : fireM.mutate({ name: p.name })
+                }
                 testResult={
                   !isRowTesting && testM.variables === p.name ? testM.data : undefined
                 }
@@ -770,18 +826,12 @@ export function PluginListCard({
                     ? (testM.error as Error).message
                     : undefined
                 }
-                fireResult={
-                  !isRowFiring && fireM.variables?.name === p.name ? fireM.data : undefined
-                }
-                fireError={
-                  !isRowFiring && fireM.variables?.name === p.name && fireM.error
-                    ? (fireM.error as Error).message
-                    : undefined
-                }
+                fireResult={fireResult}
+                fireError={fireError}
                 busyToggle={!!toggleM.isPending && toggleM.variables?.id === p.id}
                 busyDelete={!!deleteM.isPending && deleteM.variables === p.id}
                 busyTest={isRowTesting}
-                busyFire={isRowFiring}
+                busyFire={isRowFirePending}
               />
             );
           })}
@@ -902,6 +952,24 @@ function PluginRow({
               title="Drain the buffer and send every queued trace to this vendor"
             >
               {busyFire ? "Firing…" : "Run now"}
+            </button>
+          ) : null}
+          {parsedSpec.trigger === "scheduled" ? (
+            // Scheduled plugins fire on `spec.collect.interval` by
+            // default. "Flush now" bypasses the tick and ships every
+            // buffered trace right away. The button is required
+            // because the interval may be tens of minutes long and
+            // the operator watching a slow p50 just wants the data
+            // *now*.
+            <button
+              type="button"
+              className="btn-neon btn-small"
+              onClick={onFire}
+              disabled={busyFire || !rec.enabled}
+              data-testid={`plugin-fire-${rec.name}`}
+              title="Bypass the scheduled interval and ship every buffered trace right now"
+            >
+              {busyFire ? "Flushing…" : "Flush now"}
             </button>
           ) : null}
           <button type="button" className="btn-ghost btn-small" onClick={onEdit}>

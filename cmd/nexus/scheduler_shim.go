@@ -33,6 +33,19 @@ func (s *schedulerShim) FireManual(ctx context.Context, name, trigger string) (i
 	return s.s.FireManual(ctx, plugin, trigger)
 }
 
+// FireScheduled mirrors FireManual but drains a scheduled-trigger
+// plugin's buffer immediately. The same nil-plugin-no-error policy
+// applies so the REST handler can render the count as 0 rather than
+// surfacing a "plugin not found" error to the operator who mistyped
+// the name from the chip click.
+func (s *schedulerShim) FireScheduled(ctx context.Context, name, trigger string) (int, error) {
+	plugin := pluginByName(s.reg, name)
+	if plugin == nil {
+		return 0, nil
+	}
+	return s.s.FireScheduled(ctx, plugin, trigger)
+}
+
 // pluginByName returns the *evalplugin.Plugin for metadata.name or
 // nil. Disabled plugins are skipped — the operator who'd be happy
 // to see the answer "no, your toggled-off plugin isn't firing" is

@@ -19,17 +19,31 @@ import (
 // The point of these tests is to assert the handler routes the
 // request, decodes the body, and shapes the response — not to
 // verify what the real scheduler does. Count + err lets one struct
-// serve both happy-path and error-path assertions.
+// serve both happy-path and error-path assertions. The mode field
+// records which Fire* method was called so the ?which=scheduled
+// branch can be verified end-to-end.
 type stubManualFirer struct {
-	name    string
-	trigger string
-	count   int
-	err     error
+	name       string
+	trigger    string
+	mode       string
+	count      int
+	err        error
+	calledFire string // "FireManual" or "FireScheduled" — set to the name of the invoked method
 }
 
 func (s *stubManualFirer) FireManual(_ context.Context, name, trigger string) (int, error) {
 	s.name = name
 	s.trigger = trigger
+	s.mode = "manual"
+	s.calledFire = "FireManual"
+	return s.count, s.err
+}
+
+func (s *stubManualFirer) FireScheduled(_ context.Context, name, trigger string) (int, error) {
+	s.name = name
+	s.trigger = trigger
+	s.mode = "scheduled"
+	s.calledFire = "FireScheduled"
 	return s.count, s.err
 }
 
@@ -107,9 +121,11 @@ func TestPluginFireManual_DefaultTriggerFromEmail(t *testing.T) {
 	}
 }
 
-// TestPluginFireManual_ErrorFriendly: a firer error must surface
-// as 200 with `ok:false` and a clear message. Cloudflare will
-// rewrite 5xx into HTML; 200 keeps the JSON body intact.
+// TestPluginFireManual_ErrorFriendly: a firer error mapping changed
+// with the PR that added the scheduled-mode split — manual fires
+// still return 200 (the response is data, not transport), scheduled
+// fires return 400 (so the operator's flag-button press doesn't
+// continue retrying on a bad plugin kind).
 func TestPluginFireManual_ErrorFriendly(t *testing.T) {
 	s := newTestServer()
 	firer := &stubManualFirer{err: errors.New("manual-fire unavailable right now")}
@@ -120,7 +136,7 @@ func TestPluginFireManual_ErrorFriendly(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 (a typed error response is data, not transport)", rec.Code)
+		t.Fatalf("status = %d; want 200 on manual firer error (typed body, not transport)", rec.Code)
 	}
 	var resp struct {
 		OK      bool   `json:"ok"`
@@ -147,6 +163,87 @@ func TestPluginFireManual_Unwired503(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503", rec.Code)
+	}
+}
+
+// TestPluginFireScheduled_DrainsCount: when ?which=scheduled is set,
+// the route must dispatch through FireScheduled and forward the
+// trigger tag verbatim. The response message should label itself
+// "scheduled" so the operator telling the two apart from log lines.
+func TestPluginFireScheduled_DrainsCount(t *testing.T) {
+	s := newTestServer()
+	firer := &stubManualFirer{count: 9}
+	s.SetPluginManualFirer(firer)
+	mux := newFireMux(s)
+
+	body, _ := json.Marshal(map[string]string{"trigger": "interval-bypass"})
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/eval/plugins/langfuse-judge/fire?which=scheduled",
+		strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if firer.calledFire != "FireScheduled" {
+		t.Errorf("firer called = %q; want FireScheduled", firer.calledFire)
+	}
+	if firer.trigger != "interval-bypass" {
+		t.Errorf("firer trigger = %q; want interval-bypass", firer.trigger)
+	}
+	var resp struct {
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+		Count   int    `json:"count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.OK {
+		t.Errorf("ok = false; want true")
+	}
+	if resp.Count != 9 {
+		t.Errorf("count = %d; want 9", resp.Count)
+	}
+	if !strings.Contains(resp.Message, "scheduled") {
+		t.Errorf("message = %q; want it to read as a scheduled fire", resp.Message)
+	}
+	if strings.Contains(resp.Message, "manual") {
+		t.Errorf("message = %q; must not use the 'manual' label for scheduled fires", resp.Message)
+	}
+}
+
+// TestPluginFireScheduled_ErrorMappedTo400: when the firer rejects
+// the request (e.g. plugin is not actually a scheduled-trigger kind),
+// the route answers 400 with the message inline so the operator can
+// see why their button-press was rejected. Cloudflare rewriting
+// applies only to 5xx, so this 4xx stays as a typed JSON body.
+func TestPluginFireScheduled_ErrorMappedTo400(t *testing.T) {
+	s := newTestServer()
+	firer := &stubManualFirer{
+		count: 0,
+		err:   errors.New("plugin trigger is not scheduled"),
+	}
+	s.SetPluginManualFirer(firer)
+	mux := newFireMux(s)
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/eval/plugins/langfuse-judge/fire?which=scheduled", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 for typed firer error", rec.Code)
+	}
+	var resp struct {
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.OK {
+		t.Errorf("ok = true; want false on firer error")
+	}
+	if !strings.Contains(resp.Message, "not scheduled") {
+		t.Errorf("message = %q; want it to surface 'not scheduled'", resp.Message)
 	}
 }
 

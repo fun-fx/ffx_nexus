@@ -42,22 +42,47 @@ const inlinePlugin = {
 ].join("\n"),
 };
 
+// Scheduled-trigger plugin: button label should read "Flush now", the
+// POST should attach `?which=scheduled`, and the row should not
+// regress on the manual-mode path. Mirrors pluginManual but adds
+// the query-string assertion to catch the high-impact mistake of
+// omitting `?which=…` from the fetch.
+const scheduledPlugin = {
+  id: "p-sched",
+  name: "scheduled-judge",
+  enabled: true,
+  org_id: "o1",
+  spec_yaml: [
+    "type: webhook",
+    "spec:",
+    "  service:",
+    "    kind: langfuse",
+    "  send:",
+    "    trigger: scheduled",
+    "    sampling: 1.0",
+    "  collect:",
+    "    mode: webhook",
+    "    interval: 30s",
+].join("\n"),
+};
+
 function setup() {
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url === "/api/eval/plugins") {
-      return new Response(JSON.stringify({ plugins: [manualPlugin, inlinePlugin] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ plugins: [manualPlugin, inlinePlugin, scheduledPlugin] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
     }
-    if (url.startsWith("/api/eval/plugins/") && url.endsWith("/fire")) {
+    if (url.startsWith("/api/eval/plugins/") && url.includes("/fire")) {
       // Decode body so the test can assert on the audit-tag flow.
       const body = init?.body ? JSON.parse(String(init.body)) : {};
+      const which = url.includes("?which=scheduled") ? "scheduled" : "manual";
       return new Response(
         JSON.stringify({
           ok: true,
           count: 3,
-          message: `drained (trigger=${body?.trigger ?? "default"})`,
+          message: `${which} fire (trigger=${body?.trigger ?? "default"})`,
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
@@ -117,14 +142,14 @@ describe("PluginListCard — manual trigger UX", () => {
     fireEvent.click(btn);
     await waitFor(() => {
       const calls = fetchMock.mock.calls.filter(
-        (c) => typeof c[0] === "string" && c[0].endsWith("/fire"),
+        (c) => typeof c[0] === "string" && c[0].includes("/fire"),
       );
       expect(calls.length).toBeGreaterThan(0);
     });
     const [url, init] = fetchMock.mock.calls.find(
-      (c) => typeof c[0] === "string" && c[0].endsWith("/fire"),
+      (c) => typeof c[0] === "string" && c[0].includes("/fire"),
     )!;
-    expect(url).toBe("/api/eval/plugins/manual-judge/fire");
+    expect(String(url)).toContain("/api/eval/plugins/manual-judge/fire");
     expect(init?.method).toBe("POST");
     // Body parses without throwing — server defaults the audit tag
     // when the operator passes no trigger.
@@ -148,9 +173,9 @@ describe("PluginListCard — manual trigger UX", () => {
             status: 200,
           });
         }
-        if (url.endsWith("/fire")) {
+        if (url.includes("/fire")) {
           return new Response(
-            JSON.stringify({ ok: false, message: "plugin not found" }),
+            JSON.stringify({ ok: false, message: "plugin not found", count: 0 }),
             { status: 404 },
           );
         }
@@ -166,5 +191,68 @@ describe("PluginListCard — manual trigger UX", () => {
       const node = screen.getByTestId("plugin-fire-result-manual-judge");
       expect(node.textContent).toMatch(/plugin not found/);
     });
+  });
+
+  it("scheduled-trigger plugins render a 'Flush now' button", async () => {
+    renderList();
+    const btn = await waitFor(() =>
+      screen.getByTestId("plugin-fire-scheduled-judge"),
+    );
+    expect(btn.textContent).toMatch(/Flush now/);
+    expect(screen.queryByTestId("plugin-fire-live-judge")).toBeNull();
+    expect(screen.queryByTestId("plugin-fire-manual-judge")).toBeTruthy();
+  });
+
+  it("scheduled-plugin flush hits the ?which=scheduled route", async () => {
+    renderList();
+    const btn = await waitFor(() =>
+      screen.getByTestId("plugin-fire-scheduled-judge"),
+    );
+    fireEvent.click(btn);
+    await waitFor(() => {
+      // Look for any call to /fire that came from the row, then
+      // assert the query string is correct. The mock returns the
+      // mode in the message; we use that as a witness that the
+      // scheduled path was taken.
+      const data = fetchMock.mock.calls.some((c) =>
+        typeof c[0] === "string" && c[0].includes("?which=scheduled"),
+      );
+      expect(data).toBe(true);
+    });
+    await waitFor(() => {
+      const result = screen.getByTestId("plugin-fire-result-scheduled-judge");
+      expect(result.textContent).toMatch(/scheduled fire/);
+      expect(result.textContent).not.toMatch(/manual fire/);
+    });
+  });
+
+  it("manual clicks keep going to /fire?which=manual (default branch)", async () => {
+    renderList();
+    const btn = await waitFor(() =>
+      screen.getByTestId("plugin-fire-manual-judge"),
+    );
+    fireEvent.click(btn);
+    await waitFor(() => {
+      const called = fetchMock.mock.calls.filter((c) => {
+        const url = c[0];
+        return (
+          typeof url === "string" &&
+          url.startsWith("/api/eval/plugins/manual-judge/fire")
+        );
+      });
+      expect(called.length).toBeGreaterThan(0);
+    });
+    const manualCall = fetchMock.mock.calls.find((c) => {
+      const url = c[0];
+      return (
+        typeof url === "string" &&
+        url.startsWith("/api/eval/plugins/manual-judge/fire")
+      );
+    })!;
+    // The default branch must be the manual path: ?which=manual
+    // (omitting the segment would force the server to default-mode
+    // every call, which is what the function refactor avoided by
+    // stating the mode explicitly).
+    expect(String(manualCall[0])).toBe("/api/eval/plugins/manual-judge/fire?which=manual");
   });
 });
