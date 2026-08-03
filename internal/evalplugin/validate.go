@@ -12,13 +12,13 @@ import (
 // was authored for a different system.
 const pluginKindExpected = "EvalPlugin"
 
-// validTrigger enumerates the legal Send.Trigger values. The
-// dispatcher implements on_trace today; scheduled/manual are reserved
-// for follow-up work so users can write YAML now without breakage.
+// validTrigger enumerates the legal Send.Trigger values. The full
+// semantics of each value live on SendSpec in types.go; this map is
+// the closed-set membership test the YAML validator runs against.
 var validTrigger = map[string]struct{}{
-	"on_trace":  {},
-	"scheduled": {},
-	"manual":    {},
+	TriggerOnTrace:   {},
+	TriggerScheduled: {},
+	TriggerManual:    {},
 }
 
 // validCollectMode enumerates the legal Collect.Mode values.

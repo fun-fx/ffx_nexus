@@ -126,7 +126,7 @@ spec:
 | `spec.service.auth.secretRef` | one of two | Kubernetes Secret name. Resolved from the environment — see [Credentials](#credentials). |
 | `spec.service.auth.keyRef` | one of two | Pipe-separated key names inside the Secret, in vendor order (Langfuse: `public_key\|secret_key`). |
 | `spec.service.auth.inlineKey` | never    | Forbidden; secrets never appear in source-controlled YAML.     |
-| `spec.send.trigger`        | yes       | `on_trace` today. `scheduled`/`manual` are reserved.            |
+| `spec.send.trigger`        | yes       | One of `on_trace` (default — sends every trace inline), `scheduled` (Nexus buffers traces per plugin and forwards in a batch every `spec.collect.interval`), or `manual` (the dispatcher ignores inline traces entirely; an admin must POST to `/api/eval/plugins/<name>/fire` to flush). Buffer overflow for `scheduled` returns `ErrBufferFull` and the worker logs a structured drop event — see [Trigger semantics](#trigger-semantics). |
 | `spec.send.sampling`       | yes       | `[0, 1]`, and now actually enforced per plugin. Use ≤ 0.1 by default to keep egress and vendor cost bounded. |
 | `spec.send.payload`        | yes       | Map of strings; each value is a Go-text/template.               |
 | `spec.send.redact`         | no        | Only `pii` is accepted today; masks email-shaped spans in every string field of the rendered payload as `[REDACTED:email]`, using the same conservative pattern as the heuristic PII evaluator. A bare `@` in prose is left alone. |
@@ -608,6 +608,21 @@ the host answers HTTP.
 Langfuse keys are also **region-scoped**: a key pair issued in the US
 project returns 401 against the EU endpoint. Pick the region in the
 plugin editor rather than editing the endpoint by hand.
+
+### Trigger semantics
+
+`spec.send.trigger` controls when each trace is forwarded to the
+plugin. The YAML validator accepts three values:
+
+| Value        | Behaviour |
+|--------------|-----------|
+| `on_trace`   | Every trace is dispatched inline through the vendor's HTTP endpoint. This was the only behaviour pre-fix; the dispatcher used to ignore `trigger` and always act as if it were `on_trace`. |
+| `scheduled`  | Traces accumulate in a per-plugin FIFO buffer inside Nexus and are flushed as a batch every `spec.collect.interval`. The buffer is bounded (`SchedulerConfig.MaxBufferPerPlugin`, default 4096) so a vendor that hangs cannot exhaust the heap — overflow returns `ErrBufferFull` which the worker logs through the structured plugin-dispatch path. |
+| `manual`     | The dispatcher's hot path ignores inline traces entirely; only the admin REST endpoint `POST /api/eval/plugins/<name>/fire` drives the plugin. The body is `{"trigger": "<audit-tag>"}`; if omitted, the handler stamps `<admin-email>@<RFC3339>` so the scheduler's `log.Info("manual eval plugin fire", "plugin", name, "trigger", trigger)` line correlates to the user without extra clicks. |
+
+The dispatcher honours `trigger` per PR #198 — picking `scheduled`
+or `manual` is now an actual control plane decision rather than an
+intent-revealing, ignored-by-runtime field.
 
 ### Durability
 
