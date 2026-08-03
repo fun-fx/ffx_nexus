@@ -387,6 +387,13 @@ export const PLUGIN_PRESETS: Record<string, { label: string; form: PluginFormSta
  * produce a YAML manifest. The card's onClick sets a banner
  * hint via the editor surface rather than opening the manifest
  * drawer.
+ *
+ * All four are pure Go on the worker goroutine. HuggingFace
+ * Evaluate, LightEval and Ragas used to be listed here too; they
+ * ran a Python subprocess inside the Nexus pod and were removed,
+ * because eval compute Nexus has to host is the dependency the
+ * plugin model exists to avoid. Those metrics belong behind an
+ * external plugin now.
  */
 export const HEURISTIC_PRESETS: Record<
   string,
@@ -411,24 +418,6 @@ export const HEURISTIC_PRESETS: Record<
     label: "ROUGE-L",
     metric: "rouge_l",
     description: "Longest-common-subsequence F1 against reference (in-process).",
-  },
-  hf_evaluate: {
-    label: "HuggingFace Evaluate",
-    metric: "hf_evaluate",
-    description:
-      "Wraps a HF Evaluate metric via the Python subprocess adapter — exact metric names like glue, bleurt, meteor (in-process via Python).",
-  },
-  lighteval: {
-    label: "LightEval",
-    metric: "lighteval",
-    description:
-      "LightEval's LLM-tuned successor to HF Evaluate — task names like hellaswag, arc, mmlu (in-process via Python).",
-  },
-  ragas: {
-    label: "Ragas",
-    metric: "ragas",
-    description:
-      "Ragas RAG metrics — faithfulness, answer_relevancy, context_precision (in-process via Python).",
   },
 };
 

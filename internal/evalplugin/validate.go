@@ -43,18 +43,26 @@ var validRedact = map[string]struct{}{
 }
 
 // validMetric enumerates the legal MetricSpec.Name values for a
-// ServiceHeuristic plugin. The split between Go-native metric
-// implementations (contains/pii/exact_match/rouge_l) and the Python
-// subprocess (hf_evaluate/lighteval/ragas) decisions happen during
-// dispatch — only the names matter here.
+// ServiceHeuristic plugin. All of them are pure Go and run on the
+// worker goroutine, which is what keeps a heuristic plugin free of
+// egress and of hosted compute.
 var validMetric = map[string]struct{}{
 	"contains":    {},
 	"pii":         {},
 	"exact_match": {},
 	"rouge_l":     {},
-	"hf_evaluate": {},
-	"lighteval":   {},
-	"ragas":       {},
+}
+
+// retiredMetric names the metrics that were served by a Python
+// subprocess inside the Nexus pod. They were removed because they
+// require eval compute Nexus would have to ship and run, which is the
+// dependency the config-only plugin model exists to avoid. Manifests
+// still naming them get told where to go rather than a bare enum
+// rejection.
+var retiredMetric = map[string]string{
+	"hf_evaluate": "HuggingFace Evaluate",
+	"lighteval":   "LightEval",
+	"ragas":       "Ragas",
 }
 
 // validFlag enumerates the strings that may appear in spec.flags.
@@ -208,6 +216,12 @@ func validateMetric(m *MetricSpec, apiVersion string) error {
 	}
 	if apiVersion != PluginAPIVersionV1Alpha2 {
 		return errors.New("spec.service.metric is v1alpha2 only; set apiVersion accordingly")
+	}
+	if vendor, retired := retiredMetric[m.Name]; retired {
+		return fmt.Errorf(
+			"spec.service.metric.name %q was removed: %s needs eval compute running inside Nexus. "+
+				"Use an external plugin (e.g. service.type=confident_ai) or one of: contains, pii, exact_match, rouge_l",
+			m.Name, vendor)
 	}
 	if _, ok := validMetric[m.Name]; !ok {
 		return fmt.Errorf("spec.service.metric.name %q is not supported", m.Name)

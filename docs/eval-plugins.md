@@ -17,7 +17,8 @@ evaluator kinds. Nexus ships with three first-class kinds today:
 Plugins are **config only**. The Nexus binary never ships the Python
 sidecar or the SLM judge infrastructure by default — those are
 preserved for back-compat as the "local backend implementations" of
-the plugin contract.
+the plugin contract, and `NEXUS_EVAL_PLUGIN_ONLY=true` refuses them
+outright (see *Plugin-only mode* below).
 
 ### Plugins do not need an eval profile
 
@@ -125,7 +126,7 @@ spec:
 | `spec.collect.interval`    | when poll | Polling cadence when webhook is unavailable.                    |
 | `spec.collect.mapping`     | yes       | Flat-key map. Each value is the *source key* on the vendor's wire format (e.g. `key`, `value`, `comment`). Do NOT prefix with `$.` — Nexus does flat-lookup, not JSONPath. Adapters provide defaults; you only override when the vendor uses nonstandard keys. |
 | `spec.timeout`             | no        | Default 30s.                                                    |
-| `spec.service.metric.name` | when type=heuristic | Closed enum: contains / pii / exact_match / rouge_l / hf_evaluate / lighteval / ragas. |
+| `spec.service.metric.name` | when type=heuristic | Closed enum: contains / pii / exact_match / rouge_l. |
 | `spec.service.metric.path` | when type=heuristic + metric.path-style | Optional. Reserved for future extension; today the closed enum is the only contract. |
 | `spec.flags`               | no        | Array of strings. `strict` rejects unknown fields instead of silencing them. |
 
@@ -134,8 +135,13 @@ spec:
 `spec.service.type: heuristic` runs the metric in-process on the
 trace Nexus already collected. The plugin is *config-only*: no HTTPS
 call, no OTLP send, no auth block. The orchestrator hands the trace
-to the matching in-process or subprocess metric and writes the
-score straight to `eval_scores`.
+to the matching metric and writes the score straight to
+`eval_scores`.
+
+Every metric in the enum is pure Go on the worker goroutine, so a
+heuristic plugin needs neither egress nor eval compute Nexus has to
+host — which is what lets it sit beside config-only plugins without
+reintroducing the dependency they exist to remove.
 
 The closed `metric.name` enum:
 
@@ -145,9 +151,20 @@ The closed `metric.name` enum:
 | `pii`       | In-process Go (regex set) | Reuses the production heuristic_pii pattern list. Stays default-on (see *Why PII must remain default-on* below). |
 | `exact_match` | In-process Go | Trivial case-insensitive string equality. |
 | `rouge_l`   | In-process Go (LCS F-measure) | Rouge-L F1 score equal to 1.0 means a perfect recall/precision match. |
-| `hf_evaluate`  | Python subprocess (`py/eval_metric.py`) | Pulls HF `evaluate==0.4.5`. Activated when `PYTHON_SUBPROCESS=1`. |
-| `lighteval`    | Python subprocess | HF LightEval harness. Activated when `PYTHON_SUBPROCESS=1`. |
-| `ragas`        | Python subprocess | Ragas RAGAS framework. Activated when `PYTHON_SUBPROCESS=1`. |
+
+#### Removed: `hf_evaluate`, `lighteval`, `ragas`
+
+These three ran HuggingFace Evaluate, LightEval and Ragas through a
+Python subprocess inside the Nexus pod. They were removed: the
+libraries need eval compute Nexus would have to ship, install and
+run, which is precisely the dependency the plugin model exists to
+avoid. A manifest still naming one is rejected at decode time with a
+message pointing at the alternatives, rather than saving and then
+scoring nothing.
+
+For those metrics, use a vendor that runs them for you — Confident
+AI (`service.type: confident_ai`) covers the Ragas-style RAG
+metrics, and Langfuse or LangSmith can host an LLM-judge equivalent.
 
 The grep-shaped `references_from` example below shows how to lay
 out a heuristic plugin without an auth block, with the manifest
@@ -221,6 +238,35 @@ Scoring becomes a pure plugin-driven pipeline. The console's *Eval*
 page also surfaces a banner ("Plugin-only eval mode") so the seam
 is visible without grepping the pod's environment.
 
+#### What the flag refuses
+
+Skipping the seed alone was not enough: `NEXUS_JUDGE_BASE_URL` and
+`NEXUS_EVAL_SERVICE_URL` commonly outlive the decision to go
+plugin-only (a values file keeps pointing at `ollama` and
+`eval-service`), and the worker used to build both evaluators from
+those variables regardless of the flag. A cluster could therefore
+report plugin-only while calling an in-cluster judge on every
+sampled trace. The flag now closes every door to Nexus-hosted eval
+compute:
+
+- **At boot** the SLM judge and the eval-service client are not
+  constructed, and the leftover env vars are named in a WARN so the
+  operator can see what was ignored. Silence there reads exactly
+  like a healthy judge.
+- **Per trace** a `slm_judge` or `remote_eval` profile that survived
+  in the store is skipped before its credential is even resolved.
+- **At the API** a PATCH on `/api/eval/config` touching any judge or
+  eval-service field is rejected, and saving a profile of either
+  kind fails — an enabled row that never scores is the failure mode
+  this is here to remove.
+- **At runtime** `ConfigureJudges` is a no-op, covering direct
+  callers that bypass the API.
+
+Getting that compute back is a deployment decision: unset the flag.
+The `RemoteEvaluator` and `SLMJudge` code and the `eval-service/`
+directory stay in the tree as the on-premises option, disabled by
+default and ignored under plugin-only.
+
 #### Destructive companion (`NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT`)
 
 The flag above is **non-destructive** by itself — it skips seeding,
@@ -254,17 +300,26 @@ hosted split:
 
 | Prime mode | Nexus kind |
 | --- | --- |
-| `prime eval` (no `--hosted`) | `ServiceType: heuristic` (this plugin family) |
+| `prime eval` (no `--hosted`) | `ServiceType: heuristic` — but only for the four pure-Go metrics; see the caveat below |
 | `prime eval --hosted`        | `ServiceType: <langfuse\|langsmith\|confident_ai\|arize_phoenix\|...>` (existing `external` plugin) |
 
+The local row is a partial match, and the gap is the interesting
+part. Prime's local mode runs a Python harness on the machine that
+invokes it, which is the same shape as the `hf_evaluate` / `ragas`
+metrics we removed. Nexus deliberately has no equivalent: its
+"local" family is the four deterministic Go metrics, and anything
+needing a harness runtime belongs on the hosted side. So the useful
+translation of `prime eval` inside Nexus is *hosted* — point a
+plugin at the vendor that runs the harness for you.
+
 Operators new to Nexus benefit from the same mental model:
-*in-process metrics are deterministic and zero-egress;
-external plugins are config-only and ship every trace over the
-network.* Stop adding evaluator kinds without a concrete
-in-process metric or external adapter — the closed enum is a
-feature, not a limitation, because vendor bandwidth is finite
-and an open-ended enum forces every plugin to ship its own
-authentication, sampling, and observability plumbing.
+*in-process metrics are deterministic, zero-egress, and free of any
+runtime Nexus has to host; external plugins are config-only and ship
+every trace over the network.* Stop adding evaluator kinds without a
+concrete in-process metric or external adapter — the closed enum is a
+feature, not a limitation, because vendor bandwidth is finite and an
+open-ended enum forces every plugin to ship its own authentication,
+sampling, and observability plumbing.
 
 ### Inbound webhook contract (`mode: webhook`)
 

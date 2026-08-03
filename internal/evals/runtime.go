@@ -68,10 +68,32 @@ type RemoteRuntimeConfig struct {
 	Timeout time.Duration
 }
 
+// PluginOnly reports whether the worker refuses Nexus-hosted eval
+// compute. Callers use it to reject a config patch up front instead of
+// letting the write look like it took effect.
+func (w *Worker) PluginOnly() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.pluginOnly
+}
+
 // ConfigureJudges rebuilds expensive evaluators from runtime settings.
+//
+// Under plugin-only this is the last door back to a Nexus-hosted judge
+// or Python sidecar, so it stays shut. The API layer rejects the patch
+// before reaching here; this guard covers direct callers.
 func (w *Worker) ConfigureJudges(judge JudgeRuntimeConfig, remote RemoteRuntimeConfig) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	if w.pluginOnly {
+		if w.log != nil {
+			w.log.Warn("eval plugin-only mode: refusing judge/sidecar reconfiguration",
+				"judge_base_url", strings.TrimSpace(judge.BaseURL),
+				"remote_url", strings.TrimSpace(remote.URL))
+		}
+		return
+	}
 
 	w.judgeBaseURL = strings.TrimSpace(judge.BaseURL)
 	w.judgeModel = strings.TrimSpace(judge.Model)
