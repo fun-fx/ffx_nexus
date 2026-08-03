@@ -321,6 +321,20 @@ feature, not a limitation, because vendor bandwidth is finite and an
 open-ended enum forces every plugin to ship its own authentication,
 sampling, and observability plumbing.
 
+### Why there is no OpenAI Evals adapter
+
+OpenAI's Evals platform was deprecated on 2026-06-03. Existing evals
+go read-only on 2026-10-31 and the dashboard and API shut down on
+2026-11-30; OpenAI points migrating users at Promptfoo. Building an
+adapter against an API with a few months left would ship a preset that
+breaks on a known date, so we deliberately did not.
+
+What we took from it instead is its shape — *dataset + graders + run*,
+scored by a service you do not operate. That is the same contract as
+`spec.send` (what leaves) plus `spec.collect.mapping` (how a grader's
+verdict becomes an `eval_scores` row), which is why a vendor swap here
+is a manifest edit rather than a code change.
+
 ### Inbound webhook contract (`mode: webhook`)
 
 When the plugin declares `collect.mode: webhook`, the vendor must
@@ -598,21 +612,28 @@ because it ran in the same process as the paste that preceded it.
 
 ## Adapters currently shipped
 
-| `service.type` | Send | Collect | Notes |
+| `service.type` | Auth sent | Collect | Notes |
 |-----------------|------|---------|-------|
-| `langfuse`      | Authenticated | Authenticated | OTLP/JSON to `/api/public/otel/v1/traces` with Basic auth; polls `/api/public/v3/scores`. OSS / self-host friendly, and the recommended default. |
-| `langsmith`     | Unauthenticated | Heartbeat only | Posts an OTLP envelope but sends no API key, so a real LangSmith project rejects it. Needs the same credential wiring Langfuse now has. |
-| `datadog`       | Unauthenticated | Heartbeat only | Also needs `DD-API-KEY`/`DD-APPLICATION-KEY` wiring. Hex→decimal trace_id rewrite required. |
-| `braintrust`    | Unauthenticated | Heartbeat only | OTLP traces accepted; no auth wired. |
-| `arize`         | Unauthenticated | Heartbeat only | AX remote-evaluator endpoints; no auth wired. |
-| `otel`          | Beta | Heartbeat only | Direct OTLP `gen_ai.evaluation.result` to a collector. Usually needs no credential, so this one works as-is. |
-| `webhook`       | Beta | Heartbeat only | Generic JSON forwarder to the admin-defined URL. |
+| `langfuse`      | Basic (`public_key\|secret_key`) | Poll (real scores) + webhook | OTLP/JSON to `/api/public/otel/v1/traces`; polls `/api/public/v3/scores`. Cloud or self-host. The recommended default and the only adapter verified end-to-end against a live vendor account. |
+| `langsmith`     | `Authorization: Bearer` | Webhook (poll = liveness only) | Sends an OTLP envelope. LangSmith has no "give me back the scores I sent" API, so poll mode only pings `/api/v1/info` to report liveness — scores must arrive through an automation-rule webhook. |
+| `confident_ai`  | Basic pair, or single key | Webhook | Confident AI / DeepEval Cloud. Refuses to send when neither a pair nor a single key resolves, rather than posting anonymously. |
+| `arize_phoenix` | `Bearer` (optional) | Webhook | Self-hostable OTLP target; auth is optional because a local Phoenix usually has none. |
+| `datadog`       | `DD-API-KEY` | Webhook | Rewrites hex trace ids to decimal, which Datadog requires. |
+| `braintrust`    | `Authorization: Bearer` | Webhook | OTLP traces. |
+| `arize`         | `Authorization: Bearer` | Webhook | Arize AX remote-evaluator endpoints. |
+| `otel_collector` | Whatever the collector wants | Webhook | v1alpha2 adapter; pick the wire shape with `collect.transport`. Supersedes `otel` and `webhook`. |
+| `otel`, `webhook` | — | Webhook | v1alpha1 names, both routed to the `otel_collector` adapter. |
+| `heuristic`     | none (no egress) | n/a | Scores in-process; see *Heuristic metric kinds*. |
 
-Only `langfuse` and `otel` are expected to deliver data to a real vendor
-today. The credential plumbing (`external.Target`) is shared, so wiring
-the remaining vendors is a matter of setting each one's auth header and
-correcting its endpoint — not new infrastructure.
+Every adapter reads its credential from the same `external.Target`, so
+"the key is wired" is true across the table. What is *not* uniform is
+verification: only `langfuse` has been driven end-to-end against a real
+vendor project. For the others, treat a passing **Test** as evidence the
+endpoint is reachable and the key is accepted, not that scores render the
+way you expect on the vendor's dashboard.
 
-DeepEval/Confident AI, WhyLabs, RagaAI are **not** supported as
-drop-in adapters (their SDKs are Python-only and don't expose a
-generic "attach a score to a trace id" HTTP endpoint).
+WhyLabs and RagaAI have no adapter: their SDKs are Python-only and
+neither exposes a generic "attach a score to this trace id" HTTP
+endpoint. Promptfoo and DeepEval-as-a-library are development-time
+tools that run in CI rather than services a gateway can post to — use
+`confident_ai` for the hosted DeepEval path.
