@@ -1178,3 +1178,45 @@ export async function clearBenchmarkCredential(): Promise<void> {
   });
   await jsonOrError<{ ok: boolean }>(res);
 }
+
+// --- Manual-trigger plugin run ----------------------------------------
+//
+// `Send.trigger: manual` means inline traces are silently dropped
+// (Scheduler never accepts them). The only way to make a manual-
+// trigger plugin actually run is to POST to this admin endpoint,
+// which drains the buffer / fires the registered dispatcher with the
+// given audit tag. The server requires Keycloak admin role.
+export interface ManualFireResult {
+  ok: boolean;
+  count: number;
+  message: string;
+}
+
+export async function fireEvalPluginManual(
+  name: string,
+  trigger?: string,
+): Promise<ManualFireResult> {
+  const res = await fetch(
+    `/api/eval/plugins/${encodeURIComponent(name)}/fire`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // Empty body is fine — server defaults to "admin@<rfc3339>"
+      // when no trigger is provided. Pass an audit tag if the operator
+      // wants to record an operational note ("weekly-batch-2025-10-31").
+      body: JSON.stringify(trigger ? { trigger } : {}),
+    },
+  );
+  if (!res.ok) {
+    let env: PluginKeysErrorEnvelope | null = null;
+    try {
+      env = (await res.json()) as PluginKeysErrorEnvelope;
+    } catch {
+      env = null;
+    }
+    throw new Error(
+      env?.message || env?.error || `Backend HTTP ${res.status} on POST /fire`,
+    );
+  }
+  return jsonOrError<ManualFireResult>(res);
+}

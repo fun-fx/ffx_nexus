@@ -624,6 +624,42 @@ The dispatcher honours `trigger` per PR #198 — picking `scheduled`
 or `manual` is now an actual control plane decision rather than an
 intent-revealing, ignored-by-runtime field.
 
+### Manual trigger UX (console)
+
+A plugin with `spec.send.trigger: manual` shows a neon **Run now**
+button on its row in the *Evaluators* card (and on the legacy
+`/eval/plugins` page). Clicking it issues
+`POST /api/eval/plugins/<name>/fire` against the admin endpoint
+mounted in `internal/console/eval_plugins.go:pluginFireManual`:
+
+```http
+POST /api/eval/plugins/manual-judge/fire
+Content-Type: application/json
+
+{"trigger": "weekly-bake-off-2025-10-31"}     ← optional audit tag
+```
+
+The response includes the count and the audit tag the worker used:
+
+```json
+{
+  "ok": true,
+  "count": 17,
+  "message": "manual eval plugin fire (trigger=weekly-bake-off-2025-10-31)"
+}
+```
+
+Refresh behaviour: the response does not include per-trace outcomes
+because the dispatch path is async — the buffer is drained into the
+dispatcher's queue and the rest of the dispatch lifecycle is
+identifiable by the structured `log.Info("manual eval plugin fire", ...)`
+line. The row chip reads `manual` (warn tone) so the operator can spot
+which plugins still need a push.
+
+`scheduled` plugins do not surface a Run-now button: their flushing
+is on the `spec.collect.interval` and the only knob is to wait (or
+to short-circuit the interval by flipping the trigger).
+
 ### Durability
 
 An install and its keys both outlive the pod that accepted them:

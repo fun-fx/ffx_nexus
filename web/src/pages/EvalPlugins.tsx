@@ -17,6 +17,7 @@ import {
   createEvalPlugin,
   deleteEvalPlugin,
   fetchEvalPlugins,
+  fireEvalPluginManual,
   patchEvalPlugin,
   pingEvalPluginWebhook,
   testEvalPlugin,
@@ -682,10 +683,31 @@ export function PluginListCard({
     mutationFn: (id: string) => testEvalPlugin(id),
   });
 
+  const fireM = useMutation({
+    // Trigger tag piggybacks on the row's last test timestamp so two
+    // operators hitting "Run now" within the same second produce
+    // visibly distinct audit lines. Empty string falls back to the
+    // server default "<admin>@<RFC3339>".
+    mutationFn: ({
+      name,
+      tag,
+    }: {
+      name: string;
+      tag?: string;
+    }) => fireEvalPluginManual(name, tag),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["eval-plugins"] });
+      // Show the count in a one-shot toast — query invalidation
+      // refetches the list but the operator gets immediate feedback.
+      console.log(`manual fire: drained ${data.count} trace(s)`);
+    },
+  });
+
   const lastError =
     (testM.error as Error | null) ||
     (toggleM.error as Error | null) ||
-    (deleteM.error as Error | null);
+    (deleteM.error as Error | null) ||
+    (fireM.error as Error | null);
 
   // Track which plugin's Keys modal is open. null == closed. We use
   // a string state (instead of boolean per row) so exactly one modal
@@ -726,15 +748,20 @@ export function PluginListCard({
           {query.data.map((p) => {
             const isRowTesting =
               !!testM.isPending && testM.variables === p.id;
+            const isRowFiring =
+              !!fireM.isPending && fireM.variables?.name === p.name;
+            const parsedSpec = safeParse(p.spec_yaml);
             return (
               <PluginRow
                 key={p.id ?? p.name}
                 rec={p}
+                parsed={parsedSpec}
                 onToggle={() => p.id && toggleM.mutate({ id: p.id, enabled: !p.enabled })}
                 onDelete={() => p.id && deleteM.mutate(p.id)}
                 onEdit={() => onEdit(p)}
                 onTest={() => testM.mutate(p.name)}
                 onKeys={() => setKeysFor(p.name)}
+                onFire={() => fireM.mutate({ name: p.name })}
                 testResult={
                   !isRowTesting && testM.variables === p.name ? testM.data : undefined
                 }
@@ -743,9 +770,18 @@ export function PluginListCard({
                     ? (testM.error as Error).message
                     : undefined
                 }
+                fireResult={
+                  !isRowFiring && fireM.variables?.name === p.name ? fireM.data : undefined
+                }
+                fireError={
+                  !isRowFiring && fireM.variables?.name === p.name && fireM.error
+                    ? (fireM.error as Error).message
+                    : undefined
+                }
                 busyToggle={!!toggleM.isPending && toggleM.variables?.id === p.id}
                 busyDelete={!!deleteM.isPending && deleteM.variables === p.id}
                 busyTest={isRowTesting}
+                busyFire={isRowFiring}
               />
             );
           })}
@@ -765,30 +801,40 @@ export function PluginListCard({
 
 function PluginRow({
   rec,
+  parsed,
   onEdit,
   onToggle,
   onDelete,
   onTest,
   onKeys,
+  onFire,
   testResult,
   testError,
+  fireResult,
+  fireError,
   busyToggle,
   busyDelete,
   busyTest,
+  busyFire,
 }: {
   rec: EvalPluginRecord;
+  parsed: ReturnType<typeof safeParse>;
   onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
   onTest: () => void;
   onKeys: () => void;
+  onFire: () => void;
   testResult?: PluginTestResult;
   testError?: string;
+  fireResult?: { ok: boolean; count: number; message: string };
+  fireError?: string;
   busyToggle: boolean;
   busyDelete: boolean;
   busyTest: boolean;
+  busyFire: boolean;
 }) {
-  const parsed = useMemo(() => safeParse(rec.spec_yaml), [rec.spec_yaml]);
+  const parsedSpec = useMemo(() => safeParse(rec.spec_yaml), [rec.spec_yaml]);
   // Inbound webhook URL that vendors should POST score records to.
   // Computed lazily so it adapts to whatever origin the console is
   // mounted under (custom hosted tenants don't have to hard-code
@@ -815,11 +861,16 @@ function PluginRow({
       <div className="plugin-row-head">
         <div>
           <strong className="plugin-row-name">{rec.name}</strong>{" "}
-          {parsed.type ? <Chip tone="info">{parsed.type}</Chip> : null}{" "}
-          {parsed.sampling ? (
-            <Chip tone="neutral">sample {parsed.sampling}</Chip>
+          {parsedSpec.type ? <Chip tone="info">{parsedSpec.type}</Chip> : null}{" "}
+          {parsedSpec.sampling ? (
+            <Chip tone="neutral">sample {parsedSpec.sampling}</Chip>
           ) : null}{" "}
-          {parsed.mode ? <Chip tone="neutral">{parsed.mode}</Chip> : null}
+          {parsedSpec.mode ? <Chip tone="neutral">{parsedSpec.mode}</Chip> : null}
+          {parsedSpec.trigger ? (
+            <Chip tone={parsedSpec.trigger === "manual" ? "warn" : "neutral"}>
+              {parsedSpec.trigger}
+            </Chip>
+          ) : null}
         </div>
         <div className="plugin-row-actions">
           <LabelToggle
@@ -836,6 +887,23 @@ function PluginRow({
           >
             {busyTest ? "Testing…" : "Test"}
           </button>
+          {parsedSpec.trigger === "manual" ? (
+            // Manual-trigger plugins drop every inline trace. The
+            // "Run now" button is the one knob that drains the buffer
+            // (PR #198); disable while busy or while the plugin is
+            // turned off so the operator doesn't queue a fire against
+            // a plugin that's not receiving anything.
+            <button
+              type="button"
+              className="btn-neon btn-small"
+              onClick={onFire}
+              disabled={busyFire || !rec.enabled}
+              data-testid={`plugin-fire-${rec.name}`}
+              title="Drain the buffer and send every queued trace to this vendor"
+            >
+              {busyFire ? "Firing…" : "Run now"}
+            </button>
+          ) : null}
           <button type="button" className="btn-ghost btn-small" onClick={onEdit}>
             Edit
           </button>
@@ -937,19 +1005,35 @@ function PluginRow({
           ✗ {testError}
         </p>
       ) : null}
+      {fireResult ? (
+        <p
+          className={`plugin-row-test ${fireResult.ok ? "ok" : "err"}`}
+          data-testid={`plugin-fire-result-${rec.name}`}
+        >
+          {fireResult.ok
+            ? `▶ ${fireResult.message} — drained ${fireResult.count} trace(s)`
+            : `✗ ${fireResult.message}`}
+        </p>
+      ) : null}
+      {fireError ? (
+        <p className="plugin-row-test err" data-testid={`plugin-fire-result-${rec.name}`}>
+          ✗ {fireError}
+        </p>
+      ) : null}
     </article>
   );
 }
 
-/**
- * Cheap visual extract with the same logic the old list used.
- */
+// safeParse pulls out kind, samplingPct, mode, and trigger from the raw
+// YAML so the row can render chips without parsing the full manifest.
+// Anything it cannot find stays undefined; the chip simply doesn't render.
 function safeParse(raw: string): {
   type?: string;
   sampling?: string;
   mode?: string;
+  trigger?: string;
 } {
-  const out: { type?: string; sampling?: string; mode?: string } = {};
+  const out: { type?: string; sampling?: string; mode?: string; trigger?: string } = {};
   for (const line of raw.split("\n")) {
     const m = line.match(/^\s*type:\s*(.+)\s*$/);
     if (m && out.type === undefined) out.type = m[1].trim();
@@ -957,6 +1041,11 @@ function safeParse(raw: string): {
     if (s && out.sampling === undefined) out.sampling = s[1].trim();
     const c = line.match(/^\s*mode:\s*(.+)\s*$/);
     if (c && out.mode === undefined) out.mode = c[1].trim();
+    // Trigger lives under spec.send.trigger; we accept both flat and
+    // 2-space indented forms. Anything else ("on_trace") falls back
+    // to undefined and the chip is hidden — that's the common case.
+    const t = line.match(/^\s*trigger:\s*(.+)\s*$/);
+    if (t && out.trigger === undefined) out.trigger = t[1].trim();
   }
   return out;
 }
