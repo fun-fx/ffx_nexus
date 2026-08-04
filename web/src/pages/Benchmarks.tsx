@@ -38,6 +38,28 @@ function isSettled(status: BenchmarkRun["status"]): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+// ENVIRONMENT_PRESETS is what the form offers as one-click picks.
+// Prime does not publish a /environments list endpoint — see
+// internal/benchmark/runner.go's LaunchSpec note about Hub slugs
+// being opaque to Nexus — so the catalog here is curated, not
+// discovered. Each preset documents where the dataset comes from
+// so an operator picking it knows what they are about to score.
+//
+// Custom slugs (the operator's own namespace, or a vendor they
+// have pushed) go through the Add custom field, not the picker.
+const ENVIRONMENT_PRESETS: { slug: string; label: string }[] = [
+  { slug: "primeintellect/gsm8k", label: "GSM8K — grade-school math reasoning (1,319 Q)" },
+  { slug: "primeintellect/mmlu-pro", label: "MMLU-Pro — multi-task language understanding" },
+  { slug: "primeintellect/humaneval", label: "HumanEval — Python coding correctness" },
+  { slug: "primeintellect/ifeval", label: "IFEval — instruction-following" },
+  { slug: "primeintellect/math-500", label: "Math-500 — competition math" },
+  { slug: "verifiers/gsm8k", label: "verifiers/gsm8k — alt grader implementation" },
+];
+
+function presetFor(slug: string): { slug: string; label: string } | undefined {
+  return ENVIRONMENT_PRESETS.find((p) => p.slug === slug);
+}
+
 function formatScore(run: BenchmarkRun): string {
   if (run.avg_score === null || run.avg_score === undefined) return "—";
   return run.avg_score.toFixed(3);
@@ -410,7 +432,16 @@ function LaunchPanel({
   onError: (e: unknown) => void;
 }) {
   const [name, setName] = useState("");
-  const [environments, setEnvironments] = useState("");
+  // Each env is one of two shapes:
+  //   - a built-in preset slug string ("primeintellect/gsm8k"),
+  //   - a custom slug string the operator typed
+  // tagged so we can render the description for presets and a plain
+  // chip for custom entries. The union is intentionally string-based;
+  // the backend takes a flat string list anyway and we want the
+  // payload shape to round-trip without translation.
+  const [envs, setEnvs] = useState<{ slug: string; custom: boolean }[]>([
+    { slug: "primeintellect/gsm8k", custom: false },
+  ]);
   const [model, setModel] = useState("");
   const [numExamples, setNumExamples] = useState(5);
   const [rollouts, setRollouts] = useState(1);
@@ -426,10 +457,18 @@ function LaunchPanel({
     retry: false,
   });
 
-  const envList = environments
-    .split(/[\n,]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // The wire-shape sent to the backend is a flat list of slugs. We
+  // de-duplicate and drop blanks so the same preset cannot be added
+  // twice through a preset+preset collision, but the order is
+  // preserved so a list with one custom slug after a preset reads
+  // naturally on the wire.
+  const envList = Array.from(
+    new Set(
+      envs
+        .map((e) => e.slug.trim())
+        .filter(Boolean),
+    ),
+  );
   const totalSamples = Math.max(0, numExamples) * Math.max(0, rollouts);
   const overCap = maxSamples > 0 && totalSamples > maxSamples;
   const canSubmit =
@@ -475,16 +514,99 @@ function LaunchPanel({
         </label>
 
         <label className="field-row bench-field-wide">
-          <span className="field-label">
-            Environments — one Hub slug per line, or comma separated
-          </span>
-          <textarea
-            className="bench-input bench-textarea"
-            rows={3}
-            placeholder={"your-org/gsm8k\nyour-org/alphabet-sort"}
-            value={environments}
-            onChange={(e) => setEnvironments(e.target.value)}
-          />
+          <span className="field-label">Environments</span>
+          <div className="bench-env-form">
+            <div className="bench-env-preset-row">
+              <select
+                className="bench-input bench-env-preset"
+                aria-label="Add a built-in environment"
+                defaultValue=""
+                onChange={(e) => {
+                  const slug = e.target.value;
+                  if (!slug) return;
+                  setEnvs((prev) =>
+                    prev.some((p) => p.slug === slug)
+                      ? prev
+                      : [...prev, { slug, custom: false }],
+                  );
+                  // Reset to placeholder so the same preset can be re-added
+                  // after a removal without a separate click cycle.
+                  e.target.value = "";
+                }}
+              >
+                <option value="">Add a built-in environment…</option>
+                {ENVIRONMENT_PRESETS.map((p) => (
+                  <option key={p.slug} value={p.slug}>
+                    {p.slug} — {p.label}
+                  </option>
+                ))}
+              </select>
+              <form
+                className="bench-env-custom"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const form = e.currentTarget;
+                  const input = form.elements.namedItem(
+                    "custom-slug",
+                  ) as HTMLInputElement | null;
+                  const slug = (input?.value ?? "").trim();
+                  if (!slug) return;
+                  setEnvs((prev) =>
+                    prev.some((p) => p.slug === slug)
+                      ? prev
+                      : [...prev, { slug, custom: true }],
+                  );
+                  if (input) input.value = "";
+                }}
+              >
+                <input
+                  name="custom-slug"
+                  className="bench-input bench-env-custom-input"
+                  placeholder="your-org/<dataset-slug>"
+                  aria-label="Add a custom environment slug"
+                />
+                <button
+                  type="submit"
+                  className="btn-neon btn-ghost btn-small"
+                  disabled={!credentialConfigured}
+                >
+                  Add
+                </button>
+              </form>
+            </div>
+            <p className="bench-env-help">
+              Pick a built-in dataset or paste a slug you published to
+              your Prime namespace with <code>prime env push</code>.
+              Visibility is the operator&apos;s responsibility — Nexus
+              cannot list templates.
+            </p>
+            <ul
+              className="bench-env-chips"
+              data-testid="bench-env-chips"
+              aria-label="Selected environments"
+            >
+              {envs.map((e, idx) => (
+                <li key={`${e.slug}-${idx}`} className="bench-env-chip-row">
+                  <code className="bench-env">{e.slug}</code>
+                  <span className="muted bench-env-chip-note">
+                    {e.custom ? "custom" : presetFor(e.slug)?.label ?? "preset"}
+                  </span>
+                  <button
+                    type="button"
+                    className="chip-remove"
+                    aria-label={`Remove ${e.slug}`}
+                    onClick={() =>
+                      setEnvs((prev) =>
+                        prev.filter((_, i) => i !== idx),
+                      )
+                    }
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         </label>
 
         <label className="field-row">
@@ -603,18 +725,24 @@ function LaunchPanel({
         <summary>What has to be true before a run will start</summary>
         <ul>
           <li>
-            <strong>The environment must be published to the Prime Environments Hub</strong>, and
-            your account needs write access to it. An environment is a dataset plus the Python
-            scoring code that grades an answer. There is no public environments API, so Nexus cannot
-            offer a picker — paste the slug you own.
+            <strong>The environment slug must be visible to your Prime account.</strong>
+            Built-in presets (<code>primeintellect/gsm8k</code>, <code>primeintellect/mmlu-pro</code>,
+            &hellip;) work for some accounts and not for others — Nexus cannot list
+            them. Hit <em>Validate environments</em> before launching: a 404 there
+            means the slug is not published to your account yet. The fastest fix is{" "}
+            <code>prime env push your-org/&lt;name&gt;</code> on your dataset; once
+            one slug is published under your namespace, the rest become visible.
           </li>
           <li>
-            <strong>Your Prime wallet needs a balance.</strong> A run bills per token, and per
-            sandbox compute when inference is pointed at an external endpoint such as this gateway.
+            <strong>Your Prime wallet needs a balance.</strong> A run bills per
+            token, and per sandbox compute when inference is pointed at an
+            external endpoint such as this gateway. The model list above shows
+            each model&apos;s price in dollars per million tokens so you can
+            size the run.
           </li>
           <li>
-            <strong>Start small.</strong> 5 examples and 1 rollout is enough to prove the wiring
-            before spending on a real measurement.
+            <strong>Start small.</strong> 5 examples and 1 rollout is enough to
+            prove the wiring before spending on a real measurement.
           </li>
         </ul>
       </details>

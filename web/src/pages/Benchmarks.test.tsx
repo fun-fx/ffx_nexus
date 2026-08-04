@@ -202,23 +202,61 @@ describe("<Benchmarks /> launching", () => {
     ).toBeInTheDocument();
   });
 
-  it("posts the form, splitting environments on newlines and commas", async () => {
+  const renderModelCmb = async () => {
+  // The form has two <select>s: the env-preset picker has an empty
+  // "Add a built-in environment…" placeholder option, the model
+  // picker is wrapped in a <label> whose text is "Model". They both
+  // expose role=combobox, so use the wrapping label text to
+  // disambiguate. Using name alone is too fragile — when models
+  // are loading the select is replaced by a free-text field and
+  // back, so we wait for the priced options to be present.
+  await screen.findByRole("option", { name: /gpt-4\.1-mini/ });
+  const cbs = screen.getAllByRole("combobox");
+  return cbs[cbs.length - 1];
+};
+
+// The custom-slug form's submit button does not submit through a
+// plain click in JSDOM (the surrounding <label> interferes with
+// the implicit form association), so submit the form element
+// directly. This mirrors what hitting Enter inside the input does.
+function addCustomSlug(value: string) {
+  const inp = screen.getByLabelText("Add a custom environment slug") as HTMLInputElement;
+  fireEvent.change(inp, { target: { value } });
+  fireEvent.submit(inp.closest("form")!);
+}
+
+it("posts the form, combining preset choices with a custom slug", async () => {
     const { calls } = setup({ runs: [] });
     await screen.findByRole("button", { name: "Launch run" });
 
-    fireEvent.change(
-      screen.getByPlaceholderText(/your-org\/gsm8k/),
-      { target: { value: "acme/gsm8k, acme/sort\nacme/math" } },
+    // The default preset chip should already be in the list and ready
+    // to launch against, removing the need to type a slug for the
+    // smoke-test path.
+    expect(screen.getByTestId("bench-env-chips")).toHaveTextContent(
+      "primeintellect/gsm8k",
     );
-    // The picker replaces the free-text field once the catalogue loads.
-    const model = await screen.findByRole("combobox");
-    fireEvent.change(model, { target: { value: "openai/gpt-4.1-mini" } });
+
+    // Combo: take a second preset via the picker...
+    const presetPicker = screen.getByLabelText("Add a built-in environment");
+    fireEvent.change(presetPicker, {
+      target: { value: "primeintellect/mmlu-pro" },
+    });
+    // ...then add a custom slug through the free-text field.
+    addCustomSlug("your-org/alphabet-sort");
+
+    fireEvent.change(await renderModelCmb(), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
     fireEvent.change(screen.getByDisplayValue("5"), { target: { value: "10" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Launch run" }));
     await waitFor(() => expect(calls.launch).toHaveLength(1));
     expect(calls.launch[0]).toMatchObject({
-      environments: ["acme/gsm8k", "acme/sort", "acme/math"],
+      environments: [
+        "primeintellect/gsm8k",
+        "primeintellect/mmlu-pro",
+        "your-org/alphabet-sort",
+      ],
       model: "openai/gpt-4.1-mini",
       num_examples: 10,
       rollouts: 1,
@@ -229,10 +267,10 @@ describe("<Benchmarks /> launching", () => {
   it("blocks a run over the sample cap and says so", async () => {
     setup({ runs: [] });
     await screen.findByRole("button", { name: "Launch run" });
-    fireEvent.change(screen.getByPlaceholderText(/your-org\/gsm8k/), {
-      target: { value: "acme/gsm8k" },
-    });
-    fireEvent.change(await screen.findByRole("combobox"), {
+    // Remove the default preset to start from a clean slate.
+    fireEvent.click(screen.getByRole("button", { name: "Remove primeintellect/gsm8k" }));
+    addCustomSlug("your-org/gsm8k");
+    fireEvent.change(await renderModelCmb(), {
       target: { value: "openai/gpt-4.1-mini" },
     });
     fireEvent.change(screen.getByDisplayValue("5"), { target: { value: "1000" } });
@@ -252,10 +290,9 @@ describe("<Benchmarks /> launching", () => {
   it("surfaces a launch the provider refused", async () => {
     setup({ runs: [], launchError: "benchmark: not found (404): environment" });
     await screen.findByRole("button", { name: "Launch run" });
-    fireEvent.change(screen.getByPlaceholderText(/your-org\/gsm8k/), {
-      target: { value: "acme/nope" },
-    });
-    fireEvent.change(await screen.findByRole("combobox"), {
+    fireEvent.click(screen.getByRole("button", { name: "Remove primeintellect/gsm8k" }));
+    addCustomSlug("your-org/nope");
+    fireEvent.change(await renderModelCmb(), {
       target: { value: "openai/gpt-4.1-mini" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Launch run" }));
@@ -265,16 +302,15 @@ describe("<Benchmarks /> launching", () => {
   it("validates environments before launch with a cheap dry-run", async () => {
     const { calls } = setup({ runs: [] });
     await screen.findByRole("button", { name: "Validate environments" });
-    fireEvent.change(screen.getByPlaceholderText(/your-org\/gsm8k/), {
-      target: { value: "acme/gsm8k" },
-    });
-    fireEvent.change(await screen.findByRole("combobox"), {
+    fireEvent.click(screen.getByRole("button", { name: "Remove primeintellect/gsm8k" }));
+    addCustomSlug("your-org/gsm8k");
+    fireEvent.change(await renderModelCmb(), {
       target: { value: "openai/gpt-4.1-mini" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
     await waitFor(() => expect(calls.validate).toHaveLength(1));
     expect(calls.validate[0]).toMatchObject({
-      environments: ["acme/gsm8k"],
+      environments: ["your-org/gsm8k"],
       model: "openai/gpt-4.1-mini",
     });
     // On success the UI surfaces an explicit "ok" hint rather than
@@ -285,12 +321,9 @@ describe("<Benchmarks /> launching", () => {
   });
 
   it("surfaces a failed dry-run so operators fix environment slugs before launch", async () => {
-    setup({ runs: [], validateError: "benchmark: not found (404): environment acme/nope " });
+    setup({ runs: [], validateError: "benchmark: not found (404): environment primeintellect/gsm8k " });
     await screen.findByRole("button", { name: "Validate environments" });
-    fireEvent.change(screen.getByPlaceholderText(/your-org\/gsm8k/), {
-      target: { value: "acme/nope" },
-    });
-    fireEvent.change(await screen.findByRole("combobox"), {
+    fireEvent.change(await renderModelCmb(), {
       target: { value: "openai/gpt-4.1-mini" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
