@@ -2919,7 +2919,90 @@ a:hover {
   grid-column: 1 / -1;
 }
 
-.bench-check {
+.bench-env-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bench-env-preset-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bench-env-preset {
+  flex: 1;
+  min-width: 220px;
+}
+
+.bench-env-custom {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.bench-env-custom-input {
+  min-width: 220px;
+}
+
+.bench-env-help {
+  font-size: 12px;
+  color: var(--muted-2);
+  margin: 0;
+}
+
+.bench-env-help code {
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+
+.bench-env-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.bench-env-chip-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--panel-2) 80%, transparent);
+  font-size: 12px;
+}
+
+.bench-env-chip-row .bench-env {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.bench-env-chip-note {
+  font-size: 11px;
+}
+
+.bench-env-chip-row .chip-remove {
+  border: none;
+  background: transparent;
+  color: var(--muted-2);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.bench-env-chip-row .chip-remove:hover {
+  color: var(--err, #f87171);
+}
+
+.bench-help summary {
+  cursor: pointer;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -2958,6 +3041,127 @@ a:hover {
   margin: 8px 0 0;
   padding-left: 18px;
   line-height: 1.6;
+}
+
+/* ----- bench-cli-guide ----- */
+/* The CLI guide surfaces after a dry-run 404 — it explains that
+   pushing an environment is a local-CLI operation and lays out the
+   five steps an operator runs on a workstation. We use bullet steps
+   with a stepped numeric column so the order reads at a glance. */
+
+.bench-cli-guide {
+  margin: 8px 14px 14px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklab, var(--accent-3, #7dd3fc) 35%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--panel-2) 80%, transparent);
+  font-size: 13px;
+}
+
+.bench-cli-guide-head h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+.bench-cli-guide-head p {
+  margin: 0 0 12px;
+  color: var(--muted-2);
+}
+
+.bench-cli-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bench-cli-steps > li {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.bench-cli-step-num {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-grad, linear-gradient(135deg, #a78bfa, #7dd3fc));
+  color: #161616;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bench-cli-step-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.bench-cli-step-body strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.bench-cli-rotate {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line, rgba(255, 255, 255, 0.12));
+  font-size: 12px;
+  color: var(--muted-2);
+}
+
+/* ----- bench-cli-code ----- */
+
+.bench-cli-code {
+  margin: 6px 0;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-2);
+}
+
+.bench-cli-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.06));
+  background: color-mix(in oklab, var(--panel-3, #0d172a) 80%, transparent);
+}
+
+.bench-cli-code-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.bench-cli-code-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bench-cli-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  max-height: 240px;
+  overflow: auto;
+  background: transparent;
+}
+
+.bench-cli-code pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
 }
 
 .bench-cell-stack {

@@ -38,6 +38,28 @@ function isSettled(status: BenchmarkRun["status"]): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
+// ENVIRONMENT_PRESETS is what the form offers as one-click picks.
+// Prime does not publish a /environments list endpoint — see
+// internal/benchmark/runner.go's LaunchSpec note about Hub slugs
+// being opaque to Nexus — so the catalog here is curated, not
+// discovered. Each preset documents where the dataset comes from
+// so an operator picking it knows what they are about to score.
+//
+// Custom slugs (the operator's own namespace, or a vendor they
+// have pushed) go through the Add custom field, not the picker.
+const ENVIRONMENT_PRESETS: { slug: string; label: string }[] = [
+  { slug: "primeintellect/gsm8k", label: "GSM8K — grade-school math reasoning (1,319 Q)" },
+  { slug: "primeintellect/mmlu-pro", label: "MMLU-Pro — multi-task language understanding" },
+  { slug: "primeintellect/humaneval", label: "HumanEval — Python coding correctness" },
+  { slug: "primeintellect/ifeval", label: "IFEval — instruction-following" },
+  { slug: "primeintellect/math-500", label: "Math-500 — competition math" },
+  { slug: "verifiers/gsm8k", label: "verifiers/gsm8k — alt grader implementation" },
+];
+
+function presetFor(slug: string): { slug: string; label: string } | undefined {
+  return ENVIRONMENT_PRESETS.find((p) => p.slug === slug);
+}
+
 function formatScore(run: BenchmarkRun): string {
   if (run.avg_score === null || run.avg_score === undefined) return "—";
   return run.avg_score.toFixed(3);
@@ -410,7 +432,16 @@ function LaunchPanel({
   onError: (e: unknown) => void;
 }) {
   const [name, setName] = useState("");
-  const [environments, setEnvironments] = useState("");
+  // Each env is one of two shapes:
+  //   - a built-in preset slug string ("primeintellect/gsm8k"),
+  //   - a custom slug string the operator typed
+  // tagged so we can render the description for presets and a plain
+  // chip for custom entries. The union is intentionally string-based;
+  // the backend takes a flat string list anyway and we want the
+  // payload shape to round-trip without translation.
+  const [envs, setEnvs] = useState<{ slug: string; custom: boolean }[]>([
+    { slug: "primeintellect/gsm8k", custom: false },
+  ]);
   const [model, setModel] = useState("");
   const [numExamples, setNumExamples] = useState(5);
   const [rollouts, setRollouts] = useState(1);
@@ -426,10 +457,18 @@ function LaunchPanel({
     retry: false,
   });
 
-  const envList = environments
-    .split(/[\n,]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // The wire-shape sent to the backend is a flat list of slugs. We
+  // de-duplicate and drop blanks so the same preset cannot be added
+  // twice through a preset+preset collision, but the order is
+  // preserved so a list with one custom slug after a preset reads
+  // naturally on the wire.
+  const envList = Array.from(
+    new Set(
+      envs
+        .map((e) => e.slug.trim())
+        .filter(Boolean),
+    ),
+  );
   const totalSamples = Math.max(0, numExamples) * Math.max(0, rollouts);
   const overCap = maxSamples > 0 && totalSamples > maxSamples;
   const canSubmit =
@@ -453,6 +492,10 @@ function LaunchPanel({
     mutationFn: dryRunBenchmark,
   });
 
+  // Is the last dry-run failure a 404 (most common first-visit error)?
+  const dry404 =
+    dryRunM.isSuccess && !dryRunM.data.ok && /404|not found/.test(dryRunM.data.error ?? "");
+
   return (
     <section className="panel">
       <div className="panel-head">
@@ -475,16 +518,99 @@ function LaunchPanel({
         </label>
 
         <label className="field-row bench-field-wide">
-          <span className="field-label">
-            Environments — one Hub slug per line, or comma separated
-          </span>
-          <textarea
-            className="bench-input bench-textarea"
-            rows={3}
-            placeholder={"your-org/gsm8k\nyour-org/alphabet-sort"}
-            value={environments}
-            onChange={(e) => setEnvironments(e.target.value)}
-          />
+          <span className="field-label">Environments</span>
+          <div className="bench-env-form">
+            <div className="bench-env-preset-row">
+              <select
+                className="bench-input bench-env-preset"
+                aria-label="Add a built-in environment"
+                defaultValue=""
+                onChange={(e) => {
+                  const slug = e.target.value;
+                  if (!slug) return;
+                  setEnvs((prev) =>
+                    prev.some((p) => p.slug === slug)
+                      ? prev
+                      : [...prev, { slug, custom: false }],
+                  );
+                  // Reset to placeholder so the same preset can be re-added
+                  // after a removal without a separate click cycle.
+                  e.target.value = "";
+                }}
+              >
+                <option value="">Add a built-in environment…</option>
+                {ENVIRONMENT_PRESETS.map((p) => (
+                  <option key={p.slug} value={p.slug}>
+                    {p.slug} — {p.label}
+                  </option>
+                ))}
+              </select>
+              <form
+                className="bench-env-custom"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const form = e.currentTarget;
+                  const input = form.elements.namedItem(
+                    "custom-slug",
+                  ) as HTMLInputElement | null;
+                  const slug = (input?.value ?? "").trim();
+                  if (!slug) return;
+                  setEnvs((prev) =>
+                    prev.some((p) => p.slug === slug)
+                      ? prev
+                      : [...prev, { slug, custom: true }],
+                  );
+                  if (input) input.value = "";
+                }}
+              >
+                <input
+                  name="custom-slug"
+                  className="bench-input bench-env-custom-input"
+                  placeholder="your-org/<dataset-slug>"
+                  aria-label="Add a custom environment slug"
+                />
+                <button
+                  type="submit"
+                  className="btn-neon btn-ghost btn-small"
+                  disabled={!credentialConfigured}
+                >
+                  Add
+                </button>
+              </form>
+            </div>
+            <p className="bench-env-help">
+              Pick a built-in dataset or paste a slug you published to
+              your Prime namespace with <code>prime env push</code>.
+              Visibility is the operator&apos;s responsibility — Nexus
+              cannot list templates.
+            </p>
+            <ul
+              className="bench-env-chips"
+              data-testid="bench-env-chips"
+              aria-label="Selected environments"
+            >
+              {envs.map((e, idx) => (
+                <li key={`${e.slug}-${idx}`} className="bench-env-chip-row">
+                  <code className="bench-env">{e.slug}</code>
+                  <span className="muted bench-env-chip-note">
+                    {e.custom ? "custom" : presetFor(e.slug)?.label ?? "preset"}
+                  </span>
+                  <button
+                    type="button"
+                    className="chip-remove"
+                    aria-label={`Remove ${e.slug}`}
+                    onClick={() =>
+                      setEnvs((prev) =>
+                        prev.filter((_, i) => i !== idx),
+                      )
+                    }
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         </label>
 
         <label className="field-row">
@@ -598,23 +724,30 @@ function LaunchPanel({
           {dryRunM.data.error}
         </p>
       )}
+      {dry404 && <EnvPushGuide slugs={envList} />}
 
       <details className="bench-help">
         <summary>What has to be true before a run will start</summary>
         <ul>
           <li>
-            <strong>The environment must be published to the Prime Environments Hub</strong>, and
-            your account needs write access to it. An environment is a dataset plus the Python
-            scoring code that grades an answer. There is no public environments API, so Nexus cannot
-            offer a picker — paste the slug you own.
+            <strong>The environment slug must be visible to your Prime account.</strong>
+            Built-in presets (<code>primeintellect/gsm8k</code>, <code>primeintellect/mmlu-pro</code>,
+            &hellip;) work for some accounts and not for others — Nexus cannot list
+            them. Hit <em>Validate environments</em> before launching: a 404 there
+            means the slug is not published to your account yet. The fastest fix is{" "}
+            <code>prime env push your-org/&lt;name&gt;</code> on your dataset; once
+            one slug is published under your namespace, the rest become visible.
           </li>
           <li>
-            <strong>Your Prime wallet needs a balance.</strong> A run bills per token, and per
-            sandbox compute when inference is pointed at an external endpoint such as this gateway.
+            <strong>Your Prime wallet needs a balance.</strong> A run bills per
+            token, and per sandbox compute when inference is pointed at an
+            external endpoint such as this gateway. The model list above shows
+            each model&apos;s price in dollars per million tokens so you can
+            size the run.
           </li>
           <li>
-            <strong>Start small.</strong> 5 examples and 1 rollout is enough to prove the wiring
-            before spending on a real measurement.
+            <strong>Start small.</strong> 5 examples and 1 rollout is enough to
+            prove the wiring before spending on a real measurement.
           </li>
         </ul>
       </details>
@@ -643,5 +776,224 @@ function LogsDrawer({ run, onClose }: { run: BenchmarkRun | null; onClose: () =>
         <pre className="bench-logs">{logs.data || "The provider returned no log output."}</pre>
       )}
     </Drawer>
+  );
+}
+
+function EnvPushGuide({ slugs }: { slugs: string[] }) {
+  // The first slug is what the operator is most obviously trying to
+  // make visible. We use it as the target for the example commands;
+  // the rest of the list is shown as chips so the operator can swap
+  // any of them in. Falling back to "your-org/gsm8k" keeps the
+  // snippet copy-pasteable when the operator removed all chips.
+  const target = slugs[0] || "your-org/gsm8k";
+  const envYaml = SAMPLE_ENV_YAML.replace("__SLUG__", target);
+  const pushCmd = `prime env push ${target} --config ./env.yaml`;
+  const whichCmd = "which prime  &&  prime --version";
+
+  return (
+    <div className="bench-cli-guide" data-testid="bench-cli-guide">
+      <div className="bench-cli-guide-head">
+        <h3>Publish the environment yourself</h3>
+        <p className="muted">
+          Prime does not let Nexus (or any client) push environments on
+          the operator&apos;s behalf — that channel is local-CLI only.
+          Run these steps on a workstation where the dataset lives and
+          the same key is exported as <code>PRIME_API_KEY</code>:
+        </p>
+      </div>
+
+      <ol className="bench-cli-steps">
+        <li>
+          <span className="bench-cli-step-num">1</span>
+          <div className="bench-cli-step-body">
+            <strong>Confirm the CLI is installed:</strong>
+            <CodeBlock text={whichCmd} />
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">2</span>
+          <div className="bench-cli-step-body">
+            <strong>Drop a starter dataset on disk:</strong>
+            <CodeBlock
+              label="gsm8k.jsonl"
+              text={SAMPLE_DATASET_JSONL}
+              downloadName="gsm8k.jsonl"
+            />
+            <p className="muted">
+              Replace these rows with your own prompts+answers. One JSON
+              object per line — each line becomes one benchmark sample.
+            </p>
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">3</span>
+          <div className="bench-cli-step-body">
+            <strong>
+              Add a grader (Python, executed inside the sandbox):
+            </strong>
+            <CodeBlock
+              label="grade.py"
+              text={SAMPLE_GRADER_PY}
+              downloadName="grade.py"
+              language="python"
+            />
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">4</span>
+          <div className="bench-cli-step-body">
+            <strong>Bind the two files with an env.yaml:</strong>
+            <CodeBlock
+              label="env.yaml"
+              text={envYaml}
+              downloadName="env.yaml"
+            />
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">5</span>
+          <div className="bench-cli-step-body">
+            <strong>Publish it under your namespace:</strong>
+            <CodeBlock text={pushCmd} />
+            <p className="muted">
+              After this succeeds the slug <code>{target}</code> is
+              visible to this Nexus instance — come back here and re-run{" "}
+              <em>Validate environments</em>. Other slugs in your
+              namespace typically become visible at the same time.
+            </p>
+          </div>
+        </li>
+      </ol>
+
+      <div className="bench-cli-rotate">
+        <strong>If you would rather measure a different model:</strong>
+        pick any of your env chips above and re-run this guide with that
+        slug as the target.
+      </div>
+    </div>
+  );
+}
+
+// SAMPLE_DATASET_JSONL is the minimum GSM8K-shaped file Nexus
+// exports on the operator's behalf. Three questions is enough to
+// demo the dry-run + validate path; the operator is expected to
+// replace these with their production dataset before launching.
+//
+// The questions are public-domain GSM8K excerpts (OpenAI, MIT
+// licence). They use the integer-answer subset of GSM8K because
+// that is the simplest grader to write.
+const SAMPLE_DATASET_JSONL = [
+  '{"question":"Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?","answer":72}',
+  '{"question":"Weng earns $12 an hour for babysitting. Yesterday, she babysat for 1 hour and then for 3 hours. How much money did she earn in total?","answer":48}',
+  '{"question":"There were 15 trees in the grove. Grove workers planted trees in the grove today. After they were done, there were 21 trees. How many trees did the grove workers plant today?","answer":6}',
+].join("\n");
+
+// SAMPLE_GRADER_PY is the function the provider calls per sample. It
+// receives the dataset row as `sample` dict and the model's full
+// response as `completion` string and returns 1.0 for a correct
+// answer, 0.0 otherwise. The \boxed{} peel is the common LLM-eval idiom
+// for model-written answers; without it, almost every reasoning model
+// marks itself wrong because it leaves prose around the integer.
+const SAMPLE_GRADER_PY = [
+  "# grade.py — the function Prime calls per sample.",
+  "# `sample` is the JSONL row, `completion` is the model response.",
+  "# Return 1.0 for a correct answer, 0.0 otherwise (partial credit ok).",
+  "",
+  "import re",
+  "",
+  "def grade(sample, completion):",
+  "    # Models often wrap the final integer in \\boxed{…}; peel it off.",
+  "    boxed = re.search(r\"\\\\\\\\boxed\\\\{(.+?)\\\\}\", completion)",
+  "    pred = boxed.group(1).strip() if boxed else completion.strip()",
+  "    try:",
+  "        return float(int(pred) == int(sample[\"answer\"]))",
+  "    except ValueError:",
+  "        return 0.0",
+].join("\n");
+
+// SAMPLE_ENV_YAML is the manifest that `prime env push` consumes.
+// __SLUG__ is replaced at render time with the targeted slug so
+// the operator can copy-and-paste the env.yaml text directly.
+const SAMPLE_ENV_YAML = [
+  "# env.yaml — declarative manifest for `prime env push`.",
+  "# Paths are relative to this file's directory.",
+  "name: __SLUG__",
+  "dataset:",
+  "  path: ./gsm8k.jsonl",
+  "  format: jsonl",
+  "grader:",
+  "  type: custom",
+  "  module: ./grade.py",
+  "  entry: grade",
+].join("\n");
+
+function CodeBlock({
+  text,
+  label,
+  downloadName,
+  language,
+}: {
+  text: string;
+  label?: string;
+  downloadName?: string;
+  language?: string;
+}) {
+  // Per-instance copy state so each block flips its own label
+  // "Copy" → "Copied" without racing neighbours.
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard?.writeText(text);
+    } catch {
+      // Clipboard may fail in non-secure contexts (e.g. http://);
+      // not fatal because the operator can still copy by selecting
+      // the code block by hand.
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  };
+  const onDownload = () => {
+    // Build a transient object URL for the snippet so the browser
+    // gets a real "Save as" prompt with the right filename. Revoked
+    // immediately after the click so we don't leak memory.
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = downloadName || label || "snippet.txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <div
+      className={language === "python" ? "bench-cli-code is-py" : "bench-cli-code"}
+    >
+      <div className="bench-cli-code-head">
+        {label && <span className="bench-cli-code-label">{label}</span>}
+        <div className="bench-cli-code-actions">
+          {downloadName && (
+            <button
+              type="button"
+              className="btn-ghost btn-small"
+              data-testid="bench-cli-download"
+              onClick={onDownload}
+            >
+              Download
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            data-testid="bench-cli-copy"
+            onClick={onCopy}
+          >
+            <Icon.copy size={14} /> {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+      </div>
+      <pre><code>{text}</code></pre>
+    </div>
   );
 }

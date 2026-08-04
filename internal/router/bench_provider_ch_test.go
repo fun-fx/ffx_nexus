@@ -204,9 +204,12 @@ func buildSeed(rows []chRow) string {
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].model < rows[j].model
 	})
-	for _, r := range rows {
-		b.WriteString("INSERT INTO benchmark_runs (id, model, status, avg_score, completed_at) VALUES (")
-		fmt.Fprintf(&b, "'%s', '%s', '%s', ",
+	b.WriteString("INSERT INTO benchmark_runs (id, model, status, avg_score, completed_at) VALUES ")
+	for i, r := range rows {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "('%s', '%s', '%s', ",
 			fmt.Sprintf("row-%s-%d", r.model, r.completedAt.UnixNano()),
 			r.model, r.status)
 		if r.nullAvg {
@@ -217,9 +220,17 @@ func buildSeed(rows []chRow) string {
 		if r.nullCompleted {
 			b.WriteString("NULL")
 		} else {
-			fmt.Fprintf(&b, "'%s'", r.completedAt.UTC().Format("2006-01-02 15:04:05.000000"))
+			// ClickHouse DateTime64(9) expects 9-digit nanosecond
+			// precision. Truncating to microseconds collapses rows
+			// that occurred within the same microsecond into a
+			// single key, which makes argMax under test non-
+			// deterministic between cases whose seeded times
+			// happen to share a microsecond. We pre-format at the
+			// schema's full precision so the test's row order matches
+			// the production comparator's.
+			fmt.Fprintf(&b, "'%s'", r.completedAt.UTC().Format("2006-01-02 15:04:05.000000000"))
 		}
-		b.WriteString("); ")
+		b.WriteString(")")
 	}
 	return b.String()
 }
@@ -261,7 +272,7 @@ const chSchema = `CREATE TABLE IF NOT EXISTS benchmark_runs (
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (status, model, completed_at)
-SETTINGS index_granularity = 8192`
+SETTINGS index_granularity = 8192, allow_nullable_key = 1`
 
 func execCH(ctx context.Context, conn driver.Conn, sql string) error {
 	return conn.Exec(ctx, sql)

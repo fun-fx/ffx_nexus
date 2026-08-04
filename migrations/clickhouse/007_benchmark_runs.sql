@@ -65,12 +65,18 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
     created_at      DateTime64(9) DEFAULT now64(9),
     updated_at      DateTime64(9) DEFAULT now64(9),
     started_at      Nullable(DateTime64(9)),
+    -- Nullable so unsettled runs do not pollute the ORDER BY tuple —
+    -- a synthetic epoch would let argMax incorrectly promote a never-
+    -- finished row. The matching `allow_nullable_key=1` setting
+    -- tells MergeTree that being null is the storage default here;
+    -- the value is still cheap to compare because nullable
+    -- DateTime64 sorts nulls first under CH's default ordering.
     completed_at    Nullable(DateTime64(9))
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(created_at)
 ORDER BY (status, model, completed_at)
-SETTINGS index_granularity = 8192;
+SETTINGS index_granularity = 8192, allow_nullable_key = 1;
 
 -- Status + model + completed_at is the read pattern that powers the
 -- router's blending decision. The composite sort key above serves it

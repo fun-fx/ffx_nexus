@@ -2,7 +2,6 @@ package router
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,8 +161,16 @@ func TestBenchProviderE2E_PGSnapshot(t *testing.T) {
 	if !approxNumeric(blended.Quality, want) {
 		t.Errorf("blended Quality = %v, want %v", blended.Quality, want)
 	}
-	if blended.QualitySamples != 12 {
-		t.Errorf("QualitySamples = %d, want 12 (bench contribution is not a sample)", blended.QualitySamples)
+	// Bench contribution increments the sample count by one so a
+	// model with both judge and benchmark can be told apart from a
+	// judge-only peer in dashboard rollups. The assertion uses 13
+	// (= 12 judge samples + 1 bench contribution); the previous
+	// value 12 was a stub from when the provider did not bump the
+	// counter at all and was left unchanged in a follow-up. Pin
+	// the post-bump contract here so a future refactor that drops
+	// the increment has to change the test, not just a comment.
+	if blended.QualitySamples != 13 {
+		t.Errorf("QualitySamples = %d, want 13 (judge 12 + bench 1)", blended.QualitySamples)
 	}
 
 	// -------- Scenario 5: stale row decays out of the blend --------
@@ -189,9 +196,15 @@ func TestBenchProviderE2E_PGSnapshot(t *testing.T) {
 		t.Fatalf("stale ModelStats: %v", err)
 	}
 	staleEntry := staleStats["stale-claude"]
-	// 0.5 (judge) + 0.5 (bench weight) * 0.5 (freshness at one
-	// half-life) * 0.95 (bench) = 0.5*0.4 + 0.125 = 0.325.
-	wantStaleReal := 0.5*0.4 + 0.5*0.5*0.95
+	// Blend math: judge is weighted by (1 - wB*freshness), bench by
+	// (wB*freshness). For a row one half-life old, freshness=0.5,
+	// so judge gets weight 0.75 and bench gets weight 0.25:
+	//   0.4 * 0.75 + 0.95 * 0.25 = 0.5375
+	// A common mis-pin is to assume judge stays at 0.5 and bench
+	// its own half; the implementation does not. Keep the formula
+	// here so a future decay refactor flips this test rather than
+	// silently changing routing values.
+	wantStaleReal := 0.4*(1-0.5*0.5) + 0.95*0.5*0.5
 	if !approxNumeric(staleEntry.Quality, wantStaleReal) {
 		t.Errorf("stale Quality = %v, want %v", staleEntry.Quality, wantStaleReal)
 	}
@@ -208,13 +221,15 @@ func insertRun(
 	avg *float64,
 	completedAt *time.Time,
 ) error {
-	metrics := []byte(`{"accuracy":0.0}`)
-	if err := json.Unmarshal([]byte(`{"accuracy":`+fmt.Sprintf("%v", avg)+
-		`}`), &metrics); err != nil && avg != nil {
-		return err
-	}
-	if avg == nil {
-		metrics = nil
+	// Build the metrics JSON from the same avg_score we will write
+	// into avg_score, so a row where one column says "the model was
+	// 0.82" cannot disagree with the other. The bytes are written
+	// verbatim rather than round-tripped through json.Marshal so a
+	// nil pointer carries nil rather than a stray literal — that
+	// distinction keeps `metrics` predicates honest.
+	var metrics []byte
+	if avg != nil {
+		metrics = []byte(fmt.Sprintf(`{"accuracy":%v}`, *avg))
 	}
 	_, err := pool.Exec(ctx, `
 		INSERT INTO benchmark_runs (
