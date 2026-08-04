@@ -552,12 +552,19 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 
 		// Bench blend is purely env-driven today; the operator
 		// sees the live configuration rather than an inferred
-		// value. BenchEnabled flips on only when a Postgres store
-		// is also configured and the operator has not defaulted
-		// the weight to zero — both conditions are necessary.
+		// value. BenchEnabled flips on only when either backend
+		// carrying the benchmark_runs table is connected and
+		// the operator has not defaulted the weight to zero —
+		// both conditions are necessary. Postgres and ClickHouse
+		// are both supported as of the (status=completed,
+		// avg_score is not null) snapshot tables each backend
+		// grows independently. The check intentionally excludes
+		// `live_only` (the recording backend without a stats
+		// store) because that path has no benchmark rows yet.
 		snap.Routing.BenchWeight = c.cfg.RouteWBench
 		snap.Routing.BenchDecay = formatDuration(c.cfg.RouteBenchHalfLife)
-		snap.Routing.BenchEnabled = c.routingStatsStore == "postgres" && c.cfg.RouteWBench > 0
+		snap.Routing.BenchEnabled = (c.routingStatsStore == "postgres" ||
+			c.routingStatsStore == "clickhouse") && c.cfg.RouteWBench > 0
 	}
 	if c.gwHandler != nil {
 		snap.Routing.Groups = c.gwHandler.RouteGroups()
