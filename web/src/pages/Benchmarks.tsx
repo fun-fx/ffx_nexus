@@ -4,6 +4,7 @@ import {
   cancelBenchmark,
   clearBenchmarkCredential,
   deleteBenchmark,
+  dryRunBenchmark,
   fetchBenchmarkCredential,
   fetchBenchmarkLogs,
   fetchBenchmarkModels,
@@ -443,6 +444,15 @@ function LaunchPanel({
     onError,
   });
 
+  // Validate is a guarded ATP — runs only POST + PATCH /cancel
+  // with a 1-row sandbox, never persists a benchmark row, and
+  // surfaces the vendor's reason verbatim. The form uses its
+  // result before Launch to tell operators whether the slug is
+  // visible to their account.
+  const dryRunM = useMutation({
+    mutationFn: dryRunBenchmark,
+  });
+
   return (
     <section className="panel">
       <div className="panel-head">
@@ -549,6 +559,19 @@ function LaunchPanel({
         </span>
         <button
           type="button"
+          className="btn-neon btn-secondary"
+          disabled={!credentialConfigured || envList.length === 0 || model.trim() === "" || dryRunM.isPending}
+          onClick={() =>
+            dryRunM.mutate({
+              environments: envList,
+              model: model.trim(),
+            })
+          }
+        >
+          {dryRunM.isPending ? "Validating…" : "Validate environments"}
+        </button>
+        <button
+          type="button"
           className="btn-neon"
           disabled={!canSubmit || launchM.isPending}
           onClick={() =>
@@ -565,6 +588,16 @@ function LaunchPanel({
           {launchM.isPending ? "Launching…" : "Launch run"}
         </button>
       </div>
+      {dryRunM.isSuccess && dryRunM.data.ok && (
+        <p className="hint" data-testid="bench-validate-ok">
+          Vendor accepted the credential and the environment slug(s). Safe to launch.
+        </p>
+      )}
+      {dryRunM.isSuccess && !dryRunM.data.ok && (
+        <p className="hint-tag warn" data-testid="bench-validate-err">
+          {dryRunM.data.error}
+        </p>
+      )}
 
       <details className="bench-help">
         <summary>What has to be true before a run will start</summary>

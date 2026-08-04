@@ -447,6 +447,99 @@ func TestLaunchRevokesKeyWhenTheRowCannotBeWritten(t *testing.T) {
 	}
 }
 
+// --- dry-run ---
+
+// TestDryRunHappyPath confirms that credentials + a known slug
+// round-trip cleanly through POST + PATCH without the runner
+// persisting a row. The Cancel call back is what flips the test
+// from "create succeeded" into "probe complete": without it the
+// vendor still has a launched evaluation.
+func TestDryRunHappyPath(t *testing.T) {
+	seen := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/hosted-evaluations":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"evaluation_id":"ev_dry","status":"PENDING"}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/hosted-evaluations/ev_dry/cancel":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"success":true,"status":"CANCELLED"}`))
+		default:
+			t.Errorf("unexpected route: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotImplemented)
+		}
+	}))
+	defer srv.Close()
+
+	store := newFakeStore()
+	r := NewRunner(store, &fakeKeys{}, fakeTokens{token: "pit_test"}, "", nil)
+	r.SetAPIBase(srv.URL, srv.Client())
+
+	if err := r.DryRun(context.Background(), spec()); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != "POST /api/v1/hosted-evaluations" ||
+		seen[1] != "PATCH /api/v1/hosted-evaluations/ev_dry/cancel" {
+		t.Errorf("probe order = %v, want POST → PATCH ev_dry/cancel", seen)
+	}
+	// Critical: the probe must NOT persist a row. Otherwise the poller
+	// would log a transient failed entry on every credential change.
+	if len(store.rows) != 0 {
+		t.Errorf("dry-run wrote rows to the store; the description says it must not (got %v)", store.rows)
+	}
+}
+
+// TestDryRunMissingEnvironmentSurfaces404 is the most common
+// useful answer an operator wants: "is this slug visible to my
+// account?" We pin the wording so the console can display the
+// vendor's reason verbatim rather than parsing a generic 404.
+func TestDryRunMissingEnvironmentSurfaces404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/hosted-evaluations" {
+			w.WriteHeader(http.StatusNotImplemented)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"environment primeintellect/gsm8k not visible to this account"}`))
+	}))
+	defer srv.Close()
+
+	store := newFakeStore()
+	r := NewRunner(store, &fakeKeys{}, fakeTokens{token: "pit_test"}, "", nil)
+	r.SetAPIBase(srv.URL, srv.Client())
+
+	err := r.DryRun(context.Background(), spec())
+	if err == nil {
+		t.Fatal("want a 404-derived error")
+	}
+	if !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "environment") {
+		t.Errorf("error = %v, want a 404 message naming the missing environment", err)
+	}
+	// Same invariant: a probe that bails before reaching cancel because
+	// the create was rejected must still leave the store untouched.
+	if len(store.rows) != 0 {
+		t.Errorf("dry-run wrote rows on a 404: %+v", store.rows)
+	}
+}
+
+// TestDryRunRequiresCredential rejects probes before they hit the
+// vendor when there is no key configured. This mirrors Launch's
+// own check so the console can tell operators to paste a key before
+// telling them the environments are wrong.
+func TestDryRunRequiresCredential(t *testing.T) {
+	store := newFakeStore()
+	r := NewRunner(store, &fakeKeys{}, fakeTokens{token: ""}, "", nil)
+	// SetAPIBase intentionally omitted — we want to assert that the
+	// runner guards the credential before any round-trip is allowed.
+	if err := r.DryRun(context.Background(), spec()); err == nil {
+		t.Fatal("want ErrNoToken-derived error")
+	}
+}
+
 // --- poll ---
 
 func TestPollSettlesRunAndRevokesKey(t *testing.T) {

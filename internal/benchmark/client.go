@@ -97,6 +97,79 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, e
 	return out, nil
 }
 
+// DryRun verifies the credential and the environment slugs against
+// the vendor without producing a billable run.
+//
+// The cheapest known probe is a hosted-evaluations create with
+// NumExamples=1 followed by an immediate cancel. The cancel call
+// returns before the sandbox is provisioned, so the run never executes
+// the dataset and consumes no model tokens. A 404 from create means
+// the slug is not visible to this account; a 401 means the key was
+// rejected; otherwise the run exists for the lifetime of the cancel
+// round-trip and is gone by the time the function returns.
+//
+// The vendor's create endpoint treats NumExamples=1 as a single-row
+// sandbox; we pass Rollouts=1 for the same reason. The request body
+// is the same wire shape the regular Launch uses so a regression in
+// the encoded fields fails here just as loudly.
+//
+// We deliberately do not write a benchmark_runs row for a DryRun:
+// leaving one even briefly makes the poller queue it and the operator
+// sees a transient failed row in the console. The whole point of the
+// probe is to answer a question; no durable evidence is needed.
+func (c *Client) DryRun(ctx context.Context, req LaunchRequest) error {
+	if c == nil || c.token == "" {
+		return ErrNoToken
+	}
+	probe := LaunchRequest{
+		Environments:   req.Environments,
+		Model:          req.Model,
+		NumExamples:    1,
+		Rollouts:       1,
+		Name:           "nexus-dry-run",
+		TimeoutMinutes: req.TimeoutMinutes,
+	}
+	// Reject early when the request is malformed locally so we do not
+	// even round-trip on forms the operator can fix in the form.
+	if err := probe.Validate(); err != nil {
+		return err
+	}
+	body := createRequest{
+		EnvironmentIDs: probe.Environments,
+		InferenceModel: probe.Model,
+		Name:           probe.Name,
+		EvalConfig: evalConfig{
+			NumExamples:        probe.NumExamples,
+			RolloutsPerExample: probe.Rollouts,
+		},
+	}
+	if probe.TimeoutMinutes > 0 {
+		body.EvalConfig.TimeoutMinutes = &probe.TimeoutMinutes
+	}
+	var res LaunchResult
+	if err := c.do(ctx, http.MethodPost, "/api/v1/hosted-evaluations", body, &res); err != nil {
+		// The 404-on-create path is the most common useful answer
+		// ("this environment is not visible to your account"), so the
+		// caller can surface the message verbatim rather than parsing.
+		return err
+	}
+	if res.EvaluationID == "" {
+		// A create that returned 2xx but no id is a vendor surprise;
+		// we cannot cancel because we have nothing to cancel by.
+		return fmt.Errorf("benchmark: dry-run launch returned no evaluation id (status=%q error=%q)",
+			res.Status, res.Error)
+	}
+	// Cancel best-effort. The vendor accepting the cancel is itself
+	// part of the probe — a credential that creates but cannot cancel
+	// is one we do not want to carry into a real launch.
+	if err := c.Cancel(ctx, res.EvaluationID); err != nil {
+		// Wrap so we keep the underlying message intact while making
+		// it clear the cancel, not the create, is what failed.
+		return fmt.Errorf("benchmark: dry-run launch succeeded but cancel failed: %w", err)
+	}
+	return nil
+}
+
 // Status reads one run, including the aggregate score once it settles.
 //
 // This lives on /evaluations rather than /hosted-evaluations: the

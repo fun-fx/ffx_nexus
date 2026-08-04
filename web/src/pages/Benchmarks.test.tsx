@@ -49,6 +49,8 @@ interface StubOptions {
   gatewayAvailable?: boolean;
   /** Force the launch POST to fail with this message. */
   launchError?: string;
+  /** Force the validate POST to fail with this message. */
+  validateError?: string;
 }
 
 interface Calls {
@@ -56,6 +58,7 @@ interface Calls {
   cancelled: string[];
   deleted: string[];
   credential: string[];
+  validate: Array<Record<string, unknown>>;
 }
 
 function setup(opts: StubOptions = {}) {
@@ -64,7 +67,13 @@ function setup(opts: StubOptions = {}) {
     configured = true,
     gatewayAvailable = true,
   } = opts;
-  const calls: Calls = { launch: [], cancelled: [], deleted: [], credential: [] };
+  const calls: Calls = {
+    launch: [],
+    cancelled: [],
+    deleted: [],
+    credential: [],
+    validate: [],
+  };
 
   vi.stubGlobal(
     "fetch",
@@ -78,6 +87,13 @@ function setup(opts: StubOptions = {}) {
           gateway_routing_available: gatewayAvailable,
           max_total_samples: 500,
         });
+      }
+      if (url === "/api/eval/benchmarks/validate" && method === "POST") {
+        calls.validate.push(JSON.parse(String(init?.body ?? "{}")));
+        if (opts.validateError) {
+          return jsonRes({ ok: false, error: opts.validateError }, 400);
+        }
+        return jsonRes({ ok: true });
       }
       if (url === "/api/eval/benchmarks" && method === "POST") {
         calls.launch.push(JSON.parse(String(init?.body ?? "{}")));
@@ -244,6 +260,43 @@ describe("<Benchmarks /> launching", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Launch run" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("not found (404)");
+  });
+
+  it("validates environments before launch with a cheap dry-run", async () => {
+    const { calls } = setup({ runs: [] });
+    await screen.findByRole("button", { name: "Validate environments" });
+    fireEvent.change(screen.getByPlaceholderText(/your-org\/gsm8k/), {
+      target: { value: "acme/gsm8k" },
+    });
+    fireEvent.change(await screen.findByRole("combobox"), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
+    await waitFor(() => expect(calls.validate).toHaveLength(1));
+    expect(calls.validate[0]).toMatchObject({
+      environments: ["acme/gsm8k"],
+      model: "openai/gpt-4.1-mini",
+    });
+    // On success the UI surfaces an explicit "ok" hint rather than
+    // just disappearing.
+    expect(
+      await screen.findByTestId("bench-validate-ok"),
+    ).toHaveTextContent("Safe to launch");
+  });
+
+  it("surfaces a failed dry-run so operators fix environment slugs before launch", async () => {
+    setup({ runs: [], validateError: "benchmark: not found (404): environment acme/nope " });
+    await screen.findByRole("button", { name: "Validate environments" });
+    fireEvent.change(screen.getByPlaceholderText(/your-org\/gsm8k/), {
+      target: { value: "acme/nope" },
+    });
+    fireEvent.change(await screen.findByRole("combobox"), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
+    expect(await screen.findByTestId("bench-validate-err")).toHaveTextContent(
+      "not found (404)",
+    );
   });
 });
 

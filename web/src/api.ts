@@ -1123,6 +1123,51 @@ export async function fetchBenchmarks(): Promise<BenchmarkListResponse> {
   };
 }
 
+export interface DryRunBenchmarkBody {
+  environments: string[];
+  model: string;
+  timeout_minutes?: number;
+}
+
+// dryRunBenchmark probes the vendor credential + environment slugs
+// before the operator commits to a real launch.
+//
+// We deliberately do not raise on non-2xx: the console wants the
+// vendor's reason in a typed envelope no matter what HTTP status
+// the backend chose, so the form can render the same toast
+// conventions on both the happy and the broken path. A 401 here is
+// "paste your key" just like a 500 is "the slug does not exist" —
+// both belong on screen with the same styling.
+export async function dryRunBenchmark(
+  body: DryRunBenchmarkBody,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const res = await fetch("/api/eval/benchmarks/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  // Try to read the typed envelope regardless of the HTTP status.
+  // vendor errors carry the same { ok, error } shape as the happy
+  // path, so a single decoder covers both. A network failure or
+  // non-JSON body falls back to a generic message tagged with the
+  // status so the operator at least knows the request didn't make
+  // it back to a known endpoint.
+  let data: { ok?: boolean; error?: string } = {};
+  try {
+    data = (await res.json()) as { ok?: boolean; error?: string };
+  } catch {
+    /* body was not JSON; treat as opaque */
+  }
+  if (data?.ok === true) {
+    return { ok: true };
+  }
+  const err =
+    data?.error?.length !== undefined && data.error.length > 0
+      ? data.error
+      : `dry-run failed (HTTP ${res.status})`;
+  return { ok: false, error: err };
+}
+
 export async function launchBenchmark(
   body: LaunchBenchmarkBody,
 ): Promise<BenchmarkRun> {
