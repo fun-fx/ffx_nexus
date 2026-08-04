@@ -32,6 +32,12 @@ type fakeRunner struct {
 	gateway   bool
 	cancelled []string
 	deleted   []string
+
+	// DryRun records whether the handler invoked it. The dedicated
+	// slice lets a test assert that probe order is POST-then-cancel
+	// without depending on the real Client.
+	dryRunCalls []benchmark.LaunchSpec
+	dryRunErr   error
 }
 
 func (f *fakeRunner) Launch(_ context.Context, spec benchmark.LaunchSpec) (core.BenchmarkRun, error) {
@@ -58,6 +64,10 @@ func (f *fakeRunner) Models(_ context.Context) ([]benchmark.Model, error) {
 }
 func (f *fakeRunner) PollOnce(_ context.Context) (int, error) { f.polled++; return 3, nil }
 func (f *fakeRunner) GatewayRoutingAvailable() bool           { return f.gateway }
+func (f *fakeRunner) DryRun(_ context.Context, spec benchmark.LaunchSpec) error {
+	f.dryRunCalls = append(f.dryRunCalls, spec)
+	return f.dryRunErr
+}
 
 // fakeKeyStore stands in for the encrypted plugin-key vault.
 type fakeKeyStore struct {
@@ -123,6 +133,11 @@ func TestBenchmarkRoutesRequireAdminSession(t *testing.T) {
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, "/api/eval/benchmarks"},
 		{http.MethodPost, "/api/eval/benchmarks"},
+		// /validate is the dry-run endpoint; both it and / must reach the
+		// runner even from a fresh empty config (a missing benchmark
+		// wouldn't fail the matching, but a missing config would not
+		// either — we rely on requireAdmin to gate instead).
+		{http.MethodPost, "/api/eval/benchmarks/validate"},
 		{http.MethodGet, "/api/eval/benchmarks/models"},
 		{http.MethodPost, "/api/eval/benchmarks/refresh"},
 		{http.MethodGet, "/api/eval/benchmarks/credential"},
@@ -411,5 +426,82 @@ func TestCredentialWithoutVaultAnswers503(t *testing.T) {
 		http.MethodGet, "/api/eval/benchmarks/credential", "")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+// --- /validate ---
+
+// TestDryRunHandlerForwardsAndReportsOk is the happy-path mirror of
+// the underlying Runner.DryRun: the handler must pass the operator's
+// slugs and model verbatim (no defaults interfering) and report a
+// clear "ok" string the UI can render in a toast.
+func TestDryRunHandlerForwardsAndReportsOk(t *testing.T) {
+	runner := &fakeRunner{}
+	rec := call(benchServer(runner, nil).dryRunBenchmark, http.MethodPost,
+		"/api/eval/benchmarks/validate",
+		`{"environments":["ffx/gsm8k","ffx/mmlu"],"model":"gpt-4o-mini","timeout_minutes":240}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if len(runner.dryRunCalls) != 1 {
+		t.Fatalf("dry-run called %d times, want 1", len(runner.dryRunCalls))
+	}
+	got := runner.dryRunCalls[0]
+	if got.Model != "gpt-4o-mini" || len(got.Environments) != 2 ||
+		got.Environments[0] != "ffx/gsm8k" || got.Environments[1] != "ffx/mmlu" ||
+		got.TimeoutMinutes != 240 {
+		t.Errorf("spec forwarded wrong: %+v", got)
+	}
+	body := decode(t, rec)
+	if body["ok"] != true {
+		t.Errorf("body = %s, want ok=true", rec.Body.String())
+	}
+}
+
+// TestDryRunHandlerSurfacesVendorReason pins the wording so a UI
+// toast can show the vendor's 404 description verbatim. Any other
+// status mapping here would force the operator to consult logs to
+// find out whether the slug is wrong or the credential is wrong.
+func TestDryRunHandlerSurfacesVendorReason(t *testing.T) {
+	runner := &fakeRunner{
+		dryRunErr: fmt.Errorf("benchmark: not found (404): environment primeintellect/gsm8k "+
+			"not visible to this account — for a launch this usually means the environment is not published to your account"),
+	}
+	rec := call(benchServer(runner, nil).dryRunBenchmark, http.MethodPost,
+		"/api/eval/benchmarks/validate",
+		`{"environments":["primeintellect/gsm8k"],"model":"gpt-4o-mini"}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (vendor errors without a sentinel default to 500): %s",
+			rec.Code, rec.Body.String())
+	}
+	body := decode(t, rec)
+	if body["ok"] != false {
+		t.Errorf("ok field present on the failure path; want explicitly false")
+	}
+	if body["error"] == nil || !strings.Contains(body["error"].(string), "404") {
+		t.Errorf("error field = %v, want the vendor 404 wording", body["error"])
+	}
+}
+
+// TestDryRunHandlerMissingTokenAnswers400: ErrNoToken must map to
+// 400 so the UI can show "paste your key first" rather than a
+// generic failure.
+func TestDryRunHandlerMissingTokenAnswers400(t *testing.T) {
+	runner := &fakeRunner{dryRunErr: benchmark.ErrNoToken}
+	rec := call(benchServer(runner, nil).dryRunBenchmark, http.MethodPost,
+		"/api/eval/benchmarks/validate",
+		`{"environments":["ffx/gsm8k"],"model":"gpt-4o-mini"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDryRunHandlerRejectsBadJSON: a malformed body must surface a
+// 400 so the form can show the offending field instead of crashing.
+func TestDryRunHandlerRejectsBadJSON(t *testing.T) {
+	rec := call(benchServer(&fakeRunner{}, nil).dryRunBenchmark,
+		http.MethodPost, "/api/eval/benchmarks/validate", `not-json`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }

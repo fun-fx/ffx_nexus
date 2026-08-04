@@ -34,6 +34,7 @@ type BenchmarkRunner interface {
 	Models(ctx context.Context) ([]benchmark.Model, error)
 	PollOnce(ctx context.Context) (int, error)
 	GatewayRoutingAvailable() bool
+	DryRun(ctx context.Context, spec benchmark.LaunchSpec) error
 }
 
 // SetBenchmarks wires the runner. Left nil, the routes answer 503 so the
@@ -284,6 +285,41 @@ func benchmarkOrg(u core.User, r *http.Request) string {
 		return u.OrgID
 	}
 	return orgID(r)
+}
+
+// dryRunBenchmark verifies the provider credential and the
+// environment slugs return through one POST + one PATCH round-trip
+// without persisting a row.
+//
+// The console uses this so an operator can sanity-check a slug
+// before submitting a real launch. A 404 surfaces the vendor's
+// reason in the response, which is the most common useful answer
+// when the environment has not been published to this account yet.
+func (s *Server) dryRunBenchmark(w http.ResponseWriter, r *http.Request, _ core.User) {
+	if !s.benchmarksReady(w) {
+		return
+	}
+	var body struct {
+		Environments   []string `json:"environments"`
+		Model          string   `json:"model"`
+		TimeoutMinutes int      `json:"timeout_minutes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if err := s.benchmarks.DryRun(r.Context(), benchmark.LaunchSpec{
+		Environments:   body.Environments,
+		Model:          body.Model,
+		TimeoutMinutes: body.TimeoutMinutes,
+	}); err != nil {
+		writeJSON(w, benchmarkErrStatus(err), map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // benchmarkErrStatus maps a runner error onto a status code. Missing

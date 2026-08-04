@@ -286,3 +286,46 @@ like:
 The gate runs in parallel with the existing `e2e` gateway
 suite, both sharing the same services via Docker `host` DNS —
 PG and CH tolerate the additional concurrent SELECTs.
+
+## Pre-flight validate ("Validate environments" button)
+
+Vendors reject environment slugs they cannot see with a 404. The
+console offers a pre-flight dry-run so an operator can confirm:
+
+1. The pasted API key is accepted by the vendor (a 401 surfaces the
+   vendor's reason verbatim).
+2. The slugs in the form are visible to the authenticated account
+   (the most common failure mode for first-time operators).
+3. The cancel path works end-to-end — a credential that creates but
+   cannot cancel is not safe to launch with.
+
+Implementation:
+
+- **`benchmark.Client.DryRun`** in `internal/benchmark/client.go`
+  posts a `NumExamples=1, Rollouts=1` evaluation, then immediately
+  PATCHes `/cancel`. The cancel returns before the sandbox provisions
+  any inference, so the run never bills tokens. No `benchmark_runs`
+  row is written.
+- **`benchmark.Runner.DryRun`** wraps it with the same credential and
+  validation gate `Launch` walks, so the probe can't succeed on
+  inputs the regular launch would reject.
+- **Admin REST**: `POST /api/eval/benchmarks/validate` returns
+  `{"ok": true}` on success or `{"ok": false, "error": "<vendor
+  reason>"}` on a vendor-side failure. Status codes: 400 for missing
+  credentials / bad input, 500 for vendor 4xx, 200 for success.
+- **Frontend**: the launch form gains a "Validate environments"
+  button next to "Launch run". It uses the same disabled-on-empty
+  logic as Launch, so an attempt without a credential, env, or
+  model stays gated.
+
+The probe costs one POST + one PATCH against the vendor. Curlable
+example:
+
+```bash
+curl -X POST https://nexus.ffx.ai/api/eval/benchmarks/validate \
+  -H "Cookie: $COOKIE" \
+  -H 'Content-Type: application/json' \
+  -d '{"environments":["your-org/gsm8k"],"model":"openai/gpt-4o-mini"}'
+```
+
+Success: `{"ok":true}`. A 404 returns `{"ok":false,"error":"…"}`.

@@ -337,6 +337,48 @@ func (r *Runner) Poll(ctx context.Context, every time.Duration) {
 	}
 }
 
+// DryRun verifies the credential and the environment slugs against
+// the vendor without creating a billable run or persisting a row.
+//
+// Wrapping Client.DryRun keeps the runner in charge of the
+// preconditions the console relies on (a credential resolved, a
+// request shape we validate locally). We do not let the caller
+// probe the vendor without first walking the same checks
+// Launch walks; otherwise the probe can succeed on inputs that
+// would be rejected at launch time.
+func (r *Runner) DryRun(ctx context.Context, spec LaunchSpec) error {
+	if r == nil || r.store == nil {
+		return errors.New("benchmark: runner not configured")
+	}
+	token, err := r.tokens.Token(ctx, ProviderPrime)
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		return fmt.Errorf(
+			"%w: paste the PrimeIntellect API key in the console before validating environments", ErrNoToken)
+	}
+	req := LaunchRequest{
+		Environments: spec.Environments,
+		Model:        spec.Model,
+	}
+	// Validate the *probe* shape: 1 example, 1 rollout, no
+	// gateway. The runner uses the operator's spec purely to
+	// forward the slug list and model name; the rest is
+	// overridden by Client.DryRun.
+	probe := LaunchRequest{
+		Environments: req.Environments,
+		Model:        req.Model,
+		NumExamples:  1,
+		Rollouts:     1,
+		Name:         "nexus-dry-run",
+	}
+	if err := probe.Validate(); err != nil {
+		return err
+	}
+	return r.client(token).DryRun(ctx, req)
+}
+
 // Cancel stops a running evaluation at the provider and settles the row.
 func (r *Runner) Cancel(ctx context.Context, id string) error {
 	if r == nil || r.store == nil {

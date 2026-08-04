@@ -333,6 +333,10 @@ func (s *Server) Mux() http.Handler {
 		r.Route("/eval/benchmarks", func(r chi.Router) {
 			r.Get("/", s.requireAdmin(s.listBenchmarks))
 			r.Post("/", s.requireAdmin(s.launchBenchmark))
+			// Validate is the safest way to check that the credential the
+			// operator just pasted actually gets a 2xx from the vendor
+			// before they hit Launch on a real budget-bound run.
+			r.Post("/validate", s.requireAdmin(s.dryRunBenchmark))
 			r.Get("/models", s.requireAdmin(s.benchmarkModels))
 			r.Post("/refresh", s.requireAdmin(s.refreshBenchmarks))
 			r.Get("/credential", s.requireAdmin(s.getBenchmarkCredential))
