@@ -124,6 +124,19 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 
 	if provider, src := routingStatsProvider(chRec, store, stack.ScoreStore); provider != nil {
 		stack.RoutingStatsStore = src
+		// benchProvider is nil-safe when no Postgres is wired
+		// (today: benchmark_runs lives only in Postgres). Operators
+		// who set ROUTE_W_BENCH > 0 without a Postgres store will
+		// see the bench-blend loop quietly return unblended
+		// stats; that's logged here once for visibility.
+		var bench router.BenchmarkScoreSource
+		if store != nil && cfg.RouteWBench > 0 {
+			bench = router.NewPGBenchProvider(store.Pool())
+			log.Info("benchmark blend enabled",
+				"weight", cfg.RouteWBench,
+				"decay_half_life", cfg.RouteBenchHalfLife.String())
+		}
+		provider = router.NewCombinedStatsProvider(provider, bench, router.CombinedWeights{BenchmarkWeight: cfg.RouteWBench}, cfg.RouteBenchHalfLife)
 		stack.ModelRouter = router.New(
 			provider,
 			router.Weights{Quality: cfg.RouteWQuality, Cost: cfg.RouteWCost, Latency: cfg.RouteWLatency},

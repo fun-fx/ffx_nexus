@@ -87,6 +87,18 @@ type Config struct {
 	RouteGroups   string
 	RouteWQuality float64
 
+	// RouteWBench controls how PrimeIntellect / external benchmark
+	// scores mix with rolling judge scores. 0 disables the bench
+	// blend entirely; 1 makes a fresh benchmark the dominant
+	// signal (judge is ignored). 0.5 is the default.
+	//
+	// Stale benchmark influence decays via RouteBenchHalfLife:
+	// a 14-day-old run has half the weight it had at completion.
+	// benchmark_runs lives in Postgres today; the blend path is
+	// a no-op when Postgres is not configured.
+	RouteWBench        float64
+	RouteBenchHalfLife time.Duration
+
 	// --- V5 high-concurrency tuning -------------------------------------
 	// MaxConcurrentPerKey caps *concurrent* in-flight requests per virtual
 	// key, on a single replica. Use it to keep one noisy virtual key
@@ -293,6 +305,8 @@ func Load() Config {
 		RouteWLatency:             envFloat("NEXUS_ROUTE_W_LATENCY", 0.2),
 		RouteWindow:               envDuration("NEXUS_ROUTE_WINDOW", time.Hour),
 		RouteRefresh:              envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
+		RouteWBench:               envFloat("NEXUS_ROUTE_W_BENCH", 0.5),
+		RouteBenchHalfLife:        envDuration("NEXUS_ROUTE_BENCH_HALF_LIFE", 7*24*time.Hour),
 		OTLPEnabled:               envBool("NEXUS_OTLP_ENABLED", false),
 		OTLPEndpoint:              env("NEXUS_OTLP_ENDPOINT", ""),
 		MetricsAddr:               env("NEXUS_METRICS_ADDR", ""),

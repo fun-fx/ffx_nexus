@@ -1,9 +1,11 @@
 # Model benchmarks (PrimeIntellect hosted evaluations)
 
-> Status: v1alpha1, ships enabled wherever Postgres is configured but
-> inert until an operator stores a provider API key. No in-cluster eval
-> compute is added — the dataset and its scoring code run on the
-> provider's infrastructure.
+> Status: v1beta, ships enabled wherever Postgres is configured but
+> inert until an operator stores a provider API key. As of v1beta
+> the most-recent settled benchmark per model is also blended into
+> the quality-aware router's signal (see "Routing blend" below).
+> No in-cluster eval compute is added — the dataset and its
+> scoring code run on the provider's infrastructure.
 
 A benchmark answers a different question from an eval plugin.
 
@@ -154,14 +156,75 @@ a duplicate poll costs one provider read — so no leader election is
 needed. Refresh in the console forces a pass for an operator who does
 not want to wait for the tick.
 
-## Results are display-only today
+## Routing blend
 
-Scores land in `benchmark_runs` and are shown in the console. Nothing
-consumes them for routing yet: feeding a benchmark aggregate into the
-quality signal changes how traffic is steered, and that deserves its
-own decision rather than arriving as a side effect of adding a page.
-The rows carry everything that decision would need (`model`,
-`avg_score`, `total_samples`, `via_gateway`).
+v1beta blends the most recent settled benchmark per model into
+the quality-aware router's `Quality` signal — the same axis the
+router uses to rank candidate models for an alias. Without a
+benchmark row, judgement is unchanged: a model with no benchmark
+contribution still uses its judge-only Quality.
+
+### What gets blended
+
+For every model in `benchmark_runs` with `status='completed'` and
+a non-NULL `avg_score`, only the **most recent settled row**
+(`ORDER BY completed_at DESC`) contributes. Stale rows are kept
+for audit but are not consulted. This means re-running a
+benchmark automatically supersedes the prior result without
+any operator cleanup.
+
+### How the blend is computed
+
+The `CombinedStatsProvider` in `internal/router/bench_provider.go`
+takes the judge-only `Quality` from the existing `StatsProvider`
+and replaces it with:
+
+```
+freshness   = 2^(-(now - completed_at).Hours() / halfLife.Hours())
+wBench      = clamp(BenchmarkWeight * freshness, 0, 1)
+newQuality  = judge * (1 - wBench) + bench.AvgScore * wBench
+```
+
+`BenchmarkWeight` and `halfLife` are env vars so they survive a
+config push without invalidating the router's in-memory stats
+cache:
+
+| Env var | Default | Effect |
+|---|---|---|
+| `NEXUS_ROUTE_W_BENCH` | `0.5` | 0 disables; 0.5 equal influence; 1 = benchmarks dominate |
+| `NEXUS_ROUTE_BENCH_HALF_LIFE` | `168h` (7 days) | time after which a benchmark's contribution halves; `0` disables decay (last-known-wins) |
+
+`weights` are clamped to `[0,1]` at construction so a typo cannot
+invert signals. The router's `QualitySamples` is also incremented
+by 1 per blended row so dashboards report "we have external data
+here" alongside the judge count.
+
+### Availability
+
+A failing benchmark query returns the judge-only stats
+unchanged — Nexus keeps routing even if Postgres is degraded.
+`BenchEnabled` in the routing snapshot flips on only when a
+Postgres-anchored stats store is configured AND `NEXUS_ROUTE_W_BENCH`
+is positive. Routing remains alive when the snapshot reports
+`BenchEnabled: false`.
+
+### Operator surface
+
+The `/api/eval/config` snapshot extends `routing` with three
+read-only fields:
+
+- `bench_enabled` — derived: true when Postgres routing stats
+  plus a positive bench weight are both wired.
+- `bench_weight`  — the live value of `NEXUS_ROUTE_W_BENCH`.
+- `bench_decay`   — the live value of `NEXUS_ROUTE_BENCH_HALF_LIFE`
+  as a human duration string.
+
+Both vars are also added to `restart_required` so the console
+banner tells an operator that rotating the blend requires a
+pod restart. There is no PATCH surface for them: rotating
+during runtime would invalidate every cached `Stats` value and
+the failure mode (sudden, unlogged) would be hard to diagnose in
+production.
 
 ## Configuration
 
@@ -169,6 +232,8 @@ The rows carry everything that decision would need (`model`,
 |---|---|
 | `NEXUS_POSTGRES_URL` | required; without it the routes answer 503 with that explanation |
 | `NEXUS_PUBLIC_GATEWAY_URL` | enables `via_gateway`; the gateway base without `/v1` |
+| `NEXUS_ROUTE_W_BENCH` | benchmark blend weight (`0.0`–`1.0`, default `0.5`). `0` disables the bench layer entirely |
+| `NEXUS_ROUTE_BENCH_HALF_LIFE` | decay half-life for benchmark influence (default `168h`); `0` disables decay |
 
 No env var carries the provider token — it is pasted in the console and
 stored encrypted.

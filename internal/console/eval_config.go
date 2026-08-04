@@ -44,6 +44,22 @@ type EvalConfigSnapshot struct {
 		Groups      map[string][]string `json:"groups"`
 		GroupsSpec  string              `json:"groups_spec"`
 		LoadBalance bool                `json:"load_balance"`
+
+		// BenchBlend is the operational surface for PrimeIntellect
+		// (or any external benchmark platform) wired into routing.
+		// Weight and HalfLife are READ-ONLY env vars on this build —
+		// rotating them while the router is live would invalidate
+		// every cached Stats value, so the patch surface intentionally
+		// rejects writes. Operators wanting to change them restart the
+		// pod after editing NEXUS_ROUTE_W_BENCH /
+		// NEXUS_ROUTE_BENCH_HALF_LIFE. The console surfaces this in
+		// RestartRequired below.
+		//
+		// BenchEnabled is a derived field so the UI can render "bench
+		// blend is wired" vs. "not configured" without reading envs.
+		BenchEnabled bool    `json:"bench_enabled"`
+		BenchWeight  float64 `json:"bench_weight"`
+		BenchDecay   string  `json:"bench_decay"`
 	} `json:"routing"`
 	// PluginOnly is true when NEXUS_EVAL_PLUGIN_ONLY is set at
 	// boot — the runtime controller did not seed built-in

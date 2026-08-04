@@ -549,6 +549,15 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 		snap.Routing.Window = formatDuration(c.modelRouter.Window())
 		snap.Routing.Refresh = formatDuration(c.routeRefresh)
 		snap.Routing.LoadBalance = c.loadBalance
+
+		// Bench blend is purely env-driven today; the operator
+		// sees the live configuration rather than an inferred
+		// value. BenchEnabled flips on only when a Postgres store
+		// is also configured and the operator has not defaulted
+		// the weight to zero — both conditions are necessary.
+		snap.Routing.BenchWeight = c.cfg.RouteWBench
+		snap.Routing.BenchDecay = formatDuration(c.cfg.RouteBenchHalfLife)
+		snap.Routing.BenchEnabled = c.routingStatsStore == "postgres" && c.cfg.RouteWBench > 0
 	}
 	if c.gwHandler != nil {
 		snap.Routing.Groups = c.gwHandler.RouteGroups()
@@ -559,6 +568,8 @@ func (c *evalRuntimeController) buildSnapshot() console.EvalConfigSnapshot {
 		"eval_workers (NEXUS_EVAL_WORKERS)",
 		"route_refresh (NEXUS_ROUTE_REFRESH)",
 		"route_load_balance (NEXUS_ROUTE_LOAD_BALANCE)",
+		"route_w_bench (NEXUS_ROUTE_W_BENCH)",
+		"route_bench_half_life (NEXUS_ROUTE_BENCH_HALF_LIFE)",
 	}
 	return snap
 }

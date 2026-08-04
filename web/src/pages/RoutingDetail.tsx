@@ -63,6 +63,12 @@ export function RoutingDetail() {
               <Chip tone={cfg.routing.load_balance ? "ok" : "neutral"}>
                 load-balance {cfg.routing.load_balance ? "on" : "off"}
               </Chip>
+              {cfg.routing.bench_enabled ? (
+                <Chip tone="info" data-testid="routing-bench-chip">
+                  bench-blend {(cfg.routing.bench_weight ?? 0) * 100}% · decay{" "}
+                  {cfg.routing.bench_decay ?? "—"}
+                </Chip>
+              ) : null}
             </div>
           )}
         </div>

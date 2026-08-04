@@ -227,6 +227,14 @@ export interface EvalConfigSnapshot {
     groups: Record<string, string[]>;
     groups_spec: string;
     load_balance: boolean;
+    // v1beta: external benchmark blend. bench_enabled reflects an
+    // effective state (Postgres stats and a positive weight); the
+    // raw values come straight from env vars so the console can show
+    // operators exactly what is wired without needing a separate
+    // "advanced settings" page.
+    bench_enabled: boolean;
+    bench_weight: number;
+    bench_decay: string;
   };
   // True when NEXUS_EVAL_PLUGIN_ONLY is set on the pod that issued
   // this snapshot. Console surfaces a banner above the eval table.
@@ -561,6 +569,9 @@ function sanitizeEvalConfig(raw: unknown): EvalConfigSnapshot {
         : {},
       groups_spec: safeStr((raw as any)?.routing?.groups_spec, ""),
       load_balance: safeBool((raw as any)?.routing?.load_balance, false),
+      bench_enabled: safeBool((raw as any)?.routing?.bench_enabled, false),
+      bench_weight: safe((raw as any)?.routing?.bench_weight, 0),
+      bench_decay: safeStr((raw as any)?.routing?.bench_decay, ""),
     },
     plugin_only: safeBool((raw as any)?.plugin_only, false),
     purge_legacy_profiles_on_boot: safeBool((raw as any)?.purge_legacy_profiles_on_boot, false),
@@ -590,6 +601,9 @@ export const ZERO_EVAL: EvalConfigSnapshot = {
     groups: {},
     groups_spec: "",
     load_balance: false,
+    bench_enabled: false,
+    bench_weight: 0,
+    bench_decay: "",
   },
   plugin_only: false,
   purge_legacy_profiles_on_boot: false,
