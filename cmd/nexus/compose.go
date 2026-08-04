@@ -124,15 +124,25 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 
 	if provider, src := routingStatsProvider(chRec, store, stack.ScoreStore); provider != nil {
 		stack.RoutingStatsStore = src
-		// benchProvider is nil-safe when no Postgres is wired
-		// (today: benchmark_runs lives only in Postgres). Operators
-		// who set ROUTE_W_BENCH > 0 without a Postgres store will
-		// see the bench-blend loop quietly return unblended
-		// stats; that's logged here once for visibility.
+		// benchProvider is nil-safe when neither Postgres nor
+		// ClickHouse carries benchmark_runs. Today the schema lives
+		// in both backends, and which one we read from follows the
+		// same backend selection as the routed eval scores — an
+		// operator installs the bench plugin on the same datastore
+		// as the rest of the eval stack. Operators who set
+		// ROUTE_W_BENCH > 0 without either store will see the
+		// bench-blend loop quietly return unblended stats; log the
+		// unblended branch once for visibility.
 		var bench router.BenchmarkScoreSource
-		if store != nil && cfg.RouteWBench > 0 {
+		switch {
+		case store != nil && cfg.RouteWBench > 0:
 			bench = router.NewPGBenchProvider(store.Pool())
-			log.Info("benchmark blend enabled",
+			log.Info("benchmark blend enabled (postgres)",
+				"weight", cfg.RouteWBench,
+				"decay_half_life", cfg.RouteBenchHalfLife.String())
+		case chRec != nil && cfg.RouteWBench > 0:
+			bench = router.NewCHBenchProvider(chRec.Conn())
+			log.Info("benchmark blend enabled (clickhouse)",
 				"weight", cfg.RouteWBench,
 				"decay_half_life", cfg.RouteBenchHalfLife.String())
 		}

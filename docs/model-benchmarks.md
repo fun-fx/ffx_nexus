@@ -202,19 +202,39 @@ here" alongside the judge count.
 ### Availability
 
 A failing benchmark query returns the judge-only stats
-unchanged — Nexus keeps routing even if Postgres is degraded.
-`BenchEnabled` in the routing snapshot flips on only when a
-Postgres-anchored stats store is configured AND `NEXUS_ROUTE_W_BENCH`
-is positive. Routing remains alive when the snapshot reports
-`BenchEnabled: false`.
+unchanged — Nexus keeps routing even if the configured backend
+is degraded. `BenchEnabled` in the routing snapshot flips on
+only when **a benchmark-bearing stats store** is connected
+(Postgres *or* ClickHouse — both support the schema) AND
+`NEXUS_ROUTE_W_BENCH` is positive. Routing remains alive when
+the snapshot reports `BenchEnabled: false`.
+
+### Backend selection
+
+| Backend | Table | Probe query |
+|---|---|---|
+| Postgres (`NEXUS_POSTGRES_URL` set) | `benchmark_runs` per migration `012_benchmark_runs.sql` | `SELECT DISTINCT ON (model) ... ORDER BY model, completed_at DESC` |
+| ClickHouse (`NEXUS_CLICKHOUSE_URL` set, no PG) | `benchmark_runs` per migration `007_benchmark_runs.sql` | `SELECT model, argMax(avg_score, completed_at) ... WHERE status='completed' GROUP BY model` |
+
+The selection follows the same rule as the rest of the eval
+stack: whichever backend the operator installed the plugin
+table on wins. If both backends are configured, Postgres takes
+precedence (the routed eval scores also live in Postgres when
+present, so the operator gets a single source of truth). When
+neither is wired, `BenchEnabled` stays false and routing falls
+back to judge-only — silently, with a one-line "benchmark
+blend not wired (needs Postgres or ClickHouse)" message in
+the boot log so a misconfiguration is visible without a tracer
+fire.
 
 ### Operator surface
 
 The `/api/eval/config` snapshot extends `routing` with three
 read-only fields:
 
-- `bench_enabled` — derived: true when Postgres routing stats
-  plus a positive bench weight are both wired.
+- `bench_enabled` — derived: true when a benchmark-bearing
+  stats store (PG or CH) is wired *and* the bench weight is
+  positive.
 - `bench_weight`  — the live value of `NEXUS_ROUTE_W_BENCH`.
 - `bench_decay`   — the live value of `NEXUS_ROUTE_BENCH_HALF_LIFE`
   as a human duration string.
@@ -231,6 +251,7 @@ production.
 | Env var | Effect |
 |---|---|
 | `NEXUS_POSTGRES_URL` | required; without it the routes answer 503 with that explanation |
+| `NEXUS_CLICKHOUSE_URL` | optional; when set **and** Postgres is not, the bench blend reads `benchmark_runs` from CH (migration `007_benchmark_runs.sql`) via `argMax(completed_at)` |
 | `NEXUS_PUBLIC_GATEWAY_URL` | enables `via_gateway`; the gateway base without `/v1` |
 | `NEXUS_ROUTE_W_BENCH` | benchmark blend weight (`0.0`–`1.0`, default `0.5`). `0` disables the bench layer entirely |
 | `NEXUS_ROUTE_BENCH_HALF_LIFE` | decay half-life for benchmark influence (default `168h`); `0` disables decay |
