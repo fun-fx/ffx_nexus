@@ -135,3 +135,94 @@ describe("Routing page", () => {
     expect(violations.violations).toEqual([]);
   });
 });
+
+describe("Routing page with bench blend enabled", () => {
+  // Reuse the same fetch URL routing as the default block but flip
+  // the bench flags. We rebuild the implementation from scratch
+  // rather than nesting spies, which is more robust across vitest
+  // versions and keeps a clean surface for future asserts.
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/routing")) {
+        return new Response(
+          JSON.stringify([
+            {
+              model: "gemini-2.5-pro",
+              samples: 1000,
+              eff_quality: 0.92,
+              quality: 0.93,
+              safety_pass_rate: 0.99,
+              avg_latency_ms: 600,
+              avg_cost_usd: 0.012,
+            },
+            {
+              model: "gpt-4o-mini",
+              samples: 800,
+              eff_quality: 0.7,
+              quality: 0.7,
+              safety_pass_rate: 0.95,
+              avg_latency_ms: 400,
+              avg_cost_usd: 0.0004,
+            },
+          ]),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/api/eval/config")) {
+        return new Response(
+          JSON.stringify({
+            eval_enabled: true,
+            routing_enabled: true,
+            score_store: "postgres",
+            trace_store: "clickhouse",
+            score_persisted: true,
+            routing_stats_store: "postgres",
+            eval: {
+              pii_enabled: true,
+              completeness_enabled: true,
+              sample_rate: 1,
+              workers: 1,
+              judge: { enabled: false, base_url: "", model: "", api_key_set: false },
+              remote: { enabled: false, url: "", metrics: [], timeout: "" },
+            },
+            routing: {
+              weights: { quality: 0.6, cost: 0.2, latency: 0.2 },
+              window: "1h",
+              refresh: "5m",
+              groups: { fast: ["gpt-4o-mini"], smart: ["gemini-2.5-pro"] },
+              groups_spec: "NEXUS_ROUTE_GROUPS",
+              load_balance: true,
+              bench_enabled: true,
+              bench_weight: 0.5,
+              bench_decay: "168h",
+            },
+            restart_required: [],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/api/auth/me")) {
+        return new Response(JSON.stringify({}), { status: 401 });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+  });
+
+  it("renders the bench-blend chip on the list", async () => {
+    render(
+      <WithProviders>
+        <Routing />
+      </WithProviders>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("routing-list-bench-chip")).toHaveTextContent(
+        /bench-blend\s+50%/,
+      );
+      expect(screen.getByTestId("routing-list-bench-chip")).toHaveTextContent(
+        /decay\s+168h/,
+      );
+    });
+  });
+});

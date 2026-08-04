@@ -253,6 +253,24 @@ export function Eval() {
                     : `restart required: ${cfg.restart_required.join(", ")}.`}
                 </>}
           </p>
+          {cfg.routing.bench_enabled ? (
+            <div className="weight-row" data-testid="eval-bench-row">
+              <Chip tone="info">
+                bench blend active ·{" "}
+                {(cfg.routing.bench_weight ?? 0) * 100}% weight · decay
+                {" "}{cfg.routing.bench_decay ?? "—"}
+              </Chip>
+            </div>
+          ) : (
+            <div className="weight-row" data-testid="eval-bench-row">
+              <Chip tone="warn">
+                bench blend inactive — set <code>NEXUS_ROUTE_W_BENCH</code> &gt;
+                0 with Postgres or ClickHouse to feed PrimeIntellect scores
+                into the router. See{" "}
+                <Link to="/eval/benchmarks">Benchmarks</Link>.
+              </Chip>
+            </div>
+          )}
           <p className="hint">
             Scoring here judges traffic that already happened. To measure a{" "}
             <strong>model against a dataset</strong> instead, see{" "}
