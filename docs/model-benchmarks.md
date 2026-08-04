@@ -258,3 +258,31 @@ production.
 
 No env var carries the provider token — it is pasted in the console and
 stored encrypted.
+
+## Live CI gate
+
+The bench provider has unit-test coverage in
+`internal/router/bench_provider_ch_test.go` and
+`internal/router/bench_provider_test.go`, plus live contract
+tests in `internal/router/bench_e2e_live_test.go` (PG) and
+`TestCHBenchProvider_LiveContract` (CH). The live tests are
+gated on `NEXUS_POSTGRES_URL` / `NEXUS_CLICKHOUSE_URL` so a
+contributor build skips them.
+
+A separate `bench-live` job in `.github/workflows/integration.yml`
+launches a Postgres + ClickHouse service pair and exports the
+DSNs so the live tests run as a CI gate. Catch regressions
+like:
+
+- A future migration dropping `(status, model, completed_at)`
+  from CH would break the `argMax` projection.
+- A future migration on PG that stops using `DISTINCT ON` and
+  reverts to `AVG(avg_score)` (we explicitly pin against this
+  case in `bench_e2e_live_test.go`).
+- A stale `internal/core/benchmark_runs.go` writer that loses
+  `avg_score` on a status-only update path (covered by the
+  existing `TestBenchmarkRunProgressPreservesFieldsItIsNotTold`).
+
+The gate runs in parallel with the existing `e2e` gateway
+suite, both sharing the same services via Docker `host` DNS —
+PG and CH tolerate the additional concurrent SELECTs.

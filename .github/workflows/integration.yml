@@ -54,3 +54,84 @@ jobs:
       - name: Service logs on failure
         if: failure()
         run: docker compose -f deploy/docker-compose.yml logs --no-color
+
+  bench-live:
+    # Bench provider live contract gate: the bench snapshot (PG/CH) and
+    # its blend wiring have only proven themselves against fully mocked
+    # sources in regular CI. The contract bumps into a real schema
+    # through these tests — without live contracts the routing blend
+    # could pass unit tests while silently averaging away the
+    # DISTINCT-on / argMax behaviour the docs call out.
+    #
+    # Gated on the same PG/CH services the e2e job starts, so the
+    # gateway-side scripts and the bench live tests share one
+    # environment per runner. Both jobs run in parallel because they
+    # only read from the shared services; PG/CH tolerates concurrent
+    # SELECTs.
+    name: Bench live contracts (PG/CH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: nexus
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8
+        env:
+          CLICKHOUSE_DB: nexus
+          CLICKHOUSE_USER: nexus
+          CLICKHOUSE_PASSWORD: nexus
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+        ports:
+          - 8123:8123
+          - 9000:9000
+        options: >-
+          --health-cmd "wget -q -O - http://localhost:8123/ping || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      NEXUS_POSTGRES_URL: postgres://nexus:nexus@localhost:5432/nexus?sslmode=disable
+      NEXUS_CLICKHOUSE_URL: clickhouse://nexus:nexus@localhost:9000/nexus
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run bench live contracts (PG)
+        # The -short flag is intentionally omitted here: every contract
+        # test in internal/router/bench_*.go gates its live block on
+        # testing.Short() and on the surrounding DSN. With PG/CH wired
+        # through the services above, those gates fall through and the
+        # live assertions run instead of skipping.
+        run: go test -race -count=1 -run 'BenchProviderE2E' ./internal/router/...
+
+      - name: Run ClickHouse bench provider contracts
+        run: go test -race -count=1 -run 'TestCHBenchProvider_LiveContract' ./internal/router/...
+
+      - name: Run core bench CRUD + wire contract (live PG)
+        # Same DSN as the bench_provider tests; the core side already
+        # has 12+ live tests that exercise CRUD on the same schema.
+        # Surfacing them here ensures the chain CRUD → snapshot stays
+        # in lock-step — a future migration diff that adds columns will
+        # fail in core/ before the router ever sees it.
+        run: go test -race -count=1 -run 'TestBenchmarkRun' ./internal/core/...
+
+      - name: Service logs on failure
+        if: failure()
+        run: |
+          docker logs --tail 200 postgres || true
+          docker logs --tail 200 clickhouse || true
