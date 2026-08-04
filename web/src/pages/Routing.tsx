@@ -74,6 +74,14 @@ export function Routing() {
             Pick a routing alias to send requests, or browse the underlying model
             ranks behind it.
           </p>
+          {cfg?.routing.bench_enabled ? (
+            <div className="weight-row">
+              <Chip tone="info" data-testid="routing-list-bench-chip">
+                bench-blend {(cfg.routing.bench_weight ?? 0) * 100}% · decay{" "}
+                {cfg.routing.bench_decay ?? "—"}
+              </Chip>
+            </div>
+          ) : null}
         </div>
         <div className="page-stats">
           <div className="page-stat">
