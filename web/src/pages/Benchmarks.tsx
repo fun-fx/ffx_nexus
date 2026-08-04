@@ -492,6 +492,10 @@ function LaunchPanel({
     mutationFn: dryRunBenchmark,
   });
 
+  // Is the last dry-run failure a 404 (most common first-visit error)?
+  const dry404 =
+    dryRunM.isSuccess && !dryRunM.data.ok && /404|not found/.test(dryRunM.data.error ?? "");
+
   return (
     <section className="panel">
       <div className="panel-head">
@@ -720,6 +724,7 @@ function LaunchPanel({
           {dryRunM.data.error}
         </p>
       )}
+      {dry404 && <EnvPushGuide slugs={envList} />}
 
       <details className="bench-help">
         <summary>What has to be true before a run will start</summary>
@@ -771,5 +776,224 @@ function LogsDrawer({ run, onClose }: { run: BenchmarkRun | null; onClose: () =>
         <pre className="bench-logs">{logs.data || "The provider returned no log output."}</pre>
       )}
     </Drawer>
+  );
+}
+
+function EnvPushGuide({ slugs }: { slugs: string[] }) {
+  // The first slug is what the operator is most obviously trying to
+  // make visible. We use it as the target for the example commands;
+  // the rest of the list is shown as chips so the operator can swap
+  // any of them in. Falling back to "your-org/gsm8k" keeps the
+  // snippet copy-pasteable when the operator removed all chips.
+  const target = slugs[0] || "your-org/gsm8k";
+  const envYaml = SAMPLE_ENV_YAML.replace("__SLUG__", target);
+  const pushCmd = `prime env push ${target} --config ./env.yaml`;
+  const whichCmd = "which prime  &&  prime --version";
+
+  return (
+    <div className="bench-cli-guide" data-testid="bench-cli-guide">
+      <div className="bench-cli-guide-head">
+        <h3>Publish the environment yourself</h3>
+        <p className="muted">
+          Prime does not let Nexus (or any client) push environments on
+          the operator&apos;s behalf — that channel is local-CLI only.
+          Run these steps on a workstation where the dataset lives and
+          the same key is exported as <code>PRIME_API_KEY</code>:
+        </p>
+      </div>
+
+      <ol className="bench-cli-steps">
+        <li>
+          <span className="bench-cli-step-num">1</span>
+          <div className="bench-cli-step-body">
+            <strong>Confirm the CLI is installed:</strong>
+            <CodeBlock text={whichCmd} />
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">2</span>
+          <div className="bench-cli-step-body">
+            <strong>Drop a starter dataset on disk:</strong>
+            <CodeBlock
+              label="gsm8k.jsonl"
+              text={SAMPLE_DATASET_JSONL}
+              downloadName="gsm8k.jsonl"
+            />
+            <p className="muted">
+              Replace these rows with your own prompts+answers. One JSON
+              object per line — each line becomes one benchmark sample.
+            </p>
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">3</span>
+          <div className="bench-cli-step-body">
+            <strong>
+              Add a grader (Python, executed inside the sandbox):
+            </strong>
+            <CodeBlock
+              label="grade.py"
+              text={SAMPLE_GRADER_PY}
+              downloadName="grade.py"
+              language="python"
+            />
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">4</span>
+          <div className="bench-cli-step-body">
+            <strong>Bind the two files with an env.yaml:</strong>
+            <CodeBlock
+              label="env.yaml"
+              text={envYaml}
+              downloadName="env.yaml"
+            />
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">5</span>
+          <div className="bench-cli-step-body">
+            <strong>Publish it under your namespace:</strong>
+            <CodeBlock text={pushCmd} />
+            <p className="muted">
+              After this succeeds the slug <code>{target}</code> is
+              visible to this Nexus instance — come back here and re-run{" "}
+              <em>Validate environments</em>. Other slugs in your
+              namespace typically become visible at the same time.
+            </p>
+          </div>
+        </li>
+      </ol>
+
+      <div className="bench-cli-rotate">
+        <strong>If you would rather measure a different model:</strong>
+        pick any of your env chips above and re-run this guide with that
+        slug as the target.
+      </div>
+    </div>
+  );
+}
+
+// SAMPLE_DATASET_JSONL is the minimum GSM8K-shaped file Nexus
+// exports on the operator's behalf. Three questions is enough to
+// demo the dry-run + validate path; the operator is expected to
+// replace these with their production dataset before launching.
+//
+// The questions are public-domain GSM8K excerpts (OpenAI, MIT
+// licence). They use the integer-answer subset of GSM8K because
+// that is the simplest grader to write.
+const SAMPLE_DATASET_JSONL = [
+  '{"question":"Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?","answer":72}',
+  '{"question":"Weng earns $12 an hour for babysitting. Yesterday, she babysat for 1 hour and then for 3 hours. How much money did she earn in total?","answer":48}',
+  '{"question":"There were 15 trees in the grove. Grove workers planted trees in the grove today. After they were done, there were 21 trees. How many trees did the grove workers plant today?","answer":6}',
+].join("\n");
+
+// SAMPLE_GRADER_PY is the function the provider calls per sample. It
+// receives the dataset row as `sample` dict and the model's full
+// response as `completion` string and returns 1.0 for a correct
+// answer, 0.0 otherwise. The \boxed{} peel is the common LLM-eval idiom
+// for model-written answers; without it, almost every reasoning model
+// marks itself wrong because it leaves prose around the integer.
+const SAMPLE_GRADER_PY = [
+  "# grade.py — the function Prime calls per sample.",
+  "# `sample` is the JSONL row, `completion` is the model response.",
+  "# Return 1.0 for a correct answer, 0.0 otherwise (partial credit ok).",
+  "",
+  "import re",
+  "",
+  "def grade(sample, completion):",
+  "    # Models often wrap the final integer in \\boxed{…}; peel it off.",
+  "    boxed = re.search(r\"\\\\\\\\boxed\\\\{(.+?)\\\\}\", completion)",
+  "    pred = boxed.group(1).strip() if boxed else completion.strip()",
+  "    try:",
+  "        return float(int(pred) == int(sample[\"answer\"]))",
+  "    except ValueError:",
+  "        return 0.0",
+].join("\n");
+
+// SAMPLE_ENV_YAML is the manifest that `prime env push` consumes.
+// __SLUG__ is replaced at render time with the targeted slug so
+// the operator can copy-and-paste the env.yaml text directly.
+const SAMPLE_ENV_YAML = [
+  "# env.yaml — declarative manifest for `prime env push`.",
+  "# Paths are relative to this file's directory.",
+  "name: __SLUG__",
+  "dataset:",
+  "  path: ./gsm8k.jsonl",
+  "  format: jsonl",
+  "grader:",
+  "  type: custom",
+  "  module: ./grade.py",
+  "  entry: grade",
+].join("\n");
+
+function CodeBlock({
+  text,
+  label,
+  downloadName,
+  language,
+}: {
+  text: string;
+  label?: string;
+  downloadName?: string;
+  language?: string;
+}) {
+  // Per-instance copy state so each block flips its own label
+  // "Copy" → "Copied" without racing neighbours.
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard?.writeText(text);
+    } catch {
+      // Clipboard may fail in non-secure contexts (e.g. http://);
+      // not fatal because the operator can still copy by selecting
+      // the code block by hand.
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
+  };
+  const onDownload = () => {
+    // Build a transient object URL for the snippet so the browser
+    // gets a real "Save as" prompt with the right filename. Revoked
+    // immediately after the click so we don't leak memory.
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = downloadName || label || "snippet.txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <div
+      className={language === "python" ? "bench-cli-code is-py" : "bench-cli-code"}
+    >
+      <div className="bench-cli-code-head">
+        {label && <span className="bench-cli-code-label">{label}</span>}
+        <div className="bench-cli-code-actions">
+          {downloadName && (
+            <button
+              type="button"
+              className="btn-ghost btn-small"
+              data-testid="bench-cli-download"
+              onClick={onDownload}
+            >
+              Download
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            data-testid="bench-cli-copy"
+            onClick={onCopy}
+          >
+            <Icon.copy size={14} /> {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+      </div>
+      <pre><code>{text}</code></pre>
+    </div>
   );
 }
