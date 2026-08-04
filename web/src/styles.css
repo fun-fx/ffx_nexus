@@ -3057,3 +3057,36 @@ a:hover {
   white-space: pre;
   overflow-x: auto;
 }
+
+/* LangSmith automation rule creation — the input field sits
+ * above the button so the operator reads "what to paste"
+ * before the click. The button matches other admin actions
+ * (.btn-neon + .btn-small) for visual rhythm. */
+.langsmith-automation-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 10px 0;
+}
+.langsmith-automation-field {
+  flex: 1 1 280px;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.langsmith-automation-field .input {
+  margin: 0;
+}
+.langsmith-automation-manual {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted, color-mix(in oklab, var(--text) 70%, transparent));
+}
+.langsmith-automation-manual summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text);
+}

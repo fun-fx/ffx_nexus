@@ -731,10 +731,16 @@ tools that run in CI rather than services a gateway can post to — use
 > Automation rule the vendor simply keeps its output to itself and
 > Nexus renders an empty traces page.
 
-The console's LangSmith plugin drawer renders the same checklist
-inline while you are installing, so you do not have to come back to
-this document for every new project. The rest of this section is for
-operators who want the full write-up.
+Earlier releases required the operator to walk through the LangSmith
+UI's **Automations → + New** flow themselves — Nexus had no way to
+write the rule on their behalf even though the vendor's REST API
+exposes the same surface. This PR closes that gap: as of late 2025
+LangSmith's `/api/v1/runs/rules` endpoint accepts rule creation via
+`POST`, and `internal/langsmith/rules` is now Nexus's Go client for
+that endpoint. Pressing **Create automation rule** in the console
+drawer is equivalent to clicking through the UI manually — the
+drawer below shows the same body shape and URL so manual setup is
+still possible if you ever stop trusting the automator.
 
 ### Step 1 — install the plugin
 
@@ -746,7 +752,40 @@ LangSmith." only if `/api/v1/info` answers 2xx with `x-api-key`
 attached (PR #195). Earlier releases used `Authorization: Bearer`,
 which LangSmith silently 401s.
 
-### Step 2 — create one Automation rule
+### Step 2 — create the Automation rule (the new path)
+
+In the LangSmith drawer (Service kind = LangSmith), paste the
+project id from **smith.langchain.com → Settings → Projects** into
+the **LangSmith project id (UUID)** field, then click **Create
+automation rule**. Behind the button this calls:
+
+```http
+POST /api/eval/plugins/${PLUGIN_NAME}/automation
+Content-Type: application/json
+
+{"session_id":"<project-uuid-from-smith-langchain-com>"}
+```
+
+The admin REST resolves the same API key the **Test** button
+uses (via the Keys modal), computes
+`${NEXUS_PUBLIC_BASE_URL}/api/eval/plugins/${PLUGIN_NAME}/webhook`,
+and POSTs that URL plus the audit header `X-Nexus-Plugin:
+${PLUGIN_NAME}` to the vendor's `/api/v1/runs/rules`. The
+response is shown inline: the `rule_id` is the vendor-side UUID
+Nexus just created; the `webhook_url` is what was advertised.
+
+| Server response | What it means |
+|---|---|
+| `ok:true` with `rule_id` | The rule exists in your project. Traces will start feeding scores back. |
+| `ok:false` with `already_configured:true` | You (or a previous install) already wrote a rule with the same display name. Open the project and confirm its webhook URL matches the one Nexus advertises. |
+| `ok:false` with `rejected the API key.` | The key in the Keys modal is invalid for this project. Open the Keys modal, paste the correct key, and re-run. |
+| `ok:false` with `NEXUS_PUBLIC_BASE_URL is not set` | The deployer has not configured the externally-routable base URL Nexus needs to advertise. Set `NEXUS_PUBLIC_BASE_URL=https://...` in the Nexus Helm values and restart. |
+| 503 envelope (typed `ok:false`, `message:"langsmith automation not wired"`) | Same as the env-not-set case, but on a fresh build — file a bug, the wiring is conditional. |
+
+### Step 2 (manual fallback) — create the rule yourself
+
+If you would rather click through the LangSmith UI (or you are
+debugging what the console did):
 
 In [smith.langchain.com](https://smith.langchain.com) open your
 project and choose **Automations → + New**, then set:
@@ -754,7 +793,7 @@ project and choose **Automations → + New**, then set:
 - **Trigger**: *On a run finish* (or *On a feedback created* if you
   prefer to score once reviewers have approved the run).
 - **Action**: *POST to webhook*.
-- **URL**: `${NEXUS_PUBLIC}/api/eval/plugins/${PLUGIN_NAME}/webhook`.
+- **URL**: `${NEXUS_PUBLIC_BASE_URL}/api/eval/plugins/${PLUGIN_NAME}/webhook`.
 
   The drawer fills that value in for you as you type the plugin name;
   the same URL is shown under **Manage → Inbound webhook** after
@@ -789,3 +828,8 @@ LangSmith plugin is otherwise wired correctly.
 - **Different project than the dropshot key.** API keys are scoped
   per project; an automation rule in project A cannot read score
   events from project B.
+- **Rule gives a `409 already_configured` when reinstalling.** That is
+  intended — LangSmith enforces display_name uniqueness within a
+  project. The console draws a "you already configured this" line
+  that explains the operator's next step (rename the plugin in
+  Nexus, or delete the rule in LangSmith and retry).

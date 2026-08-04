@@ -1254,3 +1254,52 @@ async function fireEvalPluginWhich(
   }
   return jsonOrError<ManualFireResult>(res);
 }
+
+// CreateLangSmithAutomationRule posts the typed admin REST
+// "/automation" envelope and returns the LangSmith-side rule id
+// Nexus created plus the webhook URL Nexus advertised. The React
+// integration in EvalPlugins.tsx renders both on the row so the
+// operator can verify which LangSmith rule mirrors their plugin.
+//
+// AlreadyConfigured is surfaced as a typed boolean (not parsed
+// from message text) so the help text can say "you already have
+// this rule — open LangSmith and confirm the webhook" rather
+// than a generic "vendor complained". Mirrors backend handler
+// behavior documented in pluginCreateAutomationRule.
+export interface LangSmithRuleResult {
+  ok: boolean;
+  rule_id?: string;
+  webhook_url?: string;
+  already_configured?: boolean;
+  message?: string;
+}
+
+export async function createLangSmithAutomationRule(
+  name: string,
+  sessionID: string,
+): Promise<LangSmithRuleResult> {
+  const res = await fetch(
+    `/api/eval/plugins/${encodeURIComponent(name)}/automation`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionID }),
+    },
+  );
+  // 503 with a typed envelope is a valid "not wired" outcome
+  // (Nexus hasn't been configured with NEXUS_PUBLIC_BASE_URL).
+  // 200 with ok:false is a vendor-side conflict (409), surfaced
+  // for the React UI to swap to a "verify manually" branch.
+  if (!res.ok && res.status !== 503) {
+    let env: PluginKeysErrorEnvelope | null = null;
+    try {
+      env = (await res.json()) as PluginKeysErrorEnvelope;
+    } catch {
+      env = null;
+    }
+    throw new Error(
+      env?.message || env?.error || `Backend HTTP ${res.status} on POST /automation`,
+    );
+  }
+  return jsonOrError<LangSmithRuleResult>(res);
+}

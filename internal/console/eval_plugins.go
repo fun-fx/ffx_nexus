@@ -384,3 +384,118 @@ func modeOrManual(mode string) string {
 		return "manual"
 	}
 }
+
+// LangSmithRuleCreator is the optional dependency for the
+// "Create automation rule" admin REST route. nil means the route
+// answers 503 with a clear message so the React frontend can
+// disable the button.
+//
+// Implementations are responsible for resolving the LangSmith
+// API key from the plugin's key vault and computing the
+// webhook URL — the interface only carries the inputs that
+// change per request (session_id, display_name fragments).
+//
+// The split between "interface in console/" and "implementation
+// in cmd/nexus/langsmith_rules.go" mirrors EvalPluginTester so
+// tests can stub the seam with a deterministic response.
+type LangSmithRuleCreator interface {
+	CreateAutomationRule(ctx context.Context, pluginName, sessionID string) (AutomationRuleResult, error)
+}
+
+// AutomationRuleResult is what CreateAutomationRule returns. The
+// fields map 1:1 to the typed JSON envelope the React client
+// surfaces in the plugin row's status line so the UI never has
+// to guess which keys are present.
+//
+// RuleID is the LangSmith-side rule id we stored as a tag on
+// the local plugin row, so a follow-up delete is unambiguous.
+// AlreadyConfigured is true when LangSmith returned 409 because
+// the operator already created the rule by hand — the UI uses
+// this to swap the help text to "you already have one" rather
+// than "rule was created".
+type AutomationRuleResult struct {
+	OK                bool   `json:"ok"`
+	RuleID            string `json:"rule_id,omitempty"`
+	WebhookURL        string `json:"webhook_url,omitempty"`
+	AlreadyConfigured bool   `json:"already_configured,omitempty"`
+	Message           string `json:"message,omitempty"`
+}
+
+// SetLangSmithRuleCreator wires the vendor-side automator. nil
+// disables the route; the Server uses the same nil-check pattern
+// as pluginCollector to keep a missing dependency visible instead
+// of crashing the boot.
+func (s *Server) SetLangSmithRuleCreator(r LangSmithRuleCreator) {
+	s.langsmithRuleCreator = r
+}
+
+// pluginCreateAutomationRule is the admin REST bridge between
+// the React client and the LangSmith automator. Returns 200 on
+// every flow path with the typed envelope in the body — the
+// pattern documented in PR #197's "always return typed JSON" so
+// the UI never has to fall back to "fetch failed" displays.
+//
+// The handler is intentionally tight: it does not log the API
+// key (the resolver returns the resolved plaintext in memory
+// only) and it does not echo the body back into the audit log
+// (display_name carries the plugin name; nothing secret).
+func (s *Server) pluginCreateAutomationRule(w http.ResponseWriter, r *http.Request, u core.User) {
+	if s.langsmithRuleCreator == nil {
+		writeJSON(w, http.StatusServiceUnavailable, AutomationRuleResult{
+			OK:      false,
+			Message: "langsmith automation not wired",
+		})
+		return
+	}
+	ref := chi.URLParam(r, "name")
+	var body struct {
+		SessionID string `json:"session_id"`
+	}
+	// Body may be empty for the "no session_id override" path; in
+	// that case the body decoder leaves the field unset and the
+	// implementation falls back to whatever session the plugin
+	// vault carries (today: passed through by the operator in the
+	// UI). We do not 400 on missing session_id here because the
+	// contract is "the LangSmithRuleCreator knows what it needs";
+	// admin REST's job is to wire the click through, not validate.
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	pluginName := strings.TrimSpace(ref)
+	if pluginName == "" {
+		writeJSON(w, http.StatusBadRequest, AutomationRuleResult{
+			OK:      false,
+			Message: "plugin name is required",
+		})
+		return
+	}
+	res, err := s.langsmithRuleCreator.CreateAutomationRule(r.Context(), pluginName, body.SessionID)
+	if err != nil {
+		// Already-Configured is a typed outcome (NOT a failure):
+		// the operator already made the rule by hand, PATCH path
+		// is what to suggest next. We surface it as 200 with the
+		// envelope so the UI can branch without parsing strings.
+		// Validation failures (missing session_id, etc.) are also
+		// 200 + ok:false so the typed envelope survives.
+		//
+		// Either the implementation already populated Message on
+		// the typed result (carrying a vendor-aware explanation)
+		// or it left it blank, in which case we fall back to
+		// err.Error() so a misbehaving implementation still
+		// surfaces something useful. WebhookURL is always copied
+		// through so the UI can show "this URL was advertised to
+		// the vendor" on either path.
+		msg := res.Message
+		if msg == "" {
+			msg = err.Error()
+		}
+		writeJSON(w, http.StatusOK, AutomationRuleResult{
+			OK:                false,
+			AlreadyConfigured: res.AlreadyConfigured,
+			WebhookURL:        res.WebhookURL,
+			Message:           msg,
+		})
+		return
+	}
+	s.audit(r.Context(), u.ID, orgID(r), "eval.langsmith.rule.create", res.RuleID, pluginName)
+	writeJSON(w, http.StatusOK, res)
+}

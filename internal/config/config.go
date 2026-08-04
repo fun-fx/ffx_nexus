@@ -17,6 +17,7 @@ type Config struct {
 	GatewayAddr      string // gateway proxy listen address
 	ConsoleAddr      string // console API / dashboard listen address
 	PublicGatewayURL string // user-facing base URL shown in the console (optional)
+	PublicBaseURL    string // user-facing base URL for vendor-side webhook URLs (optional)
 
 	// Datastores. Empty values disable the corresponding integration so the
 	// core gateway can boot with zero dependencies (Bifrost-style).
@@ -275,6 +276,7 @@ func Load() Config {
 		GatewayAddr:      env("NEXUS_GATEWAY_ADDR", ":8080"),
 		ConsoleAddr:      env("NEXUS_CONSOLE_ADDR", ":8081"),
 		PublicGatewayURL: env("NEXUS_PUBLIC_GATEWAY_URL", ""),
+		PublicBaseURL:    env("NEXUS_PUBLIC_BASE_URL", ""),
 		PostgresURL:      env("NEXUS_POSTGRES_URL", ""),
 		ClickHouseURL:    env("NEXUS_CLICKHOUSE_URL", ""),
 		RedisURL:         env("NEXUS_REDIS_URL", ""),
