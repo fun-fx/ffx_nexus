@@ -464,7 +464,7 @@ func TestDryRunHandlerForwardsAndReportsOk(t *testing.T) {
 // find out whether the slug is wrong or the credential is wrong.
 func TestDryRunHandlerSurfacesVendorReason(t *testing.T) {
 	runner := &fakeRunner{
-		dryRunErr: fmt.Errorf("benchmark: not found (404): environment primeintellect/gsm8k "+
+		dryRunErr: fmt.Errorf("benchmark: not found (404): environment primeintellect/gsm8k " +
 			"not visible to this account — for a launch this usually means the environment is not published to your account"),
 	}
 	rec := call(benchServer(runner, nil).dryRunBenchmark, http.MethodPost,
