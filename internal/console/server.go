@@ -48,29 +48,35 @@ type CatalogSource interface {
 // key/credential management.
 type Server struct {
 	hub               *Hub
-	reader            *observability.Reader  // may be nil when ClickHouse is not configured
-	store             *core.Store            // may be nil when Postgres is not configured
-	routes            RouteStatsSource       // may be nil when routing is disabled
-	catalog           CatalogSource          // may be nil when the gateway is not co-located
-	reload            func(context.Context)  // may be nil when no hot-reload hook is wired
-	allowSignup       bool                   // public POST /api/auth/register
-	sso               *ssoClient             // OIDC client; nil when SSO is not configured
-	evalConfigSrc     EvalConfigSource       // nil when eval worker is disabled
-	evalConfigApply   EvalConfigApplier      // nil when eval worker is disabled
-	evalProfiles      EvalProfileSource      // PR #135: profile CRUD store
-	evalPlugins       EvalPluginSource       // eval-plugin store (Phase B)
-	pluginCollector   PluginWebhookReceiver  // eval-plugin webhook sink (Phase C)
-	pluginTester      EvalPluginTester       // eval-plugin test-send (Phase D)
-	pluginManualFirer PluginManualFirer      // admin-driven drain for manual-trigger plugins
-	pluginKeys        EvalPluginKeys         // in-process plugin key resolver (console keys)
-	benchmarks        BenchmarkRunner        // model-level benchmark runs; nil without Postgres
-	loginLim          *limiter.IPLimiter     // per-IP rate limit for /api/auth/login
-	registerLim       *limiter.IPLimiter     // per-IP rate limit for /api/auth/register
-	ssoLim            *limiter.IPLimiter     // per-IP rate limit for /api/auth/sso/*
-	gatewayProxy      *httputil.ReverseProxy // optional /v1/* → co-located gateway
-	publicGatewayURL  string                 // optional public gateway base for UI copy
-	log               *slog.Logger
-	up                websocket.Upgrader
+	reader            *observability.Reader // may be nil when ClickHouse is not configured
+	store             *core.Store           // may be nil when Postgres is not configured
+	routes            RouteStatsSource      // may be nil when routing is disabled
+	catalog           CatalogSource         // may be nil when the gateway is not co-located
+	reload            func(context.Context) // may be nil when no hot-reload hook is wired
+	allowSignup       bool                  // public POST /api/auth/register
+	sso               *ssoClient            // OIDC client; nil when SSO is not configured
+	evalConfigSrc     EvalConfigSource      // nil when eval worker is disabled
+	evalConfigApply   EvalConfigApplier     // nil when eval worker is disabled
+	evalProfiles      EvalProfileSource     // PR #135: profile CRUD store
+	evalPlugins       EvalPluginSource      // eval-plugin store (Phase B)
+	pluginCollector   PluginWebhookReceiver // eval-plugin webhook sink (Phase C)
+	pluginTester      EvalPluginTester      // eval-plugin test-send (Phase D)
+	pluginManualFirer PluginManualFirer     // admin-driven drain for manual-trigger plugins
+	pluginKeys        EvalPluginKeys        // in-process plugin key resolver (console keys)
+	benchmarks        BenchmarkRunner       // model-level benchmark runs; nil without Postgres
+	// langsmithRuleCreator is the vendor-side automator driven by
+	// /api/eval/plugins/{name}/automation. nil when LangSmith is
+	// not configured (the route answers 503 — the UI surfaces a
+	// "not wired" explanation rather than crashing the tree).
+	langsmithRuleCreator LangSmithRuleCreator
+	langsmithCreatable   func(ctx context.Context, pluginName string) bool // predicate for UI gating
+	loginLim             *limiter.IPLimiter                                // per-IP rate limit for /api/auth/login
+	registerLim          *limiter.IPLimiter                                // per-IP rate limit for /api/auth/register
+	ssoLim               *limiter.IPLimiter                                // per-IP rate limit for /api/auth/sso/*
+	gatewayProxy         *httputil.ReverseProxy                            // optional /v1/* → co-located gateway
+	publicGatewayURL     string                                            // optional public gateway base for UI copy
+	log                  *slog.Logger
+	up                   websocket.Upgrader
 }
 
 // SetAllowSignup toggles public self-service registration (member role only).
@@ -295,6 +301,16 @@ func (s *Server) Mux() http.Handler {
 		if s.pluginManualFirer != nil {
 			r.Post("/eval/plugins/{name}/fire", s.requireAdmin(s.pluginFireManual))
 		}
+
+		// LangSmith automation: pressing "Create automation rule" in
+		// the plugin row asks Nexus to call /api/v1/runs/rules on
+		// behalf of the operator, removing the one manual step the
+		// LangSmith UI previously required (PR #196). Admin-only
+		// because the call mints vendor-side resources under the
+		// tenant's bill. The route is always registered; a nil
+		// langsmithRuleCreator returns a typed 503 envelope so the
+		// UI can render an explanation rather than a 404.
+		r.Post("/eval/plugins/{name}/automation", s.requireAdmin(s.pluginCreateAutomationRule))
 
 		// Plugin Keys panel: lets admins paste per-vendor API keys into
 		// the console instead of dropping a Helm chart-managed Secret.

@@ -468,6 +468,12 @@ func main() {
 			s:   scheduler,
 			reg: pluginReg,
 		})
+		// LangSmith automation: pressing "Create automation rule"
+		// in a plugin row asks Nexus to call /api/v1/runs/rules on
+		// the operator's behalf. We wire this only when NEXUS_PUBLIC_BASE_URL
+		// is set — without it, Nexus has no externally-routable
+		// URL to advertise, so any vendor-side webhook would 404 at
+		// first eval.
 		go func() {
 			if err := collector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Warn("plugin collector stopped", "err", err)
@@ -495,6 +501,32 @@ func main() {
 				withSource(srcAdapter).
 				withSecrets(pluginSecrets))
 		consoleSrvHandler.SetPluginKeys(pluginSecrets)
+
+		// LangSmith automation: pressing "Create automation rule"
+		// in a plugin row asks Nexus to call /api/v1/runs/rules on
+		// the operator's behalf. We wire this only when NEXUS_PUBLIC_BASE_URL
+		// is set — without it, Nexus has no externally-routable URL
+		// to advertise, so any vendor-side webhook would 404 at
+		// first eval.
+		if strings.TrimSpace(cfg.PublicBaseURL) != "" {
+			automator := &langsmithRuleAutomator{
+				cfg: LangsmithAutomatorConfig{
+					BaseURL:    cfg.PublicBaseURL,
+					HeaderName: "X-Nexus-Plugin",
+				},
+				log:     log,
+				plugins: srcAdapter,
+				keys: keyVaultSecretsResolver{
+					get: func(plugin string) (map[string]string, bool) {
+						return pluginSecrets.Get(plugin)
+					},
+				},
+			}
+			consoleSrvHandler.SetLangSmithRuleCreator(automator)
+			log.Info("langsmith automation wired", "public_base_url", cfg.PublicBaseURL)
+		} else {
+			log.Info("langsmith automation not wired (NEXUS_PUBLIC_BASE_URL unset)")
+		}
 
 		// Model benchmarks. These need Postgres for the run records and
 		// the same vault for the provider token; nothing from the eval

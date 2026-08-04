@@ -15,6 +15,8 @@ const langfuseRegionURLs: Record<string, string> = {
 import {
   type EvalPluginRecord,
   createEvalPlugin,
+  createLangSmithAutomationRule,
+  type LangSmithRuleResult,
   deleteEvalPlugin,
   fetchEvalPlugins,
   fireEvalPluginManual,
@@ -209,6 +211,33 @@ function FormMode({
   updateSend: (patch: Partial<PluginFormState["send"]>) => void;
   updateCollect: (patch: Partial<PluginFormState["collect"]>) => void;
 }) {
+  // LangSmith automation state lives in this component because
+  // the input + button only renders here. Moving upwards would
+  // mean hoisting the state through props that no other node
+  // cares about.
+  const [langsmithSessionID, setLangsmithSessionID] = useState<string>("");
+  const [langsmithAutoBusy, setLangsmithAutoBusy] = useState(false);
+  const [langsmithAutoResult, setLangsmithAutoResult] =
+    useState<LangSmithRuleResult | null>(null);
+
+  const onLangsmithAutomation = async () => {
+    setLangsmithAutoBusy(true);
+    setLangsmithAutoResult(null);
+    try {
+      const res = await createLangSmithAutomationRule(
+        form.name.trim(),
+        langsmithSessionID.trim(),
+      );
+      setLangsmithAutoResult(res);
+    } catch (e) {
+      setLangsmithAutoResult({
+        ok: false,
+        message: (e as Error).message,
+      });
+    } finally {
+      setLangsmithAutoBusy(false);
+    }
+  };
   return (
     <div className="plugin-form-grid">
       <FieldRow label="Plugin name">
@@ -334,12 +363,21 @@ function FormMode({
         </FieldRow>
         {form.service.kind === "langsmith" && (
           // LangSmith's REST API has no "give me back the scores I
-          // sent" endpoint. The path back from the vendor runs
-          // through an automation rule the operator creates in
-          // smith.langchain.com — without it traces land but no
-          // scores ever return to Nexus. Sketch the body shape
-          // here so the operator has the exact contract to type
-          // into the LangSmith UI when they create the rule.
+          // sent" endpoint. Until this PR the only way to bring
+          // scores back was for the operator to hand-craft an
+          // automation rule in smith.langchain.com — a curious
+          // missing feature given LangSmith's "evaluations" tag-line.
+          //
+          // As of late 2025 LangSmith exposed POST /api/v1/runs/rules
+          // for programmatic rule creation. Nexus's
+          // /api/eval/plugins/{name}/automation wraps that endpoint
+          // and removes the manual step entirely. The form below
+          // asks for the LangSmith project id (UUID, found in
+          // Settings → Projects) and offers a single button to let
+          // Nexus create the rule on the operator's behalf. If the
+          // rule conflicts (operator already made one themselves),
+          // the typed envelope surfaces the alternative "open
+          // LangSmith and verify the webhook" path.
           <div
             className="langsmith-automation-guide"
             data-testid="langsmith-automation-guide"
@@ -347,45 +385,105 @@ function FormMode({
             <p className="muted tiny">
               LangSmith will receive traces at <code>/otel/v1/traces</code>
               {" "}with the API key you paste in the Keys modal. To bring
-              score results back to Nexus, add one Automation rule in
-              your LangSmith project:
+              score results back to Nexus, paste the project id from{" "}
+              <code>smith.langchain.com → Settings → Projects</code> below
+              and let Nexus create the automation rule for you.
             </p>
-            <ol className="langsmith-automation-steps">
-              <li>
-                Open <code>smith.langchain.com</code> → your project →
-                <strong> Automations</strong> → <strong>+ New</strong>.
-              </li>
-              <li>
-                Trigger: <strong>“On a run finish”</strong> (or
-                <em>“On a feedback created”</em>).
-              </li>
-              <li>
-                Action: <strong>POST to webhook</strong> — URL:
-                <code
-                  className="langsmith-automation-url"
-                  data-testid="incoming-webhook-url"
-                >
-                  {incomingWebhookUrl(form.name || "<plugin-name>")}
-                </code>
-              </li>
-              <li>
-                Body (the contract Nexus already accepts):
-                <pre
-                  className="langsmith-automation-body"
-                  data-testid="automation-rule-body"
-                >{`{
+            <div className="langsmith-automation-create">
+              <label className="langsmith-automation-field">
+                <span className="muted tiny">LangSmith project id (UUID)</span>
+                <input
+                  className="input"
+                  type="text"
+                  spellCheck={false}
+                  placeholder="e.g. 11111111-1111-1111-1111-111111111111"
+                  value={langsmithSessionID}
+                  onChange={(e) => setLangsmithSessionID(e.target.value)}
+                  data-testid="langsmith-session-id-input"
+                />
+              </label>
+              <button
+                type="button"
+                className="btn-neon btn-small"
+                onClick={onLangsmithAutomation}
+                disabled={
+                  langsmithAutoBusy ||
+                  !form.name ||
+                  !langsmithSessionID
+                }
+                data-testid="langsmith-automation-create"
+                title={
+                  !form.name || !langsmithSessionID
+                    ? "Set the plugin name and project id, then paste the API key in the Keys modal"
+                    : "Ask Nexus to call LangSmith /api/v1/runs/rules"
+                }
+              >
+                {langsmithAutoBusy ? "Creating…" : "Create automation rule"}
+              </button>
+            </div>
+            {langsmithAutoResult ? (
+              <p
+                className={`plugin-row-test ${
+                  langsmithAutoResult.ok ? "ok" : "err"
+                }`}
+                data-testid="langsmith-automation-result"
+              >
+                {langsmithAutoResult.ok
+                  ? `▶ ${langsmithAutoResult.message || "automation rule created"}${
+                      langsmithAutoResult.rule_id
+                        ? ` — rule_id ${langsmithAutoResult.rule_id}`
+                        : ""
+                    }${
+                      langsmithAutoResult.webhook_url
+                        ? `, webhook ${langsmithAutoResult.webhook_url}`
+                        : ""
+                    }`
+                  : langsmithAutoResult.already_configured
+                  ? `⚠ ${langsmithAutoResult.message || "already configured"}`
+                  : `✗ ${
+                      langsmithAutoResult.message || "automation rule not created"
+                    }`}
+              </p>
+            ) : null}
+            <details className="langsmith-automation-manual">
+              <summary>Or set up the rule manually</summary>
+              <ol className="langsmith-automation-steps">
+                <li>
+                  Open <code>smith.langchain.com</code> → your project →
+                  <strong> Automations</strong> → <strong>+ New</strong>.
+                </li>
+                <li>
+                  Trigger: <strong>“On a run finish”</strong> (or
+                  <em>“On a feedback created”</em>).
+                </li>
+                <li>
+                  Action: <strong>POST to webhook</strong> — URL:
+                  <code
+                    className="langsmith-automation-url"
+                    data-testid="incoming-webhook-url"
+                  >
+                    {incomingWebhookUrl(form.name || "<plugin-name>")}
+                  </code>
+                </li>
+                <li>
+                  Body (the contract Nexus already accepts):
+                  <pre
+                    className="langsmith-automation-body"
+                    data-testid="automation-rule-body"
+                  >{`{
   "name":     "<run name>",
   "trace_id": "<trace id from the run>",
   "score":    <0 .. 1>,
   "explanation": "<optional rationale>"
 }`}</pre>
-              </li>
-            </ol>
-            <p className="muted tiny">
-              The webhook URL above mirrors the one shown under{" "}
-              <strong>Manage → Inbound webhook</strong> after install —
-              both go to the same handler.
-            </p>
+                </li>
+              </ol>
+              <p className="muted tiny">
+                The webhook URL above mirrors the one shown under{" "}
+                <strong>Manage → Inbound webhook</strong> after install —
+                both go to the same handler.
+              </p>
+            </details>
           </div>
         )}
       </Section>
