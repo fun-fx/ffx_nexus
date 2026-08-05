@@ -1211,6 +1211,27 @@ export async function fetchBenchmarkModels(): Promise<BenchmarkModel[]> {
   return Array.isArray(data.models) ? data.models : [];
 }
 
+/** One operator-reported `prime env push` outcome.
+ *
+ *  Reported, not verified: the operator's CLI tells us it ran, and we
+ *  take their word for it. Whether the vendor can actually see the slug
+ *  is still only answered by dryRunBenchmark. */
+export interface EnvPushReport {
+  slug: string;
+  ok: boolean;
+  completed_at: string;
+  received_at: string;
+}
+
+export async function fetchEnvPushReports(): Promise<EnvPushReport[]> {
+  const res = await fetch("/api/eval/benchmarks/push-report");
+  // An older server without this route 404s. That is not worth an error
+  // toast — the panel simply has nothing to show.
+  if (!res.ok) return [];
+  const data = await jsonOrError<{ reports: EnvPushReport[] }>(res);
+  return Array.isArray(data.reports) ? data.reports : [];
+}
+
 export interface BenchmarkCredentialState {
   provider: string;
   configured: boolean;

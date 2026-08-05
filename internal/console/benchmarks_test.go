@@ -138,6 +138,11 @@ func TestBenchmarkRoutesRequireAdminSession(t *testing.T) {
 		// wouldn't fail the matching, but a missing config would not
 		// either — we rely on requireAdmin to gate instead).
 		{http.MethodPost, "/api/eval/benchmarks/validate"},
+		// push-report takes no money-spending action, but it feeds a
+		// panel on an admin page and an anonymous caller could otherwise
+		// plant a misleading "published" claim there.
+		{http.MethodPost, "/api/eval/benchmarks/push-report"},
+		{http.MethodGet, "/api/eval/benchmarks/push-report"},
 		{http.MethodGet, "/api/eval/benchmarks/models"},
 		{http.MethodPost, "/api/eval/benchmarks/refresh"},
 		{http.MethodGet, "/api/eval/benchmarks/credential"},

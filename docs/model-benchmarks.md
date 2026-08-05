@@ -84,8 +84,10 @@ Nexus configuration problem:
    the authenticated account can write to, so a public Hub slug such as
    `primeintellect/gsm8k` returns 404 for an account that does not own
    it. Publish your own with `prime env push`. There is no public
-   environments API, which is why the console asks you to paste a slug
-   instead of offering a picker.
+   environments API, so the console's picker is a curated list of slugs
+   worth trying rather than a discovered one — it cannot tell you which
+   of them your account can see, which is what the pre-flight validate
+   below is for. Any slug can also be typed in by hand.
 2. **A funded Prime wallet.** Runs bill per token, plus sandbox compute
    when inference points at an external endpoint. A zero balance fails
    the launch with the provider's own 402.
@@ -329,3 +331,59 @@ curl -X POST https://nexus.ffx.ai/api/eval/benchmarks/validate \
 ```
 
 Success: `{"ok":true}`. A 404 returns `{"ok":false,"error":"…"}`.
+
+## Env-push guidance and reports
+
+A 404 from the pre-flight means the slug is not published to the
+account, and the fix is a local `prime env push`. The console reacts to
+that specific failure by expanding a panel with the five files and
+commands the operator needs: a starter `gsm8k.jsonl`, a `grade.py`
+grader, an `env.yaml` binding the two, the push command itself, and the
+optional report described below. Each snippet has Copy, and the three
+files have Download.
+
+The panel appears only on a 404. A 401 or a balance error needs a
+different fix, and offering CLI steps there would send the operator
+down the wrong path.
+
+### Why Nexus cannot do the push
+
+`prime env push` reads a dataset and grader off local disk and uploads
+them; the provider exposes no server-side equivalent. Automating it
+would mean running the vendor CLI inside the cluster with the
+operator's key and their dataset staged into a pod — new infrastructure
+to hold a credential for a step the vendor deliberately keeps
+device-local. The panel therefore explains the manual path rather than
+replacing it.
+
+### The report endpoint
+
+Because the push happens on a laptop, Nexus otherwise has no way to
+know it ever ran. The last step of the guide is an optional curl:
+
+```bash
+curl -fsS -X POST https://nexus.ffx.ai/api/eval/benchmarks/push-report \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"slug":"your-org/gsm8k","ok":true}'
+```
+
+- **Advisory, not authoritative.** Anyone with an admin token can post
+  `ok: true` for a slug that was never published. Visibility is still
+  decided only by the dry-run, which asks the vendor. The console
+  labels these "reported", never "verified", and does not let a report
+  unlock Launch.
+- **No CLI output.** The body carries `slug`, `ok`, and an optional
+  `completed_at` — nothing else. `prime` echoes request details on
+  failure and the API key can ride along in them, so accepting stdout
+  would put a credential in memory and then render it into an admin
+  page. The operator reads their own failure text in their own
+  terminal.
+- **In memory, 24h TTL, capped at 256 entries.** Keyed by slug, so a
+  re-push corrects rather than accumulates. No table and no migration:
+  the data is a same-day UI convenience, and losing it on restart costs
+  one click on Validate. `GET .../push-report` lists live reports,
+  newest first.
+- Both methods are admin-gated, and both work on a deployment with no
+  control-plane database — the operator publishing environments exists
+  there too.
