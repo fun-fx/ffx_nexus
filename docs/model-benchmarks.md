@@ -313,7 +313,10 @@ Implementation:
   posts a `NumExamples=1, Rollouts=1` evaluation, then immediately
   PATCHes `/cancel`. The cancel returns before the sandbox provisions
   any inference, so the run never bills tokens. No `benchmark_runs`
-  row is written.
+  row is written. If the vendor terminalises synchronously (common
+  with insufficient funds) or refuses cancel with 409 because the
+  row is already FAILED, the probe still succeeds — slug and key
+  were accepted.
 - **`benchmark.Runner.DryRun`** wraps it with the same credential and
   validation gate `Launch` walks, so the probe can't succeed on
   inputs the regular launch would reject.

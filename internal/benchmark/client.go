@@ -167,15 +167,62 @@ func (c *Client) DryRun(ctx context.Context, req LaunchRequest) error {
 		return fmt.Errorf("benchmark: dry-run launch returned no evaluation id (status=%q error=%q)",
 			res.Status, res.Error)
 	}
+	// The vendor sometimes terminalises synchronously — insufficient
+	// funds is the common case — before we can cancel. An evaluation_id
+	// plus a billing failure still proves slug resolution and auth.
+	if dryRunAlreadySettled(res.Status) {
+		if msg := strings.TrimSpace(res.Error); msg != "" && !dryRunBillingOnlyFailure(msg) {
+			return fmt.Errorf("benchmark: dry-run probe failed: %s", msg)
+		}
+		return nil
+	}
 	// Cancel best-effort. The vendor accepting the cancel is itself
 	// part of the probe — a credential that creates but cannot cancel
-	// is one we do not want to carry into a real launch.
+	// is one we do not want to carry into a real launch — unless the
+	// vendor raced us to a terminal state (409 on cancel).
 	if err := c.Cancel(ctx, res.EvaluationID); err != nil {
-		// Wrap so we keep the underlying message intact while making
-		// it clear the cancel, not the create, is what failed.
+		if dryRunCancelAlreadyTerminal(err) {
+			return nil
+		}
 		return fmt.Errorf("benchmark: dry-run launch succeeded but cancel failed: %w", err)
 	}
 	return nil
+}
+
+// dryRunAlreadySettled reports vendor create responses that leave
+// nothing running to cancel.
+func dryRunAlreadySettled(status string) bool {
+	switch status {
+	case primeStatusFailed, primeStatusCompleted, primeStatusCancelled, primeStatusTimeout:
+		return true
+	default:
+		return Settled(NormalizeStatus(status))
+	}
+}
+
+// dryRunBillingOnlyFailure recognises probe failures that mean
+// "credential and slug worked, wallet did not".
+func dryRunBillingOnlyFailure(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "insufficient funds") ||
+		strings.Contains(m, "insufficient balance") ||
+		strings.Contains(m, "need at least $")
+}
+
+// dryRunCancelAlreadyTerminal treats a 409 cancel refusal as probe
+// success when the evaluation is already in a terminal state.
+func dryRunCancelAlreadyTerminal(err error) bool {
+	if err == nil {
+		return true
+	}
+	m := strings.ToLower(err.Error())
+	if !strings.Contains(m, "409") {
+		return false
+	}
+	return strings.Contains(m, "cannot be cancelled") ||
+		strings.Contains(m, "already failed") ||
+		strings.Contains(m, "already completed") ||
+		strings.Contains(m, "already cancelled")
 }
 
 // Status reads one run, including the aggregate score once it settles.
