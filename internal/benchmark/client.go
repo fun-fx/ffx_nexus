@@ -66,8 +66,12 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, e
 	if err := req.Validate(); err != nil {
 		return LaunchResult{}, err
 	}
+	envIDs, err := c.resolveEnvironmentIDs(ctx, req.Environments)
+	if err != nil {
+		return LaunchResult{}, err
+	}
 	body := createRequest{
-		EnvironmentIDs: req.Environments,
+		EnvironmentIDs: envIDs,
 		InferenceModel: req.Model,
 		Name:           req.Name,
 		EvalConfig: evalConfig{
@@ -134,8 +138,12 @@ func (c *Client) DryRun(ctx context.Context, req LaunchRequest) error {
 	if err := probe.Validate(); err != nil {
 		return err
 	}
+	envIDs, err := c.resolveEnvironmentIDs(ctx, probe.Environments)
+	if err != nil {
+		return err
+	}
 	body := createRequest{
-		EnvironmentIDs: probe.Environments,
+		EnvironmentIDs: envIDs,
 		InferenceModel: probe.Model,
 		Name:           probe.Name,
 		EvalConfig: evalConfig{

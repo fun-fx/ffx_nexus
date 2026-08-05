@@ -224,6 +224,7 @@ func mockProvider(t *testing.T, routes map[string]route) (*httptest.Server, *[]s
 
 func newTestRunner(t *testing.T, routes map[string]route, gatewayURL string) (*Runner, *fakeStore, *fakeKeys) {
 	t.Helper()
+	routes = withEnvStatus(routes, "ffx/gsm8k", "env_ffx_gsm8k")
 	srv, _ := mockProvider(t, routes)
 	store := newFakeStore()
 	keys := &fakeKeys{}
@@ -249,9 +250,19 @@ func spec() LaunchSpec {
 func TestLaunchViaGatewayMintsScopedKeyAndRecordsRun(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"evaluation_id":"ev_1","status":"PENDING","sandbox_id":"sb_1"}`))
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/environmentshub/ffx/gsm8k/status":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"id":"env_ffx_gsm8k"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/hosted-evaluations":
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"evaluation_id":"ev_1","status":"PENDING","sandbox_id":"sb_1"}`))
+		default:
+			t.Errorf("unexpected route: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotImplemented)
+		}
 	}))
 	defer srv.Close()
 
@@ -315,9 +326,19 @@ func TestLaunchViaGatewayMintsScopedKeyAndRecordsRun(t *testing.T) {
 func TestLaunchWithoutGatewayRoutingMintsNoKey(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"evaluation_id":"ev_2","status":"RUNNING"}`))
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/environmentshub/ffx/gsm8k/status":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"id":"env_ffx_gsm8k"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/hosted-evaluations":
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"evaluation_id":"ev_2","status":"RUNNING"}`))
+		default:
+			t.Errorf("unexpected route: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotImplemented)
+		}
 	}))
 	defer srv.Close()
 
@@ -430,7 +451,12 @@ func TestLaunchRejectedByProviderIsRecordedAndKeyRevoked(t *testing.T) {
 }
 
 func TestLaunchRevokesKeyWhenTheRowCannotBeWritten(t *testing.T) {
-	srv, _ := mockProvider(t, nil)
+	srv, _ := mockProvider(t, withEnvStatus(map[string]route{
+		"POST /api/v1/hosted-evaluations": {
+			status: http.StatusCreated,
+			body:   `{"evaluation_id":"ev_1","status":"PENDING"}`,
+		},
+	}, "ffx/gsm8k", "env_ffx_gsm8k"))
 	store := newFakeStore()
 	store.createErr = errors.New("database is down")
 	keys := &fakeKeys{}
@@ -459,6 +485,10 @@ func TestDryRunHappyPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.Method+" "+r.URL.Path)
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/environmentshub/ffx/gsm8k/status":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"id":"env_ffx_gsm8k"}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/hosted-evaluations":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -481,9 +511,10 @@ func TestDryRunHappyPath(t *testing.T) {
 	if err := r.DryRun(context.Background(), spec()); err != nil {
 		t.Fatalf("dry-run: %v", err)
 	}
-	if len(seen) != 2 || seen[0] != "POST /api/v1/hosted-evaluations" ||
-		seen[1] != "PATCH /api/v1/hosted-evaluations/ev_dry/cancel" {
-		t.Errorf("probe order = %v, want POST → PATCH ev_dry/cancel", seen)
+	if len(seen) != 3 || seen[0] != "GET /api/v1/environmentshub/ffx/gsm8k/status" ||
+		seen[1] != "POST /api/v1/hosted-evaluations" ||
+		seen[2] != "PATCH /api/v1/hosted-evaluations/ev_dry/cancel" {
+		t.Errorf("probe order = %v, want GET status → POST → PATCH ev_dry/cancel", seen)
 	}
 	// Critical: the probe must NOT persist a row. Otherwise the poller
 	// would log a transient failed entry on every credential change.
@@ -498,13 +529,13 @@ func TestDryRunHappyPath(t *testing.T) {
 // vendor's reason verbatim rather than parsing a generic 404.
 func TestDryRunMissingEnvironmentSurfaces404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/hosted-evaluations" {
-			w.WriteHeader(http.StatusNotImplemented)
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/environmentshub/ffx/gsm8k/status" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"detail":"environment ffx/gsm8k not visible to this account"}`))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"detail":"environment primeintellect/gsm8k not visible to this account"}`))
+		w.WriteHeader(http.StatusNotImplemented)
 	}))
 	defer srv.Close()
 

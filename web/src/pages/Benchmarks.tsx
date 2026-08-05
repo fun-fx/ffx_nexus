@@ -61,6 +61,19 @@ function presetFor(slug: string): { slug: string; label: string } | undefined {
   return ENVIRONMENT_PRESETS.find((p) => p.slug === slug);
 }
 
+// splitSlug separates "<owner>/<name>" for the push guide, which needs
+// the halves apart: the owner must already exist on the Prime account,
+// while only the name may be handed to `prime env init`.
+//
+// A slug with no slash is treated as a name with an unknown owner
+// rather than an error — the guide is what teaches the shape, so it has
+// to render something sensible while the operator is still typing.
+function splitSlug(slug: string): [owner: string, name: string] {
+  const cut = slug.indexOf("/");
+  if (cut < 0) return ["your-org", slug];
+  return [slug.slice(0, cut), slug.slice(cut + 1)];
+}
+
 function formatScore(run: BenchmarkRun): string {
   if (run.avg_score === null || run.avg_score === undefined) return "—";
   return run.avg_score.toFixed(3);
@@ -789,9 +802,28 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
   // any of them in. Falling back to "your-org/gsm8k" keeps the
   // snippet copy-pasteable when the operator removed all chips.
   const target = slugs[0] || "your-org/gsm8k";
-  const envYaml = SAMPLE_ENV_YAML.replace("__SLUG__", target);
-  const pushCmd = `prime env push ${target} --config ./env.yaml`;
+  // Prime slugs are <owner>/<name>. The two halves are used in
+  // different places: the owner has to already exist on the account,
+  // and only the name may appear in the CLI arguments.
+  const [owner, name] = splitSlug(target);
   const whichCmd = "which prime  &&  prime --version";
+  const whoamiCmd = "prime whoami  &&  prime teams list";
+  // `prime env init` maps "-" to "_" but leaves "/" alone, then writes
+  // to <path>/<id>/<id>.py without creating the intermediate directory.
+  // Passing "<owner>/<name>" therefore crashes on a missing folder, so
+  // the name goes in alone and the owner is supplied at push time.
+  const initCmd = `mkdir -p ~/prime-envs && cd ~/prime-envs && prime env init ${name} -p .`;
+  // No slug argument here, deliberately. With one, the CLI resolves the
+  // directory as <path>/<last-segment> — from inside the env folder
+  // that means ./<name>/<name>, and the push dies on a missing
+  // pyproject.toml. Bare `prime env push` uses the current directory.
+  const pushCmd = [
+    `cd ~/prime-envs/${name}`,
+    `# Personal account:`,
+    `prime env push --visibility PRIVATE`,
+    `# Team account (replace with your team slug, e.g. ffx-team):`,
+    `prime env push --team YOUR-TEAM-SLUG --visibility PRIVATE`,
+  ].join("\n");
   // Chained onto the push with && so it only fires on success, and
   // reports failure separately via ||. The operator pastes their own
   // console session token; we cannot template one in because the page
@@ -819,8 +851,27 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
         <p className="muted">
           Prime does not let Nexus (or any client) push environments on
           the operator&apos;s behalf — that channel is local-CLI only.
-          Run these steps on a workstation where the dataset lives and
-          the same key is exported as <code>PRIME_API_KEY</code>:
+          Run these steps on your own workstation, with the same key
+          exported as <code>PRIME_API_KEY</code>. Nothing here runs on
+          the server hosting this console.
+        </p>
+        <p className="bench-cli-prereq">
+          <strong>Do this first:</strong> the owner half of the slug (
+          <code>{owner}</code>) must already be a username or team slug
+          on your Prime account, and a fresh account has neither. Set a
+          team slug from the team profile on the{" "}
+          <a
+            href="https://app.primeintellect.ai/dashboard"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Prime dashboard
+          </a>{" "}
+          — a personal username works too, but Prime lets you choose it
+          only once and publishes it. Until one exists the push fails at
+          the very last step with <em>missing a teamname</em> or{" "}
+          <em>missing a username</em>, after the upload appears to
+          succeed.
         </p>
       </div>
 
@@ -848,53 +899,71 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
         <li>
           <span className="bench-cli-step-num">2</span>
           <div className="bench-cli-step-body">
-            <strong>Drop a starter dataset on disk:</strong>
-            <CodeBlock
-              label="gsm8k.jsonl"
-              text={SAMPLE_DATASET_JSONL}
-              downloadName="gsm8k.jsonl"
-            />
+            <strong>
+              Check the owner exists — this is the usual blocker:
+            </strong>
+            <CodeBlock text={whoamiCmd} />
             <p className="muted">
-              Replace these rows with your own prompts+answers. One JSON
-              object per line — each line becomes one benchmark sample.
+              You want a real value for <em>Username</em>, or a team
+              whose <em>Slug</em> column is filled in. <code>Not set</code>{" "}
+              and <code>null</code> both mean the push will fail; go back
+              to the dashboard link above and set one.
             </p>
           </div>
         </li>
         <li>
           <span className="bench-cli-step-num">3</span>
           <div className="bench-cli-step-body">
-            <strong>
-              Add a grader (Python, executed inside the sandbox):
-            </strong>
-            <CodeBlock
-              label="grade.py"
-              text={SAMPLE_GRADER_PY}
-              downloadName="grade.py"
-              language="python"
-            />
+            <strong>Scaffold the environment folder:</strong>
+            <CodeBlock text={initCmd} />
+            <p className="muted">
+              Pass the bare name <code>{name}</code>, not the full slug —{" "}
+              <code>prime env init {owner}/{name}</code> crashes with a{" "}
+              <code>FileNotFoundError</code> because the CLI builds a
+              nested path it never creates. You get{" "}
+              <code>~/prime-envs/{name}/</code> holding{" "}
+              <code>pyproject.toml</code>, <code>README.md</code> and a{" "}
+              <code>{name}.py</code> stub.
+            </p>
           </div>
         </li>
         <li>
           <span className="bench-cli-step-num">4</span>
           <div className="bench-cli-step-body">
-            <strong>Bind the two files with an env.yaml:</strong>
+            <strong>
+              Replace the stub — this file <em>is</em> the environment:
+            </strong>
             <CodeBlock
-              label="env.yaml"
-              text={envYaml}
-              downloadName="env.yaml"
+              label={`${name}.py`}
+              text={SAMPLE_ENV_MODULE}
+              downloadName={`${name}.py`}
+              language="python"
             />
+            <p className="muted">
+              Prime builds a wheel from this folder and calls{" "}
+              <code>load_environment()</code> in the sandbox, so the
+              dataset and the grading live here rather than in separate
+              files. This version pulls GSM8K straight from{" "}
+              <code>verifiers</code>, so there is nothing else to stage;
+              swap in your own <code>dataset</code> and reward function
+              when you want to measure something real.
+            </p>
           </div>
         </li>
         <li>
           <span className="bench-cli-step-num">5</span>
           <div className="bench-cli-step-body">
-            <strong>Publish it under your namespace:</strong>
+            <strong>Publish it:</strong>
             <CodeBlock text={pushCmd} />
             <p className="muted">
-              After this succeeds the slug <code>{target}</code> is
-              visible to this Nexus instance — come back here and re-run{" "}
-              <em>Validate environments</em>. Other slugs in your
-              namespace typically become visible at the same time.
+              Run it from inside the folder and pass no slug — with one,
+              the CLI looks for the environment in{" "}
+              <code>./{name}/{name}</code> and reports{" "}
+              <code>pyproject.toml not found</code>. Drop{" "}
+              <code>--team</code> to publish under your personal
+              username, and <code>--visibility PRIVATE</code> to keep it
+              off the public hub. Afterwards come back and re-run{" "}
+              <em>Validate environments</em>.
             </p>
           </div>
         </li>
@@ -923,57 +992,65 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
   );
 }
 
-// SAMPLE_DATASET_JSONL is the minimum GSM8K-shaped file Nexus
-// exports on the operator's behalf. Three questions is enough to
-// demo the dry-run + validate path; the operator is expected to
-// replace these with their production dataset before launching.
+// SAMPLE_ENV_MODULE is the body the operator drops over the stub that
+// `prime env init` scaffolds. It is the whole environment: Prime builds
+// a wheel from the folder and calls load_environment() inside the
+// sandbox, so there is no separate dataset file and no manifest.
 //
-// The questions are public-domain GSM8K excerpts (OpenAI, MIT
-// licence). They use the integer-answer subset of GSM8K because
-// that is the simplest grader to write.
-const SAMPLE_DATASET_JSONL = [
-  '{"question":"Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?","answer":72}',
-  '{"question":"Weng earns $12 an hour for babysitting. Yesterday, she babysat for 1 hour and then for 3 hours. How much money did she earn in total?","answer":48}',
-  '{"question":"There were 15 trees in the grove. Grove workers planted trees in the grove today. After they were done, there were 21 trees. How many trees did the grove workers plant today?","answer":6}',
-].join("\n");
-
-// SAMPLE_GRADER_PY is the function the provider calls per sample. It
-// receives the dataset row as `sample` dict and the model's full
-// response as `completion` string and returns 1.0 for a correct
-// answer, 0.0 otherwise. The \boxed{} peel is the common LLM-eval idiom
-// for model-written answers; without it, almost every reasoning model
-// marks itself wrong because it leaves prose around the integer.
-const SAMPLE_GRADER_PY = [
-  "# grade.py — the function Prime calls per sample.",
-  "# `sample` is the JSONL row, `completion` is the model response.",
-  "# Return 1.0 for a correct answer, 0.0 otherwise (partial credit ok).",
+// Two details are load-bearing and easy to get wrong:
+//
+//   - extract_boxed_answer needs strict=True. Without it the helper
+//     echoes the entire response when there is no \boxed{}, so the
+//     last-number fallback never runs and every unboxed answer scores
+//     zero.
+//   - the reward function must accept **kwargs. Rubric inspects the
+//     signature and only passes the arguments it declares, so a
+//     narrower signature silently receives less than it expects.
+//
+// The dataset comes from verifiers' own load_example_dataset, whose
+// default name is literally "gsm8k" — nothing to stage on disk.
+const SAMPLE_ENV_MODULE = [
+  '"""GSM8K — grade-school math word problems, scored on the final number."""',
   "",
   "import re",
   "",
-  "def grade(sample, completion):",
-  "    # Models often wrap the final integer in \\boxed{…}; peel it off.",
-  "    boxed = re.search(r\"\\\\\\\\boxed\\\\{(.+?)\\\\}\", completion)",
-  "    pred = boxed.group(1).strip() if boxed else completion.strip()",
+  "import verifiers as vf",
+  "",
+  "SYSTEM_PROMPT = (",
+  '    "Solve the math problem. Reason step by step, then give the final "',
+  '    "numeric answer inside \\\\boxed{}."',
+  ")",
+  "",
+  "",
+  "def correct_answer(completion, answer, **kwargs) -> float:",
+  '    """1.0 when the model\'s final number matches the reference."""',
+  "    text = completion if isinstance(completion, str) else str(completion)",
+  "",
+  "    # strict=True or the helper returns the whole response when there",
+  "    # is no \\boxed{}, starving the fallback below.",
+  '    candidate = vf.extract_boxed_answer(text, strict=True) or ""',
+  "    if not candidate:",
+  "        # Take the last number mentioned — where a chain-of-thought",
+  "        # answer almost always lands.",
+  '        numbers = re.findall(r"-?\\d[\\d,]*\\.?\\d*", text)',
+  '        candidate = numbers[-1] if numbers else ""',
+  "",
   "    try:",
-  "        return float(int(pred) == int(sample[\"answer\"]))",
+  '        return float(float(candidate.replace(",", "")) == float(str(answer).replace(",", "")))',
   "    except ValueError:",
   "        return 0.0",
-].join("\n");
-
-// SAMPLE_ENV_YAML is the manifest that `prime env push` consumes.
-// __SLUG__ is replaced at render time with the targeted slug so
-// the operator can copy-and-paste the env.yaml text directly.
-const SAMPLE_ENV_YAML = [
-  "# env.yaml — declarative manifest for `prime env push`.",
-  "# Paths are relative to this file's directory.",
-  "name: __SLUG__",
-  "dataset:",
-  "  path: ./gsm8k.jsonl",
-  "  format: jsonl",
-  "grader:",
-  "  type: custom",
-  "  module: ./grade.py",
-  "  entry: grade",
+  "",
+  "",
+  'def load_environment(num_examples: int = 100, split: str = "test", **kwargs) -> vf.Environment:',
+  '    """Load this environment."""',
+  '    dataset = vf.load_example_dataset("gsm8k", split=split, n=num_examples)',
+  "    rubric = vf.Rubric(funcs=[correct_answer], weights=[1.0])",
+  "    return vf.SingleTurnEnv(",
+  "        dataset=dataset,",
+  "        rubric=rubric,",
+  "        system_prompt=SYSTEM_PROMPT,",
+  "        **kwargs,",
+  "    )",
 ].join("\n");
 
 function CodeBlock({

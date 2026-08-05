@@ -303,6 +303,12 @@ console offers a pre-flight dry-run so an operator can confirm:
 
 Implementation:
 
+- **`benchmark.Client.resolveEnvironmentIDs`** in
+  `internal/benchmark/resolve.go` maps Hub slugs such as
+  `primeintellect/gsm8k` to internal ids via
+  `GET /environmentshub/{owner}/{name}/status` before create. The
+  hosted-evaluations endpoint documents slugs but rejects them with a
+  404; lookup is the supported path.
 - **`benchmark.Client.DryRun`** in `internal/benchmark/client.go`
   posts a `NumExamples=1, Rollouts=1` evaluation, then immediately
   PATCHes `/cancel`. The cancel returns before the sandbox provisions
@@ -336,15 +342,20 @@ Success: `{"ok":true}`. A 404 returns `{"ok":false,"error":"…"}`.
 
 A 404 from the pre-flight means the slug is not published to the
 account, and the fix is a local `prime env push`. The console reacts to
-that specific failure by expanding a panel with the five files and
-commands the operator needs: a starter `gsm8k.jsonl`, a `grade.py`
-grader, an `env.yaml` binding the two, the push command itself, and the
-optional report described below. Each snippet has Copy, and the three
-files have Download.
+that specific failure by expanding a panel with the CLI steps the
+operator needs: confirm the CLI, check the owner exists, scaffold a
+`pyproject.toml` environment folder, replace the stub module, push from
+inside the folder, and optionally report back. Each snippet has Copy,
+and the sample module has Download.
 
 The panel appears only on a 404. A 401 or a balance error needs a
 different fix, and offering CLI steps there would send the operator
 down the wrong path.
+
+Built-in presets such as `primeintellect/gsm8k` are public Hub
+environments. Nexus resolves those slugs to internal ids before calling
+hosted-evaluations, so a 404 on a preset usually means the slug lookup
+failed rather than a missing local push.
 
 ### Why Nexus cannot do the push
 
