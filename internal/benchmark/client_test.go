@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,63 @@ func serve(t *testing.T, status int, reply string) (*Client, *capture) {
 	return NewClient(srv.URL, "pit_test", srv.Client()), got
 }
 
+func serveRoutes(t *testing.T, routes map[string]route) (*Client, *capture) {
+	t.Helper()
+	got := &capture{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Method + " " + r.URL.Path
+		if key == "POST /api/v1/hosted-evaluations" {
+			got.method = r.Method
+			got.path = r.URL.Path
+			got.auth = r.Header.Get("Authorization")
+			got.accept = r.Header.Get("Accept")
+			if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
+				_ = json.Unmarshal(raw, &got.body)
+			}
+		}
+		rt, ok := routes[key]
+		if !ok {
+			t.Errorf("unexpected route: %s", key)
+			w.WriteHeader(http.StatusNotImplemented)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(rt.status)
+		_, _ = io.WriteString(w, rt.body)
+	}))
+	t.Cleanup(srv.Close)
+	return NewClient(srv.URL, "pit_test", srv.Client()), got
+}
+
+func launchRoutes(t *testing.T, createStatus int, createBody string) (*Client, *capture) {
+	t.Helper()
+	statusKey, status := envStatusRoute("ffx/gsm8k", "env_ffx_gsm8k")
+	return serveRoutes(t, map[string]route{
+		statusKey:                         status,
+		"POST /api/v1/hosted-evaluations": {status: createStatus, body: createBody},
+	})
+}
+
+func envStatusRoute(slug, id string) (string, route) {
+	owner, name, _ := strings.Cut(slug, "/")
+	key := fmt.Sprintf("GET /api/v1/environmentshub/%s/%s/status", owner, name)
+	return key, route{
+		status: http.StatusOK,
+		body:   fmt.Sprintf(`{"data":{"id":%q}}`, id),
+	}
+}
+
+func withEnvStatus(routes map[string]route, slug, id string) map[string]route {
+	if routes == nil {
+		routes = map[string]route{}
+	}
+	key, rt := envStatusRoute(slug, id)
+	if _, exists := routes[key]; !exists {
+		routes[key] = rt
+	}
+	return routes
+}
+
 func goodLaunch() LaunchRequest {
 	return LaunchRequest{
 		Environments: []string{"ffx/gsm8k"},
@@ -51,7 +109,7 @@ func goodLaunch() LaunchRequest {
 }
 
 func TestLaunchSendsVendorShape(t *testing.T) {
-	c, got := serve(t, http.StatusCreated,
+	c, got := launchRoutes(t, http.StatusCreated,
 		`{"evaluation_id":"ev_1","status":"PENDING","sandbox_id":"sb_1"}`)
 
 	res, err := c.Launch(context.Background(), goodLaunch())
@@ -73,7 +131,7 @@ func TestLaunchSendsVendorShape(t *testing.T) {
 	// environment_ids and inference_model are the vendor's names; a
 	// rename here is a silent 422 in production.
 	envs, ok := got.body["environment_ids"].([]any)
-	if !ok || len(envs) != 1 || envs[0] != "ffx/gsm8k" {
+	if !ok || len(envs) != 1 || envs[0] != "env_ffx_gsm8k" {
 		t.Errorf("environment_ids = %#v", got.body["environment_ids"])
 	}
 	if got.body["inference_model"] != "gpt-4o-mini" {
@@ -101,7 +159,7 @@ func TestLaunchSendsVendorShape(t *testing.T) {
 }
 
 func TestLaunchRoutesInferenceThroughGateway(t *testing.T) {
-	c, got := serve(t, http.StatusCreated, `{"evaluation_id":"ev_2","status":"PENDING"}`)
+	c, got := launchRoutes(t, http.StatusCreated, `{"evaluation_id":"ev_2","status":"PENDING"}`)
 
 	req := goodLaunch()
 	req.BaseURL = "https://nexus.example.ai/v1"
@@ -170,7 +228,7 @@ func TestLaunchValidationRejectsBadRequests(t *testing.T) {
 }
 
 func TestLaunchAtCapIsAllowed(t *testing.T) {
-	c, _ := serve(t, http.StatusCreated, `{"evaluation_id":"ev_3","status":"PENDING"}`)
+	c, _ := launchRoutes(t, http.StatusCreated, `{"evaluation_id":"ev_3","status":"PENDING"}`)
 	req := goodLaunch()
 	req.NumExamples = MaxTotalSamples
 	req.Rollouts = 1
@@ -187,9 +245,7 @@ func TestLaunchWithoutTokenDoesNotCallVendor(t *testing.T) {
 }
 
 func TestLaunchRejectsMissingEvaluationID(t *testing.T) {
-	// A 201 with no id leaves us unable to poll. Treating it as
-	// success would create a row that never settles.
-	c, _ := serve(t, http.StatusCreated, `{"status":"PENDING","error":"sandbox quota exceeded"}`)
+	c, _ := launchRoutes(t, http.StatusCreated, `{"status":"PENDING","error":"sandbox quota exceeded"}`)
 	_, err := c.Launch(context.Background(), goodLaunch())
 	if err == nil {
 		t.Fatal("want error when evaluation_id is absent")
@@ -295,7 +351,7 @@ func TestErrorMessagesNameTheActualCause(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c, _ := serve(t, tc.status, tc.reply)
+			c, _ := launchRoutes(t, tc.status, tc.reply)
 			_, err := c.Launch(context.Background(), goodLaunch())
 			if err == nil {
 				t.Fatal("want an error")

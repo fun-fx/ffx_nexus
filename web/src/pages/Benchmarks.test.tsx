@@ -365,13 +365,46 @@ it("posts the form, combining preset choices with a custom slug", async () => {
     fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
 
     const guide = await screen.findByTestId("bench-cli-guide");
-    // The push command targets the slug the operator actually selected,
-    // not the placeholder, or the copied line pushes the wrong thing.
-    expect(guide).toHaveTextContent("prime env push primeintellect/gsm8k");
+    // The commands are split on the slug the operator actually selected:
+    // the bare name scaffolds, the owner is what we push to. Getting
+    // either half from the placeholder instead would publish the wrong
+    // thing.
+    expect(guide).toHaveTextContent("prime env init gsm8k -p .");
+    expect(guide).toHaveTextContent("prime env push --visibility PRIVATE");
+    expect(guide).toHaveTextContent("YOUR-TEAM-SLUG");
+    // Both halves of the CLI's path handling are traps that cost real
+    // debugging time, so the guide has to keep warning about them:
+    // a slug passed to init crashes, and a slug passed to push sends it
+    // hunting one directory too deep.
+    expect(guide).toHaveTextContent("FileNotFoundError");
+    expect(guide).toHaveTextContent("pyproject.toml not found");
     expect(guide).toHaveTextContent("/api/eval/benchmarks/push-report");
     // Output is deliberately absent from the payload: the CLI can echo
     // the API key and this panel is rendered for admins.
     expect(guide).not.toHaveTextContent('"stdout"');
+  });
+
+  it("leads the guide with the owner prerequisite", async () => {
+    // A fresh Prime account has neither a username nor a team slug, and
+    // the push only complains about it at the very end — after the wheel
+    // builds and the upload reports success, which reads like it worked.
+    // Anyone who misses this loses the time to a build they have to
+    // redo, so it goes above the steps rather than inside them.
+    setup({ runs: [], validateError: "benchmark: not found (404): environment" });
+    await screen.findByRole("button", { name: "Validate environments" });
+    fireEvent.change(await renderModelCmb(), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
+
+    const guide = await screen.findByTestId("bench-cli-guide");
+    expect(guide).toHaveTextContent("must already be a username or team slug");
+    expect(guide).toHaveTextContent("missing a teamname");
+    // And it has to say where: the field is only settable in Prime's own
+    // dashboard, so a guide without the link is a dead end.
+    expect(
+      guide.querySelector('a[href*="app.primeintellect.ai"]'),
+    ).toBeInTheDocument();
   });
 
   it("shows a reported push as reported rather than verified", async () => {

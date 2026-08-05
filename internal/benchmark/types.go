@@ -96,10 +96,9 @@ var (
 // LaunchRequest is the Nexus-shaped description of a run. The wire
 // encoding lives in client.go so this stays readable at call sites.
 type LaunchRequest struct {
-	// Environments are vendor Hub slugs such as
-	// "primeintellect/gsm8k". There is no environments API to
-	// validate against, so these are free text until the vendor
-	// rejects them.
+	// Environments are vendor Hub slugs such as "primeintellect/gsm8k".
+	// The hosted-evaluations create endpoint expects internal ids;
+	// Client.resolveEnvironmentIDs maps slugs before create.
 	Environments []string
 	// Model is passed through as the vendor's inference_model. When
 	// BaseURL is set the vendor forwards it as the OpenAI "model"
