@@ -970,6 +970,13 @@ func modelAllowed(ctx context.Context, model string) bool {
 		if m == model {
 			return true
 		}
+		// Hosted eval sandboxes often send the bare upstream id
+		// (gpt-4.1-nano) while the benchmark mints the hub slug form
+		// (openai/gpt-4.1-nano). Accept the suffix match so a scoped
+		// key still works without opening the key to every model id.
+		if _, rest, hit := strings.Cut(m, "/"); hit && rest == model {
+			return true
+		}
 	}
 	return false
 }
