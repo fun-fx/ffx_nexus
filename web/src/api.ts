@@ -1140,7 +1140,7 @@ export interface DryRunBenchmarkBody {
 // both belong on screen with the same styling.
 export async function dryRunBenchmark(
   body: DryRunBenchmarkBody,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; warning?: string } | { ok: false; error: string }> {
   const res = await fetch("/api/eval/benchmarks/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

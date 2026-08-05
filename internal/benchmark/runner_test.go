@@ -508,7 +508,7 @@ func TestDryRunHappyPath(t *testing.T) {
 	r := NewRunner(store, &fakeKeys{}, fakeTokens{token: "pit_test"}, "", nil)
 	r.SetAPIBase(srv.URL, srv.Client())
 
-	if err := r.DryRun(context.Background(), spec()); err != nil {
+	if _, err := r.DryRun(context.Background(), spec()); err != nil {
 		t.Fatalf("dry-run: %v", err)
 	}
 	if len(seen) != 3 || seen[0] != "GET /api/v1/environmentshub/ffx/gsm8k/status" ||
@@ -543,7 +543,7 @@ func TestDryRunMissingEnvironmentSurfaces404(t *testing.T) {
 	r := NewRunner(store, &fakeKeys{}, fakeTokens{token: "pit_test"}, "", nil)
 	r.SetAPIBase(srv.URL, srv.Client())
 
-	err := r.DryRun(context.Background(), spec())
+	_, err := r.DryRun(context.Background(), spec())
 	if err == nil {
 		t.Fatal("want a 404-derived error")
 	}
@@ -566,7 +566,7 @@ func TestDryRunRequiresCredential(t *testing.T) {
 	r := NewRunner(store, &fakeKeys{}, fakeTokens{token: ""}, "", nil)
 	// SetAPIBase intentionally omitted — we want to assert that the
 	// runner guards the credential before any round-trip is allowed.
-	if err := r.DryRun(context.Background(), spec()); err == nil {
+	if _, err := r.DryRun(context.Background(), spec()); err == nil {
 		t.Fatal("want ErrNoToken-derived error")
 	}
 }

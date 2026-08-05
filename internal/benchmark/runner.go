@@ -209,6 +209,9 @@ func (r *Runner) Launch(ctx context.Context, spec LaunchSpec) (core.BenchmarkRun
 	run.ExternalID = res.EvaluationID
 	run.ExternalStatus = res.Status
 	run.Status = NormalizeStatus(res.Status)
+	if run.Status == StatusFailed && strings.TrimSpace(res.Error) != "" {
+		run.Error = strings.TrimSpace(res.Error)
+	}
 	if err := r.store.UpdateBenchmarkRunProgress(ctx, run); err != nil {
 		// The provider is already running it. Log loudly rather than
 		// fail the request: the poller will reconcile from the row, and
@@ -346,16 +349,16 @@ func (r *Runner) Poll(ctx context.Context, every time.Duration) {
 // probe the vendor without first walking the same checks
 // Launch walks; otherwise the probe can succeed on inputs that
 // would be rejected at launch time.
-func (r *Runner) DryRun(ctx context.Context, spec LaunchSpec) error {
+func (r *Runner) DryRun(ctx context.Context, spec LaunchSpec) (DryRunResult, error) {
 	if r == nil || r.store == nil {
-		return errors.New("benchmark: runner not configured")
+		return DryRunResult{}, errors.New("benchmark: runner not configured")
 	}
 	token, err := r.tokens.Token(ctx, ProviderPrime)
 	if err != nil {
-		return err
+		return DryRunResult{}, err
 	}
 	if token == "" {
-		return fmt.Errorf(
+		return DryRunResult{}, fmt.Errorf(
 			"%w: paste the PrimeIntellect API key in the console before validating environments", ErrNoToken)
 	}
 	req := LaunchRequest{
@@ -374,7 +377,7 @@ func (r *Runner) DryRun(ctx context.Context, spec LaunchSpec) error {
 		Name:         "nexus-dry-run",
 	}
 	if err := probe.Validate(); err != nil {
-		return err
+		return DryRunResult{}, err
 	}
 	return r.client(token).DryRun(ctx, req)
 }

@@ -64,9 +64,9 @@ func (f *fakeRunner) Models(_ context.Context) ([]benchmark.Model, error) {
 }
 func (f *fakeRunner) PollOnce(_ context.Context) (int, error) { f.polled++; return 3, nil }
 func (f *fakeRunner) GatewayRoutingAvailable() bool           { return f.gateway }
-func (f *fakeRunner) DryRun(_ context.Context, spec benchmark.LaunchSpec) error {
+func (f *fakeRunner) DryRun(_ context.Context, spec benchmark.LaunchSpec) (benchmark.DryRunResult, error) {
 	f.dryRunCalls = append(f.dryRunCalls, spec)
-	return f.dryRunErr
+	return benchmark.DryRunResult{}, f.dryRunErr
 }
 
 // fakeKeyStore stands in for the encrypted plugin-key vault.

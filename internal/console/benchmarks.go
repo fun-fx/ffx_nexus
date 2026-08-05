@@ -34,7 +34,7 @@ type BenchmarkRunner interface {
 	Models(ctx context.Context) ([]benchmark.Model, error)
 	PollOnce(ctx context.Context) (int, error)
 	GatewayRoutingAvailable() bool
-	DryRun(ctx context.Context, spec benchmark.LaunchSpec) error
+	DryRun(ctx context.Context, spec benchmark.LaunchSpec) (benchmark.DryRunResult, error)
 }
 
 // SetBenchmarks wires the runner. Left nil, the routes answer 503 so the
@@ -308,7 +308,7 @@ func (s *Server) dryRunBenchmark(w http.ResponseWriter, r *http.Request, _ core.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
-	if err := s.benchmarks.DryRun(r.Context(), benchmark.LaunchSpec{
+	if out, err := s.benchmarks.DryRun(r.Context(), benchmark.LaunchSpec{
 		Environments:   body.Environments,
 		Model:          body.Model,
 		TimeoutMinutes: body.TimeoutMinutes,
@@ -318,8 +318,14 @@ func (s *Server) dryRunBenchmark(w http.ResponseWriter, r *http.Request, _ core.
 			"error": err.Error(),
 		})
 		return
+	} else {
+		resp := map[string]any{"ok": true}
+		if out.Warning != "" {
+			resp["warning"] = out.Warning
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // benchmarkErrStatus maps a runner error onto a status code. Missing

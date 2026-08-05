@@ -468,8 +468,26 @@ func TestDryRunAcceptsImmediateBillingFailure(t *testing.T) {
 			body:   `{"evaluation_id":"ev_bill","status":"FAILED","error":"Insufficient funds. Need at least $0.380 for 1 hour of runtime."}`,
 		},
 	})
-	if err := c.DryRun(context.Background(), goodLaunch()); err != nil {
+	if _, err := c.DryRun(context.Background(), goodLaunch()); err != nil {
 		t.Fatalf("dry-run: %v", err)
+	}
+}
+
+func TestDryRunReturnsBillingWarning(t *testing.T) {
+	statusKey, status := envStatusRoute("ffx/gsm8k", "env_ffx_gsm8k")
+	c, _ := serveRoutes(t, map[string]route{
+		statusKey: status,
+		"POST /api/v1/hosted-evaluations": {
+			status: http.StatusCreated,
+			body:   `{"evaluation_id":"ev_bill","status":"FAILED","error":"Insufficient funds. Need at least $0.380 for 1 hour of runtime."}`,
+		},
+	})
+	out, err := c.DryRun(context.Background(), goodLaunch())
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if !strings.Contains(out.Warning, "Insufficient funds") {
+		t.Fatalf("warning = %q", out.Warning)
 	}
 }
 
@@ -486,7 +504,7 @@ func TestDryRunAcceptsCancel409WhenAlreadyFailed(t *testing.T) {
 			body:   `{"detail":"Evaluation is already FAILED and cannot be cancelled"}`,
 		},
 	})
-	if err := c.DryRun(context.Background(), goodLaunch()); err != nil {
+	if _, err := c.DryRun(context.Background(), goodLaunch()); err != nil {
 		t.Fatalf("dry-run: %v", err)
 	}
 }
@@ -500,7 +518,7 @@ func TestDryRunSurfacesNonBillingImmediateFailure(t *testing.T) {
 			body:   `{"evaluation_id":"ev_bad","status":"FAILED","error":"Model not available for hosted evaluations"}`,
 		},
 	})
-	err := c.DryRun(context.Background(), goodLaunch())
+	_, err := c.DryRun(context.Background(), goodLaunch())
 	if err == nil || !strings.Contains(err.Error(), "Model not available") {
 		t.Fatalf("err = %v, want model failure surfaced", err)
 	}
