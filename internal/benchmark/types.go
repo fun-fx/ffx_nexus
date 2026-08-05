@@ -41,8 +41,8 @@ const PrimeAPIBase = "https://api.primeintellect.ai"
 // is reserved: it cannot collide with a plugin because no EvalPlugin
 // manifest is allowed to claim it.
 const (
-	CredentialName     = "benchmark-primeintellect"
-	CredentialKey      = "api_key"
+	CredentialName      = "benchmark-primeintellect"
+	CredentialKey       = "api_key"
 	CredentialTeamIDKey = "team_id"
 )
 
