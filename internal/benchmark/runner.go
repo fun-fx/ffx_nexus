@@ -36,9 +36,11 @@ type Keys interface {
 	RevokeVirtualKey(ctx context.Context, orgID, actorID, id string) error
 }
 
-// Tokens resolves the provider's own API credential.
+// Tokens resolves the provider's own API credential and optional
+// team billing context.
 type Tokens interface {
 	Token(ctx context.Context, provider string) (string, error)
+	TeamID(ctx context.Context, provider string) (string, error)
 }
 
 // runKeyRPM bounds how fast the provider's sandbox may call us.
@@ -136,6 +138,10 @@ func (r *Runner) Launch(ctx context.Context, spec LaunchSpec) (core.BenchmarkRun
 			"%w: paste the PrimeIntellect API key in the console before launching a run", ErrNoToken)
 	}
 
+	teamID, err := r.tokens.TeamID(ctx, ProviderPrime)
+	if err != nil {
+		return core.BenchmarkRun{}, err
+	}
 	req := LaunchRequest{
 		Environments:   spec.Environments,
 		Model:          spec.Model,
@@ -143,6 +149,7 @@ func (r *Runner) Launch(ctx context.Context, spec LaunchSpec) (core.BenchmarkRun
 		Rollouts:       spec.Rollouts,
 		Name:           spec.Name,
 		TimeoutMinutes: spec.TimeoutMinutes,
+		TeamID:         teamID,
 	}
 	// Validate before minting anything. Validate() also runs inside
 	// Launch, but by then a key would already exist.
@@ -361,9 +368,14 @@ func (r *Runner) DryRun(ctx context.Context, spec LaunchSpec) (DryRunResult, err
 		return DryRunResult{}, fmt.Errorf(
 			"%w: paste the PrimeIntellect API key in the console before validating environments", ErrNoToken)
 	}
+	teamID, err := r.tokens.TeamID(ctx, ProviderPrime)
+	if err != nil {
+		return DryRunResult{}, err
+	}
 	req := LaunchRequest{
 		Environments: spec.Environments,
 		Model:        spec.Model,
+		TeamID:       teamID,
 	}
 	// Validate the *probe* shape: 1 example, 1 rollout, no
 	// gateway. The runner uses the operator's spec purely to

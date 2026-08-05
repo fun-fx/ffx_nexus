@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   cancelBenchmark,
@@ -310,6 +310,7 @@ export function Benchmarks() {
 
       <CredentialPanel
         configured={configured}
+        storedTeamId={credential.data?.team_id ?? ""}
         onSaved={() => {
           setError(null);
           void qc.invalidateQueries({ queryKey: ["benchmark-credential"] });
@@ -362,14 +363,22 @@ export function Benchmarks() {
 
 function CredentialPanel({
   configured,
+  storedTeamId,
   onSaved,
   onError,
 }: {
   configured: boolean;
+  storedTeamId: string;
   onSaved: () => void;
   onError: (e: unknown) => void;
 }) {
   const [value, setValue] = useState("");
+  const [teamId, setTeamId] = useState(storedTeamId);
+  useEffect(() => {
+    setTeamId(storedTeamId);
+  }, [storedTeamId]);
+  const teamChanged = teamId.trim() !== storedTeamId.trim();
+  const canSave = configured ? value.trim() !== "" || teamChanged : value.trim() !== "";
   const saveM = useMutation({
     mutationFn: saveBenchmarkCredential,
     onSuccess: () => {
@@ -387,33 +396,52 @@ function CredentialPanel({
   return (
     <section className="panel">
       <div className="panel-head">
-        <h2>PrimeIntellect API key</h2>
+        <h2>PrimeIntellect credentials</h2>
         <Chip tone={configured ? "ok" : "warn"}>{configured ? "configured" : "not set"}</Chip>
       </div>
       <p className="hint">
-        Encrypted with the Nexus master key and stored in the control-plane database, so it survives
-        a deploy. The value is never returned by the API or shown here again. Create one under{" "}
+        Encrypted with the Nexus master key and stored in the control-plane database, so they survive
+        a deploy. The API key is never returned or shown here again. Create one under{" "}
         <a href="https://app.primeintellect.ai" target="_blank" rel="noreferrer">
           your Prime account
         </a>
-        .
+        . Hosted runs bill the <strong>team wallet</strong> when a team ID is set; otherwise Prime
+        charges your personal wallet.
       </p>
       <div className="bench-credential-row">
         <input
           type="password"
           className="bench-input"
-          placeholder="pit_…"
+          placeholder={configured ? "Replace API key (optional)" : "pit_…"}
           autoComplete="off"
           value={value}
           onChange={(e) => setValue(e.target.value)}
         />
+      </div>
+      <div className="bench-credential-row">
+        <input
+          type="text"
+          className="bench-input"
+          placeholder="Team ID (optional) — prime teams list"
+          autoComplete="off"
+          value={teamId}
+          onChange={(e) => setTeamId(e.target.value)}
+        />
         <button
           type="button"
           className="btn-neon btn-small"
-          disabled={!value.trim() || saveM.isPending}
-          onClick={() => saveM.mutate(value.trim())}
+          disabled={!canSave || saveM.isPending}
+          onClick={() => {
+            const body: { api_key?: string; team_id?: string } = {
+              team_id: teamId.trim(),
+            };
+            if (value.trim()) {
+              body.api_key = value.trim();
+            }
+            saveM.mutate(body);
+          }}
         >
-          {saveM.isPending ? "Saving…" : configured ? "Replace" : "Save"}
+          {saveM.isPending ? "Saving…" : configured ? "Save" : "Save"}
         </button>
         {configured && (
           <button
@@ -421,13 +449,20 @@ function CredentialPanel({
             className="btn-ghost btn-small"
             disabled={clearM.isPending}
             onClick={() => {
-              if (window.confirm("Remove the stored PrimeIntellect key?")) clearM.mutate();
+              if (window.confirm("Remove the stored PrimeIntellect key and team ID?")) clearM.mutate();
             }}
           >
             Remove
           </button>
         )}
       </div>
+      {storedTeamId && (
+        <p className="hint">
+          Billing team: <code>{storedTeamId}</code> — find IDs with{" "}
+          <code>prime teams list</code> or <code>prime whoami</code> after{" "}
+          <code>prime switch YOUR-TEAM</code>.
+        </p>
+      )}
     </section>
   );
 }

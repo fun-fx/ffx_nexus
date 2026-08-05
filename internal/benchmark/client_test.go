@@ -156,6 +156,23 @@ func TestLaunchSendsVendorShape(t *testing.T) {
 			t.Errorf("%s must be omitted when not routing through the gateway", k)
 		}
 	}
+	if _, present := got.body["team_id"]; present {
+		t.Errorf("team_id must be omitted when unset, got %#v", got.body["team_id"])
+	}
+}
+
+func TestLaunchIncludesTeamIDWhenSet(t *testing.T) {
+	c, got := launchRoutes(t, http.StatusCreated,
+		`{"evaluation_id":"ev_1","status":"PENDING","sandbox_id":"sb_1"}`)
+
+	req := goodLaunch()
+	req.TeamID = "team_abc"
+	if _, err := c.Launch(context.Background(), req); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if got.body["team_id"] != "team_abc" {
+		t.Errorf("team_id = %#v, want team_abc", got.body["team_id"])
+	}
 }
 
 func TestLaunchRoutesInferenceThroughGateway(t *testing.T) {

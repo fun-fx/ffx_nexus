@@ -386,10 +386,25 @@ func TestCredentialRoundTripNeverReturnsTheValue(t *testing.T) {
 		t.Errorf("stored %q, want the trimmed key", got)
 	}
 
+	rec = call(srv.putBenchmarkCredential, http.MethodPut, "/api/eval/benchmarks/credential",
+		`{"team_id":"  team_abc  "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("team put status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if keys.kv[benchmark.CredentialName][benchmark.CredentialTeamIDKey] != "team_abc" {
+		t.Errorf("team_id = %q, want team_abc", keys.kv[benchmark.CredentialName][benchmark.CredentialTeamIDKey])
+	}
+	if keys.kv[benchmark.CredentialName][benchmark.CredentialKey] != "pit_secret" {
+		t.Errorf("api key was overwritten on team-only update")
+	}
+
 	rec = call(srv.getBenchmarkCredential, http.MethodGet, "/api/eval/benchmarks/credential", "")
 	body := rec.Body.String()
 	if decode(t, rec)["configured"] != true {
 		t.Error("credential not reported as configured")
+	}
+	if decode(t, rec)["team_id"] != "team_abc" {
+		t.Errorf("team_id in GET = %v", decode(t, rec)["team_id"])
 	}
 	if strings.Contains(body, "pit_secret") {
 		t.Fatalf("the token must never be returned: %s", body)

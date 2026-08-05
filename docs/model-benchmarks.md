@@ -110,9 +110,14 @@ The provider key lives in the same encrypted `eval_plugin_keys` vault
 as plugin credentials, under the reserved name
 `benchmark-primeintellect`. It therefore inherits that table's
 master-key encryption and its durability — including surviving a
-deploy, which is the property those keys originally lacked. The value
-is never read back by the API; `GET .../credential` reports only
-whether one is stored.
+deploy, which is the property those keys originally lacked. The API
+key is never read back; `GET .../credential` reports only whether one
+is stored and returns the optional `team_id` used for billing.
+
+When `team_id` is set, hosted-evaluation creates include it in the
+JSON body and Prime bills the team wallet instead of the personal
+wallet tied to the API key. Find team IDs with `prime teams list` or
+`prime whoami` after `prime switch YOUR-TEAM`.
 
 ## REST surface
 
@@ -130,7 +135,7 @@ neither belongs behind a read-scoped role.
 | `GET` | `/api/eval/benchmarks/{id}/logs` | the provider's sandbox log |
 | `GET` | `/api/eval/benchmarks/models` | the provider's inference catalogue, for the picker |
 | `POST` | `/api/eval/benchmarks/refresh` | force a poll pass |
-| `GET`/`PUT`/`DELETE` | `/api/eval/benchmarks/credential` | provider API key |
+| `GET`/`PUT`/`DELETE` | `/api/eval/benchmarks/credential` | provider API key and optional team billing id |
 
 A launch the provider refused still returns the recorded row alongside
 the error, so the console can show a failed run rather than only a

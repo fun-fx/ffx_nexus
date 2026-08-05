@@ -41,8 +41,9 @@ const PrimeAPIBase = "https://api.primeintellect.ai"
 // is reserved: it cannot collide with a plugin because no EvalPlugin
 // manifest is allowed to claim it.
 const (
-	CredentialName = "benchmark-primeintellect"
-	CredentialKey  = "api_key"
+	CredentialName     = "benchmark-primeintellect"
+	CredentialKey      = "api_key"
+	CredentialTeamIDKey = "team_id"
 )
 
 // Run lifecycle. Deliberately coarser than the vendor's state machine:
@@ -122,6 +123,11 @@ type LaunchRequest struct {
 	// field and accepts their default of 24 hours. The vendor
 	// rejects anything below 120.
 	TimeoutMinutes int
+
+	// TeamID bills the run against a Prime team wallet instead of
+	// the personal wallet tied to the API key. Empty omits the
+	// field and the vendor defaults to personal billing.
+	TeamID string
 }
 
 // TotalSamples is the unit the cap and the bill are both measured in.

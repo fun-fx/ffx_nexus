@@ -64,7 +64,7 @@ interface Calls {
   launch: Array<Record<string, unknown>>;
   cancelled: string[];
   deleted: string[];
-  credential: string[];
+  credential: Array<Record<string, unknown>>;
   validate: Array<Record<string, unknown>>;
 }
 
@@ -114,10 +114,10 @@ function setup(opts: StubOptions = {}) {
       }
       if (url === "/api/eval/benchmarks/credential") {
         if (method === "PUT") {
-          calls.credential.push(JSON.parse(String(init?.body ?? "{}")).api_key);
+          calls.credential.push(JSON.parse(String(init?.body ?? "{}")));
           return jsonRes({ ok: true, configured: true });
         }
-        return jsonRes({ provider: "primeintellect", configured });
+        return jsonRes({ provider: "primeintellect", configured, team_id: "team_stored" });
       }
       if (url === "/api/eval/benchmarks/models") {
         return jsonRes({
@@ -439,12 +439,15 @@ describe("<Benchmarks /> credential", () => {
   it("reports a stored key without revealing it and can replace it", async () => {
     const { calls } = setup();
     expect(await screen.findByText("configured")).toBeInTheDocument();
-    const field = screen.getByPlaceholderText("pit_…");
+    const field = screen.getByPlaceholderText("Replace API key (optional)");
     expect(field).toHaveAttribute("type", "password");
+    expect(screen.getByDisplayValue("team_stored")).toBeInTheDocument();
 
     fireEvent.change(field, { target: { value: "pit_abc" } });
-    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
-    await waitFor(() => expect(calls.credential).toEqual(["pit_abc"]));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(calls.credential).toEqual([{ api_key: "pit_abc", team_id: "team_stored" }]),
+    );
   });
 
   it("prompts to add a key when none is stored", async () => {

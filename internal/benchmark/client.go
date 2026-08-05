@@ -43,6 +43,7 @@ type createRequest struct {
 	InferenceModel string     `json:"inference_model"`
 	EvalConfig     evalConfig `json:"eval_config"`
 	Name           string     `json:"name,omitempty"`
+	TeamID         string     `json:"team_id,omitempty"`
 }
 
 type evalConfig struct {
@@ -74,6 +75,7 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, e
 		EnvironmentIDs: envIDs,
 		InferenceModel: req.Model,
 		Name:           req.Name,
+		TeamID:         strings.TrimSpace(req.TeamID),
 		EvalConfig: evalConfig{
 			NumExamples:        req.NumExamples,
 			RolloutsPerExample: req.Rollouts,
@@ -146,6 +148,7 @@ func (c *Client) DryRun(ctx context.Context, req LaunchRequest) (DryRunResult, e
 		EnvironmentIDs: envIDs,
 		InferenceModel: probe.Model,
 		Name:           probe.Name,
+		TeamID:         strings.TrimSpace(req.TeamID),
 		EvalConfig: evalConfig{
 			NumExamples:        probe.NumExamples,
 			RolloutsPerExample: probe.Rollouts,
