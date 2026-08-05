@@ -64,6 +64,10 @@ type Server struct {
 	pluginManualFirer PluginManualFirer     // admin-driven drain for manual-trigger plugins
 	pluginKeys        EvalPluginKeys        // in-process plugin key resolver (console keys)
 	benchmarks        BenchmarkRunner       // model-level benchmark runs; nil without Postgres
+	// pushReports holds operator-reported `prime env push` outcomes.
+	// In-memory and advisory only — see benchmark_push_report.go. The
+	// zero value works, so NewServer leaves it alone.
+	pushReports pushReportStore
 	// langsmithRuleCreator is the vendor-side automator driven by
 	// /api/eval/plugins/{name}/automation. nil when LangSmith is
 	// not configured (the route answers 503 — the UI surfaces a
@@ -337,6 +341,13 @@ func (s *Server) Mux() http.Handler {
 			// operator just pasted actually gets a 2xx from the vendor
 			// before they hit Launch on a real budget-bound run.
 			r.Post("/validate", s.requireAdmin(s.dryRunBenchmark))
+			// push-report is how the operator tells us their local
+			// `prime env push` finished. Nexus cannot run that command
+			// or watch it, so this is the only way the console learns a
+			// slug was published. Advisory only: /validate still decides
+			// whether the vendor can actually see the slug.
+			r.Post("/push-report", s.requireAdmin(s.reportEnvPush))
+			r.Get("/push-report", s.requireAdmin(s.listEnvPushReports))
 			r.Get("/models", s.requireAdmin(s.benchmarkModels))
 			r.Post("/refresh", s.requireAdmin(s.refreshBenchmarks))
 			r.Get("/credential", s.requireAdmin(s.getBenchmarkCredential))

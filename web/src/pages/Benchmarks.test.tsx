@@ -51,6 +51,13 @@ interface StubOptions {
   launchError?: string;
   /** Force the validate POST to fail with this message. */
   validateError?: string;
+  /** Reports the push-report GET should answer with. */
+  pushReports?: Array<{
+    slug: string;
+    ok: boolean;
+    completed_at: string;
+    received_at: string;
+  }>;
 }
 
 interface Calls {
@@ -87,6 +94,9 @@ function setup(opts: StubOptions = {}) {
           gateway_routing_available: gatewayAvailable,
           max_total_samples: 500,
         });
+      }
+      if (url === "/api/eval/benchmarks/push-report" && method === "GET") {
+        return jsonRes({ reports: opts.pushReports ?? [] });
       }
       if (url === "/api/eval/benchmarks/validate" && method === "POST") {
         calls.validate.push(JSON.parse(String(init?.body ?? "{}")));
@@ -330,6 +340,65 @@ it("posts the form, combining preset choices with a custom slug", async () => {
     expect(await screen.findByTestId("bench-validate-err")).toHaveTextContent(
       "not found (404)",
     );
+  });
+
+  it("offers the env-push guide on a 404 but not on other failures", async () => {
+    // A 404 is the one dry-run failure the guide answers: the slug is
+    // not published. A 401 or a balance error needs a different fix, so
+    // showing five CLI steps there would send the operator the wrong way.
+    setup({ runs: [], validateError: "benchmark: unauthorized (401): bad key" });
+    await screen.findByRole("button", { name: "Validate environments" });
+    fireEvent.change(await renderModelCmb(), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
+    await screen.findByTestId("bench-validate-err");
+    expect(screen.queryByTestId("bench-cli-guide")).not.toBeInTheDocument();
+  });
+
+  it("puts the reporting curl in the guide once a 404 exposes it", async () => {
+    setup({ runs: [], validateError: "benchmark: not found (404): environment" });
+    await screen.findByRole("button", { name: "Validate environments" });
+    fireEvent.change(await renderModelCmb(), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
+
+    const guide = await screen.findByTestId("bench-cli-guide");
+    // The push command targets the slug the operator actually selected,
+    // not the placeholder, or the copied line pushes the wrong thing.
+    expect(guide).toHaveTextContent("prime env push primeintellect/gsm8k");
+    expect(guide).toHaveTextContent("/api/eval/benchmarks/push-report");
+    // Output is deliberately absent from the payload: the CLI can echo
+    // the API key and this panel is rendered for admins.
+    expect(guide).not.toHaveTextContent('"stdout"');
+  });
+
+  it("shows a reported push as reported rather than verified", async () => {
+    // The distinction matters: a report is the operator's word, and only
+    // Validate asks the vendor. Presenting it as proof would let someone
+    // conclude a slug is live when it never was.
+    setup({
+      runs: [],
+      validateError: "benchmark: not found (404): environment",
+      pushReports: [
+        {
+          slug: "primeintellect/gsm8k",
+          ok: true,
+          completed_at: "2026-08-05T04:00:00Z",
+          received_at: "2026-08-05T04:00:05Z",
+        },
+      ],
+    });
+    await screen.findByRole("button", { name: "Validate environments" });
+    fireEvent.change(await renderModelCmb(), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
+
+    const banner = await screen.findByTestId("bench-push-reported");
+    expect(banner).toHaveTextContent("was reported at");
+    expect(banner).toHaveTextContent("not verified here");
   });
 });
 

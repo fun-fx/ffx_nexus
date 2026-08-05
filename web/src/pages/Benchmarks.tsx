@@ -8,6 +8,7 @@ import {
   fetchBenchmarkCredential,
   fetchBenchmarkLogs,
   fetchBenchmarkModels,
+  fetchEnvPushReports,
   fetchBenchmarks,
   launchBenchmark,
   refreshBenchmarks,
@@ -493,8 +494,10 @@ function LaunchPanel({
   });
 
   // Is the last dry-run failure a 404 (most common first-visit error)?
+  // Case-insensitive because the reason is the vendor's prose, and
+  // "Not Found" without the number is a plausible phrasing.
   const dry404 =
-    dryRunM.isSuccess && !dryRunM.data.ok && /404|not found/.test(dryRunM.data.error ?? "");
+    dryRunM.isSuccess && !dryRunM.data.ok && /404|not found/i.test(dryRunM.data.error ?? "");
 
   return (
     <section className="panel">
@@ -789,6 +792,25 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
   const envYaml = SAMPLE_ENV_YAML.replace("__SLUG__", target);
   const pushCmd = `prime env push ${target} --config ./env.yaml`;
   const whichCmd = "which prime  &&  prime --version";
+  // Chained onto the push with && so it only fires on success, and
+  // reports failure separately via ||. The operator pastes their own
+  // console session token; we cannot template one in because the page
+  // authenticates with a cookie the shell does not have.
+  const reportCmd = [
+    `curl -fsS -X POST ${window.location.origin}/api/eval/benchmarks/push-report \\`,
+    `  -H 'Authorization: Bearer <your console token>' \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d '{"slug":"${target}","ok":true}'`,
+  ].join("\n");
+
+  // The reports list is small and only interesting right after a push,
+  // so it is fetched with the guide rather than kept in the page-level
+  // query set.
+  const reports = useQuery({
+    queryKey: ["bench-env-push-reports"],
+    queryFn: fetchEnvPushReports,
+  });
+  const reported = reports.data?.find((r) => r.slug === target);
 
   return (
     <div className="bench-cli-guide" data-testid="bench-cli-guide">
@@ -801,6 +823,19 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
           the same key is exported as <code>PRIME_API_KEY</code>:
         </p>
       </div>
+
+      {reported && (
+        <p
+          className={reported.ok ? "hint" : "hint-tag warn"}
+          data-testid="bench-push-reported"
+        >
+          {reported.ok
+            ? `A push of ${reported.slug} was reported at ${formatWhen(reported.received_at)}.`
+            : `A push of ${reported.slug} was reported as failed at ${formatWhen(reported.received_at)}.`}{" "}
+          Reported by the CLI, not verified here — press{" "}
+          <em>Validate environments</em> to ask the vendor.
+        </p>
+      )}
 
       <ol className="bench-cli-steps">
         <li>
@@ -860,6 +895,20 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
               visible to this Nexus instance — come back here and re-run{" "}
               <em>Validate environments</em>. Other slugs in your
               namespace typically become visible at the same time.
+            </p>
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">6</span>
+          <div className="bench-cli-step-body">
+            <strong>Optional — tell this page it happened:</strong>
+            <CodeBlock text={reportCmd} label="report back" />
+            <p className="muted">
+              Nexus cannot see your terminal, so without this the console
+              has no idea a push ever ran. Posting the result puts a
+              timestamp on this panel for whoever looks next. It records
+              only the slug and pass/fail — no command output, because
+              the CLI can echo your API key into it.
             </p>
           </div>
         </li>
