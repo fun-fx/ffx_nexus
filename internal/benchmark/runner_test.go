@@ -186,11 +186,13 @@ func (f *fakeKeys) counts() (int, int) {
 }
 
 type fakeTokens struct {
-	token string
-	err   error
+	token  string
+	teamID string
+	err    error
 }
 
-func (f fakeTokens) Token(context.Context, string) (string, error) { return f.token, f.err }
+func (f fakeTokens) Token(context.Context, string) (string, error)  { return f.token, f.err }
+func (f fakeTokens) TeamID(context.Context, string) (string, error) { return f.teamID, f.err }
 
 // route maps "METHOD /path" onto a canned reply so one server can serve
 // a whole lifecycle.
@@ -267,7 +269,7 @@ func TestLaunchViaGatewayMintsScopedKeyAndRecordsRun(t *testing.T) {
 	defer srv.Close()
 
 	store, keys := newFakeStore(), &fakeKeys{}
-	r := NewRunner(store, keys, fakeTokens{token: "pit_test"}, "https://api.ffx.ai/", nil)
+	r := NewRunner(store, keys, fakeTokens{token: "pit_test", teamID: "team_bill"}, "https://api.ffx.ai/", nil)
 	r.SetAPIBase(srv.URL, srv.Client())
 
 	s := spec()
@@ -316,6 +318,9 @@ func TestLaunchViaGatewayMintsScopedKeyAndRecordsRun(t *testing.T) {
 	secrets := cfg["custom_secrets"].(map[string]any)
 	if !strings.HasPrefix(secrets["NEXUS_API_KEY"].(string), "nxs_live_") {
 		t.Errorf("secret = %#v, want the minted gateway key", secrets["NEXUS_API_KEY"])
+	}
+	if gotBody["team_id"] != "team_bill" {
+		t.Errorf("team_id = %#v, want team_bill", gotBody["team_id"])
 	}
 	// Still live: the provider needs it until the run settles.
 	if _, revoked := keys.counts(); revoked != 0 {

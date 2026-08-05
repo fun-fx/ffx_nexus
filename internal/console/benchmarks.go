@@ -235,7 +235,19 @@ func (s *Server) getBenchmarkCredential(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"provider":   benchmark.ProviderPrime,
 		"configured": s.pluginKeys.Has(benchmark.CredentialName),
+		"team_id":    benchmarkStoredTeamID(s.pluginKeys),
 	})
+}
+
+func benchmarkStoredTeamID(keys EvalPluginKeys) string {
+	if keys == nil {
+		return ""
+	}
+	kv, ok := keys.Get(benchmark.CredentialName)
+	if !ok {
+		return ""
+	}
+	return kv[benchmark.CredentialTeamIDKey]
 }
 
 func (s *Server) putBenchmarkCredential(w http.ResponseWriter, r *http.Request, u core.User) {
@@ -244,17 +256,33 @@ func (s *Server) putBenchmarkCredential(w http.ResponseWriter, r *http.Request, 
 	}
 	var body struct {
 		APIKey string `json:"api_key"`
+		TeamID string `json:"team_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
-	if strings.TrimSpace(body.APIKey) == "" {
+	existing, had := s.pluginKeys.Get(benchmark.CredentialName)
+	kv := map[string]string{}
+	if had {
+		for k, v := range existing {
+			kv[k] = v
+		}
+	}
+	apiKey := strings.TrimSpace(body.APIKey)
+	if apiKey != "" {
+		kv[benchmark.CredentialKey] = apiKey
+	} else if kv[benchmark.CredentialKey] == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "api_key is required"})
 		return
 	}
-	if err := s.pluginKeys.Set(benchmark.CredentialName,
-		map[string]string{benchmark.CredentialKey: strings.TrimSpace(body.APIKey)}); err != nil {
+	teamID := strings.TrimSpace(body.TeamID)
+	if teamID != "" {
+		kv[benchmark.CredentialTeamIDKey] = teamID
+	} else {
+		delete(kv, benchmark.CredentialTeamIDKey)
+	}
+	if err := s.pluginKeys.Set(benchmark.CredentialName, kv); err != nil {
 		// A write that only reached memory would work until the next
 		// deploy and then fail silently, which is the exact trap the
 		// plugin keys went through. Report it instead.
@@ -262,7 +290,11 @@ func (s *Server) putBenchmarkCredential(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.credential.set", benchmark.ProviderPrime, "")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "configured": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"configured": true,
+		"team_id":    kv[benchmark.CredentialTeamIDKey],
+	})
 }
 
 func (s *Server) deleteBenchmarkCredential(w http.ResponseWriter, r *http.Request, u core.User) {

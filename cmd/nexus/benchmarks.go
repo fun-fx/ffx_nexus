@@ -46,3 +46,16 @@ func (b benchmarkTokens) Token(_ context.Context, provider string) (string, erro
 	}
 	return kv[benchmark.CredentialKey], nil
 }
+
+// TeamID implements benchmark.Tokens. An empty string means bill the
+// personal wallet tied to the API key.
+func (b benchmarkTokens) TeamID(_ context.Context, provider string) (string, error) {
+	if b.keys == nil || provider != benchmark.ProviderPrime {
+		return "", nil
+	}
+	kv, ok := b.keys.Get(benchmark.CredentialName)
+	if !ok {
+		return "", nil
+	}
+	return kv[benchmark.CredentialTeamIDKey], nil
+}

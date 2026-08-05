@@ -1235,6 +1235,7 @@ export async function fetchEnvPushReports(): Promise<EnvPushReport[]> {
 export interface BenchmarkCredentialState {
   provider: string;
   configured: boolean;
+  team_id?: string;
 }
 
 export async function fetchBenchmarkCredential(): Promise<BenchmarkCredentialState> {
@@ -1243,11 +1244,14 @@ export async function fetchBenchmarkCredential(): Promise<BenchmarkCredentialSta
   return jsonOrError<BenchmarkCredentialState>(res);
 }
 
-export async function saveBenchmarkCredential(apiKey: string): Promise<void> {
+export async function saveBenchmarkCredential(body: {
+  api_key?: string;
+  team_id?: string;
+}): Promise<void> {
   const res = await fetch("/api/eval/benchmarks/credential", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: apiKey }),
+    body: JSON.stringify(body),
   });
   await jsonOrError<{ ok: boolean }>(res);
 }
