@@ -374,6 +374,48 @@ it("posts the form, combining preset choices with a custom slug", async () => {
     expect(guide).not.toHaveTextContent('"stdout"');
   });
 
+  it("reflects the actual Prime env shape (folder + pyproject.toml + module)", async () => {
+    // The previous guide advertised a config-flag pattern that Prime
+    // never accepted (`prime env push ... --config ./env.yaml`). The
+    // real CLI is folder-based: init scaffolds pyproject.toml, the
+    // operator adds a <owner>/<name>.py verifier module, and push
+    // points at the folder. The steps must show what the operator
+    // actually types, not what we guessed the command shape was.
+    setup({ runs: [], validateError: "benchmark: not found (404): environment" });
+    await screen.findByRole("button", { name: "Validate environments" });
+    fireEvent.change(await renderModelCmb(), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
+
+    const guide = await screen.findByTestId("bench-cli-guide");
+    // Init scaffolds; push points at the folder with `-p .`.
+    expect(guide).toHaveTextContent("prime env init primeintellect/gsm8k -p .");
+    expect(guide).toHaveTextContent("prime env push primeintellect/gsm8k -p .");
+    // The guessed option is gone.
+    expect(guide).not.toHaveTextContent("--config ./env.yaml");
+    // The module path mirrors the slug, so a verifier at the right
+    // place has to look like <owner>/<name>.py.
+    expect(guide).toHaveTextContent("primeintellect/gsm8k.py");
+  });
+
+  it("warns about the slug owner before the operator hits a 404 again", async () => {
+    // The 0.6.x Prime CLI rejects pushes that point at an owner the
+    // account doesn't have. The pre-requisite call-out saves a loop
+    // where the operator runs push, sees a 404 from Prime, and wonders
+    // whether prime was even installed correctly.
+    setup({ runs: [], validateError: "benchmark: not found (404): environment" });
+    await screen.findByRole("button", { name: "Validate environments" });
+    fireEvent.change(await renderModelCmb(), {
+      target: { value: "openai/gpt-4.1-mini" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate environments" }));
+
+    const guide = await screen.findByTestId("bench-cli-guide");
+    expect(guide).toHaveTextContent("Prime dashboard");
+    expect(guide).toHaveTextContent("attached to your Prime");
+  });
+
   it("shows a reported push as reported rather than verified", async () => {
     // The distinction matters: a report is the operator's word, and only
     // Validate asks the vendor. Presenting it as proof would let someone

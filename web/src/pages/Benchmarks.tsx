@@ -583,9 +583,10 @@ function LaunchPanel({
             </div>
             <p className="bench-env-help">
               Pick a built-in dataset or paste a slug you published to
-              your Prime namespace with <code>prime env push</code>.
-              Visibility is the operator&apos;s responsibility — Nexus
-              cannot list templates.
+              your Prime namespace with <code>prime env push</code>; a
+              missed slug is a 404, not a Nexus bug. Visibility is the
+              operator&apos;s responsibility — Nexus cannot list
+              templates.
             </p>
             <ul
               className="bench-env-chips"
@@ -738,8 +739,9 @@ function LaunchPanel({
             &hellip;) work for some accounts and not for others — Nexus cannot list
             them. Hit <em>Validate environments</em> before launching: a 404 there
             means the slug is not published to your account yet. The fastest fix is{" "}
-            <code>prime env push your-org/&lt;name&gt;</code> on your dataset; once
-            one slug is published under your namespace, the rest become visible.
+            <code>prime env init your-org/&lt;name&gt;</code> followed by{" "}
+            <code>prime env push your-org/&lt;name&gt; -p .</code>; once one slug is
+            published under your namespace, the rest become visible.
           </li>
           <li>
             <strong>Your Prime wallet needs a balance.</strong> A run bills per
@@ -789,13 +791,27 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
   // any of them in. Falling back to "your-org/gsm8k" keeps the
   // snippet copy-pasteable when the operator removed all chips.
   const target = slugs[0] || "your-org/gsm8k";
-  const envYaml = SAMPLE_ENV_YAML.replace("__SLUG__", target);
-  const pushCmd = `prime env push ${target} --config ./env.yaml`;
-  const whichCmd = "which prime  &&  prime --version";
-  // Chained onto the push with && so it only fires on success, and
-  // reports failure separately via ||. The operator pastes their own
-  // console session token; we cannot template one in because the page
-  // authenticates with a cookie the shell does not have.
+  const [owner, name] = target.includes("/") ? target.split("/", 2) : ["your-org", target];
+
+  // Prime environments are a *folder*. `pyproject.toml` is auto-written
+  // by `prime env init`, and the operator only has to author the
+  // verifiers module + the dataset. The module name mirrors `owner/name`
+  // with the slash converted to a path separator, so this is
+  // `<owner>/<name>.py` — e.g. `sojin/gsm8k.py`. Anything more elaborate
+  // (multi-file graders, downloaded HuggingFace datasets) works too,
+  // but the single-file shape is the minimum that loads cleanly.
+  const initCmd = `prime env init ${target} -p .`;
+  const pushCmd = `prime env push ${target} -p .`;
+  const whichCmd = "prime --version";
+
+  const pyProject = SAMPLE_PYPROJECT_TOML
+    .replace(/__OWNER__/g, owner)
+    .replace(/__NAME__/g, name);
+  const envModule = SAMPLE_ENV_MODULE
+    .replace(/__OWNER__/g, owner)
+    .replace(/__NAME__/g, name);
+  const dataset = SAMPLE_DATASET_JSONL;
+
   const reportCmd = [
     `curl -fsS -X POST ${window.location.origin}/api/eval/benchmarks/push-report \\`,
     `  -H 'Authorization: Bearer <your console token>' \\`,
@@ -815,12 +831,27 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
   return (
     <div className="bench-cli-guide" data-testid="bench-cli-guide">
       <div className="bench-cli-guide-head">
-        <h3>Publish the environment yourself</h3>
+        <h3>Push the environment from your own machine</h3>
         <p className="muted">
-          Prime does not let Nexus (or any client) push environments on
-          the operator&apos;s behalf — that channel is local-CLI only.
-          Run these steps on a workstation where the dataset lives and
-          the same key is exported as <code>PRIME_API_KEY</code>:
+          Prime does not expose a server-side push endpoint — only the
+          <code> prime</code> CLI can publish, and it must run on a
+          machine you control. Nexus cannot do this for you, even with
+          your API key, so the steps below are run on your laptop or
+          workstation, not on this console&apos;s server.
+        </p>
+        <p className="bench-cli-prereq muted">
+          <strong>Before you start:</strong> the slug&apos;s owner part
+          (<code>{owner}</code>) must be a username or team slug already
+          attached to your Prime Intellect account — set it on the{" "}
+          <a
+            href="https://app.primeintellect.ai/dashboard"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Prime dashboard
+          </a>
+          . If the slug says <code>your-org</code>, replace it with
+          whatever you set there.
         </p>
       </div>
 
@@ -841,72 +872,106 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
         <li>
           <span className="bench-cli-step-num">1</span>
           <div className="bench-cli-step-body">
-            <strong>Confirm the CLI is installed:</strong>
-            <CodeBlock text={whichCmd} />
+            <strong>Confirm the CLI is installed and logged in:</strong>
+            <CodeBlock text={whichCmd} label="check version" />
+            <p className="muted">
+              If <code>prime</code> is missing:{" "}
+              <code>pip install primeintellect</code>. If the version
+              prints but whoami doesn&apos;t show your account:{" "}
+              <code>prime config set-api-key</code>.
+            </p>
           </div>
         </li>
         <li>
           <span className="bench-cli-step-num">2</span>
           <div className="bench-cli-step-body">
-            <strong>Drop a starter dataset on disk:</strong>
-            <CodeBlock
-              label="gsm8k.jsonl"
-              text={SAMPLE_DATASET_JSONL}
-              downloadName="gsm8k.jsonl"
-            />
+            <strong>Make a folder and let the CLI scaffold it:</strong>
+            <CodeBlock text={`mkdir -p prime-envs/${target} && cd prime-envs/${target} && ${initCmd}`} />
             <p className="muted">
-              Replace these rows with your own prompts+answers. One JSON
-              object per line — each line becomes one benchmark sample.
+              This writes <code>pyproject.toml</code> and{" "}
+              <code>README.md</code> for you. The{" "}
+              <code>name = "{target}"</code> line in{" "}
+              <code>pyproject.toml</code> is the slug Prime will register
+              the environment under, so <em>do not edit it</em>.
             </p>
           </div>
         </li>
         <li>
           <span className="bench-cli-step-num">3</span>
           <div className="bench-cli-step-body">
-            <strong>
-              Add a grader (Python, executed inside the sandbox):
-            </strong>
+            <strong>Drop the verifier module in next to pyproject:</strong>
             <CodeBlock
-              label="grade.py"
-              text={SAMPLE_GRADER_PY}
-              downloadName="grade.py"
-              language="python"
+              label={`${owner}/${name}.py`}
+              text={envModule}
+              downloadName={`env-module.py`}
+              // Renaming on download avoids clobbering anything the
+              // operator already has — they rename to {owner}/{name}.py
+              // themselves because the file path mirrors the slug.
             />
+            <p className="muted">
+              The module has two functions. <code>load_environment</code>{" "}
+              hands a list of <em>(question, answer)</em> rows to the
+              harness; <code>grade</code> scores one model response.
+              Save it as <code>{owner}/{name}.py</code> so the path in{" "}
+              <code>pyproject.toml</code>&apos;s{" "}
+              <code>[tool.hatch.build] include</code> matches.
+            </p>
           </div>
         </li>
         <li>
           <span className="bench-cli-step-num">4</span>
           <div className="bench-cli-step-body">
-            <strong>Bind the two files with an env.yaml:</strong>
+            <strong>Drop the dataset next to the module:</strong>
             <CodeBlock
-              label="env.yaml"
-              text={envYaml}
-              downloadName="env.yaml"
+              label={`${owner}/gsm8k.jsonl`}
+              text={dataset}
+              downloadName="gsm8k.jsonl"
             />
+            <p className="muted">
+              Three GSM8K integer-answer questions are enough to prove
+              the wiring before you swap in your production data. The
+              loader reads <code>gsm8k.jsonl</code> from{" "}
+              <code>Path(__file__).resolve().parent</code>, so any name
+              works as long as the loader and the file agree.
+            </p>
           </div>
         </li>
         <li>
           <span className="bench-cli-step-num">5</span>
           <div className="bench-cli-step-body">
-            <strong>Publish it under your namespace:</strong>
-            <CodeBlock text={pushCmd} />
+            <strong>Inspect the manifest you got from init:</strong>
+            <CodeBlock label="pyproject.toml" text={pyProject} />
             <p className="muted">
-              After this succeeds the slug <code>{target}</code> is
-              visible to this Nexus instance — come back here and re-run{" "}
-              <em>Validate environments</em>. Other slugs in your
-              namespace typically become visible at the same time.
+              <code>num_examples</code> and{" "}
+              <code>rollouts_per_example</code> are the budget the
+              environment advertises. The launcher in the console uses
+              its own <code>num_examples</code> when it submits; this
+              one is the documented default.
             </p>
           </div>
         </li>
         <li>
           <span className="bench-cli-step-num">6</span>
           <div className="bench-cli-step-body">
+            <strong>Push it from inside the folder:</strong>
+            <CodeBlock text={pushCmd} />
+            <p className="muted">
+              The <code>-p .</code> tells the CLI to look in the current
+              directory — make sure the shell is still in{" "}
+              <code>prime-envs/{target}</code>. After this succeeds,{" "}
+              <code>{target}</code> is visible to your Prime account —
+              come back here and re-run <em>Validate environments</em>.
+            </p>
+          </div>
+        </li>
+        <li>
+          <span className="bench-cli-step-num">7</span>
+          <div className="bench-cli-step-body">
             <strong>Optional — tell this page it happened:</strong>
             <CodeBlock text={reportCmd} label="report back" />
             <p className="muted">
-              Nexus cannot see your terminal, so without this the console
-              has no idea a push ever ran. Posting the result puts a
-              timestamp on this panel for whoever looks next. It records
+              Nexus cannot see your terminal, so without this the
+              console has no idea a push ever ran. The report carries
               only the slug and pass/fail — no command output, because
               the CLI can echo your API key into it.
             </p>
@@ -916,8 +981,8 @@ function EnvPushGuide({ slugs }: { slugs: string[] }) {
 
       <div className="bench-cli-rotate">
         <strong>If you would rather measure a different model:</strong>
-        pick any of your env chips above and re-run this guide with that
-        slug as the target.
+        pick any of your env chips above and re-run this guide with
+        that slug as the target.
       </div>
     </div>
   );
@@ -937,21 +1002,51 @@ const SAMPLE_DATASET_JSONL = [
   '{"question":"There were 15 trees in the grove. Grove workers planted trees in the grove today. After they were done, there were 21 trees. How many trees did the grove workers plant today?","answer":6}',
 ].join("\n");
 
-// SAMPLE_GRADER_PY is the function the provider calls per sample. It
-// receives the dataset row as `sample` dict and the model's full
-// response as `completion` string and returns 1.0 for a correct
-// answer, 0.0 otherwise. The \boxed{} peel is the common LLM-eval idiom
-// for model-written answers; without it, almost every reasoning model
-// marks itself wrong because it leaves prose around the integer.
-const SAMPLE_GRADER_PY = [
-  "# grade.py — the function Prime calls per sample.",
-  "# `sample` is the JSONL row, `completion` is the model response.",
-  "# Return 1.0 for a correct answer, 0.0 otherwise (partial credit ok).",
+// SAMPLE_ENV_MODULE is the single Python file the operator drops next
+// to pyproject.toml under <owner>/<name>.py. Two functions:
+//
+//   load_environment()  returns a verifiers.Environment
+//   grade(sample, completion)  returns 1.0 (correct) / 0.0 (wrong)
+//
+// The dataset path is relative to the module file, so the file can
+// live anywhere inside the env folder as long as the JSONL sits next
+// to it. We deliberately avoid HuggingFace plumbing here so a first-
+// time operator can read the file in one screen and adjust it.
+const SAMPLE_ENV_MODULE = [
+  "\"\"\"__OWNER__/__NAME__ — a grade-school math environment.",
   "",
+  "Single-file verifiers env: the dataset is the JSONL sitting next to",
+  "this module, and grade() does the answer match. Three fields per",
+  "row are expected: question (str), answer (int). The CLI's",
+  "[tool.verifiers.eval] num_examples controls how many of those rows",
+  "are sampled at launch time.",
+  "\"\"\"",
+  "",
+  "import json",
   "import re",
+  "from pathlib import Path",
+  "",
+  "from verifiers import Environment",
+  "",
+  "",
+  "DATASET_PATH = Path(__file__).resolve().parent / \"gsm8k.jsonl\"",
+  "",
+  "",
+  "def load_environment() -> Environment:",
+  "    samples = []",
+  "    with DATASET_PATH.open(\"r\", encoding=\"utf-8\") as f:",
+  "        for line in f:",
+  "            line = line.strip()",
+  "            if not line:",
+  "                continue",
+  "            row = json.loads(line)",
+  "            samples.append({\"question\": row[\"question\"], \"answer\": row[\"answer\"]})",
+  "    return Environment(dataset=samples, grade=grade)",
+  "",
   "",
   "def grade(sample, completion):",
-  "    # Models often wrap the final integer in \\boxed{…}; peel it off.",
+  "    # Reasoning models often wrap the final integer in \\boxed{...}.",
+  "    # Peel it off so almost-correct prose doesn't mark itself wrong.",
   "    boxed = re.search(r\"\\\\\\\\boxed\\\\{(.+?)\\\\}\", completion)",
   "    pred = boxed.group(1).strip() if boxed else completion.strip()",
   "    try:",
@@ -960,20 +1055,31 @@ const SAMPLE_GRADER_PY = [
   "        return 0.0",
 ].join("\n");
 
-// SAMPLE_ENV_YAML is the manifest that `prime env push` consumes.
-// __SLUG__ is replaced at render time with the targeted slug so
-// the operator can copy-and-paste the env.yaml text directly.
-const SAMPLE_ENV_YAML = [
-  "# env.yaml — declarative manifest for `prime env push`.",
-  "# Paths are relative to this file's directory.",
-  "name: __SLUG__",
-  "dataset:",
-  "  path: ./gsm8k.jsonl",
-  "  format: jsonl",
-  "grader:",
-  "  type: custom",
-  "  module: ./grade.py",
-  "  entry: grade",
+// SAMPLE_PYPROJECT_TOML is what `prime env init` writes verbatim. We
+// surface it because the [tool.verifiers.eval] block is not obvious
+// to a first-time operator, and the include path under
+// [tool.hatch.build] is why the module lives at __OWNER__/__NAME__.py.
+const SAMPLE_PYPROJECT_TOML = [
+  "[project]",
+  "name = \"__OWNER__/__NAME__\"",
+  "description = \"Your environment description here\"",
+  "tags = [\"placeholder-tag\", \"train\", \"eval\"]",
+  "version = \"0.1.0\"",
+  "requires-python = \">=3.10\"",
+  "dependencies = [",
+  "    \"verifiers>=0.2.1\",",
+  "]",
+  "",
+  "[build-system]",
+  "requires = [\"hatchling\"]",
+  "build-backend = \"hatchling.build\"",
+  "",
+  "[tool.hatch.build]",
+  "include = [\"__OWNER__/__NAME__.py\", \"pyproject.toml\"]",
+  "",
+  "[tool.verifiers.eval]",
+  "num_examples = 5",
+  "rollouts_per_example = 3",
 ].join("\n");
 
 function CodeBlock({

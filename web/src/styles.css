@@ -3069,6 +3069,19 @@ a:hover {
   color: var(--muted-2);
 }
 
+.bench-cli-prereq {
+  margin-top: 4px !important;
+  padding: 8px 10px;
+  border-left: 3px solid color-mix(in oklab, var(--accent-3, #7dd3fc) 60%, transparent);
+  background: color-mix(in oklab, var(--panel-3, #0d172a) 50%, transparent);
+  border-radius: 4px;
+}
+
+.bench-cli-prereq a {
+  color: inherit;
+  text-decoration: underline;
+}
+
 .bench-cli-steps {
   list-style: none;
   padding: 0;

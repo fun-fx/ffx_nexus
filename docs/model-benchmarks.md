@@ -335,26 +335,40 @@ Success: `{"ok":true}`. A 404 returns `{"ok":false,"error":"…"}`.
 ## Env-push guidance and reports
 
 A 404 from the pre-flight means the slug is not published to the
-account, and the fix is a local `prime env push`. The console reacts to
-that specific failure by expanding a panel with the five files and
-commands the operator needs: a starter `gsm8k.jsonl`, a `grade.py`
-grader, an `env.yaml` binding the two, the push command itself, and the
-optional report described below. Each snippet has Copy, and the three
-files have Download.
+account. The fix is a local CLI flow, and the console reacts to that
+specific failure by expanding a panel with the seven steps the
+operator runs on their own machine.
 
-The panel appears only on a 404. A 401 or a balance error needs a
-different fix, and offering CLI steps there would send the operator
-down the wrong path.
+The shape is folder-based, not config-flag-based. Prime does not
+accept `--config ./env.yaml`; the CLI is the only path and the
+operator writes:
 
-### Why Nexus cannot do the push
+```bash
+mkdir -p prime-envs/your-org/gsm8k
+cd prime-envs/your-org/gsm8k
+prime env init your-org/gsm8k -p .        # scaffolds pyproject.toml + README.md
+# Operator writes:  your-org/gsm8k.py    (load_environment() + grade())
+# Operator writes:  your-org/gsm8k.jsonl (one {question, answer} per line)
+prime env push your-org/gsm8k -p .        # cwd must stay inside the folder
+```
 
-`prime env push` reads a dataset and grader off local disk and uploads
-them; the provider exposes no server-side equivalent. Automating it
-would mean running the vendor CLI inside the cluster with the
-operator's key and their dataset staged into a pod — new infrastructure
-to hold a credential for a step the vendor deliberately keeps
-device-local. The panel therefore explains the manual path rather than
-replacing it.
+Why the file paths look the way they do: `pyproject.toml` includes
+`["<owner>/<name>.py"]` and Prime deduces the slug from the
+`[project] name` field, so editing either is likely to break the
+push. The console's Copy / Download buttons write the module and
+dataset with the names Prime expects, and the operator just has to
+drop them in the right place.
+
+The slug's owner (`your-org` above) must be a username or team slug
+already attached to the operator's Prime account. With a fresh API
+key, both are unset, and the CLI returns `Owner '<x>' not found` at
+the push step. The console calls this requirement out before the
+operator runs the commands so a 404 from the CLI is not mistaken for
+a broken install.
+
+The panel appears only on a 404 from the vendor. A 401 or a balance
+error needs a different fix, and offering CLI steps there would send
+the operator down the wrong path.
 
 ### The report endpoint
 
