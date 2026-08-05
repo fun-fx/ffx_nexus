@@ -265,7 +265,7 @@ production.
 |---|---|
 | `NEXUS_POSTGRES_URL` | required; without it the routes answer 503 with that explanation |
 | `NEXUS_CLICKHOUSE_URL` | optional; when set **and** Postgres is not, the bench blend reads `benchmark_runs` from CH (migration `007_benchmark_runs.sql`) via `argMax(completed_at)` |
-| `NEXUS_PUBLIC_GATEWAY_URL` | enables `via_gateway`; the gateway base without `/v1` |
+| `NEXUS_PUBLIC_GATEWAY_URL` | enables `via_gateway`; the **direct gateway** base without `/v1` (production: `https://api.ffx.ai`, not the console hostname) |
 | `NEXUS_ROUTE_W_BENCH` | benchmark blend weight (`0.0`–`1.0`, default `0.5`). `0` disables the bench layer entirely |
 | `NEXUS_ROUTE_BENCH_HALF_LIFE` | decay half-life for benchmark influence (default `168h`); `0` disables decay |
 
@@ -342,6 +342,29 @@ Implementation:
 
 The probe costs one POST + one PATCH against the vendor. Curlable
 example:
+
+## Gateway routing troubleshooting
+
+When `via_gateway` is on, PrimeIntellect's sandbox calls
+`$NEXUS_PUBLIC_GATEWAY_URL/v1/chat/completions` with the minted
+virtual key. Failures show up in the run logs as
+`PermissionDeniedError: Your request was blocked.`
+
+**Read the response shape, not only the SDK message.** The OpenAI
+Python client uses that string as the default for *any* HTTP 403
+when the body is not a normal Nexus JSON error. Common causes:
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| 403, generic "blocked", no Nexus `error.type` in logs | Cloudflare Bot Fight / WAF on the **console** hostname (`nexus.ffx.ai`) | Set `NEXUS_PUBLIC_GATEWAY_URL` to the **direct gateway** host (`https://api.ffx.ai`). Add a Cloudflare WAF skip for `api.ffx.ai/v1/*` when `Authorization` starts with `Bearer nxs_live_`. |
+| 403, Nexus JSON `model_not_allowed` | Virtual key scope vs model field mismatch | Fixed in v1beta: bare ids (`gpt-4.1-nano`) match scoped hub slugs (`openai/gpt-4.1-nano`). Re-launch after deploy. |
+| 502, `no API key registered for provider` | `strict_byok` and the launching admin has no BYOK row for that provider | Paste the upstream provider key in the console (or pick a model your account already serves). Benchmark keys are owned by the launching admin. |
+| 401, `invalid virtual key` | Revoked / wrong key | Launch a new run (keys are minted per run). |
+
+Production uses `https://api.ffx.ai` (port 8080 gateway). Do **not**
+point hosted evals at `https://nexus.ffx.ai` — that hostname serves
+the console SPA on :8081 and is more likely to be scored as bot
+traffic by Cloudflare.
 
 ```bash
 curl -X POST https://nexus.ffx.ai/api/eval/benchmarks/validate \
