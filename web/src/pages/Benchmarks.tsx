@@ -732,7 +732,17 @@ function LaunchPanel({
       </div>
       {dryRunM.isSuccess && dryRunM.data.ok && (
         <p className="hint" data-testid="bench-validate-ok">
-          Vendor accepted the credential and the environment slug(s). Safe to launch.
+          Vendor accepted the credential and the environment slug(s).
+          {dryRunM.data.warning ? (
+            <>
+              {" "}
+              <span className="hint-tag warn" data-testid="bench-validate-warn">
+                {dryRunM.data.warning}
+              </span>
+            </>
+          ) : (
+            " Safe to launch."
+          )}
         </p>
       )}
       {dryRunM.isSuccess && !dryRunM.data.ok && (

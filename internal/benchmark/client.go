@@ -121,9 +121,9 @@ func (c *Client) Launch(ctx context.Context, req LaunchRequest) (LaunchResult, e
 // leaving one even briefly makes the poller queue it and the operator
 // sees a transient failed row in the console. The whole point of the
 // probe is to answer a question; no durable evidence is needed.
-func (c *Client) DryRun(ctx context.Context, req LaunchRequest) error {
+func (c *Client) DryRun(ctx context.Context, req LaunchRequest) (DryRunResult, error) {
 	if c == nil || c.token == "" {
-		return ErrNoToken
+		return DryRunResult{}, ErrNoToken
 	}
 	probe := LaunchRequest{
 		Environments:   req.Environments,
@@ -136,11 +136,11 @@ func (c *Client) DryRun(ctx context.Context, req LaunchRequest) error {
 	// Reject early when the request is malformed locally so we do not
 	// even round-trip on forms the operator can fix in the form.
 	if err := probe.Validate(); err != nil {
-		return err
+		return DryRunResult{}, err
 	}
 	envIDs, err := c.resolveEnvironmentIDs(ctx, probe.Environments)
 	if err != nil {
-		return err
+		return DryRunResult{}, err
 	}
 	body := createRequest{
 		EnvironmentIDs: envIDs,
@@ -159,12 +159,12 @@ func (c *Client) DryRun(ctx context.Context, req LaunchRequest) error {
 		// The 404-on-create path is the most common useful answer
 		// ("this environment is not visible to your account"), so the
 		// caller can surface the message verbatim rather than parsing.
-		return err
+		return DryRunResult{}, err
 	}
 	if res.EvaluationID == "" {
 		// A create that returned 2xx but no id is a vendor surprise;
 		// we cannot cancel because we have nothing to cancel by.
-		return fmt.Errorf("benchmark: dry-run launch returned no evaluation id (status=%q error=%q)",
+		return DryRunResult{}, fmt.Errorf("benchmark: dry-run launch returned no evaluation id (status=%q error=%q)",
 			res.Status, res.Error)
 	}
 	// The vendor sometimes terminalises synchronously — insufficient
@@ -172,9 +172,13 @@ func (c *Client) DryRun(ctx context.Context, req LaunchRequest) error {
 	// plus a billing failure still proves slug resolution and auth.
 	if dryRunAlreadySettled(res.Status) {
 		if msg := strings.TrimSpace(res.Error); msg != "" && !dryRunBillingOnlyFailure(msg) {
-			return fmt.Errorf("benchmark: dry-run probe failed: %s", msg)
+			return DryRunResult{}, fmt.Errorf("benchmark: dry-run probe failed: %s", msg)
 		}
-		return nil
+		out := DryRunResult{}
+		if msg := strings.TrimSpace(res.Error); msg != "" {
+			out.Warning = msg
+		}
+		return out, nil
 	}
 	// Cancel best-effort. The vendor accepting the cancel is itself
 	// part of the probe — a credential that creates but cannot cancel
@@ -182,11 +186,11 @@ func (c *Client) DryRun(ctx context.Context, req LaunchRequest) error {
 	// vendor raced us to a terminal state (409 on cancel).
 	if err := c.Cancel(ctx, res.EvaluationID); err != nil {
 		if dryRunCancelAlreadyTerminal(err) {
-			return nil
+			return DryRunResult{}, nil
 		}
-		return fmt.Errorf("benchmark: dry-run launch succeeded but cancel failed: %w", err)
+		return DryRunResult{}, fmt.Errorf("benchmark: dry-run launch succeeded but cancel failed: %w", err)
 	}
-	return nil
+	return DryRunResult{}, nil
 }
 
 // dryRunAlreadySettled reports vendor create responses that leave

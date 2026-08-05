@@ -169,6 +169,13 @@ func (r LaunchRequest) Validate() error {
 	return nil
 }
 
+// DryRunResult is the outcome of a pre-flight probe. Warning is set
+// when slug and credential passed but the vendor signalled a billing
+// block — launch may still fail until the wallet is funded.
+type DryRunResult struct {
+	Warning string
+}
+
 // LaunchResult is what the vendor returns from a create call. A run
 // spanning several environments yields several ids; we keep the first
 // as the row's external id and record the rest for reference.
