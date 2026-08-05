@@ -177,11 +177,11 @@ func (r *Runner) Launch(ctx context.Context, spec LaunchSpec) (core.BenchmarkRun
 				"%w: gateway-routed runs need NEXUS_PUBLIC_GATEWAY_URL to be set",
 				ErrInvalidRequest)
 		}
-		vk, secret, err := r.keys.CreateVirtualKey(ctx, spec.OrgID, spec.ActorID, "",
+		vk, secret, err := r.keys.CreateVirtualKey(ctx, spec.OrgID, spec.ActorID, spec.ActorID,
 			"benchmark "+shortID(run.ID),
 			// Scoped to the one model under test: the provider's
 			// sandbox gets no reach beyond what the run needs.
-			[]string{spec.Model}, runKeyRPM, 0, 0)
+			allowedModelsForBenchmark(spec.Model), runKeyRPM, 0, 0)
 		if err != nil {
 			return core.BenchmarkRun{}, fmt.Errorf("benchmark: mint gateway key: %w", err)
 		}
@@ -537,6 +537,22 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// allowedModelsForBenchmark lists the model ids a gateway-routed run may
+// call. The hub slug and its bare upstream id are both included because
+// Prime's verifiers often omit the provider/ prefix on custom api_base_url
+// calls.
+func allowedModelsForBenchmark(model string) []string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
+	out := []string{model}
+	if _, rest, ok := strings.Cut(model, "/"); ok && rest != "" {
+		out = append(out, rest)
+	}
+	return out
 }
 
 func scoreForLog(v *float64) any {

@@ -58,6 +58,12 @@ Gateway routing requires `NEXUS_PUBLIC_GATEWAY_URL`, because the
 provider's sandbox has to reach a URL we can name. When it is unset the
 console disables the option and says why rather than failing on submit.
 
+The minted virtual key is owned by the admin who launched the run so
+`strict_byok` deployments resolve that user's provider credentials.
+Prime's verifiers often send the bare upstream model id (`gpt-4.1-nano`)
+while the allow-list stores the hub slug (`openai/gpt-4.1-nano`); the
+gateway accepts both when they refer to the same model.
+
 ### The virtual key
 
 One key per run, created at launch and revoked when the run settles

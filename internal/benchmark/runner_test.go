@@ -148,6 +148,7 @@ func (f *fakeStore) only(t *testing.T) core.BenchmarkRun {
 
 type mintedKey struct {
 	orgID  string
+	userID string
 	name   string
 	models []string
 	rpm    int
@@ -160,14 +161,14 @@ type fakeKeys struct {
 	err     error
 }
 
-func (f *fakeKeys) CreateVirtualKey(_ context.Context, orgID, _, _, name string,
+func (f *fakeKeys) CreateVirtualKey(_ context.Context, orgID, _, userID, name string,
 	models []string, rpm int, _, _ float64) (core.VirtualKey, string, error) {
 	if f.err != nil {
 		return core.VirtualKey{}, "", f.err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.minted = append(f.minted, mintedKey{orgID: orgID, name: name, models: models, rpm: rpm})
+	f.minted = append(f.minted, mintedKey{orgID: orgID, userID: userID, name: name, models: models, rpm: rpm})
 	id := "vk-" + name
 	return core.VirtualKey{ID: id, OrgID: orgID}, "nxs_live_" + name, nil
 }
@@ -296,6 +297,9 @@ func TestLaunchViaGatewayMintsScopedKeyAndRecordsRun(t *testing.T) {
 		t.Fatalf("minted %d keys, want 1", len(keys.minted))
 	}
 	m := keys.minted[0]
+	if m.userID != "user-1" {
+		t.Errorf("benchmark key user = %q, want launching actor for BYOK", m.userID)
+	}
 	if len(m.models) != 1 || m.models[0] != "gpt-4o-mini" {
 		t.Errorf("key scope = %#v, want just the model under test", m.models)
 	}
