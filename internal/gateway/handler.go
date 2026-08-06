@@ -297,17 +297,40 @@ func (h *Handler) recordSpend(ctx context.Context, costUSD float64) {
 	}
 }
 
+// costHeaderName is the response header (and, on the streaming path, the
+// trailer) that carries the per-call spend.
+const costHeaderName = "x-nexus-cost-usd"
+
 // setCostHeader sets the x-nexus-cost-usd response header. Always emitted
 // (even when zero) so callers that read it through HTTP tooling see a
 // definite value and can distinguish "request succeeded with no cost"
 // from "cost was unknown". The body's `usage.cost_usd` field uses
 // `omitempty` for the opposite audience — OpenAI-strict JSON parsers
 // that ignore unknown keys.
+//
+// Only valid before the response head is written. Streaming responses
+// must use setCostTrailer instead.
 func setCostHeader(w http.ResponseWriter, costUSD float64) {
 	if w == nil {
 		return
 	}
-	w.Header().Set("x-nexus-cost-usd", strconv.FormatFloat(costUSD, 'f', 6, 64))
+	w.Header().Set(costHeaderName, formatCostUSD(costUSD))
+}
+
+// setCostTrailer publishes the spend after the body has been streamed.
+// The header name must already have been announced in the "Trailer"
+// header before WriteHeader; net/http then flushes it as a real trailer
+// once the handler returns. The TrailerPrefix form is used so this works
+// whether or not the value was pre-declared.
+func setCostTrailer(w http.ResponseWriter, costUSD float64) {
+	if w == nil {
+		return
+	}
+	w.Header().Set(http.TrailerPrefix+costHeaderName, formatCostUSD(costUSD))
+}
+
+func formatCostUSD(costUSD float64) string {
+	return strconv.FormatFloat(costUSD, 'f', 6, 64)
 }
 
 // ChatCompletions handles POST /v1/chat/completions for both streaming and
@@ -755,6 +778,15 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// The cost is only known once the last chunk has been read, which is
+	// long after the response head has gone out, so it has to travel as a
+	// trailer. Declaring it up front is what makes that legal — a plain
+	// Header().Set() after WriteHeader is silently dropped on the wire
+	// (an httptest.ResponseRecorder does not model that, which is why the
+	// streaming header looked fine in tests while never reaching a real
+	// client). Clients that ignore trailers read the cost in-band off
+	// usage.cost_usd on the final chunk instead.
+	w.Header().Set("Trailer", costHeaderName)
 	w.WriteHeader(http.StatusOK)
 
 	trace.Streamed = true
@@ -834,6 +866,14 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 				if c := evt.Chunk.Usage.EstimatedCost; c > 0 {
 					upstreamCost = c
 				}
+				// Stamp the cost onto the chunk that carries the usage
+				// block. This is the only copy of the number a client
+				// gets if it ignores trailers, and it is computable here
+				// from the very tokens we just read. The trace recomputes
+				// the same value below from the same inputs.
+				evt.Chunk.Usage.CostUSD = ResolveCostUSD(upstreamCost,
+					trace.RequestModel, trace.ResponseModel,
+					evt.Chunk.Usage.PromptTokens, evt.Chunk.Usage.CompletionTokens)
 			}
 			b, _ := json.Marshal(evt.Chunk)
 			_, _ = w.Write([]byte("data: "))
@@ -853,12 +893,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 		}
 	}
 	trace.CostUSD = ResolveCostUSD(upstreamCost, trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
-	// HTTP response header — safe on the streaming path because Go attaches
-	// the header to the response before the first body byte is flushed,
-	// regardless of when we call Set here. Stream clients see a single
-	// x-nexus-cost-usd header even though the cost is only known at the
-	// end of the response.
-	setCostHeader(w, trace.CostUSD)
+	// Announced as a trailer before WriteHeader above, so this reaches the
+	// client even though the response head left long ago.
+	setCostTrailer(w, trace.CostUSD)
 	h.recorder.Record(trace)
 	h.recordSpend(r.Context(), trace.CostUSD)
 }
