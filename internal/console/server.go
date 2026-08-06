@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -229,6 +230,7 @@ func (s *Server) Mux() http.Handler {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/traces", s.requireUser(s.recentTraces))
 		r.Get("/stats", s.requireUser(s.stats))
+		r.Get("/stats/providers", s.requireUser(s.providerStats))
 		r.Get("/routing", s.routing)
 		r.Get("/evals", s.evals)
 		r.Get("/eval/config", s.requireAdmin(s.getEvalConfig))
@@ -524,6 +526,82 @@ func (s *Server) enrichTraceUserEmails(ctx context.Context, org string, traces [
 			traces[i].UserEmail = byID[traces[i].UserID]
 		}
 	}
+}
+
+// providerStats returns per-provider aggregates for the spend-by-provider
+// widget. Cached in-process for 30 s so the Overview page can re-render on a
+// developer dashboard refresh without punching ClickHouse on every poll; the
+// underlying SELECT is a single GROUP BY on a partitioned column and stays
+// under one second on the prod gateway_traces table, but repetition at the
+// UI refresh rate would still be wasteful once we hit dozens of concurrent
+// dashboard tabs.
+//
+// The cache key is (window, userID-scope) so scoped queries don't poison each
+// other's buckets.
+type providerStatsCacheEntry struct {
+	value     []observability.ProviderStat
+	expiresAt time.Time
+}
+
+var (
+	providerStatsCacheMu sync.RWMutex
+	providerStatsCache   = map[string]providerStatsCacheEntry{}
+	providerStatsTTL     = 30 * time.Second
+)
+
+func providerStatsCacheGet(key string) ([]observability.ProviderStat, bool) {
+	providerStatsCacheMu.RLock()
+	defer providerStatsCacheMu.RUnlock()
+	e, ok := providerStatsCache[key]
+	if !ok || time.Now().After(e.expiresAt) {
+		return nil, false
+	}
+	return e.value, true
+}
+
+func providerStatsCacheSet(key string, v []observability.ProviderStat) {
+	providerStatsCacheMu.Lock()
+	defer providerStatsCacheMu.Unlock()
+	providerStatsCache[key] = providerStatsCacheEntry{value: v, expiresAt: time.Now().Add(providerStatsTTL)}
+}
+
+func (s *Server) providerStats(w http.ResponseWriter, r *http.Request, u core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, []observability.ProviderStat{})
+		return
+	}
+	window := time.Hour
+	if q := r.URL.Query().Get("window"); q != "" {
+		if d, err := time.ParseDuration(q); err == nil {
+			window = d
+		}
+	}
+	scope := "admin"
+	if u.Role != core.RoleAdmin {
+		scope = "user:" + u.ID
+	}
+	cacheKey := scope + "|" + window.String()
+
+	if cached, ok := providerStatsCacheGet(cacheKey); ok {
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
+
+	uid := ""
+	if u.Role != core.RoleAdmin {
+		uid = u.ID
+	}
+	out, err := s.reader.ProviderStats(r.Context(), window, uid, 20)
+	if err != nil {
+		s.log.Error("provider stats query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	if out == nil {
+		out = []observability.ProviderStat{}
+	}
+	providerStatsCacheSet(cacheKey, out)
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request, u core.User) {

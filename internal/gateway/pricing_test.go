@@ -40,6 +40,22 @@ func TestCostUSD_TableDriven(t *testing.T) {
 		{"grid text-prime", "grid/text-prime", "", 1_000_000, 1_000_000, 0.50 + 1.50},
 		{"grid code-max", "grid/code-max", "", 1_000_000, 1_000_000, 2.10 + 6.30},
 
+		// ------------------ The Grid bare instrument ids ----------------------
+		// /v1/models sync returns the bare instrument id without the
+		// `grid/` prefix (e.g. `code-prime`). They must still resolve
+		// through familyAliases so a freshly-synced call carries a USD
+		// number instead of silently being 0. PR fixed: overview cost
+		// stayed at 0 for grid providers otherwise.
+		{"grid bare text-standard",  "text-standard",  "", 1_000_000, 1_000_000, 0.20 + 0.50},
+		{"grid bare text-prime",     "text-prime",     "", 1_000_000, 1_000_000, 0.50 + 1.50},
+		{"grid bare text-max",       "text-max",       "", 1_000_000, 1_000_000, 1.50 + 4.50},
+		{"grid bare code-standard",  "code-standard",  "", 1_000_000, 1_000_000, 0.30 + 0.90},
+		{"grid bare code-prime",     "code-prime",     "", 1_000_000, 1_000_000, 0.70 + 2.10},
+		{"grid bare code-max",       "code-max",       "", 1_000_000, 1_000_000, 2.10 + 6.30},
+		{"grid bare agent-standard", "agent-standard", "", 1_000_000, 1_000_000, 0.40 + 1.20},
+		{"grid bare agent-prime",    "agent-prime",    "", 1_000_000, 1_000_000, 1.00 + 3.00},
+		{"grid bare agent-max",      "agent-max",      "", 1_000_000, 1_000_000, 3.00 + 9.00},
+
 		// ------------------ Upstream-returned versioned ids ---------------------
 		// Models are surfaced as bare versioned ids after PR #111's dynamic
 		// /v1/models sync. The lookup must resolve them through familyAliases
