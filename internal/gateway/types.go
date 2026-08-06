@@ -329,11 +329,21 @@ type Choice struct {
 	FinishReason string  `json:"finish_reason"`
 }
 
-// Usage holds token accounting.
+// Usage holds token accounting for the chat completions response.
+//
+// CostUSD is a non-standard extension. We populate it from the local
+// pricing table so every caller sees what their request cost. The
+// `omitempty` flag keeps the wire shape OpenAI-compatible: when the
+// model is unknown to the pricing table (or the computed cost rounds to
+// zero) the field is absent rather than `"cost_usd": 0`, so any client
+// that rejects extra keys still parses the response. Clients that want
+// a definite value (including zero) read the `x-nexus-cost-usd` header,
+// which is always emitted.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	CostUSD          float64 `json:"cost_usd,omitempty"`
 }
 
 // ChatCompletionChunk is a single streamed delta (OpenAI SSE format).
@@ -525,10 +535,15 @@ type ResponsesContent struct {
 }
 
 // ResponsesUsage covers the standard input/output token accounting.
+//
+// CostUSD mirrors Usage.CostUSD: a non-standard extension populated
+// from the local pricing table. See Usage for the omitempty/`x-nexus-`
+// header convention.
 type ResponsesUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	TotalTokens  int     `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
 }
 
 // ModerationRequest is the OpenAI-compatible /v1/moderations request body.
