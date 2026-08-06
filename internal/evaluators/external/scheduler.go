@@ -41,6 +41,12 @@ type Scheduler struct {
 	mu        sync.Mutex
 	buffers   map[string]*pluginBuffer
 	schedules map[string]*scheduledFlush
+	// stopped latches on Stop(). Stop releases s.mu before it joins the
+	// flush goroutines, so an in-flight sweep tick or a concurrent
+	// Enqueue can still acquire the lock after the maps were cleared.
+	// Every entry point checks this under s.mu and bails out instead of
+	// writing to a nil map, which would panic the process.
+	stopped bool
 
 	defaultCap int
 	sweepEvery time.Duration
@@ -66,6 +72,12 @@ type SchedulerConfig struct {
 // Errors surfaced from the Scheduler so MultiEvaluator can decide
 // whether to log-and-continue (overflow) or escalate (nil plugin).
 var ErrBufferFull = errors.New("eval plugin scheduler buffer full")
+
+// ErrSchedulerStopped is returned by Enqueue/FireManual/FireScheduled once
+// Stop has run. Shutdown is not an error state for the gateway — the eval
+// worker logs the drop and moves on — but the caller needs to distinguish
+// "buffered" from "discarded because we're draining".
+var ErrSchedulerStopped = errors.New("eval plugin scheduler stopped")
 
 // defaultBufferCap bounds the per-plugin queue. Sized for "vendor
 // outage pushback" at typical production trace rates — a single
@@ -132,6 +144,12 @@ func (s *Scheduler) Start(ctx context.Context, reg *evalplugin.Registry) {
 		s.mu.Unlock()
 		return
 	}
+	if s.stopped {
+		// Stop cleared the buffers; restarting would sweep against nil
+		// maps. Callers needing restart semantics build a new instance.
+		s.mu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	s.mu.Unlock()
@@ -167,6 +185,9 @@ func (s *Scheduler) reconcile(reg *evalplugin.Registry) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopped {
+		return
+	}
 	for name, rec := range wanted {
 		ivl := rec.Plugin.Spec.Collect.Interval.Std()
 		if ivl <= 0 {
@@ -198,8 +219,13 @@ func (s *Scheduler) reconcile(reg *evalplugin.Registry) {
 }
 
 // bufferFor returns the per-plugin buffer, creating it lazily when a
-// trigger first gets registered. Caller must hold s.mu.
+// trigger first gets registered. Caller must hold s.mu. Returns nil once
+// Stop has cleared the maps — callers must treat that as "scheduler is
+// draining" rather than dereferencing it.
 func (s *Scheduler) bufferFor(name string) *pluginBuffer {
+	if s.stopped {
+		return nil
+	}
 	if buf, ok := s.buffers[name]; ok {
 		return buf
 	}
@@ -265,6 +291,9 @@ func (s *Scheduler) Enqueue(p *evalplugin.Plugin, t observability.Trace) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	buf := s.bufferFor(p.Metadata.Name)
+	if buf == nil {
+		return ErrSchedulerStopped
+	}
 	if buf.ll.Len() >= buf.cap {
 		buf.dropped++
 		return ErrBufferFull
@@ -293,6 +322,9 @@ func (s *Scheduler) FireManual(ctx context.Context, p *evalplugin.Plugin, trigge
 	s.mu.Lock()
 	buf := s.bufferFor(p.Metadata.Name)
 	s.mu.Unlock()
+	if buf == nil {
+		return 0, ErrSchedulerStopped
+	}
 	count := s.drainAll(ctx, p, buf)
 	s.logf("manual eval plugin fire", "plugin", p.Metadata.Name, "count", count, "trigger", trigger)
 	return count, nil
@@ -318,6 +350,9 @@ func (s *Scheduler) FireScheduled(ctx context.Context, p *evalplugin.Plugin, tri
 	s.mu.Lock()
 	buf := s.bufferFor(p.Metadata.Name)
 	s.mu.Unlock()
+	if buf == nil {
+		return 0, ErrSchedulerStopped
+	}
 	count := s.drainAll(ctx, p, buf)
 	s.logf("scheduled eval plugin fire", "plugin", p.Metadata.Name, "count", count, "trigger", trigger)
 	return count, nil
@@ -379,6 +414,7 @@ func (s *Scheduler) DroppedReports() map[string]int64 {
 // need restart semantics should construct a new instance.
 func (s *Scheduler) Stop() {
 	s.mu.Lock()
+	s.stopped = true
 	if s.cancel != nil {
 		s.cancel()
 		s.cancel = nil

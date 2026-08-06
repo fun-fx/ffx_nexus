@@ -226,6 +226,17 @@ func (m *MultiEvaluator) dispatchForwarded(ctx context.Context, t observability.
 				}
 				return nil
 			}
+			if errors.Is(err, ErrSchedulerStopped) {
+				// Pod is draining. Losing a best-effort eval trace here is
+				// expected; reporting it as an eval failure would paint
+				// every shutdown with spurious errors.
+				if log != nil {
+					log.Warn("eval scheduler stopped; trace dropped",
+						"plugin", rec.Plugin.Metadata.Name,
+						"trace_id", t.TraceID)
+				}
+				return nil
+			}
 			return err
 		}
 		return nil
