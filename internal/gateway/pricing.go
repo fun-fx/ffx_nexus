@@ -2,10 +2,41 @@ package gateway
 
 import "strings"
 
-// price holds per-million-token USD pricing.
+// price holds per-million-token USD pricing for the simple
+// input/output split that production providers expose on most models.
+//
+// Most call math uses exactly this struct via applyBasic. Models with
+// cache discounts or reasoning premiums graduate to detailedPrice so
+// the cost composer can bill cached input separately from regular
+// input and reasoning output from text output. The catalogue carries
+// the basic rate for both paths; the composer is responsible for
+// looking up the detailed version when a model needs it.
 type price struct {
 	inPerM  float64
 	outPerM float64
+}
+
+// detailedPrice extends price with the per-component rates that some
+// model catalogues use. All fields are USD per 1M tokens for the named
+// component; zero values fall back to the basic in/out rate so authors
+// of new entries only set the fields that actually differ.
+//
+//   - cachedInPerM  — prompt tokens that hit a vendor cache. Set to a
+//     small fraction of inPerM when the vendor offers
+//     a deep discount (e.g. claude prompt cache ~10% of
+//     base input). 0 means "bill at inPerM".
+//   - reasoningOutPerM — completion tokens counted as internal reasoning
+//     by the model. Typically 2x–5x outPerM for o-series
+//     and claude extended thinking. 0 means "bill at
+//     outPerM".
+//
+// Detailed prices are intentionally only declared when the vendor
+// exposes the matching disaggregated token detail in usage; otherwise
+// the composer has no signal to apply them.
+type detailedPrice struct {
+	price
+	cachedInPerM     float64
+	reasoningOutPerM float64
 }
 
 // pricingTable is a best-effort static price list (USD per 1M tokens).
@@ -81,6 +112,40 @@ var pricingTable = map[string]price{
 	"grid/agent-max":      {3.00, 9.00},
 }
 
+// detailedPricingTable holds the small subset of models for which a
+// component-level breakdown is published and the upstream exposes the
+// matching usage.*_tokens_details block. Only entries listed in this
+// map reach the disaggregation path; everyone else stays on the basic
+// rate even when details are present, so an unexpected field from a
+// new vendor cannot multiply the cost silently.
+//
+// Numbers reflect public pricing pages reviewed in 2026-07:
+//   - Anthropic prompt cache: ~10% of base input for 5m, ~20% for 1h
+//     (https://docs.claude.com/en/docs/build-with-claude/prompt-caching).
+//   - o3 / o4 reasoning tokens: charged at the model's output rate
+//     already, so reasoningOutPerM == outPerM. Listed for completeness.
+//   - The Grid does not publish reasoning caches; left at base rate.
+var detailedPricingTable = map[string]detailedPrice{
+	// Anthropic prompt cache: cache hits at ~10% of input from the 5m
+	// window. The 1h window is ~20% but The Grid surfaced caches we
+	// observed are 5m, and bucket-level fidelity isn't worth a third
+	// field today.
+	"claude-opus-4-1":          {price: price{15.00, 75.00}, cachedInPerM: 1.50},
+	"claude-sonnet-4-5":        {price: price{3.00, 15.00}, cachedInPerM: 0.30},
+	"claude-haiku-4-5":         {price: price{1.00, 5.00}, cachedInPerM: 0.10},
+	"claude-3-7-sonnet-latest": {price: price{3.00, 15.00}, cachedInPerM: 0.30},
+	"claude-3-5-haiku-latest":  {price: price{0.80, 4.00}, cachedInPerM: 0.08},
+
+	// OpenAI o-series: reasoning tokens are charged the same as
+	// completion output. The entries are not strictly necessary today
+	// (no extra multiplier) but pinning them causes the composer to
+	// prefer the disaggregated reasoning_tokens count when it is
+	// present and so produces a number visibly closer to the vendor's
+	// own accounting for unsettled streaming cases.
+	"o3":      {price: price{2.00, 8.00}, reasoningOutPerM: 8.00},
+	"o4-mini": {price: price{1.10, 4.40}, reasoningOutPerM: 4.40},
+}
+
 // familyAliases maps an upstream-returned versioned model id to one of the
 // family keys in `pricingTable`. Lookup is a longest-prefix match against
 // the keys; the first one whose key is a strict prefix of the input wins.
@@ -135,27 +200,6 @@ var familyAliases = []struct {
 	{"agent-max", "grid/agent-max"},
 }
 
-// CostUSD computes the request cost from token usage. Returns 0 for unknown
-// models.
-//
-// Resolution order (first non-empty match wins):
-//  1. Exact lookup against `pricingTable` — handles keys that already
-//     exist (e.g. "openai/gpt-4o", "groq/llama-3.3-70b-versatile").
-//  2. Strip a leading `<provider>/` prefix and retry (handles bare ids
-//     like `gpt-4o` after the upstream /v1/models sync returns bare names).
-//  3. Longest-prefix match against `familyAliases` — handles versioned ids
-//     like `gpt-4o-2024-08-06` that share a family root with a priced key.
-//
-// `requestModel` is the customer-facing model id the caller asked for.
-// `responseModel` is the upstream-resolved id (filled from upstream
-// `model` response field); some providers rewrite the model the user
-// sees to a versioned id even though they price at the family level.
-// Passing both lets the lookup catch that case.
-//
-// Callers that previously passed only the request model keep working:
-// the function still resolves via path 1 or 2 for the request id and,
-// when the response id happens to match a known family, finds it through
-// path 3 using the response id.
 // ResolveCostUSD returns the authoritative spend for one call.
 //
 // `upstreamReported` is what the provider itself said the call cost
@@ -166,28 +210,115 @@ var familyAliases = []struct {
 // at that moment — the static table below can only ever approximate it,
 // and instruments added after a release would silently cost 0.
 //
+// Pass usage = nil for calls that need a basic price-table estimate from
+// just prompt + completion counts. Pass the actual upstream `Usage`
+// when the vendor included a `prompt_tokens_details` or
+// `completion_tokens_details` block; the composer will pick the
+// detailed rate if the model is in `detailedPricingTable` AND the
+// matching detail carries non-zero component counts.
+//
+// When upstream is silent AND the model has a published detailed rate,
+// we still prefer detail-aware math — a Claude call with 100 cached
+// prompt tokens is genuinely cheaper than 100 fresh ones, and treating
+// them as identical would be a 10x overstatement of billable spend.
+//
 // Everything else falls back to the local pricing table, which is what
 // OpenAI / Anthropic / Gemini / Groq / Mistral need because none of them
 // report cost on the wire (they return token counts only).
-func ResolveCostUSD(upstreamReported float64, requestModel, responseModel string, inTokens, outTokens int) float64 {
+func ResolveCostUSD(upstreamReported float64, requestModel, responseModel string, usage *Usage) float64 {
 	if upstreamReported > 0 {
 		return upstreamReported
 	}
-	return CostUSD(requestModel, responseModel, inTokens, outTokens)
+	if usage == nil {
+		return CostUSD(requestModel, responseModel, 0, 0)
+	}
+	detail := false
+	if usage.PromptTokenDetails != nil && usage.PromptTokenDetails.HasDetail() {
+		detail = true
+	}
+	if usage.CompletionTokenDetails != nil && usage.CompletionTokenDetails.HasDetail() {
+		detail = true
+	}
+	if detail && lookupDetailedFamily(requestModel, responseModel) != "" {
+		return costForModel(requestModel, responseModel, usage.PromptTokens, usage.CompletionTokens, true, usage)
+	}
+	return CostUSD(requestModel, responseModel, usage.PromptTokens, usage.CompletionTokens)
 }
 
+// CostUSD is a thin wrapper that ignores usage disaggregation and
+// returns the basic rate-table result. Retained so the streaming code
+// path that only has PromptTokens/CompletionTokens totals (the chunk
+// that arrives last *should* have all the details but the basic path
+// is the documented minimum) still works.
 func CostUSD(requestModel, responseModel string, inTokens, outTokens int) float64 {
-	// Try the request id first (most common case for pricing accuracy).
-	if p, ok := matchPrice(requestModel); ok {
-		return apply(p, inTokens, outTokens)
+	return costForModel(requestModel, responseModel, inTokens, outTokens, false, nil)
+}
+
+// CostUSAGECost is the disaggregation-aware version of CostUSD. Use
+// this whenever the caller holds a *Usage that may carry
+// prompt_tokens_details / completion_tokens_details.
+func CostUSAGECost(requestModel, responseModel string, usage *Usage) float64 {
+	if usage == nil {
+		return CostUSD(requestModel, responseModel, 0, 0)
 	}
-	// Fall back to the upstream-resolved id when it differs.
+	detail := false
+	if usage.PromptTokenDetails != nil && usage.PromptTokenDetails.HasDetail() {
+		detail = true
+	}
+	if usage.CompletionTokenDetails != nil && usage.CompletionTokenDetails.HasDetail() {
+		detail = true
+	}
+	if detail && lookupDetailedFamily(requestModel, responseModel) != "" {
+		return costForModel(requestModel, responseModel, usage.PromptTokens, usage.CompletionTokens, true, usage)
+	}
+	return costForModel(requestModel, responseModel, usage.PromptTokens, usage.CompletionTokens, false, nil)
+}
+
+// costForModel runs the resolution chain (model id -> family key -> price)
+// and then applies either the basic or the detail-aware formula.
+//
+// In and out tokens at zero keep math idempotent, so the invoice-only
+// case (where the trace knows a model but no usage yet) returns 0 instead
+// of NaN. The cost composer is expected to be the only place that
+// inspects `useDetail`; everywhere else the choice is made by CostUSD.
+func costForModel(requestModel, responseModel string, inTokens, outTokens int, useDetail bool, usage *Usage) float64 {
+	if useDetail {
+		if dp, ok := matchDetailed(requestModel); ok {
+			return applyDetailed(dp, inTokens, outTokens, usage)
+		}
+		if responseModel != "" && responseModel != requestModel {
+			if dp, ok := matchDetailed(responseModel); ok {
+				return applyDetailed(dp, inTokens, outTokens, usage)
+			}
+		}
+	}
+	if p, ok := matchPrice(requestModel); ok {
+		return applyBasic(p, inTokens, outTokens)
+	}
 	if responseModel != "" && responseModel != requestModel {
 		if p, ok := matchPrice(responseModel); ok {
-			return apply(p, inTokens, outTokens)
+			return applyBasic(p, inTokens, outTokens)
 		}
 	}
 	return 0
+}
+
+// lookupDetailedFamily returns the pricing-table family key for the
+// inputs — same resolution order as matchPrice — or "" if neither
+// model has a detailed entry. Used to decide whether to bypass the
+// detail path (we should not let a detail-aware *Usage on a basic-rate
+// model trigger detail math, because the fields are not documented
+// for that model and would be applying hypothetical rates).
+func lookupDetailedFamily(requestModel, responseModel string) string {
+	if _, ok := matchDetailed(requestModel); ok {
+		return requestModel
+	}
+	if responseModel != "" && responseModel != requestModel {
+		if _, ok := matchDetailed(responseModel); ok {
+			return responseModel
+		}
+	}
+	return ""
 }
 
 // matchPrice runs the resolution chain described on CostUSD() against a
@@ -220,6 +351,49 @@ func matchPrice(model string) (price, bool) {
 	return price{}, false
 }
 
+// matchDetailed resolves a model to a detailedPrice entry, mirroring
+// matchPrice's three-step chain (exact table, prefix-stripped table,
+// longest-prefix alias). It does not share the familyAliases table;
+// if the alias map changes the basic price for a model, the detail
+// table is consulted with the *family* key it resolves to, not the
+// raw alias, so the two stay in sync without renaming every detail
+// entry on an alias rename.
+func matchDetailed(model string) (detailedPrice, bool) {
+	if model == "" {
+		return detailedPrice{}, false
+	}
+	if dp, ok := detailedPricingTable[model]; ok {
+		return dp, true
+	}
+	if _, rest, found := strings.Cut(model, "/"); found {
+		if dp, ok := detailedPricingTable[rest]; ok {
+			return dp, true
+		}
+		if p, ok := matchAliasDetail(rest); ok {
+			return p, true
+		}
+	}
+	if p, ok := matchAliasDetail(model); ok {
+		return p, true
+	}
+	return detailedPrice{}, false
+}
+
+// matchAliasDetail walks `familyAliases` in declaration order and returns
+// the detailedPrice whose family key is registered in
+// `detailedPricingTable`. Zero value falls back to the basic rate,
+// which lets a basic-and-detailed pair live alongside each other.
+func matchAliasDetail(model string) (detailedPrice, bool) {
+	for _, a := range familyAliases {
+		if a.prefix == model || strings.HasPrefix(model, a.prefix) {
+			if dp, ok := detailedPricingTable[a.family]; ok {
+				return dp, true
+			}
+		}
+	}
+	return detailedPrice{}, false
+}
+
 // matchAlias walks `familyAliases` in declaration order and returns the
 // price family entry whose key is a strict prefix of the input id.
 // The map is ordered so more specific aliases come first to avoid a
@@ -244,6 +418,62 @@ func matchAlias(model string) (price, bool) {
 	return price{}, false
 }
 
-func apply(p price, inTokens, outTokens int) float64 {
+func applyBasic(p price, inTokens, outTokens int) float64 {
 	return (float64(inTokens)/1e6)*p.inPerM + (float64(outTokens)/1e6)*p.outPerM
+}
+
+// applyDetailed breaks the headline input count into "uncached" +
+// "cached" and the headline output count into "regular" + "reasoning"
+// using `usage` (when provided), summing each at its component rate.
+//
+//	inTokens == uncached + cached (the upstream reports the cache
+//	  share inside prompt_tokens_details.cached_tokens). When the
+//	  cache field is absent, the whole prompt lands at the base rate.
+//
+//	outTokens == regular_output + reasoning (completion_tokens_details
+//	  splits the same way). `regular_output` falls back to total -
+//	  reasoning when only one of the two is reported.
+//
+// The function never goes negative: any difference is rolled back
+// into the base component so the result is bounded below by applyBasic.
+func applyDetailed(dp detailedPrice, inTokens, outTokens int, usage *Usage) float64 {
+	cachedInRate := dp.cachedInPerM
+	if cachedInRate == 0 {
+		cachedInRate = dp.price.inPerM // cache hint missing → no discount
+	}
+	reasoningOutRate := dp.reasoningOutPerM
+	if reasoningOutRate == 0 {
+		reasoningOutRate = dp.price.outPerM // model has no extra premium
+	}
+
+	cachedIn := 0
+	regularOut := outTokens
+	reasoningOut := 0
+	if usage != nil {
+		if usage.PromptTokenDetails != nil && usage.PromptTokenDetails.CachedTokens > 0 {
+			cachedIn = usage.PromptTokenDetails.CachedTokens
+			if cachedIn > inTokens {
+				cachedIn = inTokens // upstream never reports more caches than the total
+			}
+		}
+		if usage.CompletionTokenDetails != nil && usage.CompletionTokenDetails.ReasoningTokens > 0 {
+			reasoningOut = usage.CompletionTokenDetails.ReasoningTokens
+			if reasoningOut > outTokens {
+				reasoningOut = outTokens
+			}
+			regularOut = outTokens - reasoningOut
+		}
+	}
+	uncached := inTokens - cachedIn
+	if uncached < 0 {
+		uncached = 0
+	}
+	if regularOut < 0 {
+		regularOut = outTokens
+	}
+
+	return (float64(uncached)/1e6)*dp.price.inPerM +
+		(float64(cachedIn)/1e6)*cachedInRate +
+		(float64(regularOut)/1e6)*dp.price.outPerM +
+		(float64(reasoningOut)/1e6)*reasoningOutRate
 }

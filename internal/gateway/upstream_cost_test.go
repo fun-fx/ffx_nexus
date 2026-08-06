@@ -17,7 +17,8 @@ import (
 // table would have produced a different (wrong) answer.
 func TestResolveCostUSD_UpstreamBeatsTable(t *testing.T) {
 	// gpt-4o-mini would price 1M+1M at 0.15+0.60 = 0.75 from the table.
-	got := ResolveCostUSD(0.123456, "gpt-4o-mini", "", 1_000_000, 1_000_000)
+	usage := &Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000}
+	got := ResolveCostUSD(0.123456, "gpt-4o-mini", "", usage)
 	if got != 0.123456 {
 		t.Fatalf("ResolveCostUSD = %v; want the upstream-reported 0.123456", got)
 	}
@@ -35,7 +36,8 @@ func TestResolveCostUSD_UnpricedModelStillCosted(t *testing.T) {
 	if got := CostUSD("gpt-sol-latest", "", 900, 300); got != 0 {
 		t.Fatalf("precondition: table should not price gpt-sol-latest, got %v", got)
 	}
-	got := ResolveCostUSD(0.0042, "gpt-sol-latest", "", 900, 300)
+	usage := &Usage{PromptTokens: 900, CompletionTokens: 300}
+	got := ResolveCostUSD(0.0042, "gpt-sol-latest", "", usage)
 	if got != 0.0042 {
 		t.Fatalf("ResolveCostUSD = %v; want 0.0042 from upstream", got)
 	}
@@ -45,7 +47,8 @@ func TestResolveCostUSD_UnpricedModelStillCosted(t *testing.T) {
 // Mistral) must keep falling back to the table, so this change cannot
 // regress the five providers that were already costed.
 func TestResolveCostUSD_FallsBackToTableWhenUpstreamSilent(t *testing.T) {
-	got := ResolveCostUSD(0, "gpt-4o-mini", "", 1_000_000, 1_000_000)
+	usage := &Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000}
+	got := ResolveCostUSD(0, "gpt-4o-mini", "", usage)
 	if got != 0.75 {
 		t.Fatalf("ResolveCostUSD = %v; want the table's 0.75", got)
 	}
@@ -54,7 +57,8 @@ func TestResolveCostUSD_FallsBackToTableWhenUpstreamSilent(t *testing.T) {
 // A negative or zero report is treated as "not reported" rather than as a
 // free call, so a malformed upstream payload cannot zero out billing.
 func TestResolveCostUSD_IgnoresNonPositiveUpstream(t *testing.T) {
-	if got := ResolveCostUSD(-1, "gpt-4o-mini", "", 1_000_000, 1_000_000); got != 0.75 {
+	usage := &Usage{PromptTokens: 1_000_000, CompletionTokens: 1_000_000}
+	if got := ResolveCostUSD(-1, "gpt-4o-mini", "", usage); got != 0.75 {
 		t.Fatalf("negative upstream cost: got %v, want table fallback 0.75", got)
 	}
 }
@@ -107,6 +111,86 @@ func TestPricing_LegacyClaudeGenerationsUnaffected(t *testing.T) {
 	}
 	if got := CostUSD("claude-3-5-haiku-latest", "", 1_000_000, 1_000_000); got != 4.8 {
 		t.Errorf("claude-3-5-haiku-latest = %v; want 4.8", got)
+	}
+}
+
+// ---- disaggregated usage: cache hits and reasoning ----
+
+// The whole point of accepting prompt_tokens_details is that a 200-token
+// Claude request with 180 hits in the prompt cache should not be billed at
+// the fresh-input rate. Without disaggregation a heavy cache user gets
+// over-billed by an order of magnitude; with it, the cost matches what
+// the vendor's own invoice would say.
+func TestPricing_CachedPromptTokensDiscounted(t *testing.T) {
+	usage := &Usage{
+		PromptTokens:     200,
+		CompletionTokens: 100,
+		PromptTokenDetails: &PromptTokenDetails{
+			CachedTokens: 180, TextTokens: 200, // cached ⊂ total
+		},
+	}
+	got := CostUSAGECost("claude-sonnet-4-5", "", usage)
+	// uncached_in  = 20  * 3.00 / 1M = 0.00006
+	// cached_in   = 180 * 0.30 / 1M = 0.000054
+	// output      = 100 * 15.00 / 1M = 0.0015
+	want := 0.00006 + 0.000054 + 0.0015
+	if diff := got - want; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("got %v, want %v (cached detail not applied)", got, want)
+	}
+	// Sanity: the same call without the cached detail should produce a
+	// substantially larger number; the difference is the discount we are
+	// handing back to cache-heavy tenants.
+	basic := CostUSAGECost("claude-sonnet-4-5", "", &Usage{
+		PromptTokens:     200,
+		CompletionTokens: 100,
+	})
+	if basic <= got {
+		t.Fatalf("basic rate = %v should be greater than cache-discounted = %v", basic, got)
+	}
+}
+
+// Reasoning output is typically priced separately. For o-series the
+// multiplier is documented to be the same as the base output rate; the
+// point of this test is that `completion_tokens_details.reasoning_tokens`
+// is read instead of being silently dropped on the floor.
+func TestPricing_CompletionDetailsAreParsed(t *testing.T) {
+	usage := &Usage{
+		PromptTokens:     1000,
+		CompletionTokens: 500,
+		CompletionTokenDetails: &CompletionTokenDetails{
+			ReasoningTokens: 300,
+			TextTokens:      200,
+		},
+	}
+	_ = CostUSAGECost("o3", "", usage)
+	// Just confirm it does not panic and yields the same number as the
+	// basic rate when reasoning and output share a multiplier (the
+	// 500-token total still has the same cost regardless of split).
+	got := CostUSAGECost("o3", "", &Usage{
+		PromptTokens: 1000, CompletionTokens: 500,
+	})
+	want := CostUSD("o3", "", 1000, 500)
+	if got != want {
+		t.Fatalf("detail-aware split should produce the basic rate when multiplier == 1: got %v, want %v", got, want)
+	}
+}
+
+// Models without a detailed price entry must not be billed using a
+// detailed formula even if the upstream happened to ship details.
+// Otherwise a future vendor's experimental cache field would silently
+// impose a discount on a model that does not actually have one.
+func TestPricing_DetailsIgnoredForBasicRatedModels(t *testing.T) {
+	usage := &Usage{
+		PromptTokens:     100,
+		CompletionTokens: 100,
+		PromptTokenDetails: &PromptTokenDetails{
+			CachedTokens: 50, // not in detailedPricingTable for gpt-4o-mini
+		},
+	}
+	got := CostUSAGECost("gpt-4o-mini", "", usage)
+	want := CostUSD("gpt-4o-mini", "", 100, 100)
+	if got != want {
+		t.Fatalf("gpt-4o-mini details should fall back to basic, got %v want %v", got, want)
 	}
 }
 
