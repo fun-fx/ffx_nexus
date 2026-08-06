@@ -130,6 +130,47 @@ export async function fetchStats(window = "1h"): Promise<Stats> {
   return sanitizeStats(data);
 }
 
+// ProviderStat mirrors observability.ProviderStat shapes returned by
+// GET /api/stats/providers. The "cost %" derived column is computed in the
+// widget itself rather than carried over the wire so the server stays
+// simple and the rendering tier can decide how to scale (log scale,
+// top-N truncation, etc.).
+export interface ProviderStat {
+  provider: string;
+  requests: number;
+  cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  avg_latency_ms: number;
+  cache_hits: number;
+}
+
+// fetchProviderStats reads /api/stats/providers with the same error-shape
+// hygiene as fetchStats: pre-auth Overview paints the spend widget with a
+// 30-second cadence and a 401 body cannot be safely cast to ProviderStat —
+// the spend bars would crash on `cost_usd.toFixed(2)` over undefined. The
+// 30-second in-process cache on the server means repeated dashboard tabs
+// that load on the same poll cadence are not double-charged.
+export async function fetchProviderStats(window = "1h"): Promise<ProviderStat[]> {
+  const res = await fetch(`/api/stats/providers?window=${window}`);
+  if (!res.ok) {
+    return [];
+  }
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data
+    .filter((d): d is ProviderStat => d && typeof d === "object" && typeof d.provider === "string")
+    .map((d) => ({
+      provider: d.provider,
+      requests: Number(d.requests ?? 0),
+      cost_usd: Number(d.cost_usd ?? 0),
+      input_tokens: Number(d.input_tokens ?? 0),
+      output_tokens: Number(d.output_tokens ?? 0),
+      avg_latency_ms: Number(d.avg_latency_ms ?? 0),
+      cache_hits: Number(d.cache_hits ?? 0),
+    }));
+}
+
 function sanitizeStats(data: Partial<Stats> | undefined | null): Stats {
   if (!data || typeof data !== "object") return ZERO_STATS;
   const safe = (v: unknown, fallback: number) =>

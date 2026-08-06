@@ -1153,6 +1153,90 @@ a:hover {
   border: 1px solid var(--border-strong);
 }
 
+/* Spend by provider widget — LiteLLM-style horizontal bars ranked by
+   raw spend. Renormalises against the max so the largest provider is
+   always full-width; secondary columns show the share-of-total and the
+   request count for context. */
+.spend-by-provider {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
+}
+
+.spend-by-provider__empty {
+  font-size: var(--fs-13);
+  color: var(--muted);
+  padding: var(--sp-4) var(--sp-3);
+  text-align: center;
+  background: color-mix(in oklab, var(--accent-3) 6%, transparent);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+}
+
+.spend-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 88px 60px 90px;
+  gap: var(--sp-3);
+  align-items: center;
+  font-size: var(--fs-13);
+  padding: 6px 8px;
+  border-radius: var(--r-md);
+}
+
+.spend-row:hover {
+  background: color-mix(in oklab, var(--accent-3) 6%, transparent);
+}
+
+.spend-row__name {
+  font-weight: 500;
+}
+
+.spend-row__bar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--accent-3) 8%, transparent);
+  overflow: hidden;
+}
+
+.spend-row__bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--accent-3) 70%, transparent),
+    var(--accent-3)
+  );
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.spend-row__cost {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.spend-row__share {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.spend-row__requests {
+  text-align: right;
+  font-size: var(--fs-12);
+}
+
+@media (max-width: 800px) {
+  .spend-row {
+    grid-template-columns: 100px 1fr 80px;
+  }
+  .spend-row__share,
+  .spend-row__requests {
+    display: none;
+  }
+}
+
 .status-pill {
   display: inline-block;
   padding: 2px 8px;

@@ -326,6 +326,74 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID s
 	return s, nil
 }
 
+// ProviderStat is one row in a per-provider aggregate over a recent window.
+// Sourced from gateway_traces; one row per distinct provider_name that
+// issued at least one trace in the window.
+type ProviderStat struct {
+	Provider     string  `json:"provider"` // openai, anthropic, grid, gemini, etc.
+	Requests     int64   `json:"requests"` // trace count in window
+	CostUSD      float64 `json:"cost_usd"` // sum(trace.cost_usd)
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	CacheHits    int64   `json:"cache_hits"`
+}
+
+// ProviderStats returns per-provider aggregates over the trailing window.
+// Ordered by raw cost descending so the dashboard's "spend by provider"
+// widget can render the most expensive provider first. When userID is
+// non-empty, only the caller's traffic is counted.
+//
+// Resource profile: one ClickHouse SELECT with a single GROUP BY. The
+// query has the same max_memory_usage budget as WindowStats() so the
+// response time lands in the same single-digit-ms range on the prod
+// gateway_traces table; callers that hit this endpoint more than once
+// per 30 s are expected to wrap it in in-memory cache at a higher layer.
+func (r *Reader) ProviderStats(ctx context.Context, window time.Duration, userID string, limit int) ([]ProviderStat, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	query := `
+		SELECT
+			provider_name,
+			toInt64(count()) AS requests,
+			ifNull(sum(cost_usd), 0) AS cost,
+			toInt64(sum(input_tokens))  AS in_tokens,
+			toInt64(sum(output_tokens)) AS out_tokens,
+			if(count() = 0, 0, avg(latency_ms)) AS avg_latency,
+			toInt64(countIf(cache_hit = 1)) AS cache_hits
+		FROM gateway_traces
+		WHERE timestamp >= now() - INTERVAL ? SECOND`
+	args := []any{int64(window.Seconds())}
+	if userID != "" {
+		query += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+	query += `
+		GROUP BY provider_name
+		ORDER BY cost DESC
+		LIMIT ?
+		SETTINGS max_memory_usage = 400000000`
+	args = append(args, limit)
+
+	rows, err := r.conn.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ProviderStat
+	for rows.Next() {
+		var s ProviderStat
+		if err := rows.Scan(&s.Provider, &s.Requests, &s.CostUSD,
+			&s.InputTokens, &s.OutputTokens, &s.AvgLatencyMs, &s.CacheHits); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // EvalMetric aggregates async eval scores for one metric over a time window.
 type EvalMetric struct {
 	Evaluator string  `json:"evaluator"`

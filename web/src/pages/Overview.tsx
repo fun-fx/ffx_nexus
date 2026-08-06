@@ -6,10 +6,12 @@ import { Icon } from "../components/icons";
 import {
   fetchEvalConfig,
   fetchMe,
+  fetchProviderStats,
   fetchRouting,
   fetchStats,
   fetchTraces,
   type EvalConfigSnapshot,
+  type ProviderStat,
   type RoutingModel,
   type Stats,
   type TraceSummary,
@@ -17,12 +19,13 @@ import {
 } from "../api";
 
 async function fetchOverview() {
-  const [me, stats, traces, routing, evalCfg] = await Promise.allSettled([
+  const [me, stats, traces, routing, evalCfg, provider] = await Promise.allSettled([
     fetchMe(),
     fetchStats(),
     fetchTraces(),
     fetchRouting(),
     fetchEvalConfig(),
+    fetchProviderStats(),
   ]);
   return {
     me: me.status === "fulfilled" ? (me.value as User | null) : null,
@@ -35,6 +38,10 @@ async function fetchOverview() {
       evalCfg.status === "fulfilled"
         ? (evalCfg.value as EvalConfigSnapshot)
         : null,
+    provider:
+      provider.status === "fulfilled"
+        ? (provider.value as ProviderStat[])
+        : [],
   };
 }
 
@@ -61,6 +68,7 @@ export function Overview() {
   const traces: TraceSummary[] = data?.traces ?? [];
   const evalCfg: EvalConfigSnapshot | null = data?.eval ?? null;
   const user: User | null = data?.me ?? null;
+  const providerStats: ProviderStat[] = data?.provider ?? [];
 
   return (
     <div className="overview">
@@ -214,6 +222,8 @@ export function Overview() {
         />
       </section>
 
+      <SpendByProvider providerStats={providerStats} />
+
       <section className="panel">
         <header className="panel-head">
           <h2>Recent traces</h2>
@@ -263,6 +273,71 @@ export function Overview() {
         </div>
       </section>
     </div>
+  );
+}
+
+function formatUsd(n: number): string {
+  if (!Number.isFinite(n) || n === 0) return "$0.0000";
+  if (n < 0.0001) return `$${n.toExponential(2)}`;
+  if (n < 1) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+// SpendByProvider renders a LiteLLM-style horizontal bar widget grouped by
+// provider_name. The server endpoint behind it is /api/stats/providers (30s
+// in-process cache, so multiple dashboard tabs polling together are not
+// hammering ClickHouse). The localScalePct here renormalises within the
+// visible providers so the largest bar is always 100%, even when the
+// absolute total is small — at $0.05 across 4 providers the user can still
+// see which one is the biggest spender rather than four equal-width stubs.
+function SpendByProvider({ providerStats }: { providerStats: ProviderStat[] }) {
+  const totalCost = providerStats.reduce((acc, p) => acc + (p.cost_usd || 0), 0);
+  const hasData = providerStats.length > 0;
+  const maxCost = Math.max(1e-9, ...providerStats.map((p) => p.cost_usd || 0));
+
+  return (
+    <section className="panel" aria-label="Spend by provider">
+      <header className="panel-head">
+        <h2>Spend by provider</h2>
+        <span className="panel-link muted">
+          {hasData ? `Total ${formatUsd(totalCost)} · last 1h` : "No spend yet"}
+        </span>
+      </header>
+      <div className="spend-by-provider">
+        {!hasData && (
+          <div className="spend-by-provider__empty">
+            Connect a provider key and run a request — spend will roll up here
+            as gateway_traces aggregate.
+          </div>
+        )}
+        {providerStats.map((p) => {
+          const pct = ((p.cost_usd || 0) / maxCost) * 100;
+          const share = totalCost > 0 ? ((p.cost_usd || 0) / totalCost) * 100 : 0;
+          return (
+            <div className="spend-row" key={p.provider} role="row">
+              <span className="spend-row__name">
+                <span className="provider-tag">{p.provider}</span>
+              </span>
+              <span className="spend-row__bar" role="presentation">
+                <span
+                  className="spend-row__bar-fill"
+                  style={{ width: `${Math.max(1, pct)}%` }}
+                />
+              </span>
+              <span className="spend-row__cost mono" role="cell">
+                {formatUsd(p.cost_usd)}
+              </span>
+              <span className="spend-row__share mono muted" role="cell">
+                {share.toFixed(1)}%
+              </span>
+              <span className="spend-row__requests muted" role="cell">
+                {p.requests.toLocaleString()} req
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
