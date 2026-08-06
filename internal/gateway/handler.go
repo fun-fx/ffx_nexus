@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -296,6 +297,19 @@ func (h *Handler) recordSpend(ctx context.Context, costUSD float64) {
 	}
 }
 
+// setCostHeader sets the x-nexus-cost-usd response header. Always emitted
+// (even when zero) so callers that read it through HTTP tooling see a
+// definite value and can distinguish "request succeeded with no cost"
+// from "cost was unknown". The body's `usage.cost_usd` field uses
+// `omitempty` for the opposite audience — OpenAI-strict JSON parsers
+// that ignore unknown keys.
+func setCostHeader(w http.ResponseWriter, costUSD float64) {
+	if w == nil {
+		return
+	}
+	w.Header().Set("x-nexus-cost-usd", strconv.FormatFloat(costUSD, 'f', 6, 64))
+}
+
 // ChatCompletions handles POST /v1/chat/completions for both streaming and
 // non-streaming requests.  It also transparently accepts Cursor Agent hybrid
 // bodies that look like Responses API payloads but are posted to this path.
@@ -530,6 +544,15 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 						trace.OutputMessages = cached.Choices[0].Message.Content
 						trace.FinishReason = cached.Choices[0].FinishReason
 					}
+					// Cache hits cannot trust the cached response's
+					// `usage.cost_usd` (older payloads predate the
+					// extension). Always recompute from current pricing
+					// table; omitempty will leave the body field absent
+					// when the model is unknown. The header is always
+					// emitted so the SDK layer still has a known number.
+					trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
+					cached.Usage.CostUSD = trace.CostUSD
+					setCostHeader(w, trace.CostUSD)
 					h.recorder.Record(trace)
 					writeJSON(w, http.StatusOK, cached)
 					return
@@ -642,6 +665,12 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 				}
 			}
 		}
+		// Stamp the cost onto both the response envelope and the
+		// response header. Body omits the field when zero; the header
+		// is always set so callers using HTTP-level tooling see a
+		// definite value.
+		resp.Usage.CostUSD = trace.CostUSD
+		setCostHeader(w, trace.CostUSD)
 		h.recorder.Record(trace)
 		h.recordSpend(r.Context(), trace.CostUSD)
 
@@ -807,6 +836,12 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 		}
 	}
 	trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
+	// HTTP response header — safe on the streaming path because Go attaches
+	// the header to the response before the first body byte is flushed,
+	// regardless of when we call Set here. Stream clients see a single
+	// x-nexus-cost-usd header even though the cost is only known at the
+	// end of the response.
+	setCostHeader(w, trace.CostUSD)
 	h.recorder.Record(trace)
 	h.recordSpend(r.Context(), trace.CostUSD)
 }

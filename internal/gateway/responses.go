@@ -55,7 +55,16 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if trace != nil {
+		trace.CostUSD = CostUSD(chatReq.Model, trace.ResponseModel, response.Usage.PromptTokens, response.Usage.CompletionTokens)
+		// Stamp the cost onto the upstream chat-completion response
+		// before chatToResponses forwards it into the Responses
+		// envelope, so both paths share a single source of truth.
+		response.Usage.CostUSD = trace.CostUSD
+		setCostHeader(w, trace.CostUSD)
+		// Re-record with the now-known cost so the trace row reaches
+		// ClickHouse with the same number the caller sees on the wire.
 		h.recorder.Record(*trace)
+		h.recordSpend(r.Context(), trace.CostUSD)
 	}
 	writeJSON(w, http.StatusOK, chatToResponses(response, req))
 }
@@ -283,10 +292,16 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		}
 		completed["output"] = output
 		if state.hasUsage {
+			// Mirror chat-completions response shape: stamp the
+			// computed cost onto the usage envelope (omitempty keeps
+			// the field absent when zero). The header is set outside
+			// this closure. trace.CostUSD is computed once at the
+			// stream-finalisation step above.
 			completed["usage"] = ResponsesUsage{
 				InputTokens:  state.usage.PromptTokens,
 				OutputTokens: state.usage.CompletionTokens,
 				TotalTokens:  state.usage.TotalTokens,
+				CostUSD:      trace.CostUSD,
 			}
 		}
 		emit("response.completed", map[string]any{"response": completed})
@@ -498,6 +513,11 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		trace.StatusCode = http.StatusOK
 	}
 	trace.LatencyMs = time.Since(streamStart).Milliseconds()
+	// Pre-compute the cost so writeCompleted can mirror it onto the
+	// usage envelope AND both this branch and the truncated/error
+	// paths can still emit the header + record spend with a known
+	// (possibly zero) value.
+	trace.CostUSD = CostUSD(chatReq.Model, trace.ResponseModel, state.usage.PromptTokens, state.usage.CompletionTokens)
 	h.recorder.Record(trace)
 
 	// ---- Close text item if any ----------------------------------------
@@ -541,6 +561,12 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	}
 
 	writeCompleted(finalStatus)
+	// Emit the canonical cost header on the streamed Responses path
+	// and roll the run-level spend counter for the calling virtual
+	// key. Both sides reuse the cost that writeCompleted assembled into
+	// the response.completed envelope.
+	setCostHeader(w, trace.CostUSD)
+	h.recordSpend(r.Context(), trace.CostUSD)
 }
 
 // providerRef pairs a provider with the model id it should be asked for, since
@@ -684,6 +710,12 @@ func chatToResponses(c *ChatCompletionResponse, req ResponsesRequest) ResponsesR
 			InputTokens:  c.Usage.PromptTokens,
 			OutputTokens: c.Usage.CompletionTokens,
 			TotalTokens:  c.Usage.TotalTokens,
+			// Forward the upstream-computed cost unchanged so the
+			// Responses envelope exposes the same `usage.cost_usd`
+			// semantics as the chat-completions path. omitempty
+			// keeps the field absent when the upstream value is
+			// zero (unknown model or zero-cost request).
+			CostUSD: c.Usage.CostUSD,
 		},
 	}
 	if len(c.Choices) == 0 {
