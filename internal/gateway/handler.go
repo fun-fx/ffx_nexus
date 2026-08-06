@@ -363,11 +363,11 @@ func cloneUsageForCost(u *Usage) *Usage {
 	}
 	if u.CompletionTokenDetails != nil {
 		clone.CompletionTokenDetails = &CompletionTokenDetails{
-			ReasoningTokens:            u.CompletionTokenDetails.ReasoningTokens,
-			TextTokens:                 u.CompletionTokenDetails.TextTokens,
-			AudioTokens:                u.CompletionTokenDetails.AudioTokens,
-			AcceptedPredictionTokens:   u.CompletionTokenDetails.AcceptedPredictionTokens,
-			RejectedPredictionTokens:   u.CompletionTokenDetails.RejectedPredictionTokens,
+			ReasoningTokens:          u.CompletionTokenDetails.ReasoningTokens,
+			TextTokens:               u.CompletionTokenDetails.TextTokens,
+			AudioTokens:              u.CompletionTokenDetails.AudioTokens,
+			AcceptedPredictionTokens: u.CompletionTokenDetails.AcceptedPredictionTokens,
+			RejectedPredictionTokens: u.CompletionTokenDetails.RejectedPredictionTokens,
 		}
 	}
 	return clone

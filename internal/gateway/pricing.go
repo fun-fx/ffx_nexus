@@ -22,13 +22,13 @@ type price struct {
 // of new entries only set the fields that actually differ.
 //
 //   - cachedInPerM  — prompt tokens that hit a vendor cache. Set to a
-//                     small fraction of inPerM when the vendor offers
-//                     a deep discount (e.g. claude prompt cache ~10% of
-//                     base input). 0 means "bill at inPerM".
+//     small fraction of inPerM when the vendor offers
+//     a deep discount (e.g. claude prompt cache ~10% of
+//     base input). 0 means "bill at inPerM".
 //   - reasoningOutPerM — completion tokens counted as internal reasoning
-//                     by the model. Typically 2x–5x outPerM for o-series
-//                     and claude extended thinking. 0 means "bill at
-//                     outPerM".
+//     by the model. Typically 2x–5x outPerM for o-series
+//     and claude extended thinking. 0 means "bill at
+//     outPerM".
 //
 // Detailed prices are intentionally only declared when the vendor
 // exposes the matching disaggregated token detail in usage; otherwise
@@ -426,13 +426,13 @@ func applyBasic(p price, inTokens, outTokens int) float64 {
 // "cached" and the headline output count into "regular" + "reasoning"
 // using `usage` (when provided), summing each at its component rate.
 //
-//   inTokens == uncached + cached (the upstream reports the cache
-//     share inside prompt_tokens_details.cached_tokens). When the
-//     cache field is absent, the whole prompt lands at the base rate.
+//	inTokens == uncached + cached (the upstream reports the cache
+//	  share inside prompt_tokens_details.cached_tokens). When the
+//	  cache field is absent, the whole prompt lands at the base rate.
 //
-//   outTokens == regular_output + reasoning (completion_tokens_details
-//     splits the same way). `regular_output` falls back to total -
-//     reasoning when only one of the two is reported.
+//	outTokens == regular_output + reasoning (completion_tokens_details
+//	  splits the same way). `regular_output` falls back to total -
+//	  reasoning when only one of the two is reported.
 //
 // The function never goes negative: any difference is rolled back
 // into the base component so the result is bounded below by applyBasic.

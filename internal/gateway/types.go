@@ -357,12 +357,12 @@ type Choice struct {
 // (only when the model's rate map has a cache or reasoning multiplier;
 // otherwise the details are indistinguishable from the headline).
 type Usage struct {
-	PromptTokens          int                 `json:"prompt_tokens"`
-	CompletionTokens      int                 `json:"completion_tokens"`
-	TotalTokens           int                 `json:"total_tokens"`
-	EstimatedCost         float64             `json:"estimated_cost,omitempty"`
-	CostUSD               float64             `json:"cost_usd,omitempty"`
-	PromptTokenDetails    *PromptTokenDetails    `json:"prompt_tokens_details,omitempty"`
+	PromptTokens           int                     `json:"prompt_tokens"`
+	CompletionTokens       int                     `json:"completion_tokens"`
+	TotalTokens            int                     `json:"total_tokens"`
+	EstimatedCost          float64                 `json:"estimated_cost,omitempty"`
+	CostUSD                float64                 `json:"cost_usd,omitempty"`
+	PromptTokenDetails     *PromptTokenDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokenDetails *CompletionTokenDetails `json:"completion_tokens_details,omitempty"`
 }
 
@@ -389,9 +389,9 @@ type PromptTokenDetails struct {
 // (claude-opus reasoning ≈ 5x output). AudioTokens and ImageTokens
 // are rare but keep the shape open.
 type CompletionTokenDetails struct {
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
-	TextTokens      int `json:"text_tokens,omitempty"`
-	AudioTokens     int `json:"audio_tokens,omitempty"`
+	ReasoningTokens          int `json:"reasoning_tokens,omitempty"`
+	TextTokens               int `json:"text_tokens,omitempty"`
+	AudioTokens              int `json:"audio_tokens,omitempty"`
 	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
 	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
 }
