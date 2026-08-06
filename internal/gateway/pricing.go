@@ -111,15 +111,15 @@ var familyAliases = []struct {
 	// /v1/models sync come back as `code-prime`, `text-max` etc. without
 	// the `grid/` prefix. Resolve them through the family aliases so
 	// cost lookup still hits the pricingTable.
-	{"text-standard",  "grid/text-standard"},
-	{"text-prime",     "grid/text-prime"},
-	{"text-max",       "grid/text-max"},
-	{"code-standard",  "grid/code-standard"},
-	{"code-prime",     "grid/code-prime"},
-	{"code-max",       "grid/code-max"},
+	{"text-standard", "grid/text-standard"},
+	{"text-prime", "grid/text-prime"},
+	{"text-max", "grid/text-max"},
+	{"code-standard", "grid/code-standard"},
+	{"code-prime", "grid/code-prime"},
+	{"code-max", "grid/code-max"},
 	{"agent-standard", "grid/agent-standard"},
-	{"agent-prime",    "grid/agent-prime"},
-	{"agent-max",      "grid/agent-max"},
+	{"agent-prime", "grid/agent-prime"},
+	{"agent-max", "grid/agent-max"},
 }
 
 // CostUSD computes the request cost from token usage. Returns 0 for unknown

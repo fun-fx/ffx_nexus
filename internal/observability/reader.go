@@ -330,9 +330,9 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID s
 // Sourced from gateway_traces; one row per distinct provider_name that
 // issued at least one trace in the window.
 type ProviderStat struct {
-	Provider     string  `json:"provider"`        // openai, anthropic, grid, gemini, etc.
-	Requests     int64   `json:"requests"`        // trace count in window
-	CostUSD      float64 `json:"cost_usd"`        // sum(trace.cost_usd)
+	Provider     string  `json:"provider"` // openai, anthropic, grid, gemini, etc.
+	Requests     int64   `json:"requests"` // trace count in window
+	CostUSD      float64 `json:"cost_usd"` // sum(trace.cost_usd)
 	InputTokens  int64   `json:"input_tokens"`
 	OutputTokens int64   `json:"output_tokens"`
 	AvgLatencyMs float64 `json:"avg_latency_ms"`
