@@ -546,10 +546,12 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					}
 					// Cache hits cannot trust the cached response's
 					// `usage.cost_usd` (older payloads predate the
-					// extension). Always recompute from current pricing
-					// table; omitempty will leave the body field absent
-					// when the model is unknown. The header is always
-					// emitted so the SDK layer still has a known number.
+					// extension), and the upstream's own reported spend
+					// belongs to the original call, not this one. Always
+					// recompute from the current pricing table; omitempty
+					// will leave the body field absent when the model is
+					// unknown. The header is always emitted so the SDK
+					// layer still has a known number.
 					trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
 					cached.Usage.CostUSD = trace.CostUSD
 					setCostHeader(w, trace.CostUSD)
@@ -647,7 +649,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					trace.GuardrailAction = "output_schema_blocked:" + f.Rule
 					trace.FinishReason = resp.Choices[0].FinishReason
 					trace.OutputMessages = resp.Choices[0].Message.Content
-					trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
+					trace.CostUSD = ResolveCostUSD(resp.Usage.EstimatedCost, trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
 					h.recorder.Record(trace)
 					h.recordSpend(r.Context(), trace.CostUSD)
 					writeError(w, http.StatusUnprocessableEntity, "schema_validation_failed", f.Reason)
@@ -657,7 +659,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 			trace.FinishReason = resp.Choices[0].FinishReason
 			trace.OutputMessages = resp.Choices[0].Message.Content
 		}
-		trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
+		trace.CostUSD = ResolveCostUSD(resp.Usage.EstimatedCost, trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
 		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
 			if b, err := json.Marshal(resp); err == nil {
 				if err := h.scache.Store(r.Context(), cacheScope(r.Context()), req.Model, promptText(req.Messages), embedVec, b); err != nil {
@@ -759,6 +761,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 	trace.StatusCode = http.StatusOK
 	var out strings.Builder
 	firstToken := true
+	// Spend the upstream reported for this stream, read off whichever
+	// chunk carried the usage block (providers put it on the last one).
+	var upstreamCost float64
 
 	for evt := range events {
 		switch {
@@ -792,6 +797,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 					trace.TTFTMillis = time.Since(start).Milliseconds()
 					firstToken = false
 				}
+				if evt.Chunk.Model != "" {
+					trace.ResponseModel = evt.Chunk.Model
+				}
 				if len(evt.Chunk.Choices) > 0 {
 					out.WriteString(evt.Chunk.Choices[0].Delta.Content)
 					if fr := evt.Chunk.Choices[0].FinishReason; fr != "" {
@@ -801,12 +809,18 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 				if evt.Chunk.Usage != nil {
 					trace.InputTokens = evt.Chunk.Usage.PromptTokens
 					trace.OutputTokens = evt.Chunk.Usage.CompletionTokens
+					if c := evt.Chunk.Usage.EstimatedCost; c > 0 {
+						upstreamCost = c
+					}
 				}
 			}
 		case evt.Chunk != nil:
 			if firstToken {
 				trace.TTFTMillis = time.Since(start).Milliseconds()
 				firstToken = false
+			}
+			if evt.Chunk.Model != "" {
+				trace.ResponseModel = evt.Chunk.Model
 			}
 			if len(evt.Chunk.Choices) > 0 {
 				out.WriteString(evt.Chunk.Choices[0].Delta.Content)
@@ -817,6 +831,9 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 			if evt.Chunk.Usage != nil {
 				trace.InputTokens = evt.Chunk.Usage.PromptTokens
 				trace.OutputTokens = evt.Chunk.Usage.CompletionTokens
+				if c := evt.Chunk.Usage.EstimatedCost; c > 0 {
+					upstreamCost = c
+				}
 			}
 			b, _ := json.Marshal(evt.Chunk)
 			_, _ = w.Write([]byte("data: "))
@@ -835,7 +852,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 			trace.GuardrailAction = "output_schema_violation:" + f.Rule
 		}
 	}
-	trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
+	trace.CostUSD = ResolveCostUSD(upstreamCost, trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
 	// HTTP response header — safe on the streaming path because Go attaches
 	// the header to the response before the first body byte is flushed,
 	// regardless of when we call Set here. Stream clients see a single

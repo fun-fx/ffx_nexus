@@ -85,12 +85,18 @@ var MistralEmbedModels = []string{
 	"codestral-embed",
 }
 
-// GridChatModels is The Grid's instrument catalog. The Grid exposes nine
+// GridChatModels is The Grid's instrument catalog. The Grid exposes
 // abstract "instruments" — the consumer picks the workload shape
 // (text / code / agent × standard / prime / max) and The Grid routes
 // to the best-priced supplier at request time. Unlike the other
 // providers here, the model id never identifies a specific LLM; it
 // just names the contract tier.
+//
+// A model id missing from this slice is not merely unpriced — the
+// registry cannot resolve it, so the request fails with 404
+// model_not_found before any trace row is written and the call is
+// invisible in the console. Keep this list in sync with The Grid's
+// published catalog.
 //
 // Reference: https://thegrid.ai/docs/instrument-specifications/current-instruments
 var GridChatModels = []string{
@@ -106,6 +112,19 @@ var GridChatModels = []string{
 	"agent-standard",
 	"agent-prime",
 	"agent-max",
+	// Lab latest markets — a model-family route rather than a task-tier
+	// specification, for buyers who want "whatever the current Opus is"
+	// instead of a quality floor. The underlying model and supplier still
+	// change as newer routes qualify, so these are priced from the
+	// upstream's reported spend like every other instrument.
+	"gpt-sol-latest",
+	"claude-opus-latest",
+	"gemini-pro-latest",
+	"minimax-latest",
+	"glm-latest",
+	"deepseek-pro-latest",
+	"kimi-latest",
+	"bytedance-pro-latest",
 }
 
 // GridEmbedModels is intentionally empty. The Grid does not currently
