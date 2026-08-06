@@ -55,7 +55,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if trace != nil {
-		trace.CostUSD = CostUSD(chatReq.Model, trace.ResponseModel, response.Usage.PromptTokens, response.Usage.CompletionTokens)
+		trace.CostUSD = ResolveCostUSD(response.Usage.EstimatedCost, chatReq.Model, trace.ResponseModel, response.Usage.PromptTokens, response.Usage.CompletionTokens)
 		// Stamp the cost onto the upstream chat-completion response
 		// before chatToResponses forwards it into the Responses
 		// envelope, so both paths share a single source of truth.
@@ -517,7 +517,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	// usage envelope AND both this branch and the truncated/error
 	// paths can still emit the header + record spend with a known
 	// (possibly zero) value.
-	trace.CostUSD = CostUSD(chatReq.Model, trace.ResponseModel, state.usage.PromptTokens, state.usage.CompletionTokens)
+	trace.CostUSD = ResolveCostUSD(state.usage.EstimatedCost, chatReq.Model, trace.ResponseModel, state.usage.PromptTokens, state.usage.CompletionTokens)
 	h.recorder.Record(trace)
 
 	// ---- Close text item if any ----------------------------------------

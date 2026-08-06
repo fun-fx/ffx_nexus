@@ -331,18 +331,27 @@ type Choice struct {
 
 // Usage holds token accounting for the chat completions response.
 //
-// CostUSD is a non-standard extension. We populate it from the local
-// pricing table so every caller sees what their request cost. The
+// CostUSD is a non-standard extension. We populate it from the upstream's
+// own reported spend when the provider sends one, and otherwise from the
+// local pricing table, so every caller sees what their request cost. The
 // `omitempty` flag keeps the wire shape OpenAI-compatible: when the
 // model is unknown to the pricing table (or the computed cost rounds to
 // zero) the field is absent rather than `"cost_usd": 0`, so any client
 // that rejects extra keys still parses the response. Clients that want
 // a definite value (including zero) read the `x-nexus-cost-usd` header,
 // which is always emitted.
+//
+// EstimatedCost is what the *upstream* reported for this call. The Grid
+// populates it on every chat completion (`usage.estimated_cost`) because
+// it is a spot market — the price comes from whichever token lot filled
+// the order, so no static table can reproduce it. When present it beats
+// our own estimate, and it is echoed back to the caller untouched so
+// clients can tell a vendor-authoritative number from a local guess.
 type Usage struct {
 	PromptTokens     int     `json:"prompt_tokens"`
 	CompletionTokens int     `json:"completion_tokens"`
 	TotalTokens      int     `json:"total_tokens"`
+	EstimatedCost    float64 `json:"estimated_cost,omitempty"`
 	CostUSD          float64 `json:"cost_usd,omitempty"`
 }
 

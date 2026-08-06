@@ -17,8 +17,11 @@ func TestGridProviderShape(t *testing.T) {
 		t.Fatalf("want name=grid, got %q", g.Name())
 	}
 	models := g.Models()
-	if len(models) != 9 {
-		t.Fatalf("Grid should expose 9 instruments (3 tiers × 3 standards); got %d (%v)", len(models), models)
+	// 9 task-tier instruments (3 tiers × 3 standards) plus 8 lab-latest
+	// model-family markets. Membership of the lab-latest half is asserted
+	// in grid_catalog_test.go.
+	if len(models) != 17 {
+		t.Fatalf("Grid should expose 17 instruments (9 task tiers + 8 lab-latest); got %d (%v)", len(models), models)
 	}
 	if !strings.HasPrefix(g.OpenAI.baseURL, "https://api.thegrid.ai") {
 		t.Fatalf("Grid base URL should be thegrid.ai; got %q", g.OpenAI.baseURL)

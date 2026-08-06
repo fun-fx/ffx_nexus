@@ -27,6 +27,7 @@ var pricingTable = map[string]price{
 	"gpt-4o-mini":  {0.15, 0.60},
 	"gpt-4.1":      {2.00, 8.00},
 	"gpt-4.1-mini": {0.40, 1.60},
+	"gpt-4.1-nano": {0.10, 0.40},
 	"o3":           {2.00, 8.00},
 	"o4-mini":      {1.10, 4.40},
 
@@ -92,16 +93,28 @@ var familyAliases = []struct {
 }{
 	{"gpt-4o-mini", "gpt-4o-mini"},
 	{"gpt-4o", "gpt-4o"},
+	// Order matters: `gpt-4.1` is a prefix of both `-mini` and `-nano`,
+	// so the narrower ids must be tested first or a nano request gets
+	// billed at the full gpt-4.1 rate (20x its real price).
 	{"gpt-4.1-mini", "gpt-4.1-mini"},
+	{"gpt-4.1-nano", "gpt-4.1-nano"},
 	{"gpt-4.1", "gpt-4.1"},
 	{"o4-mini", "o4-mini"},
 	{"o3", "o3"},
 
-	{"claude-opus-4", "claude-opus-4-1"},
-	{"claude-sonnet-4", "claude-sonnet-4-5"},
-	{"claude-haiku-4", "claude-haiku-4-5"},
+	// Anthropic prices at the tier, not the point release, and has held
+	// each tier's rate across 4.x. Matching on the bare tier name keeps
+	// a newer Opus/Sonnet/Haiku costed at its family rate instead of
+	// silently landing at zero — which matters because The Grid's
+	// `claude-opus-latest` market reports no cost of its own and is
+	// priced from the supplier id it returns (`anthropic/claude-opus-5`).
+	// The 3.x entries stay ahead of the generic ones so the older,
+	// differently-priced generation is not swallowed by them.
 	{"claude-3-7-sonnet", "claude-3-7-sonnet-latest"},
 	{"claude-3-5-haiku", "claude-3-5-haiku-latest"},
+	{"claude-opus", "claude-opus-4-1"},
+	{"claude-sonnet", "claude-sonnet-4-5"},
+	{"claude-haiku", "claude-haiku-4-5"},
 
 	{"gemini-2.5-pro", "gemini-2.5-pro"},
 	{"gemini-2.5-flash", "gemini-2.5-flash"},
@@ -143,6 +156,26 @@ var familyAliases = []struct {
 // the function still resolves via path 1 or 2 for the request id and,
 // when the response id happens to match a known family, finds it through
 // path 3 using the response id.
+// ResolveCostUSD returns the authoritative spend for one call.
+//
+// `upstreamReported` is what the provider itself said the call cost
+// (`usage.estimated_cost`). When it is positive we return it verbatim:
+// the vendor knows its own price and we do not. This is load-bearing for
+// The Grid, whose instruments (`code-prime`, `claude-opus-latest`, ...)
+// are spot-market contracts filled from whichever token lot was cheapest
+// at that moment — the static table below can only ever approximate it,
+// and instruments added after a release would silently cost 0.
+//
+// Everything else falls back to the local pricing table, which is what
+// OpenAI / Anthropic / Gemini / Groq / Mistral need because none of them
+// report cost on the wire (they return token counts only).
+func ResolveCostUSD(upstreamReported float64, requestModel, responseModel string, inTokens, outTokens int) float64 {
+	if upstreamReported > 0 {
+		return upstreamReported
+	}
+	return CostUSD(requestModel, responseModel, inTokens, outTokens)
+}
+
 func CostUSD(requestModel, responseModel string, inTokens, outTokens int) float64 {
 	// Try the request id first (most common case for pricing accuracy).
 	if p, ok := matchPrice(requestModel); ok {
