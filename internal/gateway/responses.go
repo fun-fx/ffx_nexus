@@ -176,6 +176,11 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Announce the cost header as a trailer: it is only known after the
+	// last chunk, and a Header().Set() past this point never reaches the
+	// wire. The response.completed envelope carries the same number
+	// in-band for clients that ignore trailers.
+	w.Header().Set("Trailer", costHeaderName)
 	w.WriteHeader(http.StatusOK)
 
 	emit := func(eventType string, data any) {
@@ -561,11 +566,11 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 	}
 
 	writeCompleted(finalStatus)
-	// Emit the canonical cost header on the streamed Responses path
+	// Emit the canonical cost as a trailer on the streamed Responses path
 	// and roll the run-level spend counter for the calling virtual
 	// key. Both sides reuse the cost that writeCompleted assembled into
 	// the response.completed envelope.
-	setCostHeader(w, trace.CostUSD)
+	setCostTrailer(w, trace.CostUSD)
 	h.recordSpend(r.Context(), trace.CostUSD)
 }
 

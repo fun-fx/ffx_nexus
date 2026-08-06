@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -196,16 +198,106 @@ func TestChatCompletions_NonStream_UsesUpstreamReportedCost(t *testing.T) {
 	}
 }
 
-func TestChatCompletions_Stream_UsesUpstreamReportedCost(t *testing.T) {
+// The streaming cost must be asserted over a real connection, not against
+// an httptest.ResponseRecorder. A recorder keeps a plain header map, so a
+// Header().Set() issued after WriteHeader still shows up there — while on
+// the wire it is silently dropped, because the response head has already
+// been flushed. That gap hid a streaming path that reported no cost at all
+// to real clients despite a green test.
+func TestChatCompletions_Stream_ReportsCostOverTheWire(t *testing.T) {
 	p := &upstreamCostProvider{modelName: "code-prime", cost: 0.0189, stream: true}
 	h := newTestHandler(p)
-	rec := doChat(h, `{"model":"code-prime","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	srv := httptest.NewServer(http.HandlerFunc(h.ChatCompletions))
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL,
+		strings.NewReader(`{"model":"code-prime","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
 	}
-	if got := rec.Header().Get("x-nexus-cost-usd"); got != "0.018900" {
-		t.Fatalf("x-nexus-cost-usd = %q; want 0.018900 from upstream", got)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+
+	// Trailers are only readable once the body is drained.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if got := resp.Trailer.Get("x-nexus-cost-usd"); got != "0.018900" {
+		t.Errorf("x-nexus-cost-usd trailer = %q; want 0.018900", got)
+	}
+	// Belt and braces for clients that ignore trailers: the chunk carrying
+	// the usage block must also carry the cost.
+	if !strings.Contains(string(body), `"cost_usd":0.0189`) {
+		t.Errorf("final chunk missing in-band usage.cost_usd: %s", body)
+	}
+}
+
+// Same wire-level assertion for the Responses SSE path.
+func TestResponses_Stream_ReportsCostOverTheWire(t *testing.T) {
+	p := &upstreamCostProvider{modelName: "code-prime", cost: 0.0071, stream: true}
+	h := newTestHandler(p)
+
+	srv := httptest.NewServer(http.HandlerFunc(h.Responses))
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL,
+		strings.NewReader(`{"model":"code-prime","input":"hi","stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if got := resp.Trailer.Get("x-nexus-cost-usd"); got != "0.007100" {
+		t.Errorf("x-nexus-cost-usd trailer = %q; want 0.007100", got)
+	}
+	if !strings.Contains(string(body), "response.completed") {
+		t.Errorf("stream did not complete: %s", body)
+	}
+}
+
+// The non-streaming path can still set a normal header, since nothing has
+// been written when the cost becomes known.
+func TestChatCompletions_NonStream_CostIsARealHeaderNotATrailer(t *testing.T) {
+	p := &upstreamCostProvider{modelName: "code-prime", cost: 0.0042}
+	h := newTestHandler(p)
+
+	srv := httptest.NewServer(http.HandlerFunc(h.ChatCompletions))
+	defer srv.Close()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL,
+		strings.NewReader(`{"model":"code-prime","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	if got := resp.Header.Get("x-nexus-cost-usd"); got != "0.004200" {
+		t.Fatalf("x-nexus-cost-usd header = %q; want 0.004200", got)
 	}
 }
 
