@@ -347,12 +347,65 @@ type Choice struct {
 // the order, so no static table can reproduce it. When present it beats
 // our own estimate, and it is echoed back to the caller untouched so
 // clients can tell a vendor-authoritative number from a local guess.
+//
+// PromptTokenDetails and CompletionTokenDetails are populated when the
+// upstream breaks the headline token count into its components. Cached
+// input and reasoning output are priced at different rates, so headers
+// that aggregate to the same prompt/completion totals can still differ
+// by an order of magnitude. We accept the fields here and the cost
+// composer in internal/gateway/pricing.go decides whether to apply them
+// (only when the model's rate map has a cache or reasoning multiplier;
+// otherwise the details are indistinguishable from the headline).
 type Usage struct {
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	TotalTokens      int     `json:"total_tokens"`
-	EstimatedCost    float64 `json:"estimated_cost,omitempty"`
-	CostUSD          float64 `json:"cost_usd,omitempty"`
+	PromptTokens          int                 `json:"prompt_tokens"`
+	CompletionTokens      int                 `json:"completion_tokens"`
+	TotalTokens           int                 `json:"total_tokens"`
+	EstimatedCost         float64             `json:"estimated_cost,omitempty"`
+	CostUSD               float64             `json:"cost_usd,omitempty"`
+	PromptTokenDetails    *PromptTokenDetails    `json:"prompt_tokens_details,omitempty"`
+	CompletionTokenDetails *CompletionTokenDetails `json:"completion_tokens_details,omitempty"`
+}
+
+// PromptTokenDetails is the breakdown of prompt tokens that some
+// vendors (OpenAI, The Grid, ... per https://thegrid.ai/docs/api-reference/consumption-api)
+// include in `usage.prompt_tokens_details`. CachedTokens are
+// typically billed at a steep discount (~10% of base); TextTokens
+// calls out prompt text specifically when the prompt mixes modalities;
+// AudioTokens covers audio input.
+//
+// When a values is absent the headline `prompt_tokens` total is taken
+// at face value, so this struct is purely additive — the cost composer
+// only inspects the components it cares about.
+type PromptTokenDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+	TextTokens   int `json:"text_tokens,omitempty"`
+	AudioTokens  int `json:"audio_tokens,omitempty"`
+	ImageTokens  int `json:"image_tokens,omitempty"`
+}
+
+// CompletionTokenDetails is the breakdown of completion tokens.
+// ReasoningTokens, where present (e.g. o-series, claude extended
+// thinking), is typically billed at a higher rate than text output
+// (claude-opus reasoning ≈ 5x output). AudioTokens and ImageTokens
+// are rare but keep the shape open.
+type CompletionTokenDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	TextTokens      int `json:"text_tokens,omitempty"`
+	AudioTokens     int `json:"audio_tokens,omitempty"`
+	AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
+	RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+}
+
+// HasDetail reports whether any component differs from zero, so the
+// cost composer can skip detail-aware math for the common case where
+// the vendor shipped only the headline count.
+func (d *PromptTokenDetails) HasDetail() bool {
+	return d != nil && (d.CachedTokens != 0 || d.TextTokens != 0 || d.AudioTokens != 0 || d.ImageTokens != 0)
+}
+
+func (d *CompletionTokenDetails) HasDetail() bool {
+	return d != nil && (d.ReasoningTokens != 0 || d.TextTokens != 0 || d.AudioTokens != 0 ||
+		d.AcceptedPredictionTokens != 0 || d.RejectedPredictionTokens != 0)
 }
 
 // ChatCompletionChunk is a single streamed delta (OpenAI SSE format).

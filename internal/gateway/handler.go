@@ -333,6 +333,46 @@ func formatCostUSD(costUSD float64) string {
 	return strconv.FormatFloat(costUSD, 'f', 6, 64)
 }
 
+// cloneUsageForCost returns a *Usage that is safe to retain past the
+// next chunk lifecycle. The streaming provider re-uses the chunk pointer
+// across chunks, so holding the original *Usage as a trace field would
+// silently observe the latest chunk's numbers on every read. We deep
+// copy the prompt and completion token detail pointers — when absent
+// on the next chunk, HasDetail returns false and the basic formula
+// kicks in just as the original code did.
+//
+// The copy is intentionally narrow: only the fields the cost composer
+// reads. Adding a field here only requires the composer to look at it.
+func cloneUsageForCost(u *Usage) *Usage {
+	if u == nil {
+		return nil
+	}
+	clone := &Usage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		EstimatedCost:    u.EstimatedCost,
+	}
+	if u.PromptTokenDetails != nil {
+		clone.PromptTokenDetails = &PromptTokenDetails{
+			CachedTokens: u.PromptTokenDetails.CachedTokens,
+			TextTokens:   u.PromptTokenDetails.TextTokens,
+			AudioTokens:  u.PromptTokenDetails.AudioTokens,
+			ImageTokens:  u.PromptTokenDetails.ImageTokens,
+		}
+	}
+	if u.CompletionTokenDetails != nil {
+		clone.CompletionTokenDetails = &CompletionTokenDetails{
+			ReasoningTokens:            u.CompletionTokenDetails.ReasoningTokens,
+			TextTokens:                 u.CompletionTokenDetails.TextTokens,
+			AudioTokens:                u.CompletionTokenDetails.AudioTokens,
+			AcceptedPredictionTokens:   u.CompletionTokenDetails.AcceptedPredictionTokens,
+			RejectedPredictionTokens:   u.CompletionTokenDetails.RejectedPredictionTokens,
+		}
+	}
+	return clone
+}
+
 // ChatCompletions handles POST /v1/chat/completions for both streaming and
 // non-streaming requests.  It also transparently accepts Cursor Agent hybrid
 // bodies that look like Responses API payloads but are posted to this path.
@@ -672,7 +712,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					trace.GuardrailAction = "output_schema_blocked:" + f.Rule
 					trace.FinishReason = resp.Choices[0].FinishReason
 					trace.OutputMessages = resp.Choices[0].Message.Content
-					trace.CostUSD = ResolveCostUSD(resp.Usage.EstimatedCost, trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
+					trace.CostUSD = ResolveCostUSD(resp.Usage.EstimatedCost, trace.RequestModel, trace.ResponseModel, &resp.Usage)
 					h.recorder.Record(trace)
 					h.recordSpend(r.Context(), trace.CostUSD)
 					writeError(w, http.StatusUnprocessableEntity, "schema_validation_failed", f.Reason)
@@ -682,7 +722,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 			trace.FinishReason = resp.Choices[0].FinishReason
 			trace.OutputMessages = resp.Choices[0].Message.Content
 		}
-		trace.CostUSD = ResolveCostUSD(resp.Usage.EstimatedCost, trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
+		trace.CostUSD = ResolveCostUSD(resp.Usage.EstimatedCost, trace.RequestModel, trace.ResponseModel, &resp.Usage)
 		if h.scache != nil && h.scache.Enabled() && i == 0 && cacheEligible(req) {
 			if b, err := json.Marshal(resp); err == nil {
 				if err := h.scache.Store(r.Context(), cacheScope(r.Context()), req.Model, promptText(req.Messages), embedVec, b); err != nil {
@@ -796,6 +836,10 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 	// Spend the upstream reported for this stream, read off whichever
 	// chunk carried the usage block (providers put it on the last one).
 	var upstreamCost float64
+	// Snapshot of the most recent usage block; used to compose a
+	// detail-aware cost on the final close. We capture only the parts
+	// that affect pricing, so the trace stays a thin pointer.
+	var lastUsage *Usage
 
 	for evt := range events {
 		switch {
@@ -844,6 +888,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 					if c := evt.Chunk.Usage.EstimatedCost; c > 0 {
 						upstreamCost = c
 					}
+					lastUsage = cloneUsageForCost(evt.Chunk.Usage)
 				}
 			}
 		case evt.Chunk != nil:
@@ -872,8 +917,8 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 				// from the very tokens we just read. The trace recomputes
 				// the same value below from the same inputs.
 				evt.Chunk.Usage.CostUSD = ResolveCostUSD(upstreamCost,
-					trace.RequestModel, trace.ResponseModel,
-					evt.Chunk.Usage.PromptTokens, evt.Chunk.Usage.CompletionTokens)
+					trace.RequestModel, trace.ResponseModel, evt.Chunk.Usage)
+				lastUsage = cloneUsageForCost(evt.Chunk.Usage)
 			}
 			b, _ := json.Marshal(evt.Chunk)
 			_, _ = w.Write([]byte("data: "))
@@ -892,7 +937,11 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 			trace.GuardrailAction = "output_schema_violation:" + f.Rule
 		}
 	}
-	trace.CostUSD = ResolveCostUSD(upstreamCost, trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
+	var costUsage *Usage
+	if lastUsage != nil {
+		costUsage = lastUsage
+	}
+	trace.CostUSD = ResolveCostUSD(upstreamCost, trace.RequestModel, trace.ResponseModel, costUsage)
 	// Announced as a trailer before WriteHeader above, so this reaches the
 	// client even though the response head left long ago.
 	setCostTrailer(w, trace.CostUSD)
