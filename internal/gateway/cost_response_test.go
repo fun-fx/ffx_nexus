@@ -231,9 +231,9 @@ func TestChatCompletions_NonStream_TotalTokensIsPromptPlusCompletion(t *testing.
 
 	var resp struct {
 		Usage struct {
-			PromptTokens     int     `json:"prompt_tokens"`
-			CompletionTokens int     `json:"completion_tokens"`
-			TotalTokens      int     `json:"total_tokens"`
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
 			CostUSD          float64 `json:"cost_usd"`
 		} `json:"usage"`
 	}

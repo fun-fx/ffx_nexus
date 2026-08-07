@@ -18,10 +18,10 @@ func (r *CHRecorder) NewReader() *Reader { return &Reader{conn: r.conn} }
 
 // TraceSummary is a compact row for the trace list view.
 type TraceSummary struct {
-	TraceID      string    `json:"trace_id"`
-	Timestamp    time.Time `json:"timestamp"`
-	ProviderName string    `json:"provider_name"`
-	RequestModel string    `json:"request_model"`
+	TraceID          string    `json:"trace_id"`
+	Timestamp        time.Time `json:"timestamp"`
+	ProviderName     string    `json:"provider_name"`
+	RequestModel     string    `json:"request_model"`
 	// ResponseModel is the model that actually served the response —
 	// may differ from RequestModel when routing aliases / fallbacks
 	// dispatched to a different vendor (e.g. claude-opus-latest
@@ -29,33 +29,33 @@ type TraceSummary struct {
 	// routed it). Surfaced on the Recent-sessions panel so multi-
 	// vendor fan-out stays visible even when every shared row's
 	// provider_name is "grid".
-	ResponseModel string `json:"response_model,omitempty"`
-	InputTokens   uint32 `json:"input_tokens"`
-	OutputTokens  uint32 `json:"output_tokens"`
+	ResponseModel    string    `json:"response_model,omitempty"`
+	InputTokens      uint32    `json:"input_tokens"`
+	OutputTokens     uint32    `json:"output_tokens"`
 	// TotalTokens is input_tokens + output_tokens at read time. We
 	// compute it in the SELECT rather than storing it in the table —
 	// the source columns are append-only the row ingests, and we'd
 	// rather avoid rewriting client totals every time the cost
 	// composer changes.
-	TotalTokens     int64   `json:"total_tokens"`
-	LatencyMs       int64   `json:"latency_ms"`
-	TTFTMs          int64   `json:"ttft_ms"`
-	CostUSD         float64 `json:"cost_usd"`
-	StatusCode      uint16  `json:"status_code"`
-	Streamed        uint8   `json:"streamed"`
-	FinishReason    string  `json:"finish_reason"`
-	CacheHit        uint8   `json:"cache_hit"`
-	GuardrailAction string  `json:"guardrail_action"`
+	TotalTokens      int64     `json:"total_tokens"`
+	LatencyMs        int64     `json:"latency_ms"`
+	TTFTMs           int64     `json:"ttft_ms"`
+	CostUSD          float64   `json:"cost_usd"`
+	StatusCode       uint16    `json:"status_code"`
+	Streamed         uint8     `json:"streamed"`
+	FinishReason     string    `json:"finish_reason"`
+	CacheHit         uint8     `json:"cache_hit"`
+	GuardrailAction  string    `json:"guardrail_action"`
 	// SessionID is the per-conversation marker the gateway extracted
 	// from metadata.session_id / sessionId / conversation_id on the
 	// request, or "user:<id>" when only the OpenAI user field was
 	// present. Empty when none of those were on the wire — the
 	// frontend's sessionize fallback merges by time window in that
 	// case. Added in 007_session_id.sql.
-	SessionID        string `json:"session_id,omitempty"`
-	UserID           string `json:"user_id"`
-	UserEmail        string `json:"user_email,omitempty"`
-	CredentialSource string `json:"credential_source"`
+	SessionID        string    `json:"session_id,omitempty"`
+	UserID           string    `json:"user_id"`
+	UserEmail        string    `json:"user_email,omitempty"`
+	CredentialSource string    `json:"credential_source"`
 }
 
 // RecentTraces returns the most recent traces, newest first. When userID is
@@ -307,23 +307,17 @@ func escapeLike(s string) string {
 	return s
 }
 
-// Stats holds dashboard aggregates over a recent time window. Token counts
-// are split into input vs output so the overview cards can show
-// "Prompt" / "Completion" separately — together they should match
-// TotalTokens, which is kept as a convenience for clients that do not
-// want to sum the two halves.
+// Stats holds dashboard aggregates over a recent time window.
 type Stats struct {
-	TotalRequests     int64   `json:"total_requests"`
-	ErrorRate         float64 `json:"error_rate"`
-	AvgLatencyMs      float64 `json:"avg_latency_ms"`
-	P95LatencyMs      float64 `json:"p95_latency_ms"`
-	TotalTokens       int64   `json:"total_tokens"`
-	TotalInputTokens  int64   `json:"total_input_tokens"`
-	TotalOutputTokens int64   `json:"total_output_tokens"`
-	TotalCostUSD      float64 `json:"total_cost_usd"`
-	CacheHits         int64   `json:"cache_hits"`
-	CacheHitRate      float64 `json:"cache_hit_rate"`
-	GuardrailEvents   int64   `json:"guardrail_events"`
+	TotalRequests   int64   `json:"total_requests"`
+	ErrorRate       float64 `json:"error_rate"`
+	AvgLatencyMs    float64 `json:"avg_latency_ms"`
+	P95LatencyMs    float64 `json:"p95_latency_ms"`
+	TotalTokens     int64   `json:"total_tokens"`
+	TotalCostUSD    float64 `json:"total_cost_usd"`
+	CacheHits       int64   `json:"cache_hits"`
+	CacheHitRate    float64 `json:"cache_hit_rate"`
+	GuardrailEvents int64   `json:"guardrail_events"`
 }
 
 // WindowStats returns aggregate metrics over the trailing window. When userID
@@ -336,8 +330,7 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID s
 			if(count() = 0, 0, countIf(status_code >= 400) / count()) AS error_rate,
 			if(count() = 0, 0, avg(latency_ms)) AS avg_latency,
 			if(count() = 0, 0, toFloat64(quantileTDigest(0.95)(latency_ms))) AS p95_latency,
-			toInt64(sum(input_tokens)) AS total_input_tokens,
-			toInt64(sum(output_tokens)) AS total_output_tokens,
+			toInt64(sum(input_tokens + output_tokens)) AS total_tokens,
 			ifNull(sum(cost_usd), 0) AS total_cost,
 			toInt64(countIf(cache_hit = 1)) AS cache_hits,
 			if(count() = 0, 0, countIf(cache_hit = 1) / count()) AS cache_hit_rate,
@@ -353,15 +346,10 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID s
 	row := r.conn.QueryRow(ctx, query, args...)
 	if err := row.Scan(
 		&s.TotalRequests, &s.ErrorRate, &s.AvgLatencyMs, &s.P95LatencyMs,
-		&s.TotalInputTokens, &s.TotalOutputTokens, &s.TotalCostUSD,
-		&s.CacheHits, &s.CacheHitRate, &s.GuardrailEvents,
+		&s.TotalTokens, &s.TotalCostUSD, &s.CacheHits, &s.CacheHitRate, &s.GuardrailEvents,
 	); err != nil {
 		return s, err
 	}
-	// TotalTokens is the prompt + completion aggregate for clients that
-	// don't want to sum the two halves. It is derived in Go rather than
-	// in SQL so the SELECT doesn't have to scan the same columns twice.
-	s.TotalTokens = s.TotalInputTokens + s.TotalOutputTokens
 	return s, nil
 }
 
