@@ -335,6 +335,9 @@ function SessionsTable({
             Avg latency
           </span>
           <span role="columnheader" className="right">
+            Tokens
+          </span>
+          <span role="columnheader" className="right">
             Cost
           </span>
         </div>
@@ -367,7 +370,21 @@ function SessionsTable({
                 <span>
                   <span className="provider-tag">{s.provider_name}</span>
                 </span>
-                <span className="mono ellipsis">{s.request_model}</span>
+                <span
+                  className="mono ellipsis"
+                  title={
+                    s.response_model && s.response_model !== s.request_model
+                      ? `requested: ${s.request_model}\nserved: ${s.response_model}`
+                      : s.request_model
+                  }
+                >
+                  {s.request_model}
+                  {s.response_model && s.response_model !== s.request_model && (
+                    <span className="model-served-pill">
+                      → {s.response_model}
+                    </span>
+                  )}
+                </span>
                 <span className="mono">{s.trace_count}</span>
                 <span>
                   {s.first_error ? (
@@ -380,6 +397,12 @@ function SessionsTable({
                 </span>
                 <span className="right">
                   {Math.round(s.avg_latency_ms)} ms
+                </span>
+                <span
+                  className="right mono"
+                  title={`in ${formatThousands(s.total_input_tokens)} • out ${formatThousands(s.total_output_tokens)}`}
+                >
+                  {formatThousands(s.total_tokens)}
                 </span>
                 <span className="right mono">${s.total_cost_usd.toFixed(5)}</span>
               </div>
@@ -407,7 +430,18 @@ function SessionsTable({
                               {t.status_code}
                             </span>
                           </span>
-                          <span className="right">{t.latency_ms} ms</span>
+                          <span className="right">
+                            {t.latency_ms} ms
+                          </span>
+                          <span
+                            className="right mono"
+                            title={`in ${formatThousands(t.input_tokens ?? 0)} • out ${formatThousands(t.output_tokens ?? 0)}`}
+                          >
+                            {formatThousands(
+                              t.total_tokens ??
+                                ((t.input_tokens ?? 0) + (t.output_tokens ?? 0))
+                            )}
+                          </span>
                           <span className="right mono">
                             ${Number(t.cost_usd ?? 0).toFixed(5)}
                           </span>
@@ -434,6 +468,16 @@ function formatUsd(n: number): string {
   if (n < 0.0001) return `$${n.toExponential(2)}`;
   if (n < 1) return `$${n.toFixed(4)}`;
   return `$${n.toFixed(2)}`;
+}
+
+// formatThousands turns e.g. 12345 into "12,345" so the Tokens column
+// stays readable when a multi-turn session hits six digits. We expose
+// the raw count via the title= hover (handled inline at the call site
+// with in/out breakdown) so the comma-formatted value here is purely
+// for the eye.
+function formatThousands(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  return Math.round(n).toLocaleString("en-US");
 }
 
 // SpendByProvider renders a LiteLLM-style horizontal bar widget grouped by

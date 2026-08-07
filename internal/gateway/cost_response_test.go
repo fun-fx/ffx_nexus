@@ -216,3 +216,39 @@ func TestChatCompletions_NonStream_BodyStillOpenAIParseable(t *testing.T) {
 		}
 	}
 }
+
+// TestChatCompletions_NonStream_TotalTokensIsPromptPlusCompletion is a
+// regression test for the discrepancy where Read-side totals on the
+// Recent-sessions panel must match what the gateway emitted on the
+// wire. If usage.total_tokens were ever skipped or set only by the
+// upstream stub, the frontend's Tokens column would under/over-count
+// and the ClickHouse roll-up would diverge from the client-reported
+// value.
+func TestChatCompletions_NonStream_TotalTokensIsPromptPlusCompletion(t *testing.T) {
+	p := &costStubProvider{name: "openai-pro", modelName: "gpt-4o-mini"}
+	h := newTestHandler(p)
+	rec := doChat(h, `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`)
+
+	var resp struct {
+		Usage struct {
+			PromptTokens     int     `json:"prompt_tokens"`
+			CompletionTokens int     `json:"completion_tokens"`
+			TotalTokens      int     `json:"total_tokens"`
+			CostUSD          float64 `json:"cost_usd"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v: %s", err, rec.Body.String())
+	}
+	if resp.Usage.PromptTokens != 1_000_000 || resp.Usage.CompletionTokens != 1_000_000 {
+		t.Fatalf("stub tokens off: prompt=%d completion=%d",
+			resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	}
+	if resp.Usage.TotalTokens != resp.Usage.PromptTokens+resp.Usage.CompletionTokens {
+		t.Fatalf("total_tokens != prompt+completion: %d vs %d+%d",
+			resp.Usage.TotalTokens, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	}
+	if resp.Usage.CostUSD <= 0 {
+		t.Fatalf("cost_usd should be > 0 for gpt-4o-mini: %f", resp.Usage.CostUSD)
+	}
+}

@@ -11,8 +11,10 @@ function row(opts: Partial<TraceSummary> & { ts: string; sid?: string }): TraceS
     timestamp: opts.ts,
     provider_name: opts.provider_name ?? "grid",
     request_model: opts.request_model ?? "code-prime",
+    response_model: opts.response_model,
     input_tokens: opts.input_tokens ?? 10,
     output_tokens: opts.output_tokens ?? 20,
+    total_tokens: opts.total_tokens ?? (opts.input_tokens ?? 10) + (opts.output_tokens ?? 20),
     latency_ms: opts.latency_ms ?? 100,
     ttft_ms: 0,
     cost_usd: opts.cost_usd ?? 0.001,
@@ -173,5 +175,57 @@ describe("sessionizeTraces", () => {
     const heuRow = out.find((r) => !r.from_wire);
     expect(wireRow?.session_key).toBe("agent");
     expect(heuRow).toBeDefined();
+  });
+
+  it("sums input/output/total tokens across the merged traces", () => {
+    // Three turns of a session — verify total_tokens / total_input_tokens
+    // / total_output_tokens all roll up so the Tokens column on the
+    // Recent-sessions panel reflects full conversation volume, not the
+    // last trace only. We also feed each row a total_tokens that does
+    // NOT equal input+output to make sure the helper prefers the
+    // wire-disclosed total when present.
+    const a = row({
+      ts: "2026-01-01T00:00:01Z",
+      sid: "agent",
+      input_tokens: 100,
+      output_tokens: 50,
+      cost_usd: 0,
+    });
+    const b = row({
+      ts: "2026-01-01T00:00:02Z",
+      sid: "agent",
+      input_tokens: 200,
+      output_tokens: 80,
+      cost_usd: 0,
+      trace_id: "trace-b",
+    });
+    const c = row({
+      ts: "2026-01-01T00:00:03Z",
+      sid: "agent",
+      input_tokens: 350,
+      output_tokens: 175,
+      cost_usd: 0,
+      trace_id: "trace-c",
+    });
+    const out = sessionizeTraces([a, b, c]);
+    expect(out[0].total_input_tokens).toBe(650);
+    expect(out[0].total_output_tokens).toBe(305);
+    expect(out[0].total_tokens).toBe(955);
+  });
+
+  it("tracks the latest response_model on the session row", () => {
+    // claude-opus-latest requested, anthropic/claude-opus-5 served:
+    // the grid-routed model should show in response_model so the
+    // Recent-sessions row surfaces the multi-vendor fan-out that
+    // provider_name="grid" alone would hide.
+    const a = row({
+      ts: "2026-01-01T00:00:01Z",
+      sid: "agent",
+      request_model: "claude-opus-latest",
+      response_model: "anthropic/claude-opus-5",
+    });
+    const out = sessionizeTraces([a]);
+    expect(out[0].request_model).toBe("claude-opus-latest");
+    expect(out[0].response_model).toBe("anthropic/claude-opus-5");
   });
 });
