@@ -1085,6 +1085,12 @@ func (h *Handler) newTrace(r *http.Request, req ChatCompletionRequest, providerN
 	if vk, ok := r.Context().Value(ctxKeyVKeyID).(string); ok {
 		t.VirtualKeyID = vk
 	}
+	// TurnID is derived, not read off the wire, and is deliberately kept
+	// separate from SessionID: the `user:<id>` fallback in
+	// extractSessionID is per-end-user, so grouping the overview on
+	// SessionID would fold a caller's entire history into one row.
+	// Derived after UserID above because the key is scoped to the caller.
+	t.TurnID = deriveTurnKey(t.UserID, req.Messages)
 	if req.Temperature != nil {
 		t.Temperature = *req.Temperature
 	}

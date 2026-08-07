@@ -52,7 +52,13 @@ type TraceSummary struct {
 	// present. Empty when none of those were on the wire — the
 	// frontend's sessionize fallback merges by time window in that
 	// case. Added in 007_session_id.sql.
-	SessionID        string `json:"session_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	// TurnID groups every call an agent made answering one user question.
+	// Derived gateway-side rather than read off the wire (see
+	// deriveTurnKey); empty on rows written before 008_turn_id.sql and on
+	// requests that carried no user message. The console groups the
+	// overview on this and drills down with ?turn=<id>.
+	TurnID           string `json:"turn_id,omitempty"`
 	UserID           string `json:"user_id"`
 	UserEmail        string `json:"user_email,omitempty"`
 	CredentialSource string `json:"credential_source"`
@@ -73,7 +79,7 @@ func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]
 		       toInt64(input_tokens + output_tokens) AS total_tokens,
 		       latency_ms, ttft_ms, cost_usd,
 		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
-		       session_id, user_id, credential_source
+		       session_id, turn_id, user_id, credential_source
 		FROM gateway_traces`
 	args := []any{}
 	if userID != "" {
@@ -96,7 +102,7 @@ func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]
 			&s.ResponseModel, &s.InputTokens, &s.OutputTokens, &s.TotalTokens,
 			&s.LatencyMs, &s.TTFTMs, &s.CostUSD,
 			&s.StatusCode, &s.Streamed, &s.FinishReason, &s.CacheHit, &s.GuardrailAction,
-			&s.SessionID, &s.UserID, &s.CredentialSource,
+			&s.SessionID, &s.TurnID, &s.UserID, &s.CredentialSource,
 		); err != nil {
 			return nil, err
 		}
@@ -117,6 +123,10 @@ type TraceFilter struct {
 	Status   string // "ok" | "err" | "" (any)
 	Provider string // exact match against provider_name, empty = any
 	Q        string // fuzzy match, empty = any
+	// Turn scopes the page to the calls of a single agent turn. This is
+	// what the overview's expand-a-row drill-down sends; it is an exact
+	// match on turn_id, never a fuzzy one, because the value is a hash.
+	Turn string
 }
 
 // TraceCursor is an opaque cursor the console holds between pages of trace
@@ -181,7 +191,7 @@ func (r *Reader) TracePage(ctx context.Context, before, since time.Time, limit i
 			&s.ResponseModel, &s.InputTokens, &s.OutputTokens, &s.TotalTokens,
 			&s.LatencyMs, &s.TTFTMs, &s.CostUSD,
 			&s.StatusCode, &s.Streamed, &s.FinishReason, &s.CacheHit, &s.GuardrailAction,
-			&s.SessionID, &s.UserID, &s.CredentialSource,
+			&s.SessionID, &s.TurnID, &s.UserID, &s.CredentialSource,
 		); err != nil {
 			return TracePage{}, err
 		}
@@ -227,9 +237,10 @@ func cursorSince(since time.Time) string {
 //  2. timestamp < (before)
 //  3. timestamp >= (since)
 //  4. provider_name (=)
-//  5. status predicate (no args; uses inline literal `>= 400` or `< 400`)
-//  6. q ILIKE on four columns (the operator `%?%` repeats four times)
-//  7. LIMIT
+//  5. turn_id (=)
+//  6. status predicate (no args; uses inline literal `>= 400` or `< 400`)
+//  7. q ILIKE on four columns (the operator `%?%` repeats four times)
+//  8. LIMIT
 func buildTracePageQuery(userID string, before, since time.Time, limit int, filter TraceFilter) string {
 	q := `
 		SELECT trace_id, timestamp, provider_name, request_model,
@@ -237,7 +248,7 @@ func buildTracePageQuery(userID string, before, since time.Time, limit int, filt
 		       toInt64(input_tokens + output_tokens) AS total_tokens,
 		       latency_ms, ttft_ms, cost_usd,
 		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
-		       session_id, user_id, credential_source
+		       session_id, turn_id, user_id, credential_source
 		FROM gateway_traces`
 	conds := []string{}
 	if userID != "" {
@@ -251,6 +262,9 @@ func buildTracePageQuery(userID string, before, since time.Time, limit int, filt
 	}
 	if filter.Provider != "" {
 		conds = append(conds, "provider_name = ?")
+	}
+	if filter.Turn != "" {
+		conds = append(conds, "turn_id = ?")
 	}
 	switch filter.Status {
 	case "ok":
@@ -287,6 +301,9 @@ func buildTracePageArgs(userID string, before, since time.Time, limit int, filte
 	if filter.Provider != "" {
 		args = append(args, filter.Provider)
 	}
+	if filter.Turn != "" {
+		args = append(args, filter.Turn)
+	}
 	if filter.Q != "" {
 		pattern := "%" + escapeLike(filter.Q) + "%"
 		args = append(args, pattern, pattern, pattern, pattern)
@@ -305,6 +322,134 @@ func escapeLike(s string) string {
 	s = strings.ReplaceAll(s, `%`, `\%`)
 	s = strings.ReplaceAll(s, `_`, `\_`)
 	return s
+}
+
+// TurnSummary is one agent turn — the user's question plus every model
+// call made while answering it — rolled up into a single console row.
+//
+// Rows written before 008_turn_id.sql have an empty turn_id and fall back
+// to grouping on their own trace_id, so historical traffic keeps rendering
+// one-per-row instead of collapsing into a single bogus "empty turn".
+type TurnSummary struct {
+	TurnID  string    `json:"turn_id"`
+	FirstAt time.Time `json:"first_at"`
+	LastAt  time.Time `json:"last_at"`
+	// TraceCount is how many upstream calls the turn took. 1 means the
+	// agent answered in one shot; the console renders those as plain
+	// rows with no expand affordance.
+	TraceCount int64 `json:"trace_count"`
+	// ProviderName / RequestModel describe the most recent call in the
+	// turn. A turn can span providers when routing falls back mid-loop,
+	// so these are representative rather than exhaustive.
+	ProviderName string  `json:"provider_name"`
+	RequestModel string  `json:"request_model"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	TotalTokens  int64   `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+	// LatencyMs is the summed wall time of the calls, which is what the
+	// user actually waited through on a sequential agent loop — more
+	// useful on this row than the average of the parts.
+	LatencyMs int64 `json:"latency_ms"`
+	// StatusCode is the worst status in the turn so a single failed call
+	// inside an otherwise-green loop still shows up red.
+	StatusCode uint16 `json:"status_code"`
+	UserID     string `json:"user_id"`
+	UserEmail  string `json:"user_email,omitempty"`
+}
+
+// TurnPage returns the most recent agent turns in [since, before), newest
+// last-activity first. When userID is non-empty the result is scoped to
+// that caller's traffic.
+//
+// A turn straddling the window edge is aggregated only over the calls
+// inside the window, so its counts can under-report at the boundary. That
+// is the same trade WindowStats makes and keeps the query a single
+// GROUP BY rather than a correlated lookup for each partially-matched key.
+func (r *Reader) TurnPage(ctx context.Context, before, since time.Time, limit int, userID string) ([]TurnSummary, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := r.conn.Query(ctx,
+		buildTurnPageQuery(userID, before, since),
+		buildTurnPageArgs(userID, before, since, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]TurnSummary, 0, limit)
+	for rows.Next() {
+		var s TurnSummary
+		if err := rows.Scan(
+			&s.TurnID, &s.FirstAt, &s.LastAt, &s.TraceCount,
+			&s.ProviderName, &s.RequestModel,
+			&s.InputTokens, &s.OutputTokens, &s.TotalTokens,
+			&s.CostUSD, &s.LatencyMs, &s.StatusCode, &s.UserID,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// buildTurnPageQuery produces the GROUP BY behind TurnPage. Pulled out as a
+// pure function, like buildTracePageQuery, so the SQL shape can be pinned in
+// a unit test without a live ClickHouse.
+//
+// Placeholder ordering (mirrored by buildTurnPageArgs) is:
+//  1. user_id (if present)
+//  2. timestamp < (before)
+//  3. timestamp >= (since)
+//  4. LIMIT
+func buildTurnPageQuery(userID string, before, since time.Time) string {
+	q := `
+		SELECT if(turn_id = '', trace_id, turn_id) AS group_key,
+		       min(timestamp) AS first_at,
+		       max(timestamp) AS last_at,
+		       toInt64(count()) AS trace_count,
+		       argMax(provider_name, timestamp) AS provider_name,
+		       argMax(request_model, timestamp) AS request_model,
+		       toInt64(sum(input_tokens)) AS input_tokens,
+		       toInt64(sum(output_tokens)) AS output_tokens,
+		       toInt64(sum(input_tokens) + sum(output_tokens)) AS total_tokens,
+		       sum(cost_usd) AS cost_usd,
+		       toInt64(sum(latency_ms)) AS latency_ms,
+		       max(status_code) AS status_code,
+		       any(user_id) AS user_id
+		FROM gateway_traces`
+	conds := []string{}
+	if userID != "" {
+		conds = append(conds, "user_id = ?")
+	}
+	if !before.IsZero() {
+		conds = append(conds, "timestamp < ?")
+	}
+	if !since.IsZero() {
+		conds = append(conds, "timestamp >= ?")
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ")
+	}
+	q += " GROUP BY group_key ORDER BY last_at DESC LIMIT ?"
+	return q
+}
+
+// buildTurnPageArgs mirrors buildTurnPageQuery's placeholder ordering.
+func buildTurnPageArgs(userID string, before, since time.Time, limit int) []any {
+	args := []any{}
+	if userID != "" {
+		args = append(args, userID)
+	}
+	if !before.IsZero() {
+		args = append(args, before.UTC())
+	}
+	if !since.IsZero() {
+		args = append(args, since.UTC())
+	}
+	args = append(args, limit)
+	return args
 }
 
 // Stats holds dashboard aggregates over a recent time window. Token counts

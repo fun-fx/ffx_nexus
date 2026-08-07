@@ -328,6 +328,25 @@ func (s *Server) myTraces(w http.ResponseWriter, r *http.Request, u core.User) {
 	writeJSON(w, http.StatusOK, page)
 }
 
+// myTurns is recentTurns scoped to the caller, for the non-admin overview.
+func (s *Server) myTurns(w http.ResponseWriter, r *http.Request, u core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, []observability.TurnSummary{})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	turns, err := s.reader.TurnPage(r.Context(), time.Time{}, turnWindowStart(r), limit, u.ID)
+	if err != nil {
+		s.log.Error("my turns query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	if turns == nil {
+		turns = []observability.TurnSummary{}
+	}
+	writeJSON(w, http.StatusOK, turns)
+}
+
 // myQuality returns the caller's own rolling quality/spend aggregate as a
 // single-element array (matches the /api/users/quality row shape so the
 // client can reuse the UserQuality type).

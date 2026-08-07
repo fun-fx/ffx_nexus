@@ -229,6 +229,7 @@ func (s *Server) Mux() http.Handler {
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/traces", s.requireUser(s.recentTraces))
+		r.Get("/turns", s.requireUser(s.recentTurns))
 		r.Get("/stats", s.requireUser(s.stats))
 		r.Get("/stats/providers", s.requireUser(s.providerStats))
 		r.Get("/routing", s.routing)
@@ -248,6 +249,7 @@ func (s *Server) Mux() http.Handler {
 		r.Patch("/me", s.requireUser(s.updateMe))
 		r.Get("/me/stats", s.requireUser(s.myStats))
 		r.Get("/me/traces", s.requireUser(s.myTraces))
+		r.Get("/me/turns", s.requireUser(s.myTurns))
 		r.Get("/me/quality", s.requireUser(s.myQuality))
 		r.Get("/me/keys", s.requireUser(s.listMyKeys))
 		r.Post("/me/keys", s.requireUser(s.createMyKey))
@@ -449,6 +451,71 @@ func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request, u core.Use
 	writeJSON(w, http.StatusOK, page)
 }
 
+// recentTurns backs the overview's grouped list: one row per agent turn
+// instead of one per upstream call. The window defaults to the trailing
+// hour so the page has a bounded GROUP BY to chew on; expanding a row
+// drills back into /api/traces?turn=<id> for the individual calls.
+func (s *Server) recentTurns(w http.ResponseWriter, r *http.Request, u core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, []observability.TurnSummary{})
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	uid := ""
+	if u.Role != core.RoleAdmin {
+		uid = u.ID
+	}
+	turns, err := s.reader.TurnPage(r.Context(), time.Time{}, turnWindowStart(r), limit, uid)
+	if err != nil {
+		s.log.Error("recent turns query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	if u.Role == core.RoleAdmin {
+		s.enrichTurnUserEmails(r.Context(), orgID(r), turns)
+	}
+	if turns == nil {
+		turns = []observability.TurnSummary{}
+	}
+	writeJSON(w, http.StatusOK, turns)
+}
+
+// turnWindowStart resolves the `window` duration param (default 1h) into an
+// absolute lower bound. Turns are grouped, not cursor-paged, so a window is
+// the only bound available — an unbounded GROUP BY over the full 90-day TTL
+// would scan the whole table to render ten rows.
+func turnWindowStart(r *http.Request) time.Time {
+	window := time.Hour
+	if q := r.URL.Query().Get("window"); q != "" {
+		if d, err := time.ParseDuration(q); err == nil && d > 0 {
+			window = d
+		}
+	}
+	return time.Now().Add(-window)
+}
+
+// enrichTurnUserEmails is enrichTraceUserEmails for grouped rows. ClickHouse
+// stores only user_id; emails live in Postgres.
+func (s *Server) enrichTurnUserEmails(ctx context.Context, org string, turns []observability.TurnSummary) {
+	if s.store == nil || len(turns) == 0 {
+		return
+	}
+	users, err := s.store.ListUsers(ctx, org)
+	if err != nil {
+		s.log.Warn("turn user email lookup failed", "err", err)
+		return
+	}
+	byID := make(map[string]string, len(users))
+	for _, u := range users {
+		byID[u.ID] = u.Email
+	}
+	for i := range turns {
+		if turns[i].UserID != "" {
+			turns[i].UserEmail = byID[turns[i].UserID]
+		}
+	}
+}
+
 // parseTraceQuery extracts the trace-listing query parameters off the
 // `/api/traces` and `/api/me/traces` endpoints. All fields are optional:
 //
@@ -456,6 +523,8 @@ func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request, u core.Use
 //     `[since, before)` — must be `before > since` when both set.
 //   - `status`: "ok" (<400) / "err" (>=400) / empty (any).
 //   - `provider`: exact match against `provider_name`.
+//   - `turn`: exact match against `turn_id`. Sent by the overview when a
+//     grouped row is expanded to list the individual calls of that turn.
 //   - `q`: free-text fuzzy match against `request_model | provider_name |
 //     user_email | guardrail_action`. `%` and `_` are NOT yet escaped here —
 //     the reader does that server-side so the SQL text stays clean.
@@ -491,6 +560,7 @@ func parseTraceQuery(r *http.Request) (before, since time.Time, filter observabi
 	}
 	filter.Provider = q.Get("provider")
 	filter.Q = q.Get("q")
+	filter.Turn = q.Get("turn")
 	return before, since, filter, nil
 }
 

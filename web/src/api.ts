@@ -39,11 +39,15 @@ export interface TraceSummary {
   // session_id is the per-conversation marker the gateway extracted
   // from metadata.session_id / sessionId / conversation_id on the
   // request, or "user:<id>" when only the OpenAI user field was
-  // present. Empty when none of those were on the wire — in which
-  // case the frontend's sessionizeTraces() rolls the trace up by a
-  // time window + (vkey, model) tuple. See web/src/pages/Overview.tsx
-  // for the roll-up logic.
+  // present. Empty when none of those were on the wire, which is the
+  // common case — no client we serve sends one today, which is why
+  // turn_id exists.
   session_id?: string;
+  // turn_id groups the calls an agent made answering one user question.
+  // Derived gateway-side from the request payload rather than read off
+  // the wire; empty on traces recorded before the column existed. The
+  // overview groups on this and drills down with fetchTraces({ turn }).
+  turn_id?: string;
   // total_tokens is the prompt + completion total the gateway
   // recorded (matches gen_ai.usage.total_tokens). Surfaced on the
   // Recent sessions row so the operator can size a conversation
@@ -88,6 +92,33 @@ export interface TraceQuery {
   provider?: string;
   q?: string;
   limit?: number;
+  // turn narrows the page to a single agent turn's calls. Exact match on
+  // turn_id, used by the overview's expand-a-row drill-down.
+  turn?: string;
+}
+
+// TurnSummary is one agent turn — a user question plus every model call
+// made while answering it — as returned by /api/turns. trace_count of 1
+// means the agent answered in a single call.
+export interface TurnSummary {
+  turn_id: string;
+  first_at: string;
+  last_at: string;
+  trace_count: number;
+  provider_name: string;
+  request_model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  // latency_ms is the summed wall time of the turn's calls, which is what
+  // the caller actually waited through on a sequential agent loop.
+  latency_ms: number;
+  // status_code is the worst status in the turn, so one failed call in an
+  // otherwise-green loop still surfaces.
+  status_code: number;
+  user_id?: string;
+  user_email?: string;
 }
 
 export interface User {
@@ -242,6 +273,7 @@ export async function fetchTraces(query: TraceQuery = {}): Promise<TracePage> {
   if (query.status) params.set("status", query.status);
   if (query.provider) params.set("provider", query.provider);
   if (query.q) params.set("q", query.q);
+  if (query.turn) params.set("turn", query.turn);
   if (typeof query.limit === "number") params.set("limit", String(query.limit));
   const qs = params.toString();
   const url = qs ? `/api/traces?${qs}` : `/api/traces`;
@@ -260,6 +292,22 @@ export async function fetchTraces(query: TraceQuery = {}): Promise<TracePage> {
     return data as TracePage;
   }
   return { items: [], next_cursor: { before: "", since: "" } };
+}
+
+// fetchTurns returns the grouped overview rows. Unlike /api/traces this is
+// window-bounded rather than cursor-paged: a GROUP BY has no stable cursor,
+// and the overview only ever shows the most recent handful.
+export async function fetchTurns(
+  query: { window?: string; limit?: number } = {},
+): Promise<TurnSummary[]> {
+  const params = new URLSearchParams();
+  if (query.window) params.set("window", query.window);
+  if (typeof query.limit === "number") params.set("limit", String(query.limit));
+  const qs = params.toString();
+  const res = await fetch(qs ? `/api/turns?${qs}` : `/api/turns`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data) ? (data as TurnSummary[]) : [];
 }
 
 export async function fetchRouting(): Promise<RoutingModel[]> {

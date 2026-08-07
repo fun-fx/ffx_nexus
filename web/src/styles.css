@@ -1305,21 +1305,40 @@ a:hover {
   color: var(--muted, #cbd5e1);
 }
 
-/* model-served-pill surfaces the upstream vendor on a session row
- * when the resolved model differs from what the caller asked for
- * (typical when Grid routes claude-opus-latest → anthropic/claude-opus-5).
- * Renders inline with the request model in muted monospace so the eye
- * doesn't lose its place scanning the column. */
-.model-served-pill {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  background: color-mix(in oklab, var(--warn, #fbbf24) 16%, transparent);
-  border: 1px solid color-mix(in oklab, var(--warn, #fbbf24) 32%, transparent);
-  color: var(--muted, #cbd5e1);
-  white-space: nowrap;
+/* turn-row is the overview's grouped row: one agent turn, with a Calls
+ * count between Model and Status. Declared as its own template rather
+ * than widening .trace-row because the drill-down sub-rows underneath
+ * use a different column set. */
+.trace-row.turn-row {
+  grid-template-columns:
+    84px 104px minmax(140px, 1.5fr) 58px 74px 88px 84px 92px;
+}
+
+.trace-row.turn-row.is-expandable {
+  cursor: pointer;
+}
+
+.trace-row.turn-row.is-expandable:hover,
+.trace-row.turn-row.is-open {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.turn-calls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+/* The caret is the arrowRight glyph rotated a quarter turn on open, so
+ * the expanded state reads at a glance without a second icon. */
+.turn-caret {
+  transition: transform 120ms ease;
+  opacity: 0.65;
+}
+
+.turn-caret--open {
+  transform: rotate(90deg);
 }
 
 .session-drill {
@@ -1334,20 +1353,21 @@ a:hover {
 
 .trace-row.sub-row {
   display: grid;
-  /* Mirrors the main session-row's column layout, but without the
-   * "Last seen" column — the timestamp inside the drill-down IS the
-   * turns' timestamps. We keep tokens so a multi-turn drill-down
-   * shows what each call cost in token volume at a glance. */
+  /* One call inside an expanded turn. Drops Provider and Calls from the
+   * parent template — every call in a turn shares the turn's provider,
+   * and a call has no sub-count — and leads with an ordinal so the
+   * agent's sequence is readable top to bottom. */
   grid-template-columns:
     minmax(140px, 1fr)
     minmax(160px, 1.2fr)
     minmax(80px, 0.7fr)
-    minmax(110px, 0.9fr)
-    minmax(110px, 0.9fr)
-    minmax(110px, 0.9fr);
+    minmax(90px, 0.8fr)
+    minmax(90px, 0.8fr)
+    minmax(100px, 0.9fr);
   padding: 6px 0;
   font-size: 12px;
   color: var(--muted, #cbd5e1);
+  border-bottom: none;
 }
 
 /* -- Generic page header -------------------------------------------- */
