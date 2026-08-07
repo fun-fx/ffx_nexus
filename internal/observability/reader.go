@@ -313,17 +313,17 @@ func escapeLike(s string) string {
 // TotalTokens, which is kept as a convenience for clients that do not
 // want to sum the two halves.
 type Stats struct {
-	TotalRequests      int64   `json:"total_requests"`
-	ErrorRate          float64 `json:"error_rate"`
-	AvgLatencyMs       float64 `json:"avg_latency_ms"`
-	P95LatencyMs       float64 `json:"p95_latency_ms"`
-	TotalTokens        int64   `json:"total_tokens"`
-	TotalInputTokens   int64   `json:"total_input_tokens"`
-	TotalOutputTokens  int64   `json:"total_output_tokens"`
-	TotalCostUSD       float64 `json:"total_cost_usd"`
-	CacheHits          int64   `json:"cache_hits"`
-	CacheHitRate       float64 `json:"cache_hit_rate"`
-	GuardrailEvents    int64   `json:"guardrail_events"`
+	TotalRequests     int64   `json:"total_requests"`
+	ErrorRate         float64 `json:"error_rate"`
+	AvgLatencyMs      float64 `json:"avg_latency_ms"`
+	P95LatencyMs      float64 `json:"p95_latency_ms"`
+	TotalTokens       int64   `json:"total_tokens"`
+	TotalInputTokens  int64   `json:"total_input_tokens"`
+	TotalOutputTokens int64   `json:"total_output_tokens"`
+	TotalCostUSD      float64 `json:"total_cost_usd"`
+	CacheHits         int64   `json:"cache_hits"`
+	CacheHitRate      float64 `json:"cache_hit_rate"`
+	GuardrailEvents   int64   `json:"guardrail_events"`
 }
 
 // WindowStats returns aggregate metrics over the trailing window. When userID
