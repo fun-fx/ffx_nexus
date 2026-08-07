@@ -307,17 +307,23 @@ func escapeLike(s string) string {
 	return s
 }
 
-// Stats holds dashboard aggregates over a recent time window.
+// Stats holds dashboard aggregates over a recent time window. Token counts
+// are split into input vs output so the overview cards can show
+// "Prompt" / "Completion" separately — together they should match
+// TotalTokens, which is kept as a convenience for clients that do not
+// want to sum the two halves.
 type Stats struct {
-	TotalRequests   int64   `json:"total_requests"`
-	ErrorRate       float64 `json:"error_rate"`
-	AvgLatencyMs    float64 `json:"avg_latency_ms"`
-	P95LatencyMs    float64 `json:"p95_latency_ms"`
-	TotalTokens     int64   `json:"total_tokens"`
-	TotalCostUSD    float64 `json:"total_cost_usd"`
-	CacheHits       int64   `json:"cache_hits"`
-	CacheHitRate    float64 `json:"cache_hit_rate"`
-	GuardrailEvents int64   `json:"guardrail_events"`
+	TotalRequests     int64   `json:"total_requests"`
+	ErrorRate         float64 `json:"error_rate"`
+	AvgLatencyMs      float64 `json:"avg_latency_ms"`
+	P95LatencyMs      float64 `json:"p95_latency_ms"`
+	TotalTokens       int64   `json:"total_tokens"`
+	TotalInputTokens  int64   `json:"total_input_tokens"`
+	TotalOutputTokens int64   `json:"total_output_tokens"`
+	TotalCostUSD      float64 `json:"total_cost_usd"`
+	CacheHits         int64   `json:"cache_hits"`
+	CacheHitRate      float64 `json:"cache_hit_rate"`
+	GuardrailEvents   int64   `json:"guardrail_events"`
 }
 
 // WindowStats returns aggregate metrics over the trailing window. When userID
@@ -330,7 +336,8 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID s
 			if(count() = 0, 0, countIf(status_code >= 400) / count()) AS error_rate,
 			if(count() = 0, 0, avg(latency_ms)) AS avg_latency,
 			if(count() = 0, 0, toFloat64(quantileTDigest(0.95)(latency_ms))) AS p95_latency,
-			toInt64(sum(input_tokens + output_tokens)) AS total_tokens,
+			toInt64(sum(input_tokens)) AS total_input_tokens,
+			toInt64(sum(output_tokens)) AS total_output_tokens,
 			ifNull(sum(cost_usd), 0) AS total_cost,
 			toInt64(countIf(cache_hit = 1)) AS cache_hits,
 			if(count() = 0, 0, countIf(cache_hit = 1) / count()) AS cache_hit_rate,
@@ -346,10 +353,15 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID s
 	row := r.conn.QueryRow(ctx, query, args...)
 	if err := row.Scan(
 		&s.TotalRequests, &s.ErrorRate, &s.AvgLatencyMs, &s.P95LatencyMs,
-		&s.TotalTokens, &s.TotalCostUSD, &s.CacheHits, &s.CacheHitRate, &s.GuardrailEvents,
+		&s.TotalInputTokens, &s.TotalOutputTokens, &s.TotalCostUSD,
+		&s.CacheHits, &s.CacheHitRate, &s.GuardrailEvents,
 	); err != nil {
 		return s, err
 	}
+	// TotalTokens is the prompt + completion aggregate for clients that
+	// don't want to sum the two halves. It is derived in Go rather than
+	// in SQL so the SELECT doesn't have to scan the same columns twice.
+	s.TotalTokens = s.TotalInputTokens + s.TotalOutputTokens
 	return s, nil
 }
 
