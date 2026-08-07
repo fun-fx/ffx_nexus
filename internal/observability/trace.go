@@ -78,6 +78,16 @@ type Trace struct {
 
 	// CacheHit marks a response served from the semantic cache (no upstream call).
 	CacheHit bool `json:"cache_hit,omitempty"`
+
+	// SessionID is the stable per-conversation marker the gateway
+	// extracts from incoming request metadata when the client sets one
+	// (Cursor agent: metadata.session_id or sessionId, OpenAI Responses:
+	// metadata.conversation_id). Empty when the wire did not carry a
+	// marker, and a stable sentinel the frontend can fold on roll-up.
+	// Used by /api/stats/overview to merge N consecutive traces from
+	// the same conversation (Cursor agent loop, multi-tool runs) into
+	// a single session row.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // Recorder persists traces. Implementations must be non-blocking from the

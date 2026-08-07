@@ -30,6 +30,14 @@ export interface TraceSummary {
   credential_source: string;
   user_id?: string;
   user_email?: string;
+  // session_id is the per-conversation marker the gateway extracted
+  // from metadata.session_id / sessionId / conversation_id on the
+  // request, or "user:<id>" when only the OpenAI user field was
+  // present. Empty when none of those were on the wire — in which
+  // case the frontend's sessionizeTraces() rolls the trace up by a
+  // time window + (vkey, model) tuple. See web/src/pages/Overview.tsx
+  // for the roll-up logic.
+  session_id?: string;
 }
 
 // TraceCursor is the server-issued "what to fetch next" handle. Empty

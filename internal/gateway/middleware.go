@@ -21,6 +21,7 @@ const (
 	ctxKeyRPMLimit      ctxKey = "rpm_limit"
 	ctxKeyMonthlyBudget ctxKey = "monthly_budget"
 	ctxKeyMinQuality    ctxKey = "min_quality"
+	ctxKeySessionID     ctxKey = "session_id"
 )
 
 // AuthResult is what a key authenticator returns for a valid virtual key.
