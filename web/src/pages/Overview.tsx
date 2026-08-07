@@ -63,6 +63,8 @@ export function Overview() {
     avg_latency_ms: 0,
     p95_latency_ms: 0,
     total_tokens: 0,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
     total_cost_usd: 0,
     cache_hits: 0,
     cache_hit_rate: 0,
@@ -140,7 +142,14 @@ export function Overview() {
           label="Guardrail events"
           value={stats.guardrail_events.toLocaleString()}
         />
-        <Stat label="Tokens" value={stats.total_tokens.toLocaleString()} />
+        <Stat
+          label="Prompt tokens"
+          value={(stats.total_input_tokens ?? 0).toLocaleString()}
+        />
+        <Stat
+          label="Completion tokens"
+          value={(stats.total_output_tokens ?? 0).toLocaleString()}
+        />
         <Stat label="Cost" value={`$${stats.total_cost_usd.toFixed(4)}`} />
       </section>
 

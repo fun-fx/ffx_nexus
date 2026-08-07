@@ -15,6 +15,8 @@ describe("API sanitizers", () => {
       avg_latency_ms: 0,
       p95_latency_ms: 0,
       total_tokens: 0,
+      total_input_tokens: 0,
+      total_output_tokens: 0,
       total_cost_usd: 0,
       cache_hits: 0,
       cache_hit_rate: 0,

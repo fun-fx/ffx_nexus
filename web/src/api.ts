@@ -5,7 +5,13 @@ export interface Stats {
   error_rate: number;
   avg_latency_ms: number;
   p95_latency_ms: number;
+  // total_tokens is the prompt + completion aggregate, kept for
+  // backwards compatibility with clients that read it as a single
+  // number. New code should use total_input_tokens / total_output_tokens
+  // so the dashboard can show Prompt / Completion as separate cards.
   total_tokens: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
   total_cost_usd: number;
   cache_hits: number;
   cache_hit_rate: number;
@@ -203,6 +209,8 @@ function sanitizeStats(data: Partial<Stats> | undefined | null): Stats {
     avg_latency_ms: safe(data.avg_latency_ms, 0),
     p95_latency_ms: safe(data.p95_latency_ms, 0),
     total_tokens: safe(data.total_tokens, 0),
+    total_input_tokens: safe(data.total_input_tokens, 0),
+    total_output_tokens: safe(data.total_output_tokens, 0),
     total_cost_usd: safe(data.total_cost_usd, 0),
     cache_hits: safe(data.cache_hits, 0),
     cache_hit_rate: safe(data.cache_hit_rate, 0),
@@ -216,6 +224,8 @@ const ZERO_STATS: Stats = {
   avg_latency_ms: 0,
   p95_latency_ms: 0,
   total_tokens: 0,
+  total_input_tokens: 0,
+  total_output_tokens: 0,
   total_cost_usd: 0,
   cache_hits: 0,
   cache_hit_rate: 0,
