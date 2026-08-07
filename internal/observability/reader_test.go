@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -150,27 +151,65 @@ func TestBuildTracePageQuery_TurnFilterIsExactMatch(t *testing.T) {
 // bogus group), and the aggregate list the console reads.
 func TestBuildTurnPageQuery_Shape(t *testing.T) {
 	q := buildTurnPageQuery("", time.Time{}, time.Time{})
-	if !strings.Contains(q, "if(turn_id = '', trace_id, turn_id) AS group_key") {
+	if !strings.Contains(q, "if(turn_id = '', trace_id, turn_id) AS turn_group_key") {
 		t.Errorf("missing empty-turn_id fallback to trace_id: %s", q)
 	}
-	if !strings.Contains(q, "GROUP BY group_key") {
+	if !strings.Contains(q, "GROUP BY turn_group_key") {
 		t.Errorf("must group on the derived key: %s", q)
 	}
-	if !strings.Contains(q, "ORDER BY last_at DESC LIMIT ?") {
+	if !strings.Contains(q, "ORDER BY turn_last_at DESC LIMIT ?") {
 		t.Errorf("must order by most recent activity: %s", q)
 	}
 	for _, frag := range []string{
-		"min(timestamp) AS first_at",
-		"max(timestamp) AS last_at",
-		"toInt64(count()) AS trace_count",
-		"toInt64(sum(input_tokens)) AS input_tokens",
-		"toInt64(sum(output_tokens)) AS output_tokens",
-		"sum(cost_usd) AS cost_usd",
-		"toInt64(sum(latency_ms)) AS latency_ms",
-		"max(status_code) AS status_code",
+		"min(timestamp) AS turn_first_at",
+		"max(timestamp) AS turn_last_at",
+		"toInt64(count()) AS turn_trace_count",
+		"toInt64(sum(input_tokens)) AS turn_input_tokens",
+		"toInt64(sum(output_tokens)) AS turn_output_tokens",
+		"sum(cost_usd) AS turn_cost_usd",
+		"toInt64(sum(latency_ms)) AS turn_latency_ms",
+		"max(status_code) AS turn_status_code",
 	} {
 		if !strings.Contains(q, frag) {
 			t.Errorf("query missing aggregate %q: %s", frag, q)
+		}
+	}
+}
+
+// Regression guard for an outage: the first cut aliased its aggregates after
+// the columns they summed (`sum(input_tokens) AS input_tokens`). ClickHouse
+// lets one SELECT expression reference another's alias, so the later
+// `sum(input_tokens) + sum(output_tokens)` resolved to the aliases and the
+// server rejected every request with ILLEGAL_AGGREGATION — while the shape
+// assertions above stayed green, because a string cannot tell you what the
+// server thinks it means.
+//
+// The live tests in turnpage_live_test.go are the real proof. This one runs
+// without a ClickHouse, so the rule stays enforced on every laptop and in the
+// plain Go CI job.
+func TestBuildTurnPageQuery_NoAliasShadowsAColumn(t *testing.T) {
+	// Columns of gateway_traces that the roll-up reads. An alias colliding
+	// with any of these is the trap.
+	columns := map[string]bool{
+		"trace_id": true, "turn_id": true, "timestamp": true,
+		"provider_name": true, "request_model": true, "response_model": true,
+		"input_tokens": true, "output_tokens": true, "latency_ms": true,
+		"ttft_ms": true, "cost_usd": true, "status_code": true,
+		"user_id": true, "session_id": true, "org_id": true,
+	}
+
+	q := buildTurnPageQuery("u-1", time.Now(), time.Now().Add(-time.Hour))
+	aliasRe := regexp.MustCompile(`(?i)\sAS\s+([a-z_][a-z0-9_]*)`)
+	found := aliasRe.FindAllStringSubmatch(q, -1)
+	if len(found) == 0 {
+		t.Fatal("expected the roll-up to define aliases")
+	}
+	for _, m := range found {
+		alias := strings.ToLower(m[1])
+		if columns[alias] {
+			t.Errorf("alias %q shadows the gateway_traces column of the same name; "+
+				"ClickHouse will resolve later references to the aggregate and reject "+
+				"the query with ILLEGAL_AGGREGATION. Prefix it (turn_%s).", alias, alias)
 		}
 	}
 }

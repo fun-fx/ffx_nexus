@@ -122,6 +122,16 @@ jobs:
       - name: Run ClickHouse bench provider contracts
         run: go test -race -count=1 -run 'TestCHBenchProvider_LiveContract' ./internal/router/...
 
+      - name: Run turn roll-up live contracts (ClickHouse)
+        # The turn roll-up is a GROUP BY whose correctness depends on how
+        # ClickHouse resolves SELECT aliases, which no amount of asserting
+        # on the SQL string can catch: the first cut shipped an aggregate
+        # aliased after the column it summed and every request 500'd with
+        # ILLEGAL_AGGREGATION while the shape tests stayed green. These
+        # execute the real query, so that class of bug fails here instead
+        # of in prod.
+        run: go test -race -count=1 -run 'TestTurnPage_Live|TestTracePage_Live' ./internal/observability/...
+
       - name: Run core bench CRUD + wire contract (live PG)
         # Same DSN as the bench_provider tests; the core side already
         # has 12+ live tests that exercise CRUD on the same schema.

@@ -398,6 +398,13 @@ func (r *Reader) TurnPage(ctx context.Context, before, since time.Time, limit in
 // pure function, like buildTracePageQuery, so the SQL shape can be pinned in
 // a unit test without a live ClickHouse.
 //
+// Every aggregate alias is deliberately prefixed rather than named after the
+// column it sums. ClickHouse lets one SELECT expression reference another's
+// alias, so `sum(input_tokens) AS input_tokens` followed by any later use of
+// `input_tokens` resolves to the alias and the server rejects the query with
+// "Aggregate function ... is found inside another aggregate function". The
+// prefix keeps column and alias namespaces disjoint so that cannot happen.
+//
 // Placeholder ordering (mirrored by buildTurnPageArgs) is:
 //  1. user_id (if present)
 //  2. timestamp < (before)
@@ -405,19 +412,19 @@ func (r *Reader) TurnPage(ctx context.Context, before, since time.Time, limit in
 //  4. LIMIT
 func buildTurnPageQuery(userID string, before, since time.Time) string {
 	q := `
-		SELECT if(turn_id = '', trace_id, turn_id) AS group_key,
-		       min(timestamp) AS first_at,
-		       max(timestamp) AS last_at,
-		       toInt64(count()) AS trace_count,
-		       argMax(provider_name, timestamp) AS provider_name,
-		       argMax(request_model, timestamp) AS request_model,
-		       toInt64(sum(input_tokens)) AS input_tokens,
-		       toInt64(sum(output_tokens)) AS output_tokens,
-		       toInt64(sum(input_tokens) + sum(output_tokens)) AS total_tokens,
-		       sum(cost_usd) AS cost_usd,
-		       toInt64(sum(latency_ms)) AS latency_ms,
-		       max(status_code) AS status_code,
-		       any(user_id) AS user_id
+		SELECT if(turn_id = '', trace_id, turn_id) AS turn_group_key,
+		       min(timestamp) AS turn_first_at,
+		       max(timestamp) AS turn_last_at,
+		       toInt64(count()) AS turn_trace_count,
+		       argMax(provider_name, timestamp) AS turn_provider,
+		       argMax(request_model, timestamp) AS turn_model,
+		       toInt64(sum(input_tokens)) AS turn_input_tokens,
+		       toInt64(sum(output_tokens)) AS turn_output_tokens,
+		       toInt64(sum(input_tokens + output_tokens)) AS turn_total_tokens,
+		       sum(cost_usd) AS turn_cost_usd,
+		       toInt64(sum(latency_ms)) AS turn_latency_ms,
+		       max(status_code) AS turn_status_code,
+		       any(user_id) AS turn_user_id
 		FROM gateway_traces`
 	conds := []string{}
 	if userID != "" {
@@ -432,7 +439,7 @@ func buildTurnPageQuery(userID string, before, since time.Time) string {
 	if len(conds) > 0 {
 		q += " WHERE " + strings.Join(conds, " AND ")
 	}
-	q += " GROUP BY group_key ORDER BY last_at DESC LIMIT ?"
+	q += " GROUP BY turn_group_key ORDER BY turn_last_at DESC LIMIT ?"
 	return q
 }
 
