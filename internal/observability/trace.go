@@ -88,6 +88,14 @@ type Trace struct {
 	// the same conversation (Cursor agent loop, multi-tool runs) into
 	// a single session row.
 	SessionID string `json:"session_id,omitempty"`
+
+	// TurnID groups the N model calls an agent makes while answering one
+	// user question. Unlike SessionID it is derived by the gateway rather
+	// than read off the wire — see deriveTurnKey in internal/gateway —
+	// because no client we serve sends a correlating marker today. Empty
+	// when the request carried no user message to key on, in which case
+	// the console falls back to showing the trace on its own row.
+	TurnID string `json:"turn_id,omitempty"`
 }
 
 // Recorder persists traces. Implementations must be non-blocking from the

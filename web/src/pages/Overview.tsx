@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { GradientText } from "../components/GradientText";
 import { TierCard } from "../components/TierCard";
 import { Icon } from "../components/icons";
+import { formatExact, formatTokens } from "../lib/format";
 import {
   fetchEvalConfig,
   fetchMe,
@@ -10,19 +12,21 @@ import {
   fetchRouting,
   fetchStats,
   fetchTraces,
+  fetchTurns,
   type EvalConfigSnapshot,
   type ProviderStat,
   type RoutingModel,
   type Stats,
   type TraceSummary,
+  type TurnSummary,
   type User,
 } from "../api";
 
 async function fetchOverview() {
-  const [me, stats, traces, routing, evalCfg, provider] = await Promise.allSettled([
+  const [me, stats, turns, routing, evalCfg, provider] = await Promise.allSettled([
     fetchMe(),
     fetchStats(),
-    fetchTraces(),
+    fetchTurns({ limit: 10 }),
     fetchRouting(),
     fetchEvalConfig(),
     fetchProviderStats(),
@@ -30,8 +34,7 @@ async function fetchOverview() {
   return {
     me: me.status === "fulfilled" ? (me.value as User | null) : null,
     stats: stats.status === "fulfilled" ? (stats.value as Stats) : null,
-    traces:
-      traces.status === "fulfilled" ? traces.value.items : [],
+    turns: turns.status === "fulfilled" ? (turns.value as TurnSummary[]) : [],
     routing:
       routing.status === "fulfilled" ? (routing.value as RoutingModel[]) : [],
     eval:
@@ -67,7 +70,7 @@ export function Overview() {
   };
 
   const routing: RoutingModel[] = data?.routing ?? [];
-  const traces: TraceSummary[] = data?.traces ?? [];
+  const turns: TurnSummary[] = data?.turns ?? [];
   const evalCfg: EvalConfigSnapshot | null = data?.eval ?? null;
   const user: User | null = data?.me ?? null;
   const providerStats: ProviderStat[] = data?.provider ?? [];
@@ -136,11 +139,11 @@ export function Overview() {
         />
         <Stat
           label="Prompt tokens"
-          value={(stats.total_input_tokens ?? 0).toLocaleString()}
+          value={formatTokens(stats.total_input_tokens ?? 0)}
         />
         <Stat
           label="Completion tokens"
-          value={(stats.total_output_tokens ?? 0).toLocaleString()}
+          value={formatTokens(stats.total_output_tokens ?? 0)}
         />
         <Stat label="Cost" value={`$${stats.total_cost_usd.toFixed(4)}`} />
       </section>
@@ -233,39 +236,45 @@ export function Overview() {
 
       <SpendByProvider providerStats={providerStats} />
 
-      <RecentTracesList traces={traces} isLoading={isLoading} />
+      <RecentTurnsList turns={turns} isLoading={isLoading} />
     </div>
   );
 }
 
-// RecentTracesList renders one row per trace from /api/traces, in the
-// order the server returns them (newest first by timestamp). It is a
-// flat 1:1 view on purpose: operators want to see every model call
-// individually, including requests that arrive within seconds of each
-// other, without the heuristic time-window merge that would otherwise
-// collapse an agent loop into a single line. Multi-turn sessions —
-// wire-side session_id rollups — are still surfaced by the /traces
-// page if the operator clicks through.
-function RecentTracesList({
-  traces,
+// RecentTurnsList renders one row per agent turn: the user's question
+// plus every model call the agent made while answering it, rolled up by
+// the gateway-derived turn_id. Asking one question and watching ten rows
+// scroll past is noise — the interesting unit is the turn, and the calls
+// underneath it are a click away.
+//
+// This is not the old time-window heuristic that got reverted. Grouping
+// happens server-side on a key derived from the request payload, so two
+// unrelated questions that happen to land seconds apart stay apart.
+function RecentTurnsList({
+  turns,
   isLoading,
 }: {
-  traces: TraceSummary[];
+  turns: TurnSummary[];
   isLoading: boolean;
 }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
   return (
-    <section className="panel" aria-label="Recent traces">
+    <section className="panel" aria-label="Recent turns">
       <header className="panel-head">
-        <h2>Recent traces</h2>
+        <h2>Recent turns</h2>
         <a className="panel-link" href="/traces">
           See all <Icon.arrowRight size={14} />
         </a>
       </header>
       <div className="trace-table" role="table">
-        <div className="trace-row head" role="row">
+        <div className="trace-row turn-row head" role="row">
           <span role="columnheader">Time</span>
           <span role="columnheader">Provider</span>
           <span role="columnheader">Model</span>
+          <span role="columnheader" className="right">
+            Calls
+          </span>
           <span role="columnheader">Status</span>
           <span role="columnheader" className="right">
             Latency
@@ -277,80 +286,161 @@ function RecentTracesList({
             Cost
           </span>
         </div>
-        {traces.length === 0 ? (
+        {turns.length === 0 ? (
           <div className="trace-row empty" role="row">
-            {isLoading ? "Loading…" : "No traces yet."}
+            {isLoading ? "Loading…" : "No traffic yet."}
           </div>
         ) : (
-          traces.slice(0, 10).map((t) => (
-            <div className="trace-row" key={t.trace_id}>
-              <span>{new Date(t.timestamp).toLocaleTimeString()}</span>
-              <span>
-                <span className="provider-tag">{t.provider_name}</span>
-              </span>
-              <span
-                className="mono ellipsis"
-                title={
-                  t.response_model && t.response_model !== t.request_model
-                    ? `requested: ${t.request_model}\nserved: ${t.response_model}`
-                    : t.request_model
-                }
-              >
-                {t.request_model}
-                {t.response_model &&
-                  t.response_model !== t.request_model && (
-                    <span className="model-served-pill">
-                      → {t.response_model}
-                    </span>
-                  )}
-              </span>
-              <span>
-                <span
+          turns.map((t) => {
+            const canExpand = t.trace_count > 1;
+            const isOpen = expanded === t.turn_id;
+            return (
+              <div key={t.turn_id}>
+                <div
                   className={
-                    "status-pill " +
-                    (t.status_code >= 400 ? "is-err" : "is-ok")
+                    "trace-row turn-row" +
+                    (canExpand ? " is-expandable" : "") +
+                    (isOpen ? " is-open" : "")
+                  }
+                  role={canExpand ? "button" : "row"}
+                  tabIndex={canExpand ? 0 : undefined}
+                  aria-expanded={canExpand ? isOpen : undefined}
+                  onClick={
+                    canExpand
+                      ? () => setExpanded(isOpen ? null : t.turn_id)
+                      : undefined
+                  }
+                  onKeyDown={
+                    canExpand
+                      ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setExpanded(isOpen ? null : t.turn_id);
+                          }
+                        }
+                      : undefined
                   }
                 >
-                  {t.status_code}
-                </span>
-              </span>
-              <span className="right">{t.latency_ms} ms</span>
-              <span
-                className="right mono"
-                title={`in ${formatThousands(t.input_tokens ?? 0)} • out ${formatThousands(t.output_tokens ?? 0)}`}
-              >
-                {formatThousands(
-                  t.total_tokens ??
-                    ((t.input_tokens ?? 0) + (t.output_tokens ?? 0)),
-                )}
-              </span>
-              <span className="right mono">
-                ${Number(t.cost_usd ?? 0).toFixed(5)}
-              </span>
-            </div>
-          ))
+                  <span title={new Date(t.first_at).toLocaleString()}>
+                    {new Date(t.last_at).toLocaleTimeString()}
+                  </span>
+                  <span>
+                    <span className="provider-tag">{t.provider_name}</span>
+                  </span>
+                  <span className="mono ellipsis" title={t.request_model}>
+                    {t.request_model}
+                  </span>
+                  <span className="right mono">
+                    {canExpand ? (
+                      <span className="turn-calls">
+                        <Icon.arrowRight
+                          size={11}
+                          className={
+                            "turn-caret" + (isOpen ? " turn-caret--open" : "")
+                          }
+                        />
+                        {t.trace_count}
+                      </span>
+                    ) : (
+                      <span className="muted">1</span>
+                    )}
+                  </span>
+                  <span>
+                    <span
+                      className={
+                        "status-pill " +
+                        (t.status_code >= 400 ? "is-err" : "is-ok")
+                      }
+                    >
+                      {t.status_code}
+                    </span>
+                  </span>
+                  <span className="right">{t.latency_ms} ms</span>
+                  <span
+                    className="right mono"
+                    title={`in ${formatExact(t.input_tokens ?? 0)} • out ${formatExact(t.output_tokens ?? 0)}`}
+                  >
+                    {formatTokens(
+                      t.total_tokens ??
+                        (t.input_tokens ?? 0) + (t.output_tokens ?? 0),
+                    )}
+                  </span>
+                  <span className="right mono">
+                    ${Number(t.cost_usd ?? 0).toFixed(5)}
+                  </span>
+                </div>
+                {isOpen && <TurnCalls turnID={t.turn_id} />}
+              </div>
+            );
+          })
         )}
       </div>
     </section>
   );
 }
 
+// TurnCalls lazily fetches the individual calls behind one turn. Mounted
+// only while its row is expanded, so collapsing and re-expanding refetches
+// — which is what you want on a live console where a turn may still be
+// running.
+function TurnCalls({ turnID }: { turnID: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["turn-calls", turnID],
+    queryFn: () => fetchTraces({ turn: turnID, limit: 50 }),
+  });
+
+  // The server orders newest-first for paging. Inside a turn we want the
+  // agent's own sequence, so read it back the other way.
+  const calls: TraceSummary[] = [...(data?.items ?? [])].reverse();
+
+  if (isLoading) {
+    return <div className="session-drill muted">Loading calls…</div>;
+  }
+  if (calls.length === 0) {
+    return <div className="session-drill muted">No calls found.</div>;
+  }
+  return (
+    <div className="session-drill">
+      {calls.map((c, i) => (
+        <div className="trace-row sub-row" key={c.trace_id}>
+          <span className="muted">
+            #{i + 1} · {new Date(c.timestamp).toLocaleTimeString()}
+          </span>
+          <span className="mono ellipsis" title={c.request_model}>
+            {c.request_model}
+          </span>
+          <span>
+            <span
+              className={
+                "status-pill " + (c.status_code >= 400 ? "is-err" : "is-ok")
+              }
+            >
+              {c.status_code}
+            </span>
+          </span>
+          <span className="right mono">{c.latency_ms} ms</span>
+          <span
+            className="right mono"
+            title={`in ${formatExact(c.input_tokens ?? 0)} • out ${formatExact(c.output_tokens ?? 0)}`}
+          >
+            {formatTokens(
+              c.total_tokens ?? (c.input_tokens ?? 0) + (c.output_tokens ?? 0),
+            )}
+          </span>
+          <span className="right mono">
+            ${Number(c.cost_usd ?? 0).toFixed(5)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function formatUsd(n: number): string {
   if (!Number.isFinite(n) || n === 0) return "$0.0000";
   if (n < 0.0001) return `$${n.toExponential(2)}`;
   if (n < 1) return `$${n.toFixed(4)}`;
   return `$${n.toFixed(2)}`;
-}
-
-// formatThousands turns e.g. 12345 into "12,345" so the Tokens column
-// stays readable when a multi-turn session hits six digits. We expose
-// the raw count via the title= hover (handled inline at the call site
-// with in/out breakdown) so the comma-formatted value here is purely
-// for the eye.
-function formatThousands(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return "0";
-  return Math.round(n).toLocaleString("en-US");
 }
 
 // SpendByProvider renders a LiteLLM-style horizontal bar widget grouped by

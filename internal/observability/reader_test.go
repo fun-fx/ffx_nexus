@@ -119,10 +119,93 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 // them the read path never gets the chance to complain.
 func TestBuildTracePageQuery_SelectsTotalAndResponseAndSessionFields(t *testing.T) {
 	q := buildTracePageQuery("", time.Time{}, time.Time{}, 25, TraceFilter{})
-	for _, col := range []string{"response_model", "total_tokens", "session_id"} {
+	for _, col := range []string{"response_model", "total_tokens", "session_id", "turn_id"} {
 		if !strings.Contains(q, col) {
 			t.Errorf("query missing required column %q: %s", col, q)
 		}
+	}
+}
+
+// The turn filter is an exact match, never a LIKE. turn_id holds a hash,
+// so a fuzzy match would both scan wrong and defeat the bloom index that
+// 008_turn_id.sql added for exactly this lookup.
+func TestBuildTracePageQuery_TurnFilterIsExactMatch(t *testing.T) {
+	f := TraceFilter{Turn: "a1b2c3d4e5f60718"}
+	q := buildTracePageQuery("", time.Time{}, time.Time{}, 50, f)
+	if !strings.Contains(q, "turn_id = ?") {
+		t.Errorf("turn filter must be an equality predicate: %s", q)
+	}
+	if strings.Contains(q, "turn_id LIKE") {
+		t.Errorf("turn filter must not be fuzzy: %s", q)
+	}
+	args := buildTracePageArgs("", time.Time{}, time.Time{}, 50, f)
+	if len(args) != 2 || args[0] != f.Turn {
+		t.Fatalf("want [turn, limit], got %v", args)
+	}
+}
+
+// buildTurnPageQuery groups the overview. The two properties worth
+// pinning: the empty-turn_id fallback (so traces written before the
+// column existed render one-per-row instead of collapsing into a single
+// bogus group), and the aggregate list the console reads.
+func TestBuildTurnPageQuery_Shape(t *testing.T) {
+	q := buildTurnPageQuery("", time.Time{}, time.Time{})
+	if !strings.Contains(q, "if(turn_id = '', trace_id, turn_id) AS group_key") {
+		t.Errorf("missing empty-turn_id fallback to trace_id: %s", q)
+	}
+	if !strings.Contains(q, "GROUP BY group_key") {
+		t.Errorf("must group on the derived key: %s", q)
+	}
+	if !strings.Contains(q, "ORDER BY last_at DESC LIMIT ?") {
+		t.Errorf("must order by most recent activity: %s", q)
+	}
+	for _, frag := range []string{
+		"min(timestamp) AS first_at",
+		"max(timestamp) AS last_at",
+		"toInt64(count()) AS trace_count",
+		"toInt64(sum(input_tokens)) AS input_tokens",
+		"toInt64(sum(output_tokens)) AS output_tokens",
+		"sum(cost_usd) AS cost_usd",
+		"toInt64(sum(latency_ms)) AS latency_ms",
+		"max(status_code) AS status_code",
+	} {
+		if !strings.Contains(q, frag) {
+			t.Errorf("query missing aggregate %q: %s", frag, q)
+		}
+	}
+}
+
+// max(status_code), not any(): one failed call inside an otherwise-green
+// agent loop has to surface on the collapsed row, or the operator has to
+// expand every turn to find the failure.
+func TestBuildTurnPageQuery_StatusIsWorstNotFirst(t *testing.T) {
+	q := buildTurnPageQuery("", time.Time{}, time.Time{})
+	if strings.Contains(q, "any(status_code)") || strings.Contains(q, "argMax(status_code") {
+		t.Errorf("status must be the worst in the turn, not a representative one: %s", q)
+	}
+}
+
+func TestBuildTurnPageArgs_PlaceholderOrder(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	since := now.Add(-time.Hour)
+
+	q := buildTurnPageQuery("u-9", now, since)
+	for _, want := range []string{"user_id = ?", "timestamp < ?", "timestamp >= ?"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("query missing %q: %s", want, q)
+		}
+	}
+	args := buildTurnPageArgs("u-9", now, since, 20)
+	if len(args) != 4 {
+		t.Fatalf("want [user, before, since, limit], got %v", args)
+	}
+	if args[0] != "u-9" || args[1] != now || args[2] != since || args[3] != 20 {
+		t.Errorf("placeholder order does not mirror the query: %v", args)
+	}
+
+	// Unbounded on both sides collapses to just the limit.
+	if got := buildTurnPageArgs("", time.Time{}, time.Time{}, 5); len(got) != 1 || got[0] != 5 {
+		t.Errorf("want [limit] only, got %v", got)
 	}
 }
 

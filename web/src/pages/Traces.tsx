@@ -5,6 +5,7 @@ import { Drawer } from "../components/Drawer";
 import { Chip } from "../components/Chip";
 import { StatusPill } from "../components/StatusPill";
 import { Icon } from "../components/icons";
+import { formatExact, formatTokens } from "../lib/format";
 import {
   fetchMe,
   fetchTraces,
@@ -202,8 +203,11 @@ export function Traces() {
       width: "120px",
       align: "right",
       cell: (t) => (
-        <span className="mono">
-          {t.input_tokens}/{t.output_tokens}
+        <span
+          className="mono"
+          title={`in ${formatExact(t.input_tokens ?? 0)} • out ${formatExact(t.output_tokens ?? 0)}`}
+        >
+          {formatTokens(t.input_tokens ?? 0)}/{formatTokens(t.output_tokens ?? 0)}
         </span>
       ),
       sortValue: (t) => (t.input_tokens ?? 0) + (t.output_tokens ?? 0),
@@ -494,7 +498,7 @@ function TraceDetail({ t }: { t: TraceSummary }) {
         <KV label="Latency" value={`${t.latency_ms} ms`} />
         <KV label="Cost" value={`$${t.cost_usd.toFixed(5)}`} />
         <KV label="TTFT" value={t.ttft_ms ? `${t.ttft_ms} ms` : "—"} />
-        <KV label="Tokens" value={<span className="mono">{t.input_tokens}/{t.output_tokens}</span>} />
+        <KV label="Tokens" value={<span className="mono">{formatExact(t.input_tokens ?? 0)}/{formatExact(t.output_tokens ?? 0)}</span>} />
         <KV label="Streamed" value={t.streamed ? "yes" : "no"} />
         <KV label="Cache hit" value={t.cache_hit ? "yes" : "no"} />
         <KV label="Credential source" value={t.credential_source || "env"} />

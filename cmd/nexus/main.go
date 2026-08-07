@@ -180,6 +180,7 @@ func main() {
 				"migrations/clickhouse/005_eval_user.sql",
 				"migrations/clickhouse/006_replica_id.sql",
 				"migrations/clickhouse/007_session_id.sql",
+				"migrations/clickhouse/008_turn_id.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
 				if err := rec.Migrate(ctx, string(schema)); err != nil {
