@@ -49,6 +49,74 @@ func TestDeriveTurnKey_ChangesOnNextQuestion(t *testing.T) {
 	}
 }
 
+// An operator answering a question the agent raised mid-flight, or typing a
+// correction while it is still working, is a continuation rather than a new
+// question. Keying on that message would split one piece of work into two
+// console rows at the exact moment the operator is watching it happen.
+func TestDeriveTurnKey_InterruptionMidLoopStaysInTurn(t *testing.T) {
+	system := Message{Role: "system", Content: "You are a coding agent."}
+	question := Message{Role: "user", Content: "refactor the reader"}
+	opening := []Message{system, question}
+
+	// The agent is mid-loop — it called a tool and got a result back — when
+	// the operator weighs in.
+	interrupted := append(append([]Message{}, opening...),
+		Message{Role: "assistant", ToolCalls: []ToolCall{{Type: "function", ID: "c1"}}},
+		Message{Role: "tool", Content: "file contents", ToolCallID: "c1"},
+		Message{Role: "user", Content: "use the second option"},
+	)
+	// ...and keeps working afterwards.
+	resumed := append(append([]Message{}, interrupted...),
+		Message{Role: "assistant", ToolCalls: []ToolCall{{Type: "function", ID: "c2"}}},
+		Message{Role: "tool", Content: "edit applied", ToolCallID: "c2"},
+	)
+
+	want := deriveTurnKey("u-1", opening)
+	for name, msgs := range map[string][]Message{
+		"the interrupting message":   interrupted,
+		"work resumed after it":      resumed,
+		"a second interruption":      append(append([]Message{}, resumed...), Message{Role: "user", Content: "also rename it"}),
+		"work resumed after the 2nd": append(append([]Message{}, resumed...), Message{Role: "user", Content: "also rename it"}, Message{Role: "tool", Content: "renamed"}),
+	} {
+		if got := deriveTurnKey("u-1", msgs); got != want {
+			t.Errorf("%s must stay in the opening turn: got %q, want %q", name, got, want)
+		}
+	}
+}
+
+// The other side of that rule, and the reason it is scoped so tightly:
+// Cursor keeps one long history per chat, so once the agent has actually
+// answered, the next question must break the group. Without this, an
+// afternoon of unrelated work collapses into a single row — the behaviour
+// the derived key was introduced to replace.
+func TestDeriveTurnKey_NewQuestionAfterAnswerStillSplits(t *testing.T) {
+	system := Message{Role: "system", Content: "You are a coding agent."}
+	first := []Message{system, {Role: "user", Content: "refactor the reader"}}
+
+	// The agent finished: a plain assistant reply, no tool calls pending.
+	answered := append(append([]Message{}, first...),
+		Message{Role: "assistant", ToolCalls: []ToolCall{{Type: "function", ID: "c1"}}},
+		Message{Role: "tool", Content: "file contents", ToolCallID: "c1"},
+		Message{Role: "assistant", Content: "done, the reader is split in two"},
+	)
+	second := append(append([]Message{}, answered...),
+		Message{Role: "user", Content: "now draft the release note"},
+	)
+
+	a, b := deriveTurnKey("u-1", first), deriveTurnKey("u-1", second)
+	if a == b {
+		t.Fatalf("a question asked after the agent answered must start a new turn (both %q)", a)
+	}
+	// And the follow-up's own loop groups under the follow-up, not the root.
+	loop := append(append([]Message{}, second...),
+		Message{Role: "assistant", ToolCalls: []ToolCall{{Type: "function", ID: "c2"}}},
+		Message{Role: "tool", Content: "notes", ToolCallID: "c2"},
+	)
+	if got := deriveTurnKey("u-1", loop); got != b {
+		t.Errorf("the follow-up's tool calls must group under it: got %q, want %q", got, b)
+	}
+}
+
 func TestDeriveTurnKey_ScopedToUserAndSystemPrompt(t *testing.T) {
 	msgs := []Message{
 		{Role: "system", Content: "You are a coding agent."},
