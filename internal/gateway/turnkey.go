@@ -25,6 +25,9 @@ import (
 // different people — or the same person in two different agent modes —
 // from colliding on an identical question.
 //
+// An operator answering a mid-flight question is the one case where a new
+// user message does not mean a new turn; turnRootUserIndex handles it.
+//
 // Returns "" when there is no user message to key on, which leaves the
 // trace ungrouped rather than lumping it in with unrelated traffic.
 //
@@ -34,17 +37,11 @@ import (
 // gap at query time is the fix if it ever becomes a real annoyance.
 func deriveTurnKey(userID string, msgs []Message) string {
 	var lastUser, system string
-	foundUser := false
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
-			lastUser = msgs[i].Content
-			foundUser = true
-			break
-		}
-	}
-	if !foundUser {
+	rootUser := turnRootUserIndex(msgs)
+	if rootUser < 0 {
 		return ""
 	}
+	lastUser = msgs[rootUser].Content
 	for _, m := range msgs {
 		// "developer" is the Responses-era spelling of "system"; Cursor's
 		// instructions field lands as one or the other depending on path.
@@ -62,4 +59,67 @@ func deriveTurnKey(userID string, msgs []Message) string {
 	h.Write([]byte{0})
 	h.Write([]byte(strings.TrimSpace(lastUser)))
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// turnRootUserIndex returns the index of the user message that opened the
+// current turn, or -1 when the history has no user message at all.
+//
+// Usually that is simply the last user message. The exception is an
+// interruption: the operator answers a mid-flight question, or types a
+// correction while the agent is still working. That arrives as a fresh
+// user message, and keying on it would split one piece of work into two
+// console rows right at the moment the operator is watching it.
+//
+// The two cases are distinguishable from the payload alone, with no clock
+// and no server-side state, by looking at what sits immediately before the
+// user message:
+//
+//	[... assistant:"done",            user:Q2]  -> agent had finished, new turn
+//	[... assistant:tool_calls, tool:…, user:Q2]  -> agent was mid-loop, same turn
+//
+// An assistant message carrying tool calls, or a tool result, means the
+// agent had not yet delivered an answer, so the new message continues the
+// turn in progress. A plain assistant reply means it had, so the next
+// question stands on its own.
+//
+// This is deliberately narrower than grouping a whole chat thread. Cursor
+// keeps one long history per chat, so keying on the first user message
+// would fold an afternoon of unrelated questions — a code-prime refactor
+// and a text-prime draft — into a single row, which is the exact behaviour
+// the derived key replaced.
+//
+// The walk repeats so a turn survives several interruptions in a row.
+func turnRootUserIndex(msgs []Message) int {
+	i := lastUserIndexBefore(msgs, len(msgs))
+	for i > 0 {
+		if !agentWasMidWork(msgs[i-1]) {
+			break
+		}
+		prev := lastUserIndexBefore(msgs, i)
+		if prev < 0 {
+			break
+		}
+		i = prev
+	}
+	return i
+}
+
+// lastUserIndexBefore returns the index of the newest user message strictly
+// before end, or -1 if there is none.
+func lastUserIndexBefore(msgs []Message, end int) int {
+	for i := end - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			return i
+		}
+	}
+	return -1
+}
+
+// agentWasMidWork reports whether m shows the agent still had work in
+// flight rather than having delivered its answer.
+func agentWasMidWork(m Message) bool {
+	if m.Role == "tool" {
+		return true
+	}
+	return m.Role == "assistant" && len(m.ToolCalls) > 0
 }
