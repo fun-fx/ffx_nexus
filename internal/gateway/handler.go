@@ -373,6 +373,44 @@ func cloneUsageForCost(u *Usage) *Usage {
 	return clone
 }
 
+// extractSessionID reads the wire payload once for a per-conversation
+// marker. The same probe struct also captures the OpenAI `user` field
+// since `user:<id>` is a poor-but-acceptable second-best when no
+// explicit session_id is present.
+//
+// We do this from the raw body rather than reading the parsed
+// ChatCompletionRequest because the struct's UnmarshalJSON does not
+// surface unknown top-level keys into req.Extra for the stock
+// Chat Completions path; only the Cursor hybrid and Responses paths
+// preserve extras. Doing the probe off the raw body keeps the three
+// paths consistent without reshaping struct unmarshal.
+//
+// Inexpensive: a single json.Unmarshal into a probe struct with two
+// fields. The body is already in memory by the time this runs.
+func extractSessionID(rawBody []byte) string {
+	if len(rawBody) == 0 {
+		return ""
+	}
+	var probe struct {
+		Metadata map[string]any `json:"metadata"`
+		User     string         `json:"user"`
+	}
+	if err := json.Unmarshal(rawBody, &probe); err != nil {
+		return ""
+	}
+	if probe.Metadata != nil {
+		for _, k := range []string{"session_id", "sessionId", "conversation_id"} {
+			if v, ok := probe.Metadata[k].(string); ok && v != "" {
+				return v
+			}
+		}
+	}
+	if probe.User != "" {
+		return "user:" + probe.User
+	}
+	return ""
+}
+
 // ChatCompletions handles POST /v1/chat/completions for both streaming and
 // non-streaming requests.  It also transparently accepts Cursor Agent hybrid
 // bodies that look like Responses API payloads but are posted to this path.
@@ -402,6 +440,28 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" || len(req.Messages) == 0 {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "model and messages are required")
 		return
+	}
+
+	// Pull a stable per-conversation marker from the wire so that N
+	// consecutive LLM calls from the same Cursor agent loop, Responses
+	// follow-up, or any client that sets metadata.session_id can be
+	// rolled up into one session row in the overview. Falls back to ""
+	// when the wire did not carry any marker; the frontend fills that
+	// gap with a heuristic time-window merge, never on the wire alone.
+	//
+	// Extraction happens here, on the raw body, rather than in
+	// newTrace off the parsed ChatCompletionRequest, because the
+	// Go-side unmarshal does not surface unknown keys into req.Extra
+	// — only the OpenAI-compat path (TransformCursorHybrid +
+	// pickResponsesExtras) does. Cursor agent posts through the hybrid
+	// path which preserves metadata, but the Responses and pure
+	// Chat paths do so only in marshal, not in unmarshal. Parsing the
+	// raw body once makes sure all three share the same source of
+	// truth without overengineering the struct unmarshal.
+	sessionID := extractSessionID(body)
+	if sessionID != "" {
+		ctx := context.WithValue(r.Context(), ctxKeySessionID, sessionID)
+		r = r.WithContext(ctx)
 	}
 
 	// Inline input guardrails (hot path): reject disallowed prompts before any
@@ -1009,6 +1069,13 @@ func (h *Handler) newTrace(r *http.Request, req ChatCompletionRequest, providerN
 	if rid, ok := r.Context().Value(ctxKeyRequestID).(string); ok {
 		t.ParentID = rid
 	}
+	// SessionID hops the request context — the wire payload is parsed in
+	// ChatCompletions/Responses (the only places the raw body is in
+	// hand) and the marker flows to every trace this request produces
+	// (unary, stream, error, guardrail-block) through this key.
+	if sid, ok := r.Context().Value(ctxKeySessionID).(string); ok && sid != "" {
+		t.SessionID = sid
+	}
 	if org, ok := r.Context().Value(ctxKeyOrgID).(string); ok {
 		t.OrgID = org
 	}
@@ -1039,6 +1106,14 @@ func (h *Handler) newTrace(r *http.Request, req ChatCompletionRequest, providerN
 		}
 		t.EvalReference = req.NexusEval.Reference
 	}
+	// SessionID is set by the caller when the wire carried a
+	// metadata.session_id (extracted from the raw body). newTrace does
+	// not parse the body itself — see ChatCompletions/Responses, which
+	// call extractSessionID before invoking this — because the struct
+	// unmarshal does not surface unknown keys into req.Extra for
+	// the stock Chat Completions path. Pulling the marker in one place
+	// (the caller) keeps all three wire paths (chat completions,
+	// hybrid, responses) consistent.
 	return t
 }
 
@@ -1087,7 +1162,11 @@ func cacheScope(ctx context.Context) string {
 }
 
 // recordGuardrailBlock records a trace for a request rejected by an input
-// guardrail (no upstream call was made).
+// guardrail (no upstream call was made). It also propagates the
+// per-conversation marker (if any) so the blocked row participates in
+// the same session roll-up as the follow-up call an agent would have
+// made. The marker is carried on the request context (the same way
+// org/user/vkey propagate through the request lifecycle).
 func (h *Handler) recordGuardrailBlock(r *http.Request, req ChatCompletionRequest, f guardrails.Finding) {
 	trace := h.newTrace(r, req, "")
 	trace.StatusCode = http.StatusForbidden

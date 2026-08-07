@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -25,14 +27,29 @@ import (
 //
 // Reference: https://platform.openai.com/docs/api-reference/responses/create
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "cannot read body: "+err.Error())
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(rawBody))
 	var req ResponsesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(rawBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 		return
 	}
 	if req.Model == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
+	}
+
+	// Surface the wire's per-conversation marker on every trace this
+	// request produces so the overview can fold N Responses turns
+	// from the same agent loop into one session row.
+	sessionID := extractSessionID(rawBody)
+	if sessionID != "" {
+		ctx := context.WithValue(r.Context(), ctxKeySessionID, sessionID)
+		r = r.WithContext(ctx)
 	}
 
 	chatReq, err := responsesToChat(req)

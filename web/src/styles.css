@@ -1257,6 +1257,76 @@ a:hover {
   border: 1px solid color-mix(in oklab, var(--err) 40%, transparent);
 }
 
+/* -- Session roll-up ------------------------------------------------- */
+.session-stack {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.session-row {
+  cursor: pointer;
+  /* Tie the row to the same horizontal layout as a regular trace row
+     so expanding a row does not cause visual jitter. */
+  grid-template-columns:
+    minmax(140px, 1.4fr)
+    minmax(110px, 1fr)
+    minmax(160px, 1.2fr)
+    minmax(70px, 0.7fr)
+    minmax(80px, 0.7fr)
+    minmax(110px, 0.9fr)
+    minmax(110px, 0.9fr);
+}
+
+.session-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.session-row.is-open {
+  /* Slight inset so the operator sees the row is "lifted" into an
+     active drill-down state. */
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.session-row:focus-visible {
+  outline: 2px solid var(--accent, #ec4899);
+  outline-offset: -2px;
+}
+
+.session-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: color-mix(in oklab, var(--accent, #22d3ee) 18%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent, #22d3ee) 40%, transparent);
+  color: var(--muted, #cbd5e1);
+}
+
+.session-drill {
+  padding: 8px 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 2px solid
+    color-mix(in oklab, var(--accent, #ec4899) 30%, transparent);
+}
+
+.trace-row.sub-row {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 1.4fr)
+    minmax(160px, 1.2fr)
+    minmax(80px, 0.7fr)
+    minmax(110px, 0.9fr)
+    minmax(110px, 0.9fr);
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--muted, #cbd5e1);
+}
+
 /* -- Generic page header -------------------------------------------- */
 .page-head {
   display: flex;
