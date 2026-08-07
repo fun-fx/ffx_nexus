@@ -18,10 +18,10 @@ func (r *CHRecorder) NewReader() *Reader { return &Reader{conn: r.conn} }
 
 // TraceSummary is a compact row for the trace list view.
 type TraceSummary struct {
-	TraceID          string    `json:"trace_id"`
-	Timestamp        time.Time `json:"timestamp"`
-	ProviderName     string    `json:"provider_name"`
-	RequestModel     string    `json:"request_model"`
+	TraceID      string    `json:"trace_id"`
+	Timestamp    time.Time `json:"timestamp"`
+	ProviderName string    `json:"provider_name"`
+	RequestModel string    `json:"request_model"`
 	// ResponseModel is the model that actually served the response —
 	// may differ from RequestModel when routing aliases / fallbacks
 	// dispatched to a different vendor (e.g. claude-opus-latest
@@ -29,33 +29,33 @@ type TraceSummary struct {
 	// routed it). Surfaced on the Recent-sessions panel so multi-
 	// vendor fan-out stays visible even when every shared row's
 	// provider_name is "grid".
-	ResponseModel    string    `json:"response_model,omitempty"`
-	InputTokens      uint32    `json:"input_tokens"`
-	OutputTokens     uint32    `json:"output_tokens"`
+	ResponseModel string `json:"response_model,omitempty"`
+	InputTokens   uint32 `json:"input_tokens"`
+	OutputTokens  uint32 `json:"output_tokens"`
 	// TotalTokens is input_tokens + output_tokens at read time. We
 	// compute it in the SELECT rather than storing it in the table —
 	// the source columns are append-only the row ingests, and we'd
 	// rather avoid rewriting client totals every time the cost
 	// composer changes.
-	TotalTokens      int64     `json:"total_tokens"`
-	LatencyMs        int64     `json:"latency_ms"`
-	TTFTMs           int64     `json:"ttft_ms"`
-	CostUSD          float64   `json:"cost_usd"`
-	StatusCode       uint16    `json:"status_code"`
-	Streamed         uint8     `json:"streamed"`
-	FinishReason     string    `json:"finish_reason"`
-	CacheHit         uint8     `json:"cache_hit"`
-	GuardrailAction  string    `json:"guardrail_action"`
+	TotalTokens     int64   `json:"total_tokens"`
+	LatencyMs       int64   `json:"latency_ms"`
+	TTFTMs          int64   `json:"ttft_ms"`
+	CostUSD         float64 `json:"cost_usd"`
+	StatusCode      uint16  `json:"status_code"`
+	Streamed        uint8   `json:"streamed"`
+	FinishReason    string  `json:"finish_reason"`
+	CacheHit        uint8   `json:"cache_hit"`
+	GuardrailAction string  `json:"guardrail_action"`
 	// SessionID is the per-conversation marker the gateway extracted
 	// from metadata.session_id / sessionId / conversation_id on the
 	// request, or "user:<id>" when only the OpenAI user field was
 	// present. Empty when none of those were on the wire — the
 	// frontend's sessionize fallback merges by time window in that
 	// case. Added in 007_session_id.sql.
-	SessionID        string    `json:"session_id,omitempty"`
-	UserID           string    `json:"user_id"`
-	UserEmail        string    `json:"user_email,omitempty"`
-	CredentialSource string    `json:"credential_source"`
+	SessionID        string `json:"session_id,omitempty"`
+	UserID           string `json:"user_id"`
+	UserEmail        string `json:"user_email,omitempty"`
+	CredentialSource string `json:"credential_source"`
 }
 
 // RecentTraces returns the most recent traces, newest first. When userID is

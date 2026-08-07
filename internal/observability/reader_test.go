@@ -109,7 +109,7 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 			}
 		})
 	}
-}// TestBuildTracePageQuery_SelectsTotalAndResponseAndSessionFields is
+} // TestBuildTracePageQuery_SelectsTotalAndResponseAndSessionFields is
 // the structural test that pins the SELECT list so a future refactor
 // can't silently drop the columns the Recent-sessions panel reads
 // (response_model, total_tokens, session_id). The gateway schema
