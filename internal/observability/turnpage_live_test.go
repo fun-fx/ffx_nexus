@@ -23,11 +23,11 @@ import (
 //
 // Skips when no ClickHouse is reachable, so `go test ./...` still works on
 // a laptop with nothing running. CI's Integration workflow supplies one.
-func chTestDSN() string {
+func chTestDSN() (dsn string, explicit bool) {
 	if d := os.Getenv("NEXUS_CLICKHOUSE_URL"); d != "" {
-		return d
+		return d, true
 	}
-	return "clickhouse://nexus:nexus@localhost:9000/nexus"
+	return "clickhouse://nexus:nexus@localhost:9000/nexus", false
 }
 
 // newLiveReader connects, applies the gateway_traces migrations, and returns
@@ -37,10 +37,18 @@ func newLiveReader(t *testing.T) (*Reader, *CHRecorder) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	dsn, explicit := chTestDSN()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	rec, err := NewCHRecorder(ctx, chTestDSN(), CHOptions{}, log)
+	rec, err := NewCHRecorder(ctx, dsn, CHOptions{}, log)
 	if err != nil {
-		t.Skipf("clickhouse not reachable at %s: %v", chTestDSN(), err)
+		// Skipping is right on a laptop with nothing running, but in CI the
+		// DSN is set on purpose and a silent skip would turn this whole
+		// safety net into a green no-op — exactly the failure mode that let
+		// the aliasing bug reach prod. Fail loudly when asked explicitly.
+		if explicit {
+			t.Fatalf("NEXUS_CLICKHOUSE_URL is set but clickhouse is unreachable at %s: %v", dsn, err)
+		}
+		t.Skipf("clickhouse not reachable at %s (set NEXUS_CLICKHOUSE_URL to require it): %v", dsn, err)
 	}
 	t.Cleanup(func() {
 		cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)

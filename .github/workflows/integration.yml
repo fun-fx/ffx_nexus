@@ -130,7 +130,10 @@ jobs:
         # ILLEGAL_AGGREGATION while the shape tests stayed green. These
         # execute the real query, so that class of bug fails here instead
         # of in prod.
-        run: go test -race -count=1 -run 'TestTurnPage_Live|TestTracePage_Live' ./internal/observability/...
+        # -v so the run log shows these actually executed rather than
+        # skipped; the helper also hard-fails when NEXUS_CLICKHOUSE_URL is
+        # set but unreachable, so a broken service container cannot pass.
+        run: go test -race -count=1 -v -run 'TestTurnPage_Live|TestTracePage_Live' ./internal/observability/...
 
       - name: Run core bench CRUD + wire contract (live PG)
         # Same DSN as the bench_provider tests; the core side already
