@@ -38,6 +38,20 @@ export interface TraceSummary {
   // time window + (vkey, model) tuple. See web/src/pages/Overview.tsx
   // for the roll-up logic.
   session_id?: string;
+  // total_tokens is the prompt + completion total the gateway
+  // recorded (matches gen_ai.usage.total_tokens). Surfaced on the
+  // Recent sessions row so the operator can size a conversation
+  // without expanding it; the per-turn drill-down splits it into
+  // input / output columns.
+  total_tokens?: number;
+  // response_model is the model that actually served the response,
+  // which may differ from request_model when routing aliases or
+  // fallbacks are in play (e.g. claude-opus-latest dispatched
+  // through The Grid surfaces as `anthropic/claude-opus-5` here).
+  // Surfaced on the Recent sessions row alongside request_model so
+  // multi-vendor fan-outs are visible even when the credential's
+  // provider_name only tells us which Nexus vkey answered.
+  response_model?: string;
 }
 
 // TraceCursor is the server-issued "what to fetch next" handle. Empty

@@ -39,6 +39,11 @@ export interface SessionRow {
   from_wire: boolean;
   trace_count: number;
   total_cost_usd: number;
+  // total_tokens is the sum of input+output across the merged traces.
+  // Surfaced on the overview as a single "Tokens" column so the
+  // operator can size a conversation at a glance without expanding
+  // it; the drill-down view breaks it out per-turn.
+  total_tokens: number;
   total_input_tokens: number;
   total_output_tokens: number;
   // average of latency_ms across the merged traces (single-call rows
@@ -48,6 +53,13 @@ export interface SessionRow {
   last_at: string;
   request_model: string;
   provider_name: string;
+  // response_model is the model that actually served the response
+  // (may differ from request_model when routing aliases or fallbacks
+  // are in play — e.g. claude-opus-latest dispatched through The Grid
+  // surfaces as `anthropic/claude-opus-5` here). Surfaced alongside
+  // request_model on the row so multi-vendor visibility isn't lost
+  // when the credential's provider_name is "grid".
+  response_model?: string;
   user_email?: string;
   // trace_ids, in chronological-asc order (earliest turn first), so
   // the drill-down reads like a transcript. The sessionizer sorts
@@ -66,6 +78,7 @@ interface SessionRowInternal {
   from_wire: boolean;
   trace_count: number;
   total_cost_usd: number;
+  total_tokens: number;
   total_input_tokens: number;
   total_output_tokens: number;
   avg_latency_ms: number;
@@ -73,6 +86,10 @@ interface SessionRowInternal {
   last_at: string;
   request_model: string;
   provider_name: string;
+  // response_model carries the model that actually served the
+  // response. Updated on merge so the row reflects the LAST-served
+  // vendor (multi-vendor fan-out is rare but worth keeping).
+  response_model: string;
   user_email?: string;
   ids_with_ts: TimedId[];
   first_error: { status: number; trace_id: string } | null;
@@ -84,6 +101,7 @@ function makeRow(t: TraceSummary, wireID: string): SessionRowInternal {
     from_wire: wireID !== "",
     trace_count: 1,
     total_cost_usd: Number(t.cost_usd ?? 0),
+    total_tokens: Number(t.total_tokens ?? ((t.input_tokens ?? 0) + (t.output_tokens ?? 0))),
     total_input_tokens: Number(t.input_tokens ?? 0),
     total_output_tokens: Number(t.output_tokens ?? 0),
     avg_latency_ms: Number(t.latency_ms ?? 0),
@@ -91,6 +109,7 @@ function makeRow(t: TraceSummary, wireID: string): SessionRowInternal {
     last_at: t.timestamp,
     request_model: t.request_model,
     provider_name: t.provider_name,
+    response_model: t.response_model ?? "",
     user_email: t.user_email,
     ids_with_ts: [{ id: t.trace_id, ts: t.timestamp }],
     first_error: errorOf(t),
@@ -102,6 +121,7 @@ function mergeTraceInto(row: SessionRowInternal, t: TraceSummary) {
   row.total_cost_usd += Number(t.cost_usd ?? 0);
   row.total_input_tokens += Number(t.input_tokens ?? 0);
   row.total_output_tokens += Number(t.output_tokens ?? 0);
+  row.total_tokens = row.total_input_tokens + row.total_output_tokens;
   // Running average — keep n in trace_count and recompute lazily.
   row.avg_latency_ms =
     (row.avg_latency_ms * (row.trace_count - 1) + Number(t.latency_ms ?? 0)) /
@@ -112,6 +132,11 @@ function mergeTraceInto(row: SessionRowInternal, t: TraceSummary) {
     const e = errorOf(t);
     if (e) row.first_error = e;
   }
+  // Prefer the latest response_model so the row reflects which
+  // upstream vendor served the most recent turn — useful when a
+  // session hops from "claude-opus-5" to "gpt-5" mid-conversation
+  // because routing pivoted.
+  if (t.response_model) row.response_model = t.response_model;
   row.ids_with_ts.push({ id: t.trace_id, ts: t.timestamp });
 }
 
@@ -132,6 +157,7 @@ function finalise(row: SessionRowInternal): SessionRow {
     from_wire: row.from_wire,
     trace_count: row.trace_count,
     total_cost_usd: row.total_cost_usd,
+    total_tokens: row.total_tokens,
     total_input_tokens: row.total_input_tokens,
     total_output_tokens: row.total_output_tokens,
     avg_latency_ms: row.avg_latency_ms,
@@ -139,6 +165,7 @@ function finalise(row: SessionRowInternal): SessionRow {
     last_at: row.last_at,
     request_model: row.request_model,
     provider_name: row.provider_name,
+    response_model: row.response_model || undefined,
     user_email: row.user_email,
     trace_ids: row.ids_with_ts
       .sort((a, b) => a.ts.localeCompare(b.ts))

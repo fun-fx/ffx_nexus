@@ -22,8 +22,22 @@ type TraceSummary struct {
 	Timestamp        time.Time `json:"timestamp"`
 	ProviderName     string    `json:"provider_name"`
 	RequestModel     string    `json:"request_model"`
+	// ResponseModel is the model that actually served the response —
+	// may differ from RequestModel when routing aliases / fallbacks
+	// dispatched to a different vendor (e.g. claude-opus-latest
+	// requested, anthropic/claude-opus-5 answered because The Grid
+	// routed it). Surfaced on the Recent-sessions panel so multi-
+	// vendor fan-out stays visible even when every shared row's
+	// provider_name is "grid".
+	ResponseModel    string    `json:"response_model,omitempty"`
 	InputTokens      uint32    `json:"input_tokens"`
 	OutputTokens     uint32    `json:"output_tokens"`
+	// TotalTokens is input_tokens + output_tokens at read time. We
+	// compute it in the SELECT rather than storing it in the table —
+	// the source columns are append-only the row ingests, and we'd
+	// rather avoid rewriting client totals every time the cost
+	// composer changes.
+	TotalTokens      int64     `json:"total_tokens"`
 	LatencyMs        int64     `json:"latency_ms"`
 	TTFTMs           int64     `json:"ttft_ms"`
 	CostUSD          float64   `json:"cost_usd"`
@@ -32,6 +46,13 @@ type TraceSummary struct {
 	FinishReason     string    `json:"finish_reason"`
 	CacheHit         uint8     `json:"cache_hit"`
 	GuardrailAction  string    `json:"guardrail_action"`
+	// SessionID is the per-conversation marker the gateway extracted
+	// from metadata.session_id / sessionId / conversation_id on the
+	// request, or "user:<id>" when only the OpenAI user field was
+	// present. Empty when none of those were on the wire — the
+	// frontend's sessionize fallback merges by time window in that
+	// case. Added in 007_session_id.sql.
+	SessionID        string    `json:"session_id,omitempty"`
 	UserID           string    `json:"user_id"`
 	UserEmail        string    `json:"user_email,omitempty"`
 	CredentialSource string    `json:"credential_source"`
@@ -48,9 +69,11 @@ func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]
 	}
 	query := `
 		SELECT trace_id, timestamp, provider_name, request_model,
-		       input_tokens, output_tokens, latency_ms, ttft_ms, cost_usd,
+		       response_model, input_tokens, output_tokens,
+		       toInt64(input_tokens + output_tokens) AS total_tokens,
+		       latency_ms, ttft_ms, cost_usd,
 		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
-		       user_id, credential_source
+		       session_id, user_id, credential_source
 		FROM gateway_traces`
 	args := []any{}
 	if userID != "" {
@@ -70,9 +93,10 @@ func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]
 		var s TraceSummary
 		if err := rows.Scan(
 			&s.TraceID, &s.Timestamp, &s.ProviderName, &s.RequestModel,
-			&s.InputTokens, &s.OutputTokens, &s.LatencyMs, &s.TTFTMs, &s.CostUSD,
+			&s.ResponseModel, &s.InputTokens, &s.OutputTokens, &s.TotalTokens,
+			&s.LatencyMs, &s.TTFTMs, &s.CostUSD,
 			&s.StatusCode, &s.Streamed, &s.FinishReason, &s.CacheHit, &s.GuardrailAction,
-			&s.UserID, &s.CredentialSource,
+			&s.SessionID, &s.UserID, &s.CredentialSource,
 		); err != nil {
 			return nil, err
 		}
@@ -154,9 +178,10 @@ func (r *Reader) TracePage(ctx context.Context, before, since time.Time, limit i
 		var s TraceSummary
 		if err := rows.Scan(
 			&s.TraceID, &s.Timestamp, &s.ProviderName, &s.RequestModel,
-			&s.InputTokens, &s.OutputTokens, &s.LatencyMs, &s.TTFTMs, &s.CostUSD,
+			&s.ResponseModel, &s.InputTokens, &s.OutputTokens, &s.TotalTokens,
+			&s.LatencyMs, &s.TTFTMs, &s.CostUSD,
 			&s.StatusCode, &s.Streamed, &s.FinishReason, &s.CacheHit, &s.GuardrailAction,
-			&s.UserID, &s.CredentialSource,
+			&s.SessionID, &s.UserID, &s.CredentialSource,
 		); err != nil {
 			return TracePage{}, err
 		}
@@ -208,9 +233,11 @@ func cursorSince(since time.Time) string {
 func buildTracePageQuery(userID string, before, since time.Time, limit int, filter TraceFilter) string {
 	q := `
 		SELECT trace_id, timestamp, provider_name, request_model,
-		       input_tokens, output_tokens, latency_ms, ttft_ms, cost_usd,
+		       response_model, input_tokens, output_tokens,
+		       toInt64(input_tokens + output_tokens) AS total_tokens,
+		       latency_ms, ttft_ms, cost_usd,
 		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
-		       user_id, credential_source
+		       session_id, user_id, credential_source
 		FROM gateway_traces`
 	conds := []string{}
 	if userID != "" {

@@ -16,7 +16,6 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 	now := time.Date(2026, 7, 27, 9, 30, 0, 0, time.UTC)
 	earlier := now.Add(-2 * time.Hour)
 	earliest := now.Add(-24 * time.Hour)
-
 	cases := []struct {
 		name        string
 		userID      string
@@ -109,6 +108,21 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 				}
 			}
 		})
+	}
+}// TestBuildTracePageQuery_SelectsTotalAndResponseAndSessionFields is
+// the structural test that pins the SELECT list so a future refactor
+// can't silently drop the columns the Recent-sessions panel reads
+// (response_model, total_tokens, session_id). The gateway schema
+// migration 007_session_id.sql may not have run on a freshly-bootstrapped
+// environment yet, so we treat missing-column errors as a server-side
+// problem rather than a UI bug — but if the helper stops asking for
+// them the read path never gets the chance to complain.
+func TestBuildTracePageQuery_SelectsTotalAndResponseAndSessionFields(t *testing.T) {
+	q := buildTracePageQuery("", time.Time{}, time.Time{}, 25, TraceFilter{})
+	for _, col := range []string{"response_model", "total_tokens", "session_id"} {
+		if !strings.Contains(q, col) {
+			t.Errorf("query missing required column %q: %s", col, q)
+		}
 	}
 }
 
