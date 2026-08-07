@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { GradientText } from "../components/GradientText";
 import { TierCard } from "../components/TierCard";
@@ -18,10 +18,6 @@ import {
   type TraceSummary,
   type User,
 } from "../api";
-import {
-  sessionizeTraces,
-  type SessionRow,
-} from "../lib/sessionize";
 
 async function fetchOverview() {
   const [me, stats, traces, routing, evalCfg, provider] = await Promise.allSettled([
@@ -73,9 +69,6 @@ export function Overview() {
 
   const routing: RoutingModel[] = data?.routing ?? [];
   const traces: TraceSummary[] = data?.traces ?? [];
-  // Sessionize the freshly fetched trace list once per render so the
-  // roll-up order / counts stay stable while the operator drills in.
-  const sessions = useMemo(() => sessionizeTraces(traces), [traces]);
   const evalCfg: EvalConfigSnapshot | null = data?.eval ?? null;
   const user: User | null = data?.me ?? null;
   const providerStats: ProviderStat[] = data?.provider ?? [];
@@ -241,107 +234,42 @@ export function Overview() {
 
       <SpendByProvider providerStats={providerStats} />
 
-      <SessionsTable sessions={sessions} isLoading={isLoading} />
+      <RecentTracesList traces={traces} isLoading={isLoading} />
     </div>
   );
 }
 
-// SessionsTable replaces the flat "Recent traces" roll on the overview
-// with one row per session / agent loop turn. Clicking a row flips it
-// open and renders the underlying TraceSummary list — same data the
-// /api/traces endpoint already returns — so a click is a drill-down,
-// not a new server-side join. A session with `trace_count > 1` and a
-// wire-side `session_id` is a Cursor agent loop; we surface that
-// explicitly so the operator understands the row, and so they can
-// reach into a single turn via the trace list when they want to.
-function SessionsTable({
-  sessions,
+// RecentTracesList renders one row per trace from /api/traces, in the
+// order the server returns them (newest first by timestamp). It is a
+// flat 1:1 view on purpose: operators want to see every model call
+// individually, including requests that arrive within seconds of each
+// other, without the heuristic time-window merge that would otherwise
+// collapse an agent loop into a single line. Multi-turn sessions —
+// wire-side session_id rollups — are still surfaced by the /traces
+// page if the operator clicks through.
+function RecentTracesList({
+  traces,
   isLoading,
 }: {
-  sessions: SessionRow[];
+  traces: TraceSummary[];
   isLoading: boolean;
 }) {
-  const [openKey, setOpenKey] = useState<string | null>(null);
-  const [children, setChildren] = useState<Record<string, TraceSummary[]>>({});
-
-  // Reset the drill-down cache when the rolled-up list changes so old
-  // expanded rows don't survive a refetch on the same dashboard tab.
-  useEffect(() => {
-    setOpenKey(null);
-    setChildren({});
-  }, [sessions]);
-
-  if (sessions.length === 0) {
-    return (
-      <section className="panel">
-        <header className="panel-head">
-          <h2>Recent sessions</h2>
-          <a className="panel-link" href="/traces">
-            See all <Icon.arrowRight size={14} />
-          </a>
-        </header>
-        <div className="trace-table" role="table">
-          <div className="trace-row empty" role="row">
-            {isLoading ? "Loading…" : "No traces yet."}
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  function toggle(key: string) {
-    if (openKey === key) {
-      setOpenKey(null);
-      return;
-    }
-    setOpenKey(key);
-    const row = sessions.find((s) => s.session_key === key);
-    if (!row || row.trace_count <= 1) {
-      // Single-turn "session" — meaning one trace, no roll-up. We
-      // already render the roll-up row, so the drill-down would be
-      // redundant; we just keep the row open with an explanatory
-      // tooltip in place of the sub-list.
-      return;
-    }
-    if (children[key]) return;
-    // Pull the full flat list and filter by trace id. We re-use the
-    // existing /api/traces no-filter page so we do not need a new
-    // server endpoint; the in-memory filter is cheap at this scale.
-    void loadChildren(key, row.trace_ids);
-  }
-
-  async function loadChildren(key: string, traceIds: string[]) {
-    try {
-      const page = await fetchTraces({});
-      const wanted = new Set(traceIds);
-      const filtered = page.items.filter((t) => wanted.has(t.trace_id));
-      // Sort chronological-asc inside the session — newest trace at
-      // the bottom — to match how the operator saw the conversation
-      // unfold.
-      filtered.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-      setChildren((prev) => ({ ...prev, [key]: filtered }));
-    } catch {
-      setChildren((prev) => ({ ...prev, [key]: [] }));
-    }
-  }
-
   return (
-    <section className="panel" aria-label="Recent sessions">
+    <section className="panel" aria-label="Recent traces">
       <header className="panel-head">
-        <h2>Recent sessions</h2>
+        <h2>Recent traces</h2>
         <a className="panel-link" href="/traces">
           See all <Icon.arrowRight size={14} />
         </a>
       </header>
       <div className="trace-table" role="table">
         <div className="trace-row head" role="row">
-          <span role="columnheader">Last seen</span>
+          <span role="columnheader">Time</span>
           <span role="columnheader">Provider</span>
           <span role="columnheader">Model</span>
-          <span role="columnheader">Turns</span>
           <span role="columnheader">Status</span>
           <span role="columnheader" className="right">
-            Avg latency
+            Latency
           </span>
           <span role="columnheader" className="right">
             Tokens
@@ -350,127 +278,64 @@ function SessionsTable({
             Cost
           </span>
         </div>
-        {sessions.slice(0, 10).map((s) => {
-          const open = openKey === s.session_key;
-          const traceCount =
-            (children[s.session_key] ?? []).length || s.trace_count;
-          return (
-            <div className="session-stack" key={s.session_key}>
-              <div
-                className={"trace-row session-row" + (open ? " is-open" : "")}
-                role="row"
-                onClick={() => toggle(s.session_key)}
-                tabIndex={0}
-                aria-expanded={open}
+        {traces.length === 0 ? (
+          <div className="trace-row empty" role="row">
+            {isLoading ? "Loading…" : "No traces yet."}
+          </div>
+        ) : (
+          traces.slice(0, 10).map((t) => (
+            <div className="trace-row" key={t.trace_id}>
+              <span>{new Date(t.timestamp).toLocaleTimeString()}</span>
+              <span>
+                <span className="provider-tag">{t.provider_name}</span>
+              </span>
+              <span
+                className="mono ellipsis"
                 title={
-                  s.from_wire
-                    ? `Session id: ${s.session_key}`
-                    : "Merged by time window — no session_id on the wire"
+                  t.response_model && t.response_model !== t.request_model
+                    ? `requested: ${t.request_model}\nserved: ${t.response_model}`
+                    : t.request_model
                 }
               >
-                <span>
-                  {new Date(s.last_at).toLocaleTimeString()}
-                  {!s.from_wire && (
-                    <span className="session-badge" aria-label="heuristic merge">
-                      heur
+                {t.request_model}
+                {t.response_model &&
+                  t.response_model !== t.request_model && (
+                    <span className="model-served-pill">
+                      → {t.response_model}
                     </span>
                   )}
-                </span>
-                <span>
-                  <span className="provider-tag">{s.provider_name}</span>
-                </span>
+              </span>
+              <span>
                 <span
-                  className="mono ellipsis"
-                  title={
-                    s.response_model && s.response_model !== s.request_model
-                      ? `requested: ${s.request_model}\nserved: ${s.response_model}`
-                      : s.request_model
+                  className={
+                    "status-pill " +
+                    (t.status_code >= 400 ? "is-err" : "is-ok")
                   }
                 >
-                  {s.request_model}
-                  {s.response_model && s.response_model !== s.request_model && (
-                    <span className="model-served-pill">
-                      → {s.response_model}
-                    </span>
-                  )}
+                  {t.status_code}
                 </span>
-                <span className="mono">{s.trace_count}</span>
-                <span>
-                  {s.first_error ? (
-                    <span className="status-pill is-err">
-                      {s.first_error.status}
-                    </span>
-                  ) : (
-                    <span className="status-pill is-ok">ok</span>
-                  )}
-                </span>
-                <span className="right">
-                  {Math.round(s.avg_latency_ms)} ms
-                </span>
-                <span
-                  className="right mono"
-                  title={`in ${formatThousands(s.total_input_tokens)} • out ${formatThousands(s.total_output_tokens)}`}
-                >
-                  {formatThousands(s.total_tokens)}
-                </span>
-                <span className="right mono">${s.total_cost_usd.toFixed(5)}</span>
-              </div>
-              {open && (
-                <div className="session-drill">
-                  {traceCount > 1 ? (
-                    !children[s.session_key] ? (
-                      <div className="trace-row empty">Loading turns…</div>
-                    ) : (children[s.session_key] ?? []).length === 0 ? (
-                      <div className="trace-row empty">No turns found.</div>
-                    ) : (
-                      children[s.session_key]!.map((t) => (
-                        <div className="trace-row sub-row" key={t.trace_id}>
-                          <span>
-                            {new Date(t.timestamp).toLocaleTimeString()}
-                          </span>
-                          <span className="mono ellipsis">{t.request_model}</span>
-                          <span>
-                            <span
-                              className={
-                                "status-pill " +
-                                (t.status_code >= 400 ? "is-err" : "is-ok")
-                              }
-                            >
-                              {t.status_code}
-                            </span>
-                          </span>
-                          <span className="right">
-                            {t.latency_ms} ms
-                          </span>
-                          <span
-                            className="right mono"
-                            title={`in ${formatThousands(t.input_tokens ?? 0)} • out ${formatThousands(t.output_tokens ?? 0)}`}
-                          >
-                            {formatThousands(
-                              t.total_tokens ??
-                                ((t.input_tokens ?? 0) + (t.output_tokens ?? 0))
-                            )}
-                          </span>
-                          <span className="right mono">
-                            ${Number(t.cost_usd ?? 0).toFixed(5)}
-                          </span>
-                        </div>
-                      ))
-                    )
-                  ) : (
-                    <div className="trace-row empty">
-                      Single-turn session — same as the row above.
-                    </div>
-                  )}
-                </div>
-              )}
+              </span>
+              <span className="right">{t.latency_ms} ms</span>
+              <span
+                className="right mono"
+                title={`in ${formatThousands(t.input_tokens ?? 0)} • out ${formatThousands(t.output_tokens ?? 0)}`}
+              >
+                {formatThousands(
+                  t.total_tokens ??
+                    ((t.input_tokens ?? 0) + (t.output_tokens ?? 0)),
+                )}
+              </span>
+              <span className="right mono">
+                ${Number(t.cost_usd ?? 0).toFixed(5)}
+              </span>
             </div>
-          );
-        })}
+          ))
+        )}
       </div>
     </section>
   );
 }
+
 
 function formatUsd(n: number): string {
   if (!Number.isFinite(n) || n === 0) return "$0.0000";
