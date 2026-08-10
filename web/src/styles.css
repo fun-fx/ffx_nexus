@@ -3491,3 +3491,71 @@ a:hover {
   font-weight: 600;
   color: var(--text);
 }
+
+/* Provider credentials pre-flight UI.
+   - .secret-row lays out the password input + the Test button on a
+     single horizontal line.
+   - .detection-hint is the gentle nudge when a pasted key's shape
+     contradicts the operator's dropdown.
+   - .probe-result is the round-trip status pill + message block
+     that follows the probe.
+   - .drawer-footer mirrors the Drawer's footer styling so the new
+     form can render its own Save bar inside the body when needed.
+   - .link-button is a button-styled-as-link for the detection hint.
+*/
+.secret-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.secret-row input[type="password"] {
+  flex: 1 1 auto;
+}
+.detection-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+.link-button:hover {
+  color: color-mix(in oklab, var(--accent) 70%, var(--text));
+}
+.probe-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.probe-result--ok {
+  background: color-mix(in oklab, var(--ok, #36c46c) 16%, transparent);
+  color: var(--text);
+}
+.probe-result--err {
+  background: color-mix(in oklab, var(--err, #ff6b6b) 14%, transparent);
+  color: var(--text);
+}
+.drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, color-mix(in oklab, var(--text) 12%, transparent));
+  margin-top: 12px;
+}

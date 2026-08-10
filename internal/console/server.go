@@ -255,6 +255,7 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/me/keys", s.requireUser(s.createMyKey))
 		r.Delete("/me/keys/{id}", s.requireUser(s.revokeMyKey))
 		r.Get("/me/credentials", s.requireUser(s.listMyCredentials))
+		r.Post("/me/credentials/preflight", s.requireUser(s.preflightCredential))
 		r.Post("/me/credentials", s.requireUser(s.createMyCredential))
 		r.Post("/me/credentials/{id}/rotate", s.requireUser(s.rotateMyCredential))
 		r.Delete("/me/credentials/{id}", s.requireUser(s.deleteMyCredential))
