@@ -973,6 +973,39 @@ export async function deleteMyCredential(id: string): Promise<void> {
   await jsonOrThrow(await fetch(`/api/me/credentials/${id}`, { method: "DELETE" }));
 }
 
+// Provider-aware pre-flight before commit.
+//
+// The Provider credentials screen calls this *before* the drawer is
+// allowed to mutate state. The server's handler invokes a single
+// free, read-only auth round-trip to the upstream; we surface the
+// result in the UI so a stale or typo'd key never lands in the
+// encrypted store. `provider_label` is the human-friendly name the
+// drawer renders in its connection-status pill; `detected_provider`
+// is non-empty only when the pasted secret's shape suggests a
+// different provider than the dropdown the operator picked.
+export interface PreflightResult {
+  ok: boolean;
+  provider: string;
+  provider_label: string;
+  status?: number;
+  latency_ms?: number;
+  message?: string;
+  detected_provider?: string;
+}
+
+export async function preflightCredential(input: {
+  provider: string;
+  secret: string;
+  base_url?: string;
+}): Promise<PreflightResult> {
+  const res = await fetch(`/api/me/credentials/preflight`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return jsonOrError<PreflightResult>(res);
+}
+
 export async function fetchMyKeys(): Promise<VirtualKey[]> {
   const res = await fetch(`/api/me/keys`);
   const data = await res.json();
