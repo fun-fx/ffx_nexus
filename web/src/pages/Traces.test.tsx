@@ -17,12 +17,13 @@ const adminMe = {
   org_id: "o1",
 };
 
-function traceRow(trace_id: string, status: number, provider: string, minutesAgo: number) {
+function traceRow(trace_id: string, status: number, provider: string, minutesAgo: number, opts: { turn_id?: string; model?: string } = {}) {
   return {
     trace_id,
+    turn_id: opts.turn_id ?? "",
     timestamp: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
     provider_name: provider,
-    request_model: "gpt-4o",
+    request_model: opts.model ?? "gpt-4o",
     input_tokens: 100,
     output_tokens: 200,
     latency_ms: 1234,
@@ -271,5 +272,103 @@ describe("<Traces /> live filter round-trips", () => {
       expect(c.url).not.toMatch(/status=warning/);
       expect(c.url).not.toMatch(/status=invalid/);
     }
+  });
+});
+
+// -------------------------------------------------------------------
+// 4. Turn-grouped rendering rolls up sibling calls behind one row.
+// -------------------------------------------------------------------
+describe("<Traces /> turn-grouped row", () => {
+  beforeEach(() => {
+    stubFetch((url) => {
+      if (url.endsWith("/api/me")) {
+        return new Response(JSON.stringify(adminMe), { status: 200 });
+      }
+      if (url.includes("/api/traces")) {
+        return new Response(
+          JSON.stringify({
+            // Two calls share a turn_id so the page groups them. The
+            // third call has no turn_id and stays a singleton row.
+            items: [
+              traceRow("c1", 200, "openai", 4, { turn_id: "turn-A" }),
+              traceRow("c2", 200, "openai", 5, { turn_id: "turn-A" }),
+              traceRow("s1", 500, "openai", 7),
+            ],
+            next_cursor: { before: "", since: "" },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+  });
+
+  it("rolls up the two turn-A calls into a single expandable row", async () => {
+    renderTraces();
+    await waitFor(() => {
+      expect(screen.getByTestId("traces-turn-row-turn-A")).toBeTruthy();
+    });
+    // The singleton row keyed on trace_id is independent.
+    expect(screen.getByTestId("traces-single-row-s1")).toBeTruthy();
+    // The "2" calls count is rendered inside the grouped row, not three
+    // separate rows.
+    const turnRow = screen.getByTestId("traces-turn-row-turn-A");
+    expect(turnRow.textContent).toMatch(/2/);
+    // Only ONE trace_id-stamped single row plus ONE turn_id-stamped row
+    // — proving the grouping dropped the duplicate trace_id into the
+    // parent row.
+    expect(screen.queryByTestId("traces-single-row-c1")).toBeNull();
+    expect(screen.queryByTestId("traces-single-row-c2")).toBeNull();
+  });
+
+  it("clicking a turn row expands inline calls via fetchTraces({ turn })", async () => {
+    renderTraces();
+    await waitFor(() => screen.getByTestId("traces-turn-row-turn-A"));
+    fireEvent.click(screen.getByTestId("traces-turn-row-turn-A"));
+    // The second fetch should target the same turn_id via the turn=
+    // query parameter — that is the contract overview uses to drill in.
+    await waitFor(() => {
+      const turnCalls = callLog.filter(
+        (c) => c.url.includes("/api/traces") && c.url.includes("turn=turn-A"),
+      );
+      expect(turnCalls.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("inline expansion re-applies the active filters", async () => {
+    renderTraces();
+    await waitFor(() => screen.getByTestId("traces-turn-row-turn-A"));
+    // Switch to err-only filter — the parent page refetches with
+    // status=err; the expansion must mirror it on its own request.
+    await waitFor(() => screen.getByText("4xx/5xx"));
+    fireEvent.click(screen.getByText("4xx/5xx"));
+    await waitFor(() => {
+      const errs = callLog.filter(
+        (c) => c.url.includes("/api/traces") && /[?&]status=err/.test(c.url),
+      );
+      expect(errs.length).toBeGreaterThanOrEqual(1);
+    });
+    fireEvent.click(screen.getByTestId("traces-turn-row-turn-A"));
+    await waitFor(() => {
+      const turnCalls = callLog.filter(
+        (c) => c.url.includes("/api/traces") && c.url.includes("turn=turn-A"),
+      );
+      const last = turnCalls[turnCalls.length - 1];
+      expect(last.url).toMatch(/[?&]status=err/);
+    });
+  });
+
+  it("filter change collapses any open expansion", async () => {
+    renderTraces();
+    await waitFor(() => screen.getByTestId("traces-turn-row-turn-A"));
+    fireEvent.click(screen.getByTestId("traces-turn-row-turn-A"));
+    // Engineer another status change so queryKey flips; the expansion
+    // should collapse because the visible slice has changed.
+    fireEvent.click(screen.getByText("2xx/3xx"));
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-testid="turn-calls-turn-A"]'),
+      ).toBeNull();
+    });
   });
 });

@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Chip } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
-import { Chip } from "../components/Chip";
-import { StatusPill } from "../components/StatusPill";
 import { Icon } from "../components/icons";
+import { StatusPill } from "../components/StatusPill";
 import { formatExact, formatTokens } from "../lib/format";
 import {
   fetchMe,
   fetchTraces,
-  type TraceSummary,
   type TraceQuery,
   type TraceCursor,
+  type TraceSummary,
   type User,
 } from "../api";
 
@@ -54,6 +54,125 @@ function buildFilterQuery(
   };
 }
 
+// TurnRow is the turn-grouped display unit. Either one TraceSummary that
+// stood alone (turn_id empty OR singleton within the visible page) OR a
+// sequence of calls sharing the same turn_id rolled up on the wire.
+// trace_count reflects the visible-page slice; the inline expansion can
+// still call fetchTraces({ turn }) to surface the calls the server
+// windowed out of the initial page.
+type TurnRow =
+  | { kind: "single"; key: string; calls: [TraceSummary] }
+  | { kind: "turn"; key: string; turnID: string; calls: TraceSummary[] };
+
+// flattenToTurnRows mirrors Overview's grouped reading of a TraceSummary
+// stream. Items keep insertion order so "Load older" appends in time
+// direction without re-sorting. A row is "turn" when at least two
+// adjacent calls share the same turn_id — singleton calls (turn_id
+// missing OR unique in the visible slice) fall back to single-row mode so
+// the cursor and Drawer behaviour stay 1:1 with the legacy table.
+function flattenToTurnRows(items: TraceSummary[]): TurnRow[] {
+  const out: TurnRow[] = [];
+  let i = 0;
+  while (i < items.length) {
+    const t = items[i];
+    const id = t.turn_id;
+    // Singleton: empty turn_id, or the next item differs.
+    if (!id || items[i + 1]?.turn_id !== id) {
+      out.push({ kind: "single", key: t.trace_id, calls: [t] });
+      i += 1;
+      continue;
+    }
+    // Group: collect every consecutive item with this turn_id.
+    let j = i + 1;
+    while (j < items.length && items[j].turn_id === id) j += 1;
+    const calls = items.slice(i, j);
+    out.push({ kind: "turn", key: id, turnID: id, calls });
+    i = j;
+  }
+  return out;
+}
+
+// groupStats takes the visible-page calls that share a turn_id and
+// returns the aggregates the parent row shows. Worst-status picks the
+// largest status_code so a single 5xx inside an otherwise-green turn
+// still surfaces. timestamp is the LAST call's timestamp so the row
+// sorts and reads the way it would on the overview panel.
+function groupStats(calls: TraceSummary[]) {
+  let worst = 0;
+  let cost = 0;
+  let latency = 0;
+  let input = 0;
+  let output = 0;
+  let cacheHit = false;
+  let guardrail: string | null = null;
+  let cred: string | null = null;
+  let lastAt = calls[0].timestamp;
+  for (const c of calls) {
+    if (c.status_code > worst) worst = c.status_code;
+    cost += c.cost_usd;
+    latency += c.latency_ms;
+    input += c.input_tokens ?? 0;
+    output += c.output_tokens ?? 0;
+    if (c.cache_hit) cacheHit = true;
+    if (c.guardrail_action && !guardrail) guardrail = c.guardrail_action;
+    if (c.credential_source && c.credential_source !== "env" && !cred) {
+      cred = c.credential_source;
+    }
+    if (c.timestamp > lastAt) lastAt = c.timestamp;
+  }
+  return {
+    timestamp: lastAt,
+    provider_name: calls[0].provider_name,
+    request_model: calls[0].request_model,
+    status_code: worst,
+    latency_ms: latency,
+    input_tokens: input,
+    output_tokens: output,
+    cost_usd: cost,
+    cache_hit: cacheHit,
+    guardrail_action: guardrail,
+    credential_source: cred,
+    user_id: calls[0].user_id,
+    user_email: calls[0].user_email,
+  };
+}
+
+// rolledUpTrace shapes a TraceSummary for a multi-call turn so DataTable
+// can sort and click through it like any other row. The shape mirrors
+// the singleton rows except for the synthetic `__rollup` and `__callCount`
+// markers that drive the inline expansion branch in onRowClick and the
+// added `Calls` column. The synthetic marker names are intentionally
+// dual-underscore-prefixed so a future TraceSummary schema field could
+// not collide accidentally.
+export function rolledUpTrace(calls: TraceSummary[]): TraceSummary & {
+  __rollup: true;
+  __turnID: string;
+  __callCount: number;
+} {
+  const s = groupStats(calls);
+  const latest = calls[0];
+  const merged = {
+    ...latest,
+    timestamp: s.timestamp,
+    status_code: s.status_code,
+    latency_ms: s.latency_ms,
+    input_tokens: s.input_tokens,
+    output_tokens: s.output_tokens,
+    cost_usd: s.cost_usd,
+    cache_hit: s.cache_hit ? 1 : 0,
+    guardrail_action: s.guardrail_action ?? "",
+    credential_source: s.credential_source ?? "",
+    __rollup: true as const,
+    __turnID: calls[0].turn_id,
+    __callCount: calls.length,
+  };
+  return merged as unknown as TraceSummary & {
+    __rollup: true;
+    __turnID: string;
+    __callCount: number;
+  };
+}
+
 export function Traces() {
   const qc = useQueryClient();
 
@@ -61,6 +180,10 @@ export function Traces() {
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<TraceSummary | null>(null);
+  // Turn row whose calls are currently expanded in inline mode. We
+  // model this separately from the singleton Drawer so a turn can be
+  // expanded while another trace sits in the Drawer.
+  const [expandedTurn, setExpandedTurn] = useState<string | null>(null);
 
   // Date-range window state. Both fields are kept in <input
   // type="datetime-local"> format (no timezone, browser-local). The
@@ -104,15 +227,20 @@ export function Traces() {
   // (deprecated in react-query v5) and treat a fresh queryKey (filter
   // change) as a signal to fully replace, not append — the previous
   // request's data is stale and would otherwise contaminate the new
-  // window's results.
+  // window's results. We also collapse expansion: a filter change
+  // changes the visible-page slice, so the previously-expanded turn is
+  // almost certainly no longer in the new view.
   useEffect(() => {
     if (!data) return;
     setItems(data.page.items);
     setNextCursor(data.page.next_cursor);
+    setExpandedTurn(null);
   }, [data, isSuccess]);
 
-  const user = data?.me ?? null;
-  const isAdmin = user?.role === "admin";
+  // The admin "User" column only renders when the caller is privileged;
+  // pulling `me` off the bundle keeps the data flight minimal while
+  // letting the column handler pick the role on every render.
+  const user: User | null = data?.me ?? null;
 
   // Unique providers visible in the *current* page only — handy as quick
   // chips but not authoritative. The server-side provider filter is
@@ -121,6 +249,35 @@ export function Traces() {
     () => Array.from(new Set(items.map((t) => t.provider_name))).sort(),
     [items],
   );
+
+  // turnRows is a parallel array of TraceSummary-shaped records that
+  // DataTable can sort and click without a custom renderer. Single
+  // calls pass through untouched. Turn buckets roll up to the latest call's
+  // rowKey (so a stable Drawer surface survives split/de-dup on
+  // refetch) with merged token sums, latest-at-first time, worst status,
+  // and total cost — sortValue hooks read those merged numbers so a
+  // column click never silently swaps a roll-up for a single value.
+  // `raw` keeps the underlying buckets around for the inline expansion.
+  const turnRows = useMemo(() => flattenToTurnRows(items), [items]);
+  const displayRows: TraceSummary[] = useMemo(
+    () => turnRows.map((row) => (row.kind === "single" ? row.calls[0] : rolledUpTrace(row.calls))),
+    [turnRows],
+  );
+
+  // Inline call list under an expanded turn row. Empty outside of an
+  // expansion so we don't fire the network on every filter change.
+  const callsFor = useCallback((turnID: string): TraceQuery => {
+    // Mirror the active filters into the inline expansion so the
+    // operator's status/provider/q/date intent carries down. Limit is
+    // generous so a multi-call agent run fits in one round-trip.
+    return {
+      ...filterQuery,
+      limit: 50,
+      turn: turnID,
+      since: dateInputToIso(sinceInput) || undefined,
+      before: dateInputToIso(beforeInput) || undefined,
+    };
+  }, [filterQuery, sinceInput, beforeInput]);
 
   // "Load older": request the next page using the cursor we received
   // last round, RE-applying the current status/provider/q so filter
@@ -151,13 +308,27 @@ export function Traces() {
     }
   }, [filterQuery, nextCursor]);
 
+  const hasMore = Boolean(nextCursor.before || nextCursor.since);
+
+  // Stats pinned on the page header use the SAME aggregates the rows
+  // show, so error rate / max latency stay consistent with turn-grouped
+  // display: error rate is over calls (not over rows), max is over the
+  // worst latency in the visible page.
+  const totalCalls = items.length;
+  const errorCalls = items.filter((t) => t.status_code >= 400).length;
+  const maxLatency = items.length === 0 ? 0 : Math.max(...items.map((t) => t.latency_ms));
+
+  // Column shape for the sortable DataTable. Calls comes first so
+  // multi-call rows are easy to spot; sortValue operates on the rolled-up
+  // numbers because single calls would otherwise bubble into the middle
+  // of a same-turn group.
   const columns: Column<TraceSummary>[] = [
     {
       id: "time",
       header: "Time",
-      width: "160px",
+      width: 160,
       cell: (t) => (
-        <span className="mono">
+        <span className="mono" title={new Date(t.timestamp).toLocaleString()}>
           {new Date(t.timestamp).toLocaleString()}
         </span>
       ),
@@ -167,7 +338,7 @@ export function Traces() {
     {
       id: "provider",
       header: "Provider",
-      width: "120px",
+      width: 110,
       cell: (t) => <span className="provider-tag">{t.provider_name}</span>,
       sortValue: (t) => t.provider_name,
     },
@@ -178,9 +349,37 @@ export function Traces() {
       sortValue: (t) => t.request_model,
     },
     {
+      id: "calls",
+      header: "Calls",
+      width: 70,
+      align: "right",
+      cell: (t) => {
+        const typed = t as TraceSummary & {
+          __rollup?: true;
+          __callCount?: number;
+        };
+        const isRollup = typed.__rollup === true;
+        return (
+          <span
+            className={isRollup ? "turn-calls mono" : "muted mono"}
+            title={isRollup ? "Multi-call turn — click to expand" : undefined}
+          >
+            {isRollup ? (typed.__callCount ?? 0) : "1"}
+          </span>
+        );
+      },
+      sortValue: (t) => {
+        const typed = t as TraceSummary & {
+          __rollup?: true;
+          __callCount?: number;
+        };
+        return typed.__rollup === true ? typed.__callCount ?? 0 : 1;
+      },
+    },
+    {
       id: "status",
       header: "Status",
-      width: "90px",
+      width: 90,
       cell: (t) => (
         <StatusPill
           label={t.status_code.toString()}
@@ -192,7 +391,7 @@ export function Traces() {
     {
       id: "latency",
       header: "Latency",
-      width: "90px",
+      width: 90,
       align: "right",
       cell: (t) => <span className="mono">{t.latency_ms} ms</span>,
       sortValue: (t) => t.latency_ms,
@@ -200,7 +399,7 @@ export function Traces() {
     {
       id: "tokens",
       header: "Tokens (in/out)",
-      width: "120px",
+      width: 130,
       align: "right",
       cell: (t) => (
         <span
@@ -215,7 +414,7 @@ export function Traces() {
     {
       id: "cost",
       header: "Cost",
-      width: "100px",
+      width: 110,
       align: "right",
       cell: (t) => <span className="mono">${t.cost_usd.toFixed(5)}</span>,
       sortValue: (t) => t.cost_usd,
@@ -223,12 +422,10 @@ export function Traces() {
     {
       id: "flags",
       header: "Flags",
-      width: "180px",
+      width: 180,
       cell: (t) => (
         <span className="flag-row">
-          {t.cache_hit ? (
-            <Chip tone="accent">cache</Chip>
-          ) : null}
+          {t.cache_hit ? <Chip tone="accent">cache</Chip> : null}
           {t.guardrail_action ? (
             <Chip tone="warn">{t.guardrail_action.split(":")[0]}</Chip>
           ) : null}
@@ -245,20 +442,19 @@ export function Traces() {
         </span>
       ),
     },
-    ...(isAdmin
+    ...(user?.role === "admin"
       ? [
           {
             id: "user",
             header: "User",
-            width: "180px",
+            width: 180,
             cell: (t: TraceSummary) => t.user_email || "-",
             sortValue: (t: TraceSummary) => t.user_email ?? "",
+            disableResize: true,
           } as Column<TraceSummary>,
         ]
       : []),
   ];
-
-  const hasMore = Boolean(nextCursor.before || nextCursor.since);
 
   return (
     <div className="traces-page">
@@ -271,34 +467,31 @@ export function Traces() {
           <p className="page-sub">
             Gateway traffic. Filter, sort, and click a row to inspect. Use the
             date range or <em>Load older</em> to walk back through time within
-            the active filter set.
+            the active filter set. Rows with multiple calls are agent turns —
+            click to drill into the underlying calls.
           </p>
         </div>
         <div className="page-stats">
           <div className="page-stat">
             <div className="page-stat-label">rows</div>
-            <div className="page-stat-value">{items.length}</div>
+            <div className="page-stat-value">{turnRows.length}</div>
+          </div>
+          <div className="page-stat">
+            <div className="page-stat-label">calls</div>
+            <div className="page-stat-value">{totalCalls}</div>
           </div>
           <div className="page-stat">
             <div className="page-stat-label">error rate</div>
             <div className="page-stat-value">
-              {items.length === 0
+              {totalCalls === 0
                 ? "—"
-                : `${(
-                    (items.filter((t) => t.status_code >= 400).length /
-                      items.length) *
-                    100
-                  ).toFixed(1)}%`}
+                : `${((errorCalls / totalCalls) * 100).toFixed(1)}%`}
             </div>
           </div>
           <div className="page-stat">
-            <div className="page-stat-label">avg p95 latency</div>
+            <div className="page-stat-label">max latency</div>
             <div className="page-stat-value">
-              {items.length === 0
-                ? "—"
-                : `${Math.round(
-                    Math.max(...items.map((t) => t.latency_ms)),
-                  )} ms`}
+              {maxLatency === 0 ? "—" : `${Math.round(maxLatency)} ms`}
             </div>
           </div>
         </div>
@@ -400,11 +593,39 @@ export function Traces() {
       </div>
 
       <div className="panel">
-        <DataTable
-          rows={items}
+        <DataTable<TraceSummary>
+          rows={displayRows}
           columns={columns}
-          rowKey={(t) => t.trace_id}
-          onRowClick={(t) => setSelected(t)}
+          rowKey={(t) =>
+            (t as TraceSummary & { __rollup?: boolean; __turnID?: string }).__rollup
+              ? "turn:" + ((t as TraceSummary & { __turnID?: string }).__turnID ?? t.trace_id)
+              : t.trace_id
+          }
+          rowTestId={(t) => {
+            const typed = t as TraceSummary & {
+              __rollup?: true;
+              __turnID?: string;
+            };
+            if (typed.__rollup && typed.__turnID) {
+              return "traces-turn-row-" + typed.__turnID;
+            }
+            return "traces-single-row-" + t.trace_id;
+          }}
+          onRowClick={(t) => {
+            const typed = t as TraceSummary & {
+              __rollup?: true;
+              __turnID?: string;
+            };
+            const turnID =
+              typed.__rollup && typeof typed.__turnID === "string"
+                ? typed.__turnID
+                : null;
+            if (turnID !== null) {
+              setExpandedTurn((prev) => (prev === turnID ? null : turnID));
+            } else {
+              setSelected(t);
+            }
+          }}
           emptyMessage={
             isLoading ? "Loading traces…" : "No traces match the filters."
           }
@@ -412,6 +633,17 @@ export function Traces() {
           storageKey="nexus:dt:traces"
         />
       </div>
+
+      {/* Inline expansion lives under the DataTable row when a turn is
+          open. We deliberately render it outside the table because the
+          drill-down is N child rows, not part of the sortable header
+          grid; DataTable owns the header/footer/paging chrome. */}
+      {expandedTurn && turnRows.find((r) => r.kind === "turn" && r.turnID === expandedTurn)?.kind === "turn" && (
+        <InlineExpansion
+          turnID={expandedTurn as string}
+          query={callsFor(expandedTurn as string)}
+        />
+      )}
 
       <div className="traces-pager">
         <button
@@ -466,6 +698,64 @@ export function Traces() {
   );
 }
 
+// TurnCallsInline is the Traces-page equivalent of Overview's TurnCalls:
+// mounted only while a turn row is expanded, so collapsing and
+// re-expanding refetches — desired on a live console where a turn is
+// still being recorded. Re-applies the active filter set so the inline
+// list honours the user's status/provider/q/date intent.
+function InlineExpansion({ turnID, query }: { turnID: string; query: TraceQuery }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["turn-calls", turnID, query],
+    queryFn: () => fetchTraces(query),
+  });
+  // Server orders newest-first for paging. Inside a turn we want the
+  // agent's own sequence, so read it back the other way.
+  const calls: TraceSummary[] = [...(data?.items ?? [])].reverse();
+
+  if (isLoading) {
+    return (
+      <div className="session-drill muted" data-testid={`turn-calls-${turnID}`}>
+        Loading calls…
+      </div>
+    );
+  }
+  if (calls.length === 0) {
+    return (
+      <div className="session-drill muted" data-testid={`turn-calls-${turnID}`}>
+        No calls found.
+      </div>
+    );
+  }
+  return (
+    <div className="session-drill" data-testid={`turn-calls-${turnID}`}>
+      {calls.map((c, i) => (
+        <div className="trace-row sub-row" key={c.trace_id} role="row">
+          <span className="muted">
+            #{i + 1} · {new Date(c.timestamp).toLocaleTimeString()}
+          </span>
+          <span className="mono ellipsis" title={c.request_model}>
+            {c.request_model}
+          </span>
+          <span>
+            <StatusPill
+              label={c.status_code.toString()}
+              tone={c.status_code >= 400 ? "err" : "ok"}
+            />
+          </span>
+          <span className="right mono">{c.latency_ms} ms</span>
+          <span
+            className="right mono"
+            title={`in ${formatExact(c.input_tokens ?? 0)} • out ${formatExact(c.output_tokens ?? 0)}`}
+          >
+            {formatTokens(c.input_tokens ?? 0)}/{formatTokens(c.output_tokens ?? 0)}
+          </span>
+          <span className="right mono">${Number(c.cost_usd ?? 0).toFixed(5)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // dateInputToIso converts an <input type="datetime-local"> string
 // ("YYYY-MM-DDTHH:mm") to a UTC RFC3339 with Z suffix. Empty input
 // returns "" so the query builder can omit it from the URL entirely.
@@ -503,6 +793,7 @@ function TraceDetail({ t }: { t: TraceSummary }) {
         <KV label="Cache hit" value={t.cache_hit ? "yes" : "no"} />
         <KV label="Credential source" value={t.credential_source || "env"} />
         <KV label="User" value={t.user_email || "-"} />
+        <KV label="Turn ID" value={t.turn_id ? <span className="mono">{t.turn_id}</span> : "—"} />
       </div>
       {t.guardrail_action && (
         <>

@@ -32,6 +32,13 @@ interface Props<T> {
   columns: Column<T>[];
   rowKey?: (row: T) => string;
   onRowClick?: (row: T) => void;
+  /**
+   * Optional testid hook so callers can target rows by stable id from
+   * tests. Format: `traces-turn-row-${row.turn_id}` for turns and
+   * `traces-single-row-${row.trace_id}` for singletons. Pass `undefined`
+   * in production to avoid leaking debug strings in the DOM.
+   */
+  rowTestId?: (row: T) => string | undefined;
   emptyMessage?: React.ReactNode;
   initialSort?: { id: string; dir: "asc" | "desc" };
   pageSize?: number;
@@ -106,6 +113,7 @@ export function DataTable<T>({
   columns,
   rowKey,
   onRowClick,
+  rowTestId,
   emptyMessage = "No rows.",
   initialSort,
   pageSize = 25,
@@ -220,6 +228,7 @@ export function DataTable<T>({
                 className={"dt-row" + (onRowClick ? " is-clickable" : "")}
                 role="row"
                 key={key}
+                data-testid={rowTestId ? rowTestId(row) : undefined}
                 style={
                   {
                     gridTemplateColumns: rendered.map((r) => r.track).join(" "),
