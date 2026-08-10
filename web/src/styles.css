@@ -1308,10 +1308,19 @@ a:hover {
 /* turn-row is the overview's grouped row: one agent turn, with a Calls
  * count between Model and Status. Declared as its own template rather
  * than widening .trace-row because the drill-down sub-rows underneath
- * use a different column set. */
+ * use a different column set.
+ *
+ * NB: The grid-template-columns here is the *default* before user
+ * resize — ResizableGrid overrides it via an inline style on the same
+ * row, so the CSS rule below only kicks in when no inline template is
+ * present (e.g. legacy paths that still wire a .trace-row.turn-row by
+ * hand). The leading 8-col rule documents the legacy template for
+ * eyeballing; the header/visual rules remain so the row keeps its
+ * typography across both paths. */
 .trace-row.turn-row {
   grid-template-columns:
     84px 104px minmax(140px, 1.5fr) 58px 74px 88px 84px 92px;
+  cursor: default;
 }
 
 .trace-row.turn-row.is-expandable {
@@ -3559,3 +3568,133 @@ a:hover {
   border-top: 1px solid var(--border, color-mix(in oklab, var(--text) 12%, transparent));
   margin-top: 12px;
 }
+
+/* rg is the wrapper produced by ResizableGrid; it sits inside an existing
+ * container (typically .trace-table or .session-drill) and lays its rows
+ * out as a CSS grid driven by an inline grid-template-columns string.
+ * The component sets the template on every row + the header so the
+ * operator's resize handle updates everything in lock-step. */
+.rg {
+  display: contents;
+}
+
+/* rg-row covers every row including the head and body sub-shapes. The
+ * component sets grid-template-columns inline so user resize wins on
+ * every row. We carry the legacy .trace-row typography/border so the
+ * new grid keeps visual continuity with the original table. */
+.rg-row {
+  display: grid;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-13);
+  color: var(--muted);
+}
+
+.rg-row--head {
+  font-size: 11px;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 8px 6px;
+}
+
+/* rg-cell is the default cell; columns get padding + truncation on long
+ * text. Right-aligned numerics compose with the existing .right /
+ * .mono font helpers used elsewhere in the trace-row family. The cell
+ * is `position: relative` so the resize handle can anchor at its right
+ * edge via `position: absolute`. */
+.rg-cell {
+  padding: 0 4px;
+  font-size: var(--fs-13);
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  position: relative;
+}
+
+.rg-cell--head {
+  padding: 0 4px;
+  color: var(--muted-2);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.rg-cell .right,
+.rg-cell-truncate {
+  /* Forward-compatibility shim: in the older .trace-row template, .right
+   * sat on the spans directly. Now it's on a cell, so the helper that
+   * text-aligns numerics still works. */
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+.rg-cell-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+}
+
+.rg-cell--align-right { text-align: right; font-family: var(--font-mono); }
+.rg-cell--align-center { text-align: center; }
+.rg-cell--align-right .right,
+.rg-cell--align-right.rg-cell-truncate {
+  text-align: right;
+}
+
+/* rg-col-handle is a column-resize affordance. Invisible by default
+ * (1px wide on the right edge of the prior cell) so the grid stays
+ * visually quiet; on hover/focus/drag the 6px hit area lights up via
+ * ::after so an operator who reaches for the edge finds the boundary.
+ * The handle is appended INSIDE the column's right-aligned cell so its
+ * `position: absolute` lands at that cell's right edge with no extra
+ * grid track needed. */
+.rg-col-handle {
+  position: absolute;
+  top: -6px;
+  right: -4px;
+  bottom: -6px;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+  z-index: 2;
+}
+
+.rg-col-handle::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.rg-col-handle:hover::after,
+.rg-col-handle:focus-visible::after,
+.rg-col-handle.is-dragging::after {
+  opacity: 1;
+}
+
+/* While the user is dragging, block selection on the rest of the
+ * grid so text doesn't accidentally get highlighted. The cursor
+ * rule keeps the visible affordance honest. */
+body.rg-resizing {
+  cursor: col-resize !important;
+  user-select: none;
+}
+

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { GradientText } from "../components/GradientText";
+import { ResizableGrid, type ColumnSpec, type RowSpec } from "../components/ResizableGrid";
 import { TierCard } from "../components/TierCard";
 import { Icon } from "../components/icons";
 import { formatExact, formatTokens } from "../lib/format";
@@ -250,6 +251,135 @@ export function Overview() {
 // This is not the old time-window heuristic that got reverted. Grouping
 // happens server-side on a key derived from the request payload, so two
 // unrelated questions that happen to land seconds apart stay apart.
+// Column template for the parent turn-row. Defaults match the legacy
+// fixed grid 84 / 104 / minmax(140px, 1.5fr) / 58 / 74 / 88 / 84 / 92.
+const TURN_COLUMNS: ColumnSpec[] = [
+  { id: "time", header: "Time", initialWidth: 84 },
+  { id: "provider", header: "Provider", initialWidth: 104 },
+  { id: "model", header: "Model", initialWidth: "minmax(140px, 1.5fr)" },
+  { id: "calls", header: "Calls", initialWidth: 58, align: "right" },
+  { id: "status", header: "Status", initialWidth: 74 },
+  { id: "latency", header: "Latency", initialWidth: 88, align: "right" },
+  { id: "tokens", header: "Tokens", initialWidth: 84, align: "right" },
+  { id: "cost", header: "Cost", initialWidth: 92, align: "right" },
+];
+
+// Sub-row template drops Provider and Calls (every call in a turn shares
+// the parent's provider; a call has no sub-count). Column widths live in
+// a separate localStorage key so the drill-down panel and the
+// turn-row above can be tuned independently. The first cell takes a
+// colSpan to visually absorb the parent's Provider+Time slot — this is
+// how we reuse a ResizableGrid instance for a different shape without
+// forcing the consumer to re-think column-to-cell mapping.
+const SUB_COLUMNS: ColumnSpec[] = [
+  { id: "time", header: "Time", initialWidth: 84 },
+  { id: "provider", header: "Provider", initialWidth: 104 },
+  { id: "model", header: "Model", initialWidth: "minmax(140px, 1.5fr)" },
+  { id: "status", header: "Status", initialWidth: 74 },
+  { id: "latency", header: "Latency", initialWidth: 88, align: "right" },
+  { id: "tokens", header: "Tokens", initialWidth: 84, align: "right" },
+  { id: "cost", header: "Cost", initialWidth: 92, align: "right" },
+];
+
+// buildTurnRow cells each turn into a RowSpec using the 8-column
+// template. The cells array is index-aligned with TURN_COLUMNS.
+function buildTurnRow(
+  t: TurnSummary,
+  isOpen: boolean,
+  canExpand: boolean,
+  toggleOpen: () => void,
+): RowSpec {
+  return {
+    rowKey: `turn-${t.turn_id}`,
+    rowTestId: `overview-turn-row-${t.turn_id}`,
+    className:
+      "trace-row turn-row" +
+      (canExpand ? " is-expandable" : "") +
+      (isOpen ? " is-open" : ""),
+    role: canExpand ? "button" : "row",
+    tabIndex: canExpand ? 0 : undefined,
+    ariaExpanded: canExpand ? isOpen : undefined,
+    onClick: canExpand ? toggleOpen : undefined,
+    cells: [
+      {
+        node: (
+          <span title={new Date(t.first_at).toLocaleString()}>
+            {new Date(t.last_at).toLocaleTimeString()}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span>
+            <span className="provider-tag">{t.provider_name}</span>
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span className="mono ellipsis rg-cell-truncate" title={t.request_model}>
+            {t.request_model}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span className="right mono">
+            {canExpand ? (
+              <span className="turn-calls">
+                <Icon.arrowRight
+                  size={11}
+                  className={
+                    "turn-caret" + (isOpen ? " turn-caret--open" : "")
+                  }
+                />
+                {t.trace_count}
+              </span>
+            ) : (
+              <span className="muted">1</span>
+            )}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span>
+            <span
+              className={
+                "status-pill " +
+                (t.status_code >= 400 ? "is-err" : "is-ok")
+              }
+            >
+              {t.status_code}
+            </span>
+          </span>
+        ),
+      },
+      { node: <span className="right">{t.latency_ms} ms</span> },
+      {
+        node: (
+          <span
+            className="right mono"
+            title={`in ${formatExact(t.input_tokens ?? 0)} • out ${formatExact(t.output_tokens ?? 0)}`}
+          >
+            {formatTokens(
+              t.total_tokens ??
+                (t.input_tokens ?? 0) + (t.output_tokens ?? 0),
+            )}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span className="right mono">
+            ${Number(t.cost_usd ?? 0).toFixed(5)}
+          </span>
+        ),
+      },
+    ],
+  };
+}
+
 function RecentTurnsList({
   turns,
   isLoading,
@@ -258,6 +388,14 @@ function RecentTurnsList({
   isLoading: boolean;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  const rows: RowSpec[] = turns.map((t) => {
+    const canExpand = t.trace_count > 1;
+    const isOpen = expanded === t.turn_id;
+    return buildTurnRow(t, isOpen, canExpand, () =>
+      setExpanded(isOpen ? null : t.turn_id),
+    );
+  });
 
   return (
     <section className="panel" aria-label="Recent turns">
@@ -268,108 +406,22 @@ function RecentTurnsList({
         </a>
       </header>
       <div className="trace-table" role="table">
-        <div className="trace-row turn-row head" role="row">
-          <span role="columnheader">Time</span>
-          <span role="columnheader">Provider</span>
-          <span role="columnheader">Model</span>
-          <span role="columnheader" className="right">
-            Calls
-          </span>
-          <span role="columnheader">Status</span>
-          <span role="columnheader" className="right">
-            Latency
-          </span>
-          <span role="columnheader" className="right">
-            Tokens
-          </span>
-          <span role="columnheader" className="right">
-            Cost
-          </span>
-        </div>
+        <ResizableGrid
+          columns={TURN_COLUMNS}
+          storageKey="nexus:rg:overview-turns"
+          groups={[{ rows }]}
+        />
         {turns.length === 0 ? (
           <div className="trace-row empty" role="row">
             {isLoading ? "Loading…" : "No traffic yet."}
           </div>
         ) : (
           turns.map((t) => {
-            const canExpand = t.trace_count > 1;
             const isOpen = expanded === t.turn_id;
+            if (!isOpen) return null;
             return (
-              <div key={t.turn_id}>
-                <div
-                  className={
-                    "trace-row turn-row" +
-                    (canExpand ? " is-expandable" : "") +
-                    (isOpen ? " is-open" : "")
-                  }
-                  role={canExpand ? "button" : "row"}
-                  tabIndex={canExpand ? 0 : undefined}
-                  aria-expanded={canExpand ? isOpen : undefined}
-                  onClick={
-                    canExpand
-                      ? () => setExpanded(isOpen ? null : t.turn_id)
-                      : undefined
-                  }
-                  onKeyDown={
-                    canExpand
-                      ? (e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            setExpanded(isOpen ? null : t.turn_id);
-                          }
-                        }
-                      : undefined
-                  }
-                >
-                  <span title={new Date(t.first_at).toLocaleString()}>
-                    {new Date(t.last_at).toLocaleTimeString()}
-                  </span>
-                  <span>
-                    <span className="provider-tag">{t.provider_name}</span>
-                  </span>
-                  <span className="mono ellipsis" title={t.request_model}>
-                    {t.request_model}
-                  </span>
-                  <span className="right mono">
-                    {canExpand ? (
-                      <span className="turn-calls">
-                        <Icon.arrowRight
-                          size={11}
-                          className={
-                            "turn-caret" + (isOpen ? " turn-caret--open" : "")
-                          }
-                        />
-                        {t.trace_count}
-                      </span>
-                    ) : (
-                      <span className="muted">1</span>
-                    )}
-                  </span>
-                  <span>
-                    <span
-                      className={
-                        "status-pill " +
-                        (t.status_code >= 400 ? "is-err" : "is-ok")
-                      }
-                    >
-                      {t.status_code}
-                    </span>
-                  </span>
-                  <span className="right">{t.latency_ms} ms</span>
-                  <span
-                    className="right mono"
-                    title={`in ${formatExact(t.input_tokens ?? 0)} • out ${formatExact(t.output_tokens ?? 0)}`}
-                  >
-                    {formatTokens(
-                      t.total_tokens ??
-                        (t.input_tokens ?? 0) + (t.output_tokens ?? 0),
-                    )}
-                  </span>
-                  <span className="right mono">
-                    ${Number(t.cost_usd ?? 0).toFixed(5)}
-                  </span>
-                </div>
-                {isOpen && <TurnCalls turnID={t.turn_id} />}
+              <div key={`drill-${t.turn_id}`}>
+                <TurnCalls turnID={t.turn_id} />
               </div>
             );
           })
@@ -393,6 +445,70 @@ function TurnCalls({ turnID }: { turnID: string }) {
   // agent's own sequence, so read it back the other way.
   const calls: TraceSummary[] = [...(data?.items ?? [])].reverse();
 
+  const subRows: RowSpec[] = calls.map((c, i) => ({
+    rowKey: `sub-${c.trace_id}`,
+    className: "trace-row sub-row",
+    cells: [
+      // colSpan: 2 absorbs the parent's time+provider slot — the sub-
+      // shape doesn't render Provider (every call in a turn shares the
+      // parent's provider), so we collapse those two grid columns on
+      // a single cell. This keeps model/status/latency/tokens/cost
+      // aligned with the parent turn-row above.
+      {
+        colSpan: 2,
+        node: (
+          <span className="muted">
+            #{i + 1} · {new Date(c.timestamp).toLocaleTimeString()}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span className="mono ellipsis rg-cell-truncate" title={c.request_model}>
+            {c.request_model}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span>
+            <span
+              className={
+                "status-pill " +
+                (c.status_code >= 400 ? "is-err" : "is-ok")
+              }
+            >
+              {c.status_code}
+            </span>
+          </span>
+        ),
+      },
+      {
+        node: <span className="right mono">{c.latency_ms} ms</span>,
+      },
+      {
+        node: (
+          <span
+            className="right mono"
+            title={`in ${formatExact(c.input_tokens ?? 0)} • out ${formatExact(c.output_tokens ?? 0)}`}
+          >
+            {formatTokens(
+              c.total_tokens ??
+                (c.input_tokens ?? 0) + (c.output_tokens ?? 0),
+            )}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span className="right mono">
+            ${Number(c.cost_usd ?? 0).toFixed(5)}
+          </span>
+        ),
+      },
+    ],
+  }));
+
   if (isLoading) {
     return <div className="session-drill muted">Loading calls…</div>;
   }
@@ -401,37 +517,11 @@ function TurnCalls({ turnID }: { turnID: string }) {
   }
   return (
     <div className="session-drill">
-      {calls.map((c, i) => (
-        <div className="trace-row sub-row" key={c.trace_id}>
-          <span className="muted">
-            #{i + 1} · {new Date(c.timestamp).toLocaleTimeString()}
-          </span>
-          <span className="mono ellipsis" title={c.request_model}>
-            {c.request_model}
-          </span>
-          <span>
-            <span
-              className={
-                "status-pill " + (c.status_code >= 400 ? "is-err" : "is-ok")
-              }
-            >
-              {c.status_code}
-            </span>
-          </span>
-          <span className="right mono">{c.latency_ms} ms</span>
-          <span
-            className="right mono"
-            title={`in ${formatExact(c.input_tokens ?? 0)} • out ${formatExact(c.output_tokens ?? 0)}`}
-          >
-            {formatTokens(
-              c.total_tokens ?? (c.input_tokens ?? 0) + (c.output_tokens ?? 0),
-            )}
-          </span>
-          <span className="right mono">
-            ${Number(c.cost_usd ?? 0).toFixed(5)}
-          </span>
-        </div>
-      ))}
+      <ResizableGrid
+        columns={SUB_COLUMNS}
+        storageKey="nexus:rg:overview-turns-sub"
+        groups={[{ showHeader: false, rows: subRows }]}
+      />
     </div>
   );
 }
