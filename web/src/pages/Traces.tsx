@@ -4,6 +4,7 @@ import { Chip } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
 import { Icon } from "../components/icons";
+import { ResizableGrid, type ColumnSpec, type RowSpec } from "../components/ResizableGrid";
 import { StatusPill } from "../components/StatusPill";
 import { formatExact, formatTokens } from "../lib/format";
 import {
@@ -703,6 +704,23 @@ export function Traces() {
 // re-expanding refetches — desired on a live console where a turn is
 // still being recorded. Re-applies the active filter set so the inline
 // list honours the user's status/provider/q/date intent.
+//
+// Sub-row template drops Provider and Calls (every call in a turn shares
+// the parent's provider; a call has no sub-count). The grid still carries
+// Time, Provider, Model, Status, Latency, Tokens, Cost (7 columns) so
+// Status/Latency/Tokens/Cost align with the parent DataTable positions
+// 5–8; the first cell takes colSpan: 2 to absorb the time+provider slot
+// visually, keeping Model column-aligned on a wider screen.
+const TRACES_SUB_COLUMNS: ColumnSpec[] = [
+  { id: "time", header: "Time", initialWidth: 160 },
+  { id: "provider", header: "Provider", initialWidth: 110 },
+  { id: "model", header: "Model", initialWidth: "minmax(180px, 1.4fr)" },
+  { id: "status", header: "Status", initialWidth: 90 },
+  { id: "latency", header: "Latency", initialWidth: 90, align: "right" },
+  { id: "tokens", header: "Tokens", initialWidth: 130, align: "right" },
+  { id: "cost", header: "Cost", initialWidth: 110, align: "right" },
+];
+
 function InlineExpansion({ turnID, query }: { turnID: string; query: TraceQuery }) {
   const { data, isLoading } = useQuery({
     queryKey: ["turn-calls", turnID, query],
@@ -711,6 +729,59 @@ function InlineExpansion({ turnID, query }: { turnID: string; query: TraceQuery 
   // Server orders newest-first for paging. Inside a turn we want the
   // agent's own sequence, so read it back the other way.
   const calls: TraceSummary[] = [...(data?.items ?? [])].reverse();
+
+  const subRows: RowSpec[] = calls.map((c, i) => ({
+    rowKey: c.trace_id,
+    className: "trace-row sub-row",
+    cells: [
+      // colSpan: 2 absorbs the parent's time+provider slot — the sub-
+      // shape doesn't render Provider (every call in a turn shares the
+      // parent's provider), so we collapse those two grid columns on
+      // a single cell. Model / Status / Latency / Tokens / Cost then
+      // align under the parent DataTable's columns 3 / 5–8.
+      {
+        colSpan: 2,
+        node: (
+          <span className="muted">
+            #{i + 1} · {new Date(c.timestamp).toLocaleTimeString()}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span className="mono ellipsis rg-cell-truncate" title={c.request_model}>
+            {c.request_model}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <StatusPill
+            label={c.status_code.toString()}
+            tone={c.status_code >= 400 ? "err" : "ok"}
+          />
+        ),
+      },
+      {
+        node: <span className="right mono">{c.latency_ms} ms</span>,
+      },
+      {
+        node: (
+          <span
+            className="right mono"
+            title={`in ${formatExact(c.input_tokens ?? 0)} • out ${formatExact(c.output_tokens ?? 0)}`}
+          >
+            {formatTokens(c.input_tokens ?? 0)}/{formatTokens(c.output_tokens ?? 0)}
+          </span>
+        ),
+      },
+      {
+        node: (
+          <span className="right mono">${Number(c.cost_usd ?? 0).toFixed(5)}</span>
+        ),
+      },
+    ],
+  }));
 
   if (isLoading) {
     return (
@@ -728,30 +799,11 @@ function InlineExpansion({ turnID, query }: { turnID: string; query: TraceQuery 
   }
   return (
     <div className="session-drill" data-testid={`turn-calls-${turnID}`}>
-      {calls.map((c, i) => (
-        <div className="trace-row sub-row" key={c.trace_id} role="row">
-          <span className="muted">
-            #{i + 1} · {new Date(c.timestamp).toLocaleTimeString()}
-          </span>
-          <span className="mono ellipsis" title={c.request_model}>
-            {c.request_model}
-          </span>
-          <span>
-            <StatusPill
-              label={c.status_code.toString()}
-              tone={c.status_code >= 400 ? "err" : "ok"}
-            />
-          </span>
-          <span className="right mono">{c.latency_ms} ms</span>
-          <span
-            className="right mono"
-            title={`in ${formatExact(c.input_tokens ?? 0)} • out ${formatExact(c.output_tokens ?? 0)}`}
-          >
-            {formatTokens(c.input_tokens ?? 0)}/{formatTokens(c.output_tokens ?? 0)}
-          </span>
-          <span className="right mono">${Number(c.cost_usd ?? 0).toFixed(5)}</span>
-        </div>
-      ))}
+      <ResizableGrid
+        columns={TRACES_SUB_COLUMNS}
+        storageKey="nexus:rg:traces-inline"
+        groups={[{ showHeader: false, rows: subRows }]}
+      />
     </div>
   );
 }
