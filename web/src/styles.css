@@ -2432,6 +2432,91 @@ a:hover {
   }
 }
 
+/* Date-window range inputs (Since / Before) inside the filter bar of
+ * the Traces page. The browser ships an un-themed datetime-local control
+ * by default — left bare it shows the OS chrome (grey background,
+ * OS-native calendar icon) and breaks the visual contract that the rest
+ * of the page holds with its inputs (border, radius, focus ring).
+ * Tint the shell with the same tokens as .field-row input /
+ * .filter-search and recolour the spin/calendar chrome so the box
+ * reads as part of the page. Native picker (click → OS calendar) is
+ * preserved so we do not have to ship a custom calendar widget for
+ * the only two range fields on /traces. */
+.filter-bar-window .dt-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: var(--fs-14);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.filter-bar-window .dt-input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px
+    color-mix(in oklab, var(--accent) 24%, transparent);
+  color: var(--text);
+}
+
+.filter-bar-window .dt-input > span {
+  /* The static "Since" / "Before" label sitting next to the picker. */
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.filter-bar-window .dt-input input[type="datetime-local"] {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: var(--fs-14);
+  font-family: inherit;
+  /* Suppress the browser's default pill that wraps the segmented fields. */
+  padding: 0;
+  margin: 0;
+  min-height: 1.5em;
+}
+
+/* WebKit (Chrome, Edge, Safari) — recolour the segments and the calendar
+ * picker indicator so the empty / filled state match the page tokens.
+ * ::-webkit-datetime-edit picks up the editable day / month / hour fields;
+ * ::-webkit-datetime-edit-fields-wrapper is the gap between segments. */
+.filter-bar-window .dt-input input[type="datetime-local"]::-webkit-datetime-edit {
+  color: var(--text);
+}
+
+.filter-bar-window .dt-input input[type="datetime-local"]::-webkit-datetime-edit-fields-wrapper {
+  color: var(--text);
+}
+
+.filter-bar-window .dt-input input[type="datetime-local"]:invalid::-webkit-datetime-edit {
+  /* Empty picker — sit at --muted, like a placeholder. */
+  color: var(--muted);
+}
+
+.filter-bar-window .dt-input input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  /* Drop the OS-native blue tint and size it to the rest of the input. */
+  filter: invert(0.6) hue-rotate(180deg);
+  opacity: 0.75;
+  cursor: pointer;
+  margin-left: 4px;
+}
+
+.filter-bar-window .dt-input input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  filter: invert(0.5) hue-rotate(180deg);
+}
+
+/* Firefox renders datetime-local as a single text segment without an
+ * inline picker indicator; the single shipped pseudo to tint. */
+.filter-bar-window .dt-input input[type="datetime-local"]::-moz-placeholder {
+  color: var(--muted);
+}
+
 /* PR #137 — eval profile CRUD UI */
 .profile-list {
   display: flex;
