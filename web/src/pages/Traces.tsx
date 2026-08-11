@@ -6,7 +6,7 @@ import { Drawer } from "../components/Drawer";
 import { Icon } from "../components/icons";
 import { ResizableGrid, type ColumnSpec, type RowSpec } from "../components/ResizableGrid";
 import { StatusPill } from "../components/StatusPill";
-import { formatExact, formatTokens } from "../lib/format";
+import { formatExact, formatTimestampShort, formatTokens } from "../lib/format";
 import {
   fetchMe,
   fetchTraces,
@@ -327,12 +327,18 @@ export function Traces() {
     {
       id: "time",
       header: "Time",
-      width: 160,
-      cell: (t) => (
-        <span className="mono" title={new Date(t.timestamp).toLocaleString()}>
-          {new Date(t.timestamp).toLocaleString()}
-        </span>
-      ),
+      width: 140,
+      cell: (t) => {
+        // Cell shows a short wall-clock form so the column does not
+        // wrap "Aug 11, 2026, 6:51:24 PM" across five lines; the
+        // full timestamp stays on the title= tooltip for forensics.
+        const full = new Date(t.timestamp).toLocaleString();
+        return (
+          <span className="mono tabular" title={full}>
+            {formatTimestampShort(t.timestamp)}
+          </span>
+        );
+      },
       sortValue: (t) => new Date(t.timestamp).getTime(),
       align: "left",
     },
