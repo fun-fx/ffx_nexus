@@ -35,6 +35,22 @@ type BenchmarkRunner interface {
 	PollOnce(ctx context.Context) (int, error)
 	GatewayRoutingAvailable() bool
 	DryRun(ctx context.Context, spec benchmark.LaunchSpec) (benchmark.DryRunResult, error)
+
+	// Schedules: re-fire plans driven by internal/cron. The runner
+	// exposes them as plain CRUD so the console can list, create and
+	// delete without a separate dependency on internal/cron.
+	CreateSchedule(ctx context.Context, row core.BenchmarkSchedule) (core.BenchmarkSchedule, error)
+	ListSchedules(ctx context.Context, orgID string, limit int) ([]core.BenchmarkSchedule, error)
+	GetSchedule(ctx context.Context, id string) (core.BenchmarkSchedule, error)
+	DeleteSchedule(ctx context.Context, id string) error
+
+	// GetLatestSettledByModel returns the most-recent settled run
+	// for a model, including MinScore / MaxScore / TotalSamples.
+	// Used by the leaderboard to surface the full distribution
+	// alongside AvgScore so the operator can see "the average is
+	// X but the spread was wide" without opening the row detail.
+	GetLatestSettledByModel(ctx context.Context, model string) (core.BenchmarkRun, error)
+	ListRecentSettledByModel(ctx context.Context, model string, limit int) ([]core.RecentBenchmarkRun, error)
 }
 
 // SetBenchmarks wires the runner. Left nil, the routes answer 503 so the
