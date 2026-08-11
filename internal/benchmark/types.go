@@ -97,6 +97,11 @@ var (
 // LaunchRequest is the Nexus-shaped description of a run. The wire
 // encoding lives in client.go so this stays readable at call sites.
 type LaunchRequest struct {
+	// ScheduleID, when non-empty, links the run to a row in
+	// benchmark_schedules. Surfaced on the row so the console can
+	// answer "what did the 06:00 GSM8K run come from" without
+	// re-deriving from cadence.
+	ScheduleID string
 	// Environments are vendor Hub slugs such as "primeintellect/gsm8k".
 	// The hosted-evaluations create endpoint expects internal ids;
 	// Client.resolveEnvironmentIDs maps slugs before create.

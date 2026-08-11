@@ -343,6 +343,38 @@ func (r *Router) Window() time.Duration {
 	return r.window
 }
 
+// Source returns the StatsProvider instance driving the router. The
+// return type is the router's chosen provider: a CombinedProvider
+// when the bench blend is wired, a PG/CHStatsProvider otherwise.
+//
+// Exposed only as an interface so callers do not accidentally bind
+// to a specific backend. The console's QualityRouterQuerier uses
+// this to read the live weights; tests use it to inject fakes.
+func (r *Router) Source() StatsProvider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.provider
+}
+
+// KnownModels returns the model ids currently cached by the router.
+// Empty when Refresh() has not yet run. The semantics are
+// "models we have stats for", not "models we would route to";
+// a deployment that never refreshed yet returns [].
+//
+// Reading the live cache is correct because the operator's question
+// is "what's in the lineup right now". Returning a stale list would
+// hide the very thing the route is meant to expose.
+func (r *Router) KnownModels() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.stats))
+	for k := range r.stats {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Close stops the background refresher.
 func (r *Router) Close() {
 	close(r.done)

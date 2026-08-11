@@ -22,6 +22,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/console"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
+	"github.com/ffxnexus/nexus/internal/cron"
 	"github.com/ffxnexus/nexus/internal/evalplugin"
 	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/evaluators/external"
@@ -107,6 +108,10 @@ func main() {
 				"migrations/postgres/009_eval_plugins.sql",
 				"migrations/postgres/010_eval_scores_kind.sql",
 				"migrations/postgres/011_eval_plugin_keys.sql",
+				// Benchmark scheduling — splits operator intent from
+				// settled runs so the cron runner can re-stamp due
+				// times without polluting benchmark_runs.
+				"migrations/postgres/013_scheduled_benchmarks.sql",
 				"migrations/postgres/012_benchmark_runs.sql",
 			} {
 				schema, _ := nexus.Migrations.ReadFile(path)
@@ -342,6 +347,12 @@ func main() {
 	consoleSrvHandler.SetSSO(ctx, cfg.SSO)
 	if modelRouter != nil {
 		consoleSrvHandler.SetRouteStats(modelRouter)
+		// Read the runtime router's bench-blend state so the
+		// operator's quality view never drifts from what the
+		// gateway actually does on each decision. The console's
+		// QualityRouterQuerier is the narrow contract; the
+		// adapter in cmd/nexus/quality_querier.go bridges it.
+		consoleSrvHandler.SetQualityRouter(NewRouterQualityQuerier(modelRouter))
 	}
 	consoleSrvHandler.SetCatalog(gwHandler.Catalog())
 	if evalWorker != nil {
@@ -546,6 +557,30 @@ func main() {
 			log.Info("model benchmarks enabled",
 				"provider", benchmark.ProviderPrime,
 				"gateway_routing", benchRunner.GatewayRoutingAvailable())
+
+			// Champion drift: detect large relative changes between
+			// adjacent settled runs and any model whose row is past
+			// the freshness threshold. Settle-time detection runs
+			// from the poll loop; staleness runs at boot.
+			driftSink := benchmark.NewAuditSink(store)
+			driftSrc := driftStore{store: store}
+			watcher := benchmark.NewDriftWatcher(
+				benchmark.DefaultDriftAlertSpec,
+				driftSink, log)
+			benchRunner.SetDriftWatcher(watcher, driftSrc)
+			lineup := modelRouter.KnownModels()
+			watcher.ObserveStaleness(ctx, driftSrc, lineup)
+			log.Info("benchmark drift alerts enabled",
+				"relative_threshold", benchmark.DefaultDriftAlertSpec.RelativeChangeThreshold,
+				"freshness_threshold", benchmark.DefaultDriftAlertSpec.FreshnessThreshold)
+
+			// Scheduled benchmark re-fires. Shares the underlying
+			// Runner so that launch, vkey minting and rollback on
+			// partial launch failure all live in one place; the cron
+			// package only owns the "when" and the bookkeeping.
+			sched := cron.New(schedStore{store: store}, makeScheduleLander(benchRunner), log)
+			go sched.Run(ctx)
+			log.Info("benchmark scheduler enabled")
 		}
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new

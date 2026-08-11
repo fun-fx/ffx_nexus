@@ -65,6 +65,11 @@ type Server struct {
 	pluginManualFirer PluginManualFirer     // admin-driven drain for manual-trigger plugins
 	pluginKeys        EvalPluginKeys        // in-process plugin key resolver (console keys)
 	benchmarks        BenchmarkRunner       // model-level benchmark runs; nil without Postgres
+	// qualityRouter exposes the in-memory router state to the console
+	// so /api/eval/benchmarks/quality can answer "what is the
+	// router actually doing right now". nil when the router is not
+	// wired (e.g. local debug deployments); the route then 503s.
+	qualityRouter QualityRouterQuerier
 	// pushReports holds operator-reported `prime env push` outcomes.
 	// In-memory and advisory only — see benchmark_push_report.go. The
 	// zero value works, so NewServer leaves it alone.
@@ -342,6 +347,20 @@ func (s *Server) Mux() http.Handler {
 		r.Route("/eval/benchmarks", func(r chi.Router) {
 			r.Get("/", s.requireAdmin(s.listBenchmarks))
 			r.Post("/", s.requireAdmin(s.launchBenchmark))
+
+			// Schedules: per-tenant re-fire plans that drive the
+			// cron.runner. The endpoints exist so an operator can
+			// shape recurring benchmark coverage without manually
+			// relaunching runs. Schedules survive a restart because
+			// the table is durable; the cron goroutine picks them
+			// up on its next tick.
+			r.Route("/schedules", func(r chi.Router) {
+				r.Get("/", s.requireAdmin(s.listBenchmarkSchedules))
+				r.Post("/", s.requireAdmin(s.createBenchmarkSchedule))
+				r.Get("/{id}", s.requireAdmin(s.getBenchmarkSchedule))
+				r.Delete("/{id}", s.requireAdmin(s.deleteBenchmarkSchedule))
+			})
+
 			// Validate is the safest way to check that the credential the
 			// operator just pasted actually gets a 2xx from the vendor
 			// before they hit Launch on a real budget-bound run.
@@ -370,6 +389,16 @@ func (s *Server) Mux() http.Handler {
 		r.Delete("/users/{id}", s.requireAdmin(s.deleteUser))
 		r.Get("/users/quality", s.requireAdmin(s.userQuality))
 		r.Get("/audit", s.requireAdmin(s.listAudit))
+
+		// Operator-facing quality snapshot: model lineup + freshness.
+		// Returns the most recent settled benchmark score per model
+		// plus the decay-applied contribution weight the router
+		// is mixing in right now. The admin's "is this benchmark still
+		// teaching the router anything?" question has its answer here.
+		r.Get("/eval/benchmarks/quality", s.requireAdmin(s.benchmarkQuality))
+		r.Get("/eval/benchmarks/leaderboard", s.requireAdmin(s.benchmarkLeaderboard))
+		r.Post("/eval/benchmarks/quality", s.requireAdmin(s.benchmarkQualityGate))
+		r.Get("/eval/benchmarks/{model}/history", s.requireAdmin(s.benchmarkHistory))
 
 		// Backwards-compat alias: /api/me/quality/stats (deprecated, prefer
 		// /api/me/quality) — kept for any client that has been wired against

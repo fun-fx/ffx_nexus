@@ -20,15 +20,86 @@ import (
 // not told about (the COALESCE / NULLIF clauses). A naive overwrite
 // here would let a bug through that only shows up in production.
 type fakeStore struct {
-	mu   sync.Mutex
-	rows map[string]core.BenchmarkRun
-	// createErr forces the "row could not be written" path.
+	mu        sync.Mutex
+	rows      map[string]core.BenchmarkRun
+	scheds    []core.BenchmarkSchedule
 	createErr error
 	updateErr error
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{rows: map[string]core.BenchmarkRun{}}
+}
+
+// Schedule / recent-row methods that exist solely to satisfy the
+// store interface for PR-1 (schedules) and PR-4 (leaderboard) tests.
+// They hold no opinion other than "round-trip what was put in".
+func (f *fakeStore) CreateBenchmarkSchedule(_ context.Context, r core.BenchmarkSchedule) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.scheds == nil {
+		f.scheds = []core.BenchmarkSchedule{}
+	}
+	f.scheds = append(f.scheds, r)
+	return nil
+}
+
+func (f *fakeStore) GetBenchmarkSchedule(_ context.Context, id string) (core.BenchmarkSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.scheds {
+		if s.ID == id {
+			return s, nil
+		}
+	}
+	return core.BenchmarkSchedule{}, errors.New("not found")
+}
+
+func (f *fakeStore) ListBenchmarkSchedules(_ context.Context, _ string, _ int) ([]core.BenchmarkSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]core.BenchmarkSchedule, len(f.scheds))
+	copy(cp, f.scheds)
+	return cp, nil
+}
+
+func (f *fakeStore) DeleteBenchmarkSchedule(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, s := range f.scheds {
+		if s.ID == id {
+			f.scheds = append(f.scheds[:i], f.scheds[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("not found")
+}
+
+func (f *fakeStore) ListRecentSettledByModel(_ context.Context, model string, limit int) ([]core.RecentBenchmarkRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []core.RecentBenchmarkRun{}
+	for _, r := range f.rows {
+		if r.Model != model {
+			continue
+		}
+		if r.Status != "completed" || r.AvgScore == nil || r.CompletedAt == nil {
+			continue
+		}
+		out = append(out, core.RecentBenchmarkRun{
+			ID:           r.ID,
+			Model:        r.Model,
+			AvgScore:     r.AvgScore,
+			MinScore:     r.MinScore,
+			MaxScore:     r.MaxScore,
+			TotalSamples: r.TotalSamples,
+			CompletedAt:  r.CompletedAt,
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeStore) CreateBenchmarkRun(_ context.Context, r core.BenchmarkRun) error {

@@ -61,7 +61,13 @@ type CombinedWeights struct {
 //
 // This is the smallest viable diff: we don't change Router or any
 // caller's interface, we just hand them pre-blended numbers.
-type combinedStatsProvider struct {
+//
+// Exported as CombinedProvider so cmd/nexus (the wiring layer) can
+// reach its getters without an awkward type assertion at the call
+// site. The internal field names stay lowercase because they are
+// protected by the methods; callers should always read via
+// Weights() / HalfLife() / BenchSource().
+type CombinedProvider struct {
 	primary       StatsProvider
 	bench         BenchmarkScoreSource
 	weights       CombinedWeights
@@ -72,20 +78,37 @@ type combinedStatsProvider struct {
 // to [0,1] so a misconfiguration cannot produce nonsense (a
 // negative weight would invert signals, which would be very
 // confusing in dashboards). A nil bench disables the blend.
-func NewCombinedStatsProvider(primary StatsProvider, bench BenchmarkScoreSource, w CombinedWeights, decayHalfLife time.Duration) *combinedStatsProvider {
+func NewCombinedStatsProvider(primary StatsProvider, bench BenchmarkScoreSource, w CombinedWeights, decayHalfLife time.Duration) *CombinedProvider {
 	if w.BenchmarkWeight < 0 {
 		w.BenchmarkWeight = 0
 	}
 	if w.BenchmarkWeight > 1 {
 		w.BenchmarkWeight = 1
 	}
-	return &combinedStatsProvider{
+	return &CombinedProvider{
 		primary:       primary,
 		bench:         bench,
 		weights:       w,
 		decayHalfLife: decayHalfLife,
 	}
 }
+
+// BenchSource returns the wrapped BenchmarkScoreSource so callers
+// outside the router (the console's /api/quality handler, an
+// exporter) can stay in sync with what the router reads. Returning
+// the underlying field directly is fine because the field is
+// already concurrency-safe per the BenchmarkScoreSource contract.
+func (c *CombinedProvider) BenchSource() BenchmarkScoreSource { return c.bench }
+
+// Weights returns the clamped weights the provider is using. Useful
+// for operator-facing endpoints that want to render the same
+// numbers the router resolves on each request without reloading
+// env vars.
+func (c *CombinedProvider) Weights() CombinedWeights { return c.weights }
+
+// HalfLife returns the configured decay half-life. A zero value
+// means decay is disabled (a benchmark's influence does not wane).
+func (c *CombinedProvider) HalfLife() time.Duration { return c.decayHalfLife }
 
 // ModelStats fuses the two sources. If bench is nil, returns
 // unblended. If bench returns no row for a model, that model
@@ -94,7 +117,7 @@ func NewCombinedStatsProvider(primary StatsProvider, bench BenchmarkScoreSource,
 // blend; QualitySamples is incremented by one so a model with
 // both judges and a benchmark signals it has more data than
 // either alone.
-func (c *combinedStatsProvider) ModelStats(ctx context.Context, window time.Duration) (map[string]ModelStats, error) {
+func (c *CombinedProvider) ModelStats(ctx context.Context, window time.Duration) (map[string]ModelStats, error) {
 	if c.primary == nil {
 		return map[string]ModelStats{}, nil
 	}

@@ -69,6 +69,31 @@ func (f *fakeRunner) DryRun(_ context.Context, spec benchmark.LaunchSpec) (bench
 	return benchmark.DryRunResult{}, f.dryRunErr
 }
 
+// Schedule stubs: PR-1 added the methods to BenchmarkRunner. The
+// console's handlers do not depend on these for any pre-existing
+// test, so default no-op answers are sufficient.
+func (f *fakeRunner) CreateSchedule(_ context.Context, row core.BenchmarkSchedule) (core.BenchmarkSchedule, error) {
+	return row, nil
+}
+
+func (f *fakeRunner) ListSchedules(_ context.Context, _ string, _ int) ([]core.BenchmarkSchedule, error) {
+	return nil, nil
+}
+
+func (f *fakeRunner) GetSchedule(_ context.Context, _ string) (core.BenchmarkSchedule, error) {
+	return core.BenchmarkSchedule{}, errors.New("not found")
+}
+
+func (f *fakeRunner) DeleteSchedule(_ context.Context, _ string) error { return nil }
+
+func (f *fakeRunner) GetLatestSettledByModel(_ context.Context, _ string) (core.BenchmarkRun, error) {
+	return core.BenchmarkRun{}, errors.New("not found")
+}
+
+func (f *fakeRunner) ListRecentSettledByModel(_ context.Context, _ string, _ int) ([]core.RecentBenchmarkRun, error) {
+	return nil, nil
+}
+
 // fakeKeyStore stands in for the encrypted plugin-key vault.
 type fakeKeyStore struct {
 	kv     map[string]map[string]string

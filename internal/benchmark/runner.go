@@ -26,6 +26,11 @@ type Store interface {
 	ListUnsettledBenchmarkRuns(ctx context.Context, limit int) ([]core.BenchmarkRun, error)
 	DeleteBenchmarkRun(ctx context.Context, id string) error
 	ClearBenchmarkRunVKey(ctx context.Context, id string) error
+	ListRecentSettledByModel(ctx context.Context, model string, limit int) ([]core.RecentBenchmarkRun, error)
+	CreateBenchmarkSchedule(ctx context.Context, r core.BenchmarkSchedule) error
+	GetBenchmarkSchedule(ctx context.Context, id string) (core.BenchmarkSchedule, error)
+	ListBenchmarkSchedules(ctx context.Context, orgID string, limit int) ([]core.BenchmarkSchedule, error)
+	DeleteBenchmarkSchedule(ctx context.Context, id string) error
 }
 
 // Keys mints and revokes the gateway credential handed to the provider
@@ -70,6 +75,13 @@ type Runner struct {
 	// /v1 suffix. Empty means gateway-routed runs are refused: the
 	// provider cannot reach a URL we cannot name.
 	gatewayURL string
+
+	// Drift detection. Set via SetDriftWatcher at boot; nil keeps the
+	// runner freely settling without a noise pip on every transition.
+	// Alert fan-out is through the watcher's own sink so this field
+	// only needs to remember the value, not deliver events itself.
+	watcher       *DriftWatcher
+	watcherSource DriftSources
 }
 
 // NewRunner wires a runner. A nil logger is replaced with a discarding
@@ -94,6 +106,29 @@ func (r *Runner) SetAPIBase(base string, hc *http.Client) {
 	r.hc = hc
 }
 
+// SetDriftWatcher wires the post-settlement drift detector. Pass a
+// nil watcher to disable. The source is the read interface the
+// watcher consults to fetch adjacent rows; passing nil disables
+// the alert path even if watcher is set.
+//
+// Both arguments are stored on the runner because the watcher
+// itself is concurrent-safe and stateless; the runner can keep
+// pointing at it from any poll goroutine.
+func (r *Runner) SetDriftWatcher(w *DriftWatcher, src DriftSources) {
+	r.watcher = w
+	r.watcherSource = src
+}
+
+// SweepStaleness runs the boot-time staleness check across the
+// listed models. The watcher emits alerts; the runner's only
+// responsibility is the call (and the model's own slice).
+func (r *Runner) SweepStaleness(ctx context.Context, models []string) {
+	if r == nil || r.watcher == nil || r.watcherSource == nil {
+		return
+	}
+	r.watcher.ObserveStaleness(ctx, r.watcherSource, models)
+}
+
 // GatewayRoutingAvailable reports whether this deployment can ask the
 // provider to send inference back through us. The console uses it to
 // explain why the option is unavailable instead of failing on submit.
@@ -104,6 +139,10 @@ type LaunchSpec struct {
 	OrgID   string
 	ActorID string
 	Name    string
+	// ScheduleID, when non-empty, marks the run as a scheduled-launch
+	// produced by internal/cron.Runner. The runner stamps the same id
+	// onto the schedule row so the two sides agree on provenance.
+	ScheduleID string
 	// Environments are provider Hub slugs. We cannot validate them —
 	// the provider publishes no environments API — so a wrong slug
 	// surfaces as their 404 with our explanation attached.
@@ -150,6 +189,7 @@ func (r *Runner) Launch(ctx context.Context, spec LaunchSpec) (core.BenchmarkRun
 		Name:           spec.Name,
 		TimeoutMinutes: spec.TimeoutMinutes,
 		TeamID:         teamID,
+		ScheduleID:     spec.ScheduleID,
 	}
 	// Validate before minting anything. Validate() also runs inside
 	// Launch, but by then a key would already exist.
@@ -169,6 +209,7 @@ func (r *Runner) Launch(ctx context.Context, spec LaunchSpec) (core.BenchmarkRun
 		ViaGateway:   spec.ViaGateway,
 		Status:       StatusPending,
 		CreatedBy:    spec.ActorID,
+		ScheduleID:   spec.ScheduleID,
 	}
 
 	if spec.ViaGateway {
@@ -268,16 +309,42 @@ func (r *Runner) PollOnce(ctx context.Context) (int, error) {
 				"run", run.ID, "external_id", run.ExternalID, "err", err)
 			continue
 		}
-		if r.applyStatus(ctx, run, ev) {
-			changed++
+		written, watch, justRun, justSettled, werr := r.applyStatus(ctx, run, ev)
+		if werr != nil || !written {
+			continue
+		}
+		changed++
+		if justSettled {
+			r.log.Info("benchmark run settled",
+				"run", run.ID, "status", NormalizeStatus(ev.Status),
+				"external_status", ev.Status,
+				"avg_score", scoreForLog(ev.AvgScore), "samples", ev.TotalSamples)
+		}
+		if watch != nil && justRun.ID != "" {
+			watch.ObserveSettle(ctx, r.watcherSource, justRun)
 		}
 	}
 	return changed, nil
 }
 
-// applyStatus folds one provider reading into the row. Returns whether
-// anything was written.
-func (r *Runner) applyStatus(ctx context.Context, run core.BenchmarkRun, ev Evaluation) bool {
+// applyStatus folds one provider reading into the row. Returns five
+// values so the caller can decide whether to fire drift alerts and
+// log "settled" independently:
+//
+//	written  : the row was actually updated (always true on success)
+//	watch    : the drift watcher, if any (nil disables)
+//	justRun  : the run-as-RunLite that just settled, set when watch is non-nil
+//	settled  : true only on the exact transition from "not settled" to "settled"
+//	err      : non-nil when writing the row failed
+//
+// Returning settled separately from written is what stops the
+// post-settlement log line from firing on every poll. The settled
+// transition is rare; a settled-already run still moves its
+// completed_at into the picture but the log line should not.
+func (r *Runner) applyStatus(ctx context.Context, run core.BenchmarkRun, ev Evaluation) (written bool, watch *DriftWatcher, justRun RunLite, settled bool, err error) {
+	if r == nil {
+		return false, nil, RunLite{}, false, errors.New("benchmark: runner not configured")
+	}
 	next := core.BenchmarkRun{
 		ID:             run.ID,
 		ExternalID:     run.ExternalID,
@@ -291,8 +358,6 @@ func (r *Runner) applyStatus(ctx context.Context, run core.BenchmarkRun, ev Eval
 		StartedAt:      ev.StartedAt,
 		CompletedAt:    ev.CompletedAt,
 	}
-	// total_samples is only meaningful once the provider has produced
-	// samples; a zero mid-run would read as "nothing was evaluated".
 	if ev.TotalSamples > 0 {
 		n := ev.TotalSamples
 		next.TotalSamples = &n
@@ -305,25 +370,29 @@ func (r *Runner) applyStatus(ctx context.Context, run core.BenchmarkRun, ev Eval
 				"run", run.ID, "err", err)
 		}
 	}
-	// A settled run has no further need to call us.
 	if Settled(next.Status) && run.VKeyID != "" {
 		run.OrgID = orgOr(run.OrgID)
 		r.revokeKey(ctx, run)
-		if err := r.store.ClearBenchmarkRunVKey(ctx, run.ID); err != nil {
+		if clearErr := r.store.ClearBenchmarkRunVKey(ctx, run.ID); clearErr != nil {
 			r.log.Warn("benchmark: could not clear the run's key reference",
-				"run", run.ID, "err", err)
+				"run", run.ID, "err", clearErr)
 		}
 	}
-	if err := r.store.UpdateBenchmarkRunProgress(ctx, next); err != nil {
-		r.log.Warn("benchmark: could not store poll result", "run", run.ID, "err", err)
-		return false
+	if writeErr := r.store.UpdateBenchmarkRunProgress(ctx, next); writeErr != nil {
+		r.log.Warn("benchmark: could not store poll result", "run", run.ID, "err", writeErr)
+		return false, nil, RunLite{}, false, writeErr
 	}
-	if Settled(next.Status) && !Settled(run.Status) {
-		r.log.Info("benchmark run settled",
-			"run", run.ID, "status", next.Status, "external_status", ev.Status,
-			"avg_score", scoreForLog(ev.AvgScore), "samples", ev.TotalSamples)
+	justSettled := Settled(next.Status) && !Settled(run.Status)
+	if justSettled && ev.AvgScore != nil && ev.CompletedAt != nil && !ev.CompletedAt.IsZero() {
+		justRun = RunLite{
+			ID:          run.ID,
+			Model:       run.Model,
+			AvgScore:    *ev.AvgScore,
+			CompletedAt: *ev.CompletedAt,
+		}
 	}
-	return true
+	_ = timeNow // keep symbol referenced in case future tests pin the clock
+	return true, r.watcher, justRun, justSettled, nil
 }
 
 // Poll runs PollOnce on a ticker until the context is cancelled. Safe to
@@ -508,6 +577,85 @@ func (r *Runner) Models(ctx context.Context) ([]Model, error) {
 func (r *Runner) client(token string) *Client {
 	return NewClient(r.apiBase, token, r.hc)
 }
+
+// CreateSchedule wraps the store with a runner-side nil-guard so a
+// misconfigured Server returns 503 cleanly. The store fills in the
+// default NextLaunchAt when the caller has not supplied one — the
+// console always supplies, but a programmatic caller might leave
+// it zero and the subsequent cron tick would then fire immediately.
+func (r *Runner) CreateSchedule(ctx context.Context, row core.BenchmarkSchedule) (core.BenchmarkSchedule, error) {
+	if r == nil || r.store == nil {
+		return core.BenchmarkSchedule{}, errors.New("benchmark: runner not configured")
+	}
+	if row.NextLaunchAt.IsZero() && row.CadenceSeconds > 0 {
+		row.NextLaunchAt = timeNow().Add(time.Duration(row.CadenceSeconds) * time.Second)
+	}
+	if err := r.store.CreateBenchmarkSchedule(ctx, row); err != nil {
+		return core.BenchmarkSchedule{}, err
+	}
+	return r.store.GetBenchmarkSchedule(ctx, row.ID)
+}
+
+// ListSchedules mirrors List so the console can fetch the
+// operator's plans with the same nil-guard.
+func (r *Runner) ListSchedules(ctx context.Context, orgID string, limit int) ([]core.BenchmarkSchedule, error) {
+	if r == nil || r.store == nil {
+		return nil, errors.New("benchmark: runner not configured")
+	}
+	return r.store.ListBenchmarkSchedules(ctx, orgID, limit)
+}
+
+func (r *Runner) GetSchedule(ctx context.Context, id string) (core.BenchmarkSchedule, error) {
+	if r == nil || r.store == nil {
+		return core.BenchmarkSchedule{}, errors.New("benchmark: runner not configured")
+	}
+	return r.store.GetBenchmarkSchedule(ctx, id)
+}
+
+func (r *Runner) DeleteSchedule(ctx context.Context, id string) error {
+	if r == nil || r.store == nil {
+		return errors.New("benchmark: runner not configured")
+	}
+	return r.store.DeleteBenchmarkSchedule(ctx, id)
+}
+
+// GetLatestSettledByModel is the leaderboard's primary input.
+// Returns ErrNotFound when the model has never settled a row, just
+// like the underlying store.
+func (r *Runner) GetLatestSettledByModel(ctx context.Context, model string) (core.BenchmarkRun, error) {
+	if r == nil || r.store == nil {
+		return core.BenchmarkRun{}, errors.New("benchmark: runner not configured")
+	}
+	if model == "" {
+		return core.BenchmarkRun{}, fmt.Errorf("%w: model is required", ErrInvalidRequest)
+	}
+	rows, err := r.store.ListRecentSettledByModel(ctx, model, 1)
+	if err != nil {
+		return core.BenchmarkRun{}, err
+	}
+	if len(rows) == 0 {
+		return core.BenchmarkRun{}, core.ErrNotFound
+	}
+	head, err := r.store.GetBenchmarkRun(ctx, rows[0].ID)
+	if err != nil {
+		return core.BenchmarkRun{}, err
+	}
+	return head, nil
+}
+
+// ListRecentSettledByModel serves the history endpoint. The runner
+// pass-through is wrapped with the same nil-guard the rest of the
+// BenchmarkRunner interface uses.
+func (r *Runner) ListRecentSettledByModel(ctx context.Context, model string, limit int) ([]core.RecentBenchmarkRun, error) {
+	if r == nil || r.store == nil {
+		return nil, errors.New("benchmark: runner not configured")
+	}
+	return r.store.ListRecentSettledByModel(ctx, model, limit)
+}
+
+// timeNow is extracted so the tests can swap a deterministic clock in
+// if they need to assert on NextLaunchAt arithmetic.
+var timeNow = func() time.Time { return time.Now().UTC() }
 
 // revokeKey drops the gateway credential a run was given. Best effort:
 // a failure is logged, not returned, because it must never turn a

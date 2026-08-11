@@ -53,13 +53,20 @@ type BenchmarkRun struct {
 	UpdatedAt      time.Time       `json:"updated_at"`
 	StartedAt      *time.Time      `json:"started_at,omitempty"`
 	CompletedAt    *time.Time      `json:"completed_at,omitempty"`
+	// ScheduleID links a run to its originating benchmark_schedules row.
+	// Empty for ad-hoc console launches; non-empty for runs launched by
+	// internal/cron.Runner. Reading it on the console side lets an
+	// operator see that the row they opened came from a scheduled plan
+	// rather than from an explicit click.
+	ScheduleID string `json:"schedule_id,omitempty"`
 }
 
 const benchmarkRunColumns = `
 	id, org_id, provider, external_id, name, environments, model,
 	num_examples, rollouts, via_gateway, vkey_id, status, external_status,
 	avg_score, min_score, max_score, total_samples, metrics, viewer_url,
-	error, created_by, created_at, updated_at, started_at, completed_at`
+	error, created_by, created_at, updated_at, started_at, completed_at,
+	schedule_id`
 
 // CreateBenchmarkRun inserts the row before the provider is called, so
 // a launch that fails mid-flight still leaves a record an operator can
@@ -88,10 +95,12 @@ func (s *Store) CreateBenchmarkRun(ctx context.Context, r BenchmarkRun) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO benchmark_runs (
 			id, org_id, provider, external_id, name, environments, model,
-			num_examples, rollouts, via_gateway, vkey_id, status, created_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			num_examples, rollouts, via_gateway, vkey_id, status, created_by,
+			schedule_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		r.ID, r.OrgID, r.Provider, r.ExternalID, r.Name, envs, r.Model,
-		r.NumExamples, r.Rollouts, r.ViaGateway, r.VKeyID, r.Status, r.CreatedBy)
+		r.NumExamples, r.Rollouts, r.ViaGateway, r.VKeyID, r.Status, r.CreatedBy,
+		r.ScheduleID)
 	return err
 }
 
@@ -253,6 +262,7 @@ func scanBenchmarkRun(rows pgx.Rows) (BenchmarkRun, error) {
 		&r.NumExamples, &r.Rollouts, &r.ViaGateway, &r.VKeyID, &r.Status, &r.ExternalStatus,
 		&r.AvgScore, &r.MinScore, &r.MaxScore, &r.TotalSamples, &metrics, &r.ViewerURL,
 		&r.Error, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt, &r.StartedAt, &r.CompletedAt,
+		&r.ScheduleID,
 	); err != nil {
 		return BenchmarkRun{}, err
 	}
