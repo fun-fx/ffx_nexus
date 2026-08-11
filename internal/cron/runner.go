@@ -23,16 +23,16 @@ import (
 // Spec is one row from benchmark_schedules plus the interfaces the
 // runner needs to launch it and record the row it produced.
 type Spec struct {
-	ID            string
-	OrgID         string
-	Name          string
-	Environments  []string
-	Model         string
-	NumExamples   int
-	Rollouts      int
-	ViaGateway    bool
-	Cadence       time.Duration
-	NextLaunchAt  time.Time
+	ID           string
+	OrgID        string
+	Name         string
+	Environments []string
+	Model        string
+	NumExamples  int
+	Rollouts     int
+	ViaGateway   bool
+	Cadence      time.Duration
+	NextLaunchAt time.Time
 }
 
 // Lander asks the benchmark package to launch a run.

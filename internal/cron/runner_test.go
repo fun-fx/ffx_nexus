@@ -26,8 +26,8 @@ type fakeStore struct {
 }
 
 type updateCall struct {
-	ID     string
-	When   time.Time
+	ID   string
+	When time.Time
 }
 
 type markCall struct {

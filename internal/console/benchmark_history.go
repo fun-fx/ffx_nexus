@@ -22,12 +22,12 @@ import (
 // response either confirms a regression or shows a stable line
 // they can put in front of an exec.
 type benchmarkHistoryResponse struct {
-	Model       string                     `json:"model"`
-	GeneratedAt time.Time                  `json:"generated_at"`
-	HalfLife    string                     `json:"half_life"`
-	Weights     router.CombinedWeights     `json:"weights"`
-	Rows        []benchmarkHistoryEntry    `json:"rows"`
-	Trend       benchmarkHistoryTrend      `json:"trend"`
+	Model       string                  `json:"model"`
+	GeneratedAt time.Time               `json:"generated_at"`
+	HalfLife    string                  `json:"half_life"`
+	Weights     router.CombinedWeights  `json:"weights"`
+	Rows        []benchmarkHistoryEntry `json:"rows"`
+	Trend       benchmarkHistoryTrend   `json:"trend"`
 }
 
 type benchmarkHistoryEntry struct {

@@ -43,19 +43,19 @@ var DefaultDriftAlertSpec = DriftAlertSpec{
 // record would force them to consult another system to know when the
 // gap was first observed.
 type DriftAlert struct {
-	Model        string    `json:"model"`
-	Kind         string    `json:"kind"` // "relative_change" | "freshness_age"
-	CurrentScore float64   `json:"current_score"`
-	PreviousScore float64  `json:"previous_score"`
-	RunID        string    `json:"run_id"`
-	ObservedAt   time.Time `json:"observed_at"`
+	Model         string    `json:"model"`
+	Kind          string    `json:"kind"` // "relative_change" | "freshness_age"
+	CurrentScore  float64   `json:"current_score"`
+	PreviousScore float64   `json:"previous_score"`
+	RunID         string    `json:"run_id"`
+	ObservedAt    time.Time `json:"observed_at"`
 	// Origin distinguishes "I just settled" from "I have been stale
 	// for a while and only just got around to telling you". The
 	// post-settle detector sets Origin="settle". The boot staleness
 	// sweep sets Origin="boot".
-	Origin      string  `json:"origin"`
-	Threshold   float64 `json:"threshold"`
-	Detail      string  `json:"detail,omitempty"`
+	Origin    string  `json:"origin"`
+	Threshold float64 `json:"threshold"`
+	Detail    string  `json:"detail,omitempty"`
 }
 
 // AlertSink accepts a drift alert. The default concrete sink is

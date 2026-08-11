@@ -20,9 +20,9 @@ import (
 // not told about (the COALESCE / NULLIF clauses). A naive overwrite
 // here would let a bug through that only shows up in production.
 type fakeStore struct {
-	mu      sync.Mutex
-	rows    map[string]core.BenchmarkRun
-	scheds  []core.BenchmarkSchedule
+	mu        sync.Mutex
+	rows      map[string]core.BenchmarkRun
+	scheds    []core.BenchmarkSchedule
 	createErr error
 	updateErr error
 }
@@ -87,11 +87,11 @@ func (f *fakeStore) ListRecentSettledByModel(_ context.Context, model string, li
 			continue
 		}
 		out = append(out, core.RecentBenchmarkRun{
-			ID:          r.ID,
-			Model:       r.Model,
-			AvgScore:    r.AvgScore,
-			MinScore:    r.MinScore,
-			MaxScore:    r.MaxScore,
+			ID:           r.ID,
+			Model:        r.Model,
+			AvgScore:     r.AvgScore,
+			MinScore:     r.MinScore,
+			MaxScore:     r.MaxScore,
 			TotalSamples: r.TotalSamples,
 			CompletedAt:  r.CompletedAt,
 		})

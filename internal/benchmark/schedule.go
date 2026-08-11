@@ -13,16 +13,16 @@ import (
 // handlers short. The fields mirror Cron.Spec one-for-one except the
 // cron-side cadence is encoded as time.Duration rather than seconds.
 type ScheduleSpec struct {
-	ID            string
-	OrgID         string
-	Name          string
-	Environments  []string
-	Model         string
-	NumExamples   int
-	Rollouts      int
-	ViaGateway    bool
-	Cadence       time.Duration
-	NextLaunchAt  time.Time
+	ID           string
+	OrgID        string
+	Name         string
+	Environments []string
+	Model        string
+	NumExamples  int
+	Rollouts     int
+	ViaGateway   bool
+	Cadence      time.Duration
+	NextLaunchAt time.Time
 }
 
 // ScheduleLander is what cron.Runner calls to fire a schedule. The
@@ -60,15 +60,15 @@ func (r *Runner) RunSchedule(ctx context.Context, s ScheduleSpec) (string, error
 		return "", fmt.Errorf("%w: cadence must be positive", ErrInvalidRequest)
 	}
 	spec := LaunchSpec{
-		OrgID:      s.OrgID,
-		ActorID:    "cron:schedule:" + s.ID,
-		Name:       s.Name,
-		ScheduleID: s.ID,
+		OrgID:        s.OrgID,
+		ActorID:      "cron:schedule:" + s.ID,
+		Name:         s.Name,
+		ScheduleID:   s.ID,
 		Environments: s.Environments,
-		Model:      s.Model,
-		NumExamples: s.NumExamples,
-		Rollouts:    s.Rollouts,
-		ViaGateway:  s.ViaGateway,
+		Model:        s.Model,
+		NumExamples:  s.NumExamples,
+		Rollouts:     s.Rollouts,
+		ViaGateway:   s.ViaGateway,
 	}
 	run, err := r.Launch(ctx, spec)
 	if err != nil {

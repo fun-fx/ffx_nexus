@@ -38,13 +38,13 @@ func (s *scheduleStub) Get(_ context.Context, _ string) (core.BenchmarkRun, erro
 	return core.BenchmarkRun{}, nil
 }
 func (s *scheduleStub) Cancel(_ context.Context, _ string) error         { return nil }
-func (s *scheduleStub) Delete(_ context.Context, _ string) error        { return nil }
+func (s *scheduleStub) Delete(_ context.Context, _ string) error         { return nil }
 func (s *scheduleStub) Logs(_ context.Context, _ string) (string, error) { return "", nil }
 func (s *scheduleStub) Models(_ context.Context) ([]benchmark.Model, error) {
 	return nil, nil
 }
 func (s *scheduleStub) PollOnce(_ context.Context) (int, error) { return 0, nil }
-func (s *scheduleStub) GatewayRoutingAvailable() bool            { return true }
+func (s *scheduleStub) GatewayRoutingAvailable() bool           { return true }
 func (s *scheduleStub) DryRun(_ context.Context, _ benchmark.LaunchSpec) (benchmark.DryRunResult, error) {
 	return benchmark.DryRunResult{}, nil
 }

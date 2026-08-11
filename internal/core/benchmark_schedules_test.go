@@ -38,7 +38,12 @@ func newScheduleID(t *testing.T) string {
 	return "schd-" + t.Name()[:min(6, len(t.Name()))] + "-" + time.Now().UTC().Format("150405") + "-" + uintToStr(n)
 }
 
-func min(a, b int) int { if a < b { return a }; return b }
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 func uintToStr(n uint64) string {
 	if n == 0 {

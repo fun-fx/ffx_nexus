@@ -9,8 +9,8 @@ import (
 )
 
 type fakeSources struct {
-	mu    sync.Mutex
-	runs  map[string]map[string]RunLite // model -> ordered_by_completed_at_desc
+	mu   sync.Mutex
+	runs map[string]map[string]RunLite // model -> ordered_by_completed_at_desc
 }
 
 func (f *fakeSources) GetBenchmarkRun(_ context.Context, id string) (RunLite, error) {

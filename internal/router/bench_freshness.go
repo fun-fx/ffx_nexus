@@ -38,7 +38,7 @@ type SnapshotWithFreshness struct {
 	Stats      BenchmarkStats
 	Freshness  float64 // 0..1: weight the blend applies right now
 	HalfLife   time.Duration
-	BlendedIn  bool    // true when Stats.AvgScore is actually mixed in
+	BlendedIn  bool // true when Stats.AvgScore is actually mixed in
 	SampleTime time.Time
 }
 

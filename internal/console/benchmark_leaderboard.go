@@ -22,7 +22,7 @@ import (
 // the same numbers the router uses, so an operator's question about
 // the leaderboard never drifts from the answer.
 type benchmarkLeaderboardResponse struct {
-	GeneratedAt time.Time                `json:"generated_at"`
+	GeneratedAt time.Time                 `json:"generated_at"`
 	Weights     router.CombinedWeights    `json:"weights"`
 	HalfLife    string                    `json:"half_life"`
 	Rows        []benchmarkLeaderboardRow `json:"rows"`
@@ -33,17 +33,17 @@ type benchmarkLeaderboardResponse struct {
 // router will multiply it by; Effective is the product, kept on
 // the row to avoid a second multiplication in the front-end.
 type benchmarkLeaderboardRow struct {
-	Model         string    `json:"model"`
-	LatestRunID   string    `json:"latest_run_id"`
-	AvgScore      float64   `json:"avg_score"`
-	MinScore      float64   `json:"min_score"`
-	MaxScore      float64   `json:"max_score"`
-	CompletedAt   time.Time `json:"completed_at"`
-	TotalSamples  int       `json:"total_samples"`
-	Freshness     float64   `json:"freshness"`
-	Effective     float64   `json:"effective"`
-	BlendedIn     bool      `json:"blended_in"`
-	StaleAgeDays  float64   `json:"stale_age_days"`
+	Model        string    `json:"model"`
+	LatestRunID  string    `json:"latest_run_id"`
+	AvgScore     float64   `json:"avg_score"`
+	MinScore     float64   `json:"min_score"`
+	MaxScore     float64   `json:"max_score"`
+	CompletedAt  time.Time `json:"completed_at"`
+	TotalSamples int       `json:"total_samples"`
+	Freshness    float64   `json:"freshness"`
+	Effective    float64   `json:"effective"`
+	BlendedIn    bool      `json:"blended_in"`
+	StaleAgeDays float64   `json:"stale_age_days"`
 }
 
 func (s *Server) benchmarkLeaderboard(w http.ResponseWriter, r *http.Request, _ core.User) {
@@ -105,13 +105,13 @@ func (s *Server) benchmarkLeaderboard(w http.ResponseWriter, r *http.Request, _ 
 		}
 		fresh := router.Freshness(stat, halfLife, now)
 		row := benchmarkLeaderboardRow{
-			Model:       m,
-			LatestRunID: latestRunFor(s, m),
-			AvgScore:    stat.AvgScore,
-			CompletedAt: stat.CompletedAt,
-			Freshness:   fresh,
-			Effective:   stat.AvgScore * fresh,
-			BlendedIn:   weights.BenchmarkWeight > 0 && fresh > 0,
+			Model:        m,
+			LatestRunID:  latestRunFor(s, m),
+			AvgScore:     stat.AvgScore,
+			CompletedAt:  stat.CompletedAt,
+			Freshness:    fresh,
+			Effective:    stat.AvgScore * fresh,
+			BlendedIn:    weights.BenchmarkWeight > 0 && fresh > 0,
 			StaleAgeDays: now.Sub(stat.CompletedAt).Hours() / 24,
 		}
 		if s.benchmarks != nil {

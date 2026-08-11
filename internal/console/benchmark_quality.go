@@ -28,13 +28,13 @@ type benchmarkQualityResponse struct {
 	// Row is one public-facing entry: model id, score, freshness,
 	// contribution, and the time the data reflects. The operator
 	// reads this row at a glance.
-	Model        string  `json:"model"`
-	AvgScore     float64 `json:"avg_score"`
-	CompletedAt  string  `json:"completed_at"`
-	Freshness    float64 `json:"freshness"`
-	BenchWeight  float64 `json:"bench_weight"`
-	BlendedIn    bool    `json:"blended_in"`
-	HalfLife     string  `json:"half_life"`
+	Model       string  `json:"model"`
+	AvgScore    float64 `json:"avg_score"`
+	CompletedAt string  `json:"completed_at"`
+	Freshness   float64 `json:"freshness"`
+	BenchWeight float64 `json:"bench_weight"`
+	BlendedIn   bool    `json:"blended_in"`
+	HalfLife    string  `json:"half_life"`
 
 	// Routing context: which way the router is leaning on this row
 	// right now. With NEXUS_ROUTE_W_BENCH=0 the row reads
@@ -90,7 +90,7 @@ func (s *Server) benchmarkQuality(w http.ResponseWriter, r *http.Request, _ core
 	for _, m := range lineup {
 		entry := snap[m]
 		row := benchmarkQualityResponse{
-			Model:    m,
+			Model:     m,
 			BlendedIn: 0 < weights.BenchmarkWeight && entry.Freshness > 0,
 		}
 		if entry.Stats.CompletedAt.IsZero() {
@@ -110,9 +110,9 @@ func (s *Server) benchmarkQuality(w http.ResponseWriter, r *http.Request, _ core
 		out.Freshness = append(out.Freshness, row)
 	}
 	out.Freshness = append(out.Freshness, benchmarkQualityResponse{
-		BlendedIn:   false,
-		ModelsAll:   len(lineup),
-		ModelsUsed:  usedCount,
+		BlendedIn:  false,
+		ModelsAll:  len(lineup),
+		ModelsUsed: usedCount,
 	})
 
 	writeJSON(w, http.StatusOK, out)

@@ -21,7 +21,7 @@ import (
 // treats that as "bench blend inactive / unsupported", which is
 // honest.
 type routerQualityQuerier struct {
-	router  *router.Router
+	router   *router.Router
 	combined *router.CombinedProvider
 }
 

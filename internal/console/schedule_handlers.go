@@ -31,19 +31,19 @@ import (
 
 // scheduleRequest is the JSON shape accepted on POST.
 type scheduleRequest struct {
-	Name         string   `json:"name"`
-	Environments []string `json:"environments"`
-	Model        string   `json:"model"`
-	NumExamples  int      `json:"num_examples"`
-	Rollouts     int      `json:"rollouts"`
-	ViaGateway   *bool    `json:"via_gateway"`
-	CadenceSeconds int    `json:"cadence_seconds"`
-	Enabled      *bool    `json:"enabled"`
+	Name           string   `json:"name"`
+	Environments   []string `json:"environments"`
+	Model          string   `json:"model"`
+	NumExamples    int      `json:"num_examples"`
+	Rollouts       int      `json:"rollouts"`
+	ViaGateway     *bool    `json:"via_gateway"`
+	CadenceSeconds int      `json:"cadence_seconds"`
+	Enabled        *bool    `json:"enabled"`
 }
 
 const (
-	scheduleMinCadence = 60              // 1 minute — synchronous ticks run every 30s
-	scheduleMaxCadence = 7 * 24 * 3600  // 7 days — anything longer is more usefully manual
+	scheduleMinCadence = 60            // 1 minute — synchronous ticks run every 30s
+	scheduleMaxCadence = 7 * 24 * 3600 // 7 days — anything longer is more usefully manual
 )
 
 func (s *Server) createBenchmarkSchedule(w http.ResponseWriter, r *http.Request, u core.User) {

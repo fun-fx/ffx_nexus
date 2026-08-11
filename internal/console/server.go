@@ -69,7 +69,7 @@ type Server struct {
 	// so /api/eval/benchmarks/quality can answer "what is the
 	// router actually doing right now". nil when the router is not
 	// wired (e.g. local debug deployments); the route then 503s.
-	qualityRouter     QualityRouterQuerier
+	qualityRouter QualityRouterQuerier
 	// pushReports holds operator-reported `prime env push` outcomes.
 	// In-memory and advisory only — see benchmark_push_report.go. The
 	// zero value works, so NewServer leaves it alone.
@@ -396,9 +396,9 @@ func (s *Server) Mux() http.Handler {
 		// is mixing in right now. The admin's "is this benchmark still
 		// teaching the router anything?" question has its answer here.
 		r.Get("/eval/benchmarks/quality", s.requireAdmin(s.benchmarkQuality))
-			r.Get("/eval/benchmarks/leaderboard", s.requireAdmin(s.benchmarkLeaderboard))
-			r.Post("/eval/benchmarks/quality", s.requireAdmin(s.benchmarkQualityGate))
-			r.Get("/eval/benchmarks/{model}/history", s.requireAdmin(s.benchmarkHistory))
+		r.Get("/eval/benchmarks/leaderboard", s.requireAdmin(s.benchmarkLeaderboard))
+		r.Post("/eval/benchmarks/quality", s.requireAdmin(s.benchmarkQualityGate))
+		r.Get("/eval/benchmarks/{model}/history", s.requireAdmin(s.benchmarkHistory))
 
 		// Backwards-compat alias: /api/me/quality/stats (deprecated, prefer
 		// /api/me/quality) — kept for any client that has been wired against
