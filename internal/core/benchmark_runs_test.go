@@ -33,12 +33,23 @@ func benchTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Skipf("postgres not reachable at %s: %v", dsn, err)
 	}
-	schema, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "012_benchmark_runs.sql"))
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
+	// bench-using tests fan in here, so apply every benchmark-schema
+	// migration the production boot is expected to bring along. The
+	// list stays in 0xx ascending order; future migrations on
+	// benchmark_runs must be appended here so the test DB carries the
+	// same shape as the cluster.
+	migrations := []string{
+		"012_benchmark_runs.sql",
+		"013_scheduled_benchmarks.sql",
 	}
-	if err := store.Migrate(ctx, string(schema)); err != nil {
-		t.Fatalf("apply migration: %v", err)
+	for _, name := range migrations {
+		schema, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", name))
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		if err := store.Migrate(ctx, string(schema)); err != nil {
+			t.Fatalf("apply migration %s: %v", name, err)
+		}
 	}
 	if _, err := store.pool.Exec(ctx, `DELETE FROM benchmark_runs`); err != nil {
 		t.Fatalf("truncate: %v", err)
