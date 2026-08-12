@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 // Langfuse region → base URL table. Editable through the Region
@@ -767,6 +767,20 @@ export function PluginListCard({
     refetchInterval: 30_000,
   });
 
+  // One-shot inline banner shown above the rows after a manual fire /
+  // scheduled flush. Keeps an admin who hits "Run now" from having to
+  // open devtools to know how many traces just drained. We auto-clear
+  // after a few seconds so old confirmations don't accumulate.
+  const [notice, setNotice] = useState<string | null>(null);
+  function pushNotice(text: string) {
+    setNotice(text);
+  }
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   const toggleM = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       patchEvalPlugin(id, { enabled }),
@@ -796,9 +810,9 @@ export function PluginListCard({
     }) => fireEvalPluginManual(name, tag),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["eval-plugins"] });
-      // Show the count in a one-shot toast — query invalidation
-      // refetches the list but the operator gets immediate feedback.
-      console.log(`manual fire: drained ${data.count} trace(s)`);
+      // Inline banner replaces the devtools-only console.log so the admin
+      // sees a one-shot "drained N traces" notice without checking devtools.
+      pushNotice(`Manual fire drained ${data.count} trace(s).`);
     },
   });
 
@@ -817,7 +831,7 @@ export function PluginListCard({
     }) => fireEvalPluginScheduled(name, tag),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["eval-plugins"] });
-      console.log(`scheduled flush: drained ${data.count} trace(s)`);
+      pushNotice(`Scheduled flush drained ${data.count} trace(s).`);
     },
   });
 
@@ -850,6 +864,12 @@ export function PluginListCard({
             + Install plugin
           </button>
         </header>
+      ) : null}
+
+      {notice ? (
+        <div className="plugin-flash-notice" role="status" aria-live="polite">
+          {notice}
+        </div>
       ) : null}
 
       {query.isLoading ? <p className="muted small">Loading plugins…</p> : null}

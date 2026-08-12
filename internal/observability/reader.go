@@ -742,26 +742,26 @@ type DailySpendBreakdownRow struct {
 // the percentage of the previous period the current period saved
 // (negative = the user spent more, positive = the user saved):
 //
-//   delta = current - previous
-//   pct   = (previous - current) / previous * 100
+//	delta = current - previous
+//	pct   = (previous - current) / previous * 100
 //
 // When previous = 0 (e.g. brand-new user with no traffic before the
 // window) pct is reported as 0 with a `HasPrevious=false` flag
 // instead of NaN — the UI renders this as "first window" rather than
 // "infinite savings", which would otherwise mislead.
 type DailySpendSummary struct {
-	Days             int     `json:"days"`
-	CurrentCost      float64 `json:"current_cost_usd"`
-	PreviousCost     float64 `json:"previous_cost_usd"`
-	DeltaCost        float64 `json:"delta_cost_usd"`
-	SavingsPct       float64 `json:"savings_pct"`
-	HasPrevious      bool    `json:"has_previous"`
-	CurrentTokens    int64   `json:"current_tokens"`
-	PreviousTokens   int64   `json:"previous_tokens"`
-	CurrentRequests  int64   `json:"current_requests"`
-	PreviousRequests int64   `json:"previous_requests"`
-	CurrentCacheHits int64   `json:"current_cache_hits"`
-	PreviousCacheHits int64  `json:"previous_cache_hits"`
+	Days              int     `json:"days"`
+	CurrentCost       float64 `json:"current_cost_usd"`
+	PreviousCost      float64 `json:"previous_cost_usd"`
+	DeltaCost         float64 `json:"delta_cost_usd"`
+	SavingsPct        float64 `json:"savings_pct"`
+	HasPrevious       bool    `json:"has_previous"`
+	CurrentTokens     int64   `json:"current_tokens"`
+	PreviousTokens    int64   `json:"previous_tokens"`
+	CurrentRequests   int64   `json:"current_requests"`
+	PreviousRequests  int64   `json:"previous_requests"`
+	CurrentCacheHits  int64   `json:"current_cache_hits"`
+	PreviousCacheHits int64   `json:"previous_cache_hits"`
 }
 
 // DailySpendSummary returns the rolled-up totals for the trailing
