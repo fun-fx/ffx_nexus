@@ -22,6 +22,17 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: toolchain version
+        # When go.mod has a `toolchain` directive (Go 1.21+), go picks
+        # that exact patch release automatically. Logging which one it
+        # uses makes govulncheck's stdlib version matches self-evident
+        # in the run log without us having to read scanner output.
+        run: |
+          go version
+          # go env GOTOOLCHAIN shows 'auto' vs 'local'; the toolchain
+          # directive is consumed regardless thanks to setup-go@v6.
+          go env GOTOOLCHAIN GOVERSION
+
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)
