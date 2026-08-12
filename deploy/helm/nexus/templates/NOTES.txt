@@ -38,3 +38,18 @@ WARNING: No provider API keys and no existingSecret were set. The gateway will
 start, but chat completions will fail until you supply a key (via secrets.* or
 existingSecret) or register one through the credential store.
 {{- end }}
+
+{{- if and .Values.config.grafana .Values.config.grafana.enabled }}
+
+Grafana observability toggle is ON.
+  - Dashboard CRs: {{ .Values.config.grafana.dashboardsEnabled | default true }}
+  - Alert rules:  {{ .Values.config.grafana.alertsEnabled | default false }}
+  - Folder:       {{ .Values.config.grafana.folder | default "Nexus" }}
+  {{- if .Values.config.grafana.alertsEnabled }}
+  {{- if not .Values.config.grafana.folderUID }}
+  WARNING: config.grafana.alertsEnabled is true but config.grafana.folderUID is
+  empty. Discover the existing folder UID via `curl -u admin:$PASS http://<grafana>/api/folders | jq '.[] | select(.title == "{{ .Values.config.grafana.folder | default "Nexus" }}") | .uid'` and set config.grafana.folderUID before the next `helm upgrade`.
+  {{- end }}
+  Alert webhook URL defaults to http://failover-echo.tenant-nexus.svc:8080/alert — override `config.grafana.alertsWebhook` to point at your real receiver.
+  {{- end }}
+{{- end }}

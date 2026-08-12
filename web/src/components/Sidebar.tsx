@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { Icon } from "./icons";
-import { fetchMe, type User } from "../api";
+import { fetchMe, fetchUIObservability, type User } from "../api";
 
 type NavItem = {
   to: string;
@@ -32,10 +32,17 @@ function matchExactly(to: string): boolean {
 
 export function Sidebar() {
   const [user, setUser] = useState<User | null>(null);
+  const [grafana, setGrafana] = useState<string | null>(null);
   useEffect(() => {
     fetchMe()
       .then(setUser)
       .catch(() => setUser(null));
+    // The Grafana URL is non-sensitive and anonymous, so we don't gate it
+    // on user state. If the endpoint is empty (operator didn't set
+    // NEXUS_PUBLIC_GRAFANA_URL) we just skip rendering the link entirely.
+    fetchUIObservability()
+      .then((o) => setGrafana(o.grafana?.base ?? null))
+      .catch(() => setGrafana(null));
   }, []);
 
   const groups: Array<NavItem["group"]> = ["Workspace", "Admin"];
@@ -84,6 +91,31 @@ export function Sidebar() {
             </div>
           );
         })}
+        {grafana ? (
+          <div className="sidebar-group sidebar-external">
+            <div className="sidebar-group-label">External</div>
+            <a
+              className="sidebar-item sidebar-item-external"
+              href={grafana}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <span className="sidebar-item-icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path
+                    d="M6 3h7v7M13 3 4 12"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <span className="sidebar-item-label">Open in Grafana</span>
+              <span className="sidebar-item-bar" aria-hidden="true" />
+            </a>
+          </div>
+        ) : null}
       </nav>
       <div className="sidebar-foot">
         {user ? (

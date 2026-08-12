@@ -378,6 +378,9 @@ func main() {
 		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore, profileStore, resolver, pluginStore)
 		consoleSrvHandler.SetEvalConfig(erc, erc)
 		erc.SeedProfilesFromConfig(ctx)
+		// Console sidebar / Spend / Quality pages render an
+		// "Open in Grafana" link when this is non-empty.
+		consoleSrvHandler.SetPublicGrafanaURL(cfg.PublicGrafanaURL)
 		if resolver != nil {
 			evalWorker.SetSecretResolver(resolver.Resolve)
 		}

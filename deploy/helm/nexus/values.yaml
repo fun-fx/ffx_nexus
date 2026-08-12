@@ -39,6 +39,12 @@ config:
   consoleAddr: ":8081"
   # Public HTTPS base for the OpenAI-compatible gateway (shown in console UI).
   publicGatewayUrl: ""
+  # Optional Grafana URL to surface on the console's Spend / Quality /
+  # Traces pages. Empty == the console hides the "Open in Grafana" link.
+  # The bundled dashboard UIDs (nexus-01-overview, nexus-02-llm-spend,
+  # nexus-03-eval-quality) must match the GrafanaDashboard CRs in
+  # templates/grafana-dashboards.yaml.
+  publicGrafanaUrl: ""
   upstreamTimeout: "120s"
   openaiBaseUrl: ""
 
@@ -223,6 +229,53 @@ metrics:
                                   # entry here becomes another collection.
     healthTimeout: "90s"          # NEXUS_METABASE_HEALTH_TIMEOUT
     requestTimeout: "10s"         # NEXUS_METABASE_REQUEST_TIMEOUT
+
+  # --- Grafana dashboard toggle (V5) -----------------------------------------
+  # Renders three GrafanaDashboard CRs (01-overview, 02-llm-spend,
+  # 03-eval-quality) into the chart-managed namespace so a Cozystack-managed
+  # Grafana instance picks them up automatically. The toggle is independent
+  # of the Grafana instance itself — Grafana is shared infra owned by the
+  # platform/ops team (deploy/cozystack/09-grafana-dashboards.yaml applies
+  # the equivalent manifests platform-side). This block just lets the
+  # gateway author carry the dashboards in the chart so releases stay
+  # source-of-truth in the same repo as the metrics they visualize.
+  #
+  # What it does on `enabled: true`:
+  #   1. Renders the three bundled reference dashboard JSONs as ConfigMaps
+  #      under names `nexus-dashboard-{overview,spend,eval}`.
+  #   2. Renders three matching GrafanaDashboard CRs (kind from the
+  #      `grafana.integreatly.org/v1beta1` API) that the Grafana operator
+  #      reconciles into the target Grafana.
+  #   3. Renders a GrafanaContactPoint + GrafanaAlertRuleGroup (in the
+  #      same toggle) so alert routing is also chart-managed.
+  grafana:
+    enabled: false
+    # `folder` is the display name in the Grafana UI. The operator will
+    # assign a UID on first apply — `folderUID` below is only used by the
+    # AlertRuleGroup, which can NOT auto-create its parent folder (the
+    # existing folder UID must be discovered for a fresh cluster via
+    # `curl -u admin:$PASS http://<grafana>/api/folders | jq`).
+    folder: Nexus
+    folderUID: ""                 # Required when alertsEnabled: true.
+                                  # Empty => the chart renders dashboards but
+                                  # omits the alert rule group.
+    dashboardsEnabled: true       # Toggle for the 3 GrafanaDashboard CRs only.
+    alertsEnabled: false          # Toggle for contact point + alert rules.
+    # `extraDashboards` lets an operator preload additional JSON files
+    # from the chart's `files/` dir (mounted at `extraDashboardsDir`).
+    # Empty => ship only the 3 bundled references.
+    extraDashboards: {}           # Map of filename -> JSON body.
+    # Public URL surfaced on the console's *Spend* / *Quality* pages so the
+    # operator can click through to the matching Grafana dashboard. Empty
+    # => the console hides the link.
+    publicUrl: ""
+    # Label selector the Grafana CRs use to bind to a specific Grafana
+    # instance. Cozystack's default operator labels grafana instances with
+    # `dashboards: grafana`; override if your cluster uses something else
+    # (e.g. `app.kubernetes.io/name: grafana` for vanilla grafana-operator).
+    instanceSelector:
+      matchLabels:
+        dashboards: grafana
 
   # --- V5 high-concurrency tuning ---------------------------------------------
   # These map directly to the Go runtime env vars GOMEMLIMIT and GOGC. Set

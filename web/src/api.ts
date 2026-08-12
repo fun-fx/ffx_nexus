@@ -1712,3 +1712,25 @@ export async function createLangSmithAutomationRule(
   }
   return jsonOrError<LangSmithRuleResult>(res);
 }
+
+// UI observability helper — fetches the operator-supplied Grafana URL
+// bundle surfaced on /api/ui/observability so the sidebar / Spend /
+// Quality pages can render an "Open in Grafana" link. `grafana` may be
+// undefined when the operator did not set NEXUS_PUBLIC_GRAFANA_URL; the
+// caller should treat that as "no link".
+export type UIObservabilityGrafana = {
+  base: string;
+  overview: string;
+  spend: string;
+  eval: string;
+};
+
+export type UIObservability = {
+  grafana?: UIObservabilityGrafana;
+};
+
+export async function fetchUIObservability(): Promise<UIObservability> {
+  const res = await fetch("/api/ui/observability");
+  if (!res.ok) return {};
+  return jsonOrError<UIObservability>(res);
+}

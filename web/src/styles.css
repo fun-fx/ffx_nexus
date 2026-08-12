@@ -489,6 +489,16 @@ a:hover {
   opacity: 1;
 }
 
+.sidebar-external .sidebar-item-label {
+  /* External links stay quieter than nav items so the eye lands on the
+     internal pages first; the icon-arrow signals "leaves the app". */
+  color: var(--muted);
+}
+
+.sidebar-item-external:hover .sidebar-item-label {
+  color: var(--text);
+}
+
 .sidebar-foot {
   margin-top: auto;
   padding-top: 14px;
