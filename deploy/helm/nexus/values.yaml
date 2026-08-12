@@ -291,6 +291,16 @@ metrics:
     instanceSelector:
       matchLabels:
         dashboards: grafana
+    # Prefix applied to every GrafanaDashboard CR's metadata.name and
+    # matching ConfigMap name. The chart's CRs MUST not collide with the
+    # operator-applied legacy path under bare names like `nexus-01-overview`
+    # (legacy manifest: deploy/cozystack/09-grafana-dashboards.yaml in the
+    # ops repo). The default prefix `chart-` keeps the CR names distinct
+    # across both paths and gives chart-managed dashboards a unique folder
+    # identity in Grafana. Set to "" (empty) only after the legacy path is
+    # removed — otherwise the cluster ends up with two GrafanaDashboard CRs
+    # reconciling the same logical UID.
+    namePrefix: "chart-"
 
   # --- V5 high-concurrency tuning ---------------------------------------------
   # These map directly to the Go runtime env vars GOMEMLIMIT and GOGC. Set
