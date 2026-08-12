@@ -238,7 +238,7 @@ describe("Spend — self view", () => {
     // reached again by re-clicking the bar in the chart. The new flow
     // keeps a `drilled:` chip rail under the chart so a reader can
     // click back into the same day without scrolling.
-    stubFetch(withSummaryFetch((url) => {
+stubFetch(withSummaryFetch((url) => {
       if (url === "/api/me") return jsonResponse(adminMe);
       if (url === "/api/me/spend/daily?days=30") {
         return jsonResponse([
@@ -308,7 +308,7 @@ describe("Spend — self view", () => {
   });
 
   it("range chip reset clears the picked day entirely (no orphan rail)", async () => {
-    stubFetch(withSummaryFetch((url) => {
+stubFetch(withSummaryFetch((url) => {
       if (url === "/api/me") return jsonResponse(adminMe);
       if (url.startsWith("/api/me/spend/daily?days=")) {
         return jsonResponse([

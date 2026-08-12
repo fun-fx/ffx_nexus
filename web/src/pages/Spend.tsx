@@ -565,7 +565,6 @@ function chosenBarHeight(
   if (maxCost <= 0) return 2;
   return Math.max(2, (safe.cost_usd / maxCost) * usable);
 }
-
 // --- SpendHero ---------------------------------------------------------
 //
 // The page's hero block: a left-aligned title pair next to a 1×2 hero
