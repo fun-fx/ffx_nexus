@@ -438,11 +438,11 @@ func TestBuildDailySpendSummaryQuery(t *testing.T) {
 // the wrong column).
 func TestDailySpendSummary_SavingsPctMath(t *testing.T) {
 	cases := []struct {
-		name                       string
-		current, previous          float64
-		hasPrevious                bool
-		wantDelta                  float64
-		wantSavingsPct             float64
+		name              string
+		current, previous float64
+		hasPrevious       bool
+		wantDelta         float64
+		wantSavingsPct    float64
 	}{
 		{"no previous", 12.34, 0, false, 12.34, 0},
 		{"spent less than before", 50, 100, true, -50, 50},
