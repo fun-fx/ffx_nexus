@@ -65,6 +65,15 @@ type Server struct {
 	pluginManualFirer PluginManualFirer     // admin-driven drain for manual-trigger plugins
 	pluginKeys        EvalPluginKeys        // in-process plugin key resolver (console keys)
 	benchmarks        BenchmarkRunner       // model-level benchmark runs; nil without Postgres
+	// cspOrigins is the operator-supplied allow-list for cross-origin
+	// connections the console may make (marketing → console login handoff,
+	// live-trace WSS endpoint on a separate hostname, third-party login
+	// portals). Wired from Config.PublicWebOrigins
+	// (NEXUS_PUBLIC_WEB_ORIGINS, comma-separated) at boot. Empty list
+	// degrades the CSP connect-src to 'self' only, which is safe for
+	// on-prem Helm deploys that never serve a separate marketing origin
+	// — see securityHeaders() for the policy assembly.
+	cspOrigins []string
 	// qualityRouter exposes the in-memory router state to the console
 	// so /api/eval/benchmarks/quality can answer "what is the
 	// router actually doing right now". nil when the router is not
@@ -143,6 +152,28 @@ func (s *Server) SetCredentialReloader(fn func(context.Context)) { s.reload = fn
 func (s *Server) SetEvalConfig(src EvalConfigSource, apply EvalConfigApplier) {
 	s.evalConfigSrc = src
 	s.evalConfigApply = apply
+}
+
+
+// SetCSPOrigins sets the operator-supplied allow-list of web origins that
+// the console may connect to. Used by securityHeaders() to assemble the
+// Content-Security-Policy `connect-src` directive without hardcoding any
+// company's domain. Whitespace and trailing slashes are trimmed; an empty
+// resulting list is preserved (securityHeaders treats empty as 'self'-only,
+// which is the desired safe default for on-prem deploys).
+//
+// Splitting on comma lets one Helm `config.publicWebOrigins` value carry
+// multiple origins (e.g. `https://marketing.<tenant>,https://live-trace.<tenant>`).
+func (s *Server) SetCSPOrigins(origins []string) {
+	out := make([]string, 0, len(origins))
+	for _, o := range origins {
+		o = strings.TrimSpace(o)
+		o = strings.TrimRight(o, "/")
+		if o != "" {
+			out = append(out, o)
+		}
+	}
+	s.cspOrigins = out
 }
 
 // SetEvalProfiles attaches the profile store used by PR #135 per-eval

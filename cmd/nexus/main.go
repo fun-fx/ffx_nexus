@@ -378,6 +378,12 @@ func main() {
 		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore, profileStore, resolver, pluginStore)
 		consoleSrvHandler.SetEvalConfig(erc, erc)
 		erc.SeedProfilesFromConfig(ctx)
+		// CSP allow-list: comma-separated web origins the console may connect to
+		// (marketing site, separate live-trace wss host, etc.). Encoded into the
+		// CSP `connect-src` directive by securityHeaders, replacing the prior
+		// `https://*.ffx.ai` hardcode so multi-tenant Helm deploys do not need
+		// a code change to permit their own origin.
+		consoleSrvHandler.SetCSPOrigins(cfg.PublicWebOrigins)
 		if resolver != nil {
 			evalWorker.SetSecretResolver(resolver.Resolve)
 		}

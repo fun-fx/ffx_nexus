@@ -11,4 +11,3 @@ ci/
 # by any active template; helm 3.17's chart layer scans .yaml files
 # in templates/ and tries to parse them as templates, which fails
 # on the literal `\n` escapes used in pipeline traces. Exclude.
-templates/eval-plugins/
