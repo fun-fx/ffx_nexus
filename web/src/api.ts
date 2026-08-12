@@ -1047,6 +1047,108 @@ export async function deleteUser(id: string): Promise<void> {
   await jsonOrThrow(await fetch(`/api/users/${id}`, { method: "DELETE" }));
 }
 
+// --- Spend (per-day LLM cost) -----------------------------------------
+//
+// /api/me/spend/daily and /api/me/spend/daily/{day}/breakdown are
+// user-scoped (the caller's own gateway_traces). Admins can also target
+// any member via /api/users/{id}/spend/daily, passing "me" for the admin's
+// own spend.
+
+export interface DailySpendRow {
+  day: string; // YYYY-MM-DD (server UTC)
+  cost_usd: number;
+  tokens: number;
+  requests: number;
+  cache_hits: number;
+}
+
+export interface DailySpendBreakdownRow {
+  model: string; // request_model
+  provider: string;
+  // response_model is omitted on cache-hit and legacy rows where the
+  // server-side response shape was not persisted; the UI treats "" as
+  // "cache served" rather than a literal model name.
+  response_model?: string;
+  cost_usd: number;
+  tokens: number;
+  requests: number;
+  cache_hits: number;
+}
+
+function sanitizeDailySpendRow(d: Partial<DailySpendRow> | undefined | null): DailySpendRow {
+  const safe = (v: unknown, fb: number) =>
+    typeof v === "number" && Number.isFinite(v) ? v : fb;
+  return {
+    day: typeof d?.day === "string" ? d!.day : "",
+    cost_usd: safe(d?.cost_usd, 0),
+    tokens: safe(d?.tokens, 0),
+    requests: safe(d?.requests, 0),
+    cache_hits: safe(d?.cache_hits, 0),
+  };
+}
+
+function sanitizeDailySpendBreakdownRow(
+  d: Partial<DailySpendBreakdownRow> | undefined | null,
+): DailySpendBreakdownRow {
+  const safe = (v: unknown, fb: number) =>
+    typeof v === "number" && Number.isFinite(v) ? v : fb;
+  return {
+    model: typeof d?.model === "string" ? d!.model : "",
+    provider: typeof d?.provider === "string" ? d!.provider : "",
+    response_model:
+      typeof d?.response_model === "string" && d!.response_model !== ""
+        ? d!.response_model
+        : undefined,
+    cost_usd: safe(d?.cost_usd, 0),
+    tokens: safe(d?.tokens, 0),
+    requests: safe(d?.requests, 0),
+    cache_hits: safe(d?.cache_hits, 0),
+  };
+}
+
+export async function fetchMySpendDaily(days: number): Promise<DailySpendRow[]> {
+  const res = await fetch(`/api/me/spend/daily?days=${encodeURIComponent(String(days))}`);
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data.map((d) => sanitizeDailySpendRow(d as Partial<DailySpendRow>));
+}
+
+export async function fetchMySpendBreakdown(day: string): Promise<DailySpendBreakdownRow[]> {
+  const res = await fetch(
+    `/api/me/spend/daily/${encodeURIComponent(day)}/breakdown`,
+  );
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data.map((d) => sanitizeDailySpendBreakdownRow(d as Partial<DailySpendBreakdownRow>));
+}
+
+// "me" is a server-side alias for the admin caller's own ID, so the
+// admin can opt into the same shape as a per-member lookup without
+// resolving their own user ID in the page.
+export async function fetchUserSpendDaily(
+  userID: string,
+  days: number,
+): Promise<DailySpendRow[]> {
+  const res = await fetch(
+    `/api/users/${encodeURIComponent(userID)}/spend/daily?days=${encodeURIComponent(String(days))}`,
+  );
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data.map((d) => sanitizeDailySpendRow(d as Partial<DailySpendRow>));
+}
+
+export async function fetchUserSpendBreakdown(
+  userID: string,
+  day: string,
+): Promise<DailySpendBreakdownRow[]> {
+  const res = await fetch(
+    `/api/users/${encodeURIComponent(userID)}/spend/daily/${encodeURIComponent(day)}/breakdown`,
+  );
+  const data = await res.json();
+  if (!Array.isArray(data)) return [];
+  return data.map((d) => sanitizeDailySpendBreakdownRow(d as Partial<DailySpendBreakdownRow>));
+}
+
 // --- Admin: audit log (v1.1) ---
 
 export interface AuditEntry {

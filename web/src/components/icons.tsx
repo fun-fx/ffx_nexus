@@ -173,6 +173,14 @@ export const Icon = {
     ),
   chevron: (p: IconProps) =>
     base(<path d="M9 6l6 6-6 6" />, p),
-  dash: (p: IconProps) =>
-    base(<path d="M5 12h14" />, p),
+  dash: (p: IconProps) => base(<path d="M5 12h14" />, p),
+  wallet: (p: IconProps) =>
+    base(
+      <>
+        <path d="M3 7h15a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+        <path d="M3 7l3-3h11" />
+        <circle cx="16" cy="13" r="1.6" fill="currentColor" stroke="none" />
+      </>,
+      p,
+    ),
 };

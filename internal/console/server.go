@@ -256,6 +256,8 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/me/traces", s.requireUser(s.myTraces))
 		r.Get("/me/turns", s.requireUser(s.myTurns))
 		r.Get("/me/quality", s.requireUser(s.myQuality))
+		r.Get("/me/spend/daily", s.requireUser(s.mySpendDaily))
+		r.Get("/me/spend/daily/{day}/breakdown", s.requireUser(s.mySpendBreakdown))
 		r.Get("/me/keys", s.requireUser(s.listMyKeys))
 		r.Post("/me/keys", s.requireUser(s.createMyKey))
 		r.Delete("/me/keys/{id}", s.requireUser(s.revokeMyKey))
@@ -388,6 +390,8 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/users", s.requireAdmin(s.createUser))
 		r.Delete("/users/{id}", s.requireAdmin(s.deleteUser))
 		r.Get("/users/quality", s.requireAdmin(s.userQuality))
+		r.Get("/users/{id}/spend/daily", s.requireAdmin(s.userSpendDaily))
+		r.Get("/users/{id}/spend/daily/{day}/breakdown", s.requireAdmin(s.userSpendBreakdown))
 		r.Get("/audit", s.requireAdmin(s.listAudit))
 
 		// Operator-facing quality snapshot: model lineup + freshness.

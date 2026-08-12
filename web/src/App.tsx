@@ -15,6 +15,7 @@ import { Eval } from "./pages/Eval";
 import { Benchmarks } from "./pages/Benchmarks";
 import { Audit } from "./pages/Audit";
 import { Playground } from "./pages/Playground";
+import { Spend } from "./pages/Spend";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -41,6 +42,7 @@ export function App() {
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>
                 <Route index element={<Overview />} />
+                <Route path="spend" element={<Spend />} />
                 <Route path="traces" element={<Traces />} />
                 <Route path="routing" element={<Routing />} />
                 <Route path="routing/:alias" element={<RoutingDetail />} />
