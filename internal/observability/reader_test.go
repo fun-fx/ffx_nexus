@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
@@ -340,4 +341,101 @@ func TestTracePage_NilReaderEnvelope(t *testing.T) {
 		t.Errorf("Items must always be a slice (never nil) so JSON encodes []")
 	}
 	_ = context.Background() // keep "context" import alive for future cases
+}
+
+// DailySpendByDay / DailySpendBreakdown: pin the SQL/arg shapes so a
+// regression (e.g. wrong placeholder count, dropped user filter, wrong
+// bucket function) catches here before reaching prod.
+func TestBuildDailySpendByDayQuery(t *testing.T) {
+	cases := []struct {
+		name       string
+		userID     string
+		wantFilter []string // substrings that must appear
+		wantArgs   int
+	}{
+		{"no user filter", "", []string{"org_id = ?", "timestamp >= ?", "timestamp < ?", "GROUP BY day", "ORDER BY day ASC"}, 3},
+		{"with user filter", "u-1", []string{"org_id = ?", "user_id = ?", "timestamp >= ?", "timestamp < ?", "GROUP BY day", "ORDER BY day ASC"}, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := buildDailySpendByDayQuery("org-a", tc.userID)
+			for _, want := range tc.wantFilter {
+				if !strings.Contains(q, want) {
+					t.Errorf("query missing %q:\n%s", want, q)
+				}
+			}
+			arg := buildDailySpendByDayArgs("org-a", time.Now(), time.Now().Add(time.Hour), tc.userID)
+			if len(arg) != tc.wantArgs {
+				t.Errorf("arg len want=%d got=%d (%v)", tc.wantArgs, len(arg), arg)
+			}
+		})
+	}
+}
+
+func TestBuildDailySpendBreakdownQuery(t *testing.T) {
+	start := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+
+	cases := []struct {
+		name     string
+		userID   string
+		wantArgs int
+	}{
+		{"no user filter", "", 3},
+		{"with user filter", "u-2", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := buildDailySpendBreakdownQuery("org-a", tc.userID)
+			wantPieces := []string{
+				"GROUP BY request_model, provider_name, response_model",
+				"ORDER BY cost_usd DESC",
+				"LIMIT 200",
+				"countIf(cache_hit = 1)",
+			}
+			for _, want := range wantPieces {
+				if !strings.Contains(q, want) {
+					t.Errorf("query missing %q:\n%s", want, q)
+				}
+			}
+			arg := buildDailySpendBreakdownArgs("org-a", start, end, tc.userID)
+			if len(arg) != tc.wantArgs {
+				t.Errorf("arg len want=%d got=%d (%v)", tc.wantArgs, len(arg), arg)
+			}
+			// bind order: orgID, start, end [, userID]
+			if arg[0] != "org-a" {
+				t.Errorf("arg[0] want=org-a got=%v", arg[0])
+			}
+			if !arg[1].(time.Time).Equal(start) || !arg[2].(time.Time).Equal(end) {
+				t.Errorf("arg[1..2] want=[%v,%v] got=[%v,%v]", start, end, arg[1], arg[2])
+			}
+		})
+	}
+}
+
+// DailySpendBreakdownRow.ResponseModel is rendered with `omitempty` JSON
+// tag intentionally: cache-hit rows (no upstream fan-out) carry "" so the
+// UI treats them as "cache served" rather than a literal model name.
+// Regressions here would change the wire shape.
+func TestDailySpendBreakdownRow_JSONContract(t *testing.T) {
+	r := DailySpendBreakdownRow{
+		Model:         "openai/gpt-4o-mini",
+		Provider:      "openai",
+		ResponseModel: "",
+		CostUSD:       0,
+		Tokens:        120,
+		Requests:      1,
+		CacheHits:     1,
+	}
+	out, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(out), `"response_model":""`) {
+		t.Errorf("response_model must be omitted when empty (got: %s)", out)
+	}
+	// And the model/provider identity must persist.
+	if !strings.Contains(string(out), `"model":"openai/gpt-4o-mini"`) {
+		t.Errorf("model missing from JSON: %s", out)
+	}
 }

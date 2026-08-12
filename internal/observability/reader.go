@@ -701,3 +701,137 @@ func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, u
 	}
 	return out, rows.Err()
 }
+
+// DailySpendRow is one bin of gateway_traces spend grouped by calendar
+// day (UTC). powers the /api/me/spend/daily endpoint and the Spend page
+// daily chart/list. CacheHits counts the rows where cache_hit = 1; their
+// cost_usd contribution is 0, so we expose the count separately so the
+// UI can also report how many responses the semantic cache served
+// without inventing a synthetic upstream cost.
+type DailySpendRow struct {
+	Day       string  `json:"day"` // YYYY-MM-DD (UTC)
+	CostUSD   float64 `json:"cost_usd"`
+	Tokens    int64   `json:"tokens"` // input_tokens + output_tokens
+	Requests  int64   `json:"requests"`
+	CacheHits int64   `json:"cache_hits"`
+}
+
+// DailySpendBreakdownRow is one bin of a single day's spend grouped by
+// request_model + provider + response_model, used by the per-day drill
+// panel. response_model is empty when cache_hit = 1 (no upstream fan-out)
+// or when only the requested model answered.
+type DailySpendBreakdownRow struct {
+	Model         string  `json:"model"` // request_model
+	Provider      string  `json:"provider"`
+	ResponseModel string  `json:"response_model,omitempty"`
+	CostUSD       float64 `json:"cost_usd"`
+	Tokens        int64   `json:"tokens"`
+	Requests      int64   `json:"requests"`
+	CacheHits     int64   `json:"cache_hits"`
+}
+
+// DailySpendByDay groups gateway_traces by calendar day in the half-open
+// interval [since, until). orgID is mandatory (multi-tenant isolation);
+// userID, when non-empty, narrows the result to that single user (used
+// by /api/me/spend/daily). Order: oldest day first — caller can flip it.
+func (r *Reader) DailySpendByDay(ctx context.Context, since, until time.Time, orgID, userID string) ([]DailySpendRow, error) {
+	rows, err := r.conn.Query(ctx, buildDailySpendByDayQuery(orgID, userID), buildDailySpendByDayArgs(orgID, since, until, userID)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]DailySpendRow, 0)
+	for rows.Next() {
+		var row DailySpendRow
+		var day time.Time
+		if err := rows.Scan(&day, &row.CostUSD, &row.Tokens, &row.Requests, &row.CacheHits); err != nil {
+			return nil, err
+		}
+		row.Day = day.UTC().Format("2006-01-02")
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// DailySpendBreakdown groups gateway_traces for exactly one calendar day
+// (UTC) by request_model + provider + response_model. Capped at 200 rows
+// to keep the response bounded for hot days; ORDER BY cost_usd DESC so
+// the page can drop the tail without losing the meaningful bins.
+func (r *Reader) DailySpendBreakdown(ctx context.Context, day time.Time, orgID, userID string) ([]DailySpendBreakdownRow, error) {
+	day = day.UTC()
+	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	rows, err := r.conn.Query(ctx, buildDailySpendBreakdownQuery(orgID, userID), buildDailySpendBreakdownArgs(orgID, start, end, userID)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]DailySpendBreakdownRow, 0)
+	for rows.Next() {
+		var row DailySpendBreakdownRow
+		if err := rows.Scan(&row.Model, &row.Provider, &row.ResponseModel, &row.CostUSD, &row.Tokens, &row.Requests, &row.CacheHits); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func buildDailySpendByDayQuery(orgID, userID string) string {
+	q := `
+		SELECT toStartOfDay(timestamp) AS day,
+		       sum(cost_usd) AS cost_usd,
+		       toInt64(sum(input_tokens + output_tokens)) AS tokens,
+		       toInt64(count()) AS requests,
+		       toInt64(countIf(cache_hit = 1)) AS cache_hits
+		FROM gateway_traces
+		WHERE org_id = ?
+		  AND timestamp >= ?
+		  AND timestamp < ?`
+	if userID != "" {
+		q += ` AND user_id = ?`
+	}
+	return q + `
+		GROUP BY day
+		ORDER BY day ASC`
+}
+
+func buildDailySpendByDayArgs(orgID string, since, until time.Time, userID string) []any {
+	args := []any{orgID, since, until}
+	if userID != "" {
+		args = append(args, userID)
+	}
+	return args
+}
+
+func buildDailySpendBreakdownQuery(orgID, userID string) string {
+	q := `
+		SELECT request_model,
+		       provider_name,
+		       response_model,
+		       sum(cost_usd) AS cost_usd,
+		       toInt64(sum(input_tokens + output_tokens)) AS tokens,
+		       toInt64(count()) AS requests,
+		       toInt64(countIf(cache_hit = 1)) AS cache_hits
+		FROM gateway_traces
+		WHERE org_id = ?
+		  AND timestamp >= ?
+		  AND timestamp < ?`
+	if userID != "" {
+		q += ` AND user_id = ?`
+	}
+	return q + `
+		GROUP BY request_model, provider_name, response_model
+		ORDER BY cost_usd DESC
+		LIMIT 200`
+}
+
+func buildDailySpendBreakdownArgs(orgID string, start, end time.Time, userID string) []any {
+	args := []any{orgID, start, end}
+	if userID != "" {
+		args = append(args, userID)
+	}
+	return args
+}

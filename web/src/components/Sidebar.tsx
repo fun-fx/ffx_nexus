@@ -12,6 +12,7 @@ type NavItem = {
 
 const NAV: NavItem[] = [
   { to: "/", label: "Overview", icon: "grid", group: "Workspace" },
+  { to: "/spend", label: "Spend", icon: "wallet", group: "Workspace" },
   { to: "/playground", label: "Playground", icon: "play", group: "Workspace" },
   { to: "/traces", label: "Traces", icon: "chart", group: "Workspace" },
   { to: "/routing", label: "Routing", icon: "zap", group: "Workspace" },
