@@ -14,8 +14,13 @@ import (
 //
 // The CSP is intentionally permissive enough to allow:
 //   - self-hosted CSS/JS (the embedded dashboard assets)
-//   - the marketing site to POST login state into the console if it ever does
-//   - the WSS endpoint used by the live trace stream on the same origin
+//   - the operator-supplied web origins (marketing → console login handoff
+//     and the WSS endpoint used by the live trace stream). These come from
+//     `Server.SetCSPOrigins`, which the runtime wires from
+//     `Config.PublicWebOrigins` (NEXUS_PUBLIC_WEB_ORIGINS). The list is
+//     tenant-supplied so Nexus does not hardcode any company's hostname —
+//     an empty list degrades the policy to 'self' only, which is fine for
+//     on-prem Helm deploys that do not run a separate marketing site.
 //
 // The headers are set before any handler runs, so even 401/403/429 responses
 // carry them.
@@ -26,13 +31,27 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		// CSP: allow same-origin, plus the marketing site (so the marketing
-		// → console login handoff works), and the WSS endpoint on the same
-		// origin. img/font data: URIs are needed for the dashboard's inline
-		// icons and font fallbacks.
+		// CSP: allow same-origin, plus the operator-supplied web origins
+		// (so the marketing → console login handoff works), and the WSS
+		// endpoint on the same origin. img/font data: URIs are needed for
+		// the dashboard's inline icons and font fallbacks.
+		//
+		// Origins come from SetCSPOrigins (defaults to a single empty list).
+		// Both http and https variants of each origin are admitted; Secure
+		// WebSocket URLs ("wss://" on the same host) follow automatically.
+		extra := ""
+		for _, o := range s.cspOrigins {
+			if o == "" {
+				continue
+			}
+			extra += " " + o
+			if strings.HasPrefix(o, "https://") {
+				extra += " " + strings.Replace(o, "https://", "wss://", 1)
+			}
+		}
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; "+
-				"connect-src 'self' https://api.ffx.ai https://nexus.ffx.ai wss://nexus.ffx.ai; "+
+				"connect-src 'self'"+extra+"; "+
 				"style-src 'self' 'unsafe-inline'; "+
 				"script-src 'self'; "+
 				"img-src 'self' data:; "+

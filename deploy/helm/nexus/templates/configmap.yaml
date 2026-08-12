@@ -19,6 +19,13 @@ data:
   # *Quality* / *Traces* pages can render an "Open in Grafana" link.
   NEXUS_PUBLIC_GRAFANA_URL: {{ . | quote }}
   {{- end }}
+  {{- with .Values.config.publicWebOrigins }}
+  # Operator-supplied web-origin allow-list for the console CSP
+  # `connect-src` directive. Replaces the hardcoded *.ffx.ai list
+  # previously baked into internal/console/security.go so multi-tenant
+  # Helm deploys do not need a code change to admit their own origin.
+  NEXUS_PUBLIC_WEB_ORIGINS: {{ join "," . | quote }}
+  {{- end }}
   {{- with .Values.config.upstreamTimeout }}
   NEXUS_UPSTREAM_TIMEOUT: {{ . | quote }}
   {{- end }}

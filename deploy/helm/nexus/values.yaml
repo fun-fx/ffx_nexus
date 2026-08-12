@@ -45,6 +45,21 @@ config:
   # nexus-03-eval-quality) must match the GrafanaDashboard CRs in
   # templates/grafana-dashboards.yaml.
   publicGrafanaUrl: ""
+  # Operator-supplied allow-list of web origins the console may connect to.
+  # Wired into CSP `connect-src` (was previously hardcoded to *.ffx.ai in
+  # code). Empty list == CSP falls back to 'self' only.
+  #
+  # Example for our prod cluster (the marketing site + live-trace WSS
+  # share the same hostname and are reachable via both https:// and
+  # wss:// on it):
+  #
+  #   config:
+  #     publicWebOrigins:
+  #       - https://nexus.ffx.ai
+  #       - https://api.ffx.ai
+  #
+  # Other deployments override this to their own marketing / SPA origins.
+  publicWebOrigins: []        # []string
   upstreamTimeout: "120s"
   openaiBaseUrl: ""
 

@@ -21,6 +21,13 @@ type Config struct {
 	PublicGrafanaURL string // user-facing Grafana base URL surfaced on the
 	//                       console's *Spend* / *Quality* / *Traces* pages
 	//                       (optional; empty == console hides the link).
+	PublicWebOrigins []string // operator-supplied allow-list of web origins
+	//                        that the console may connect to. Wired into
+	//                        the CSP `connect-src` directive so the policy
+	//                        no longer hardcodes any company's domain.
+	//                        Comma-separated env (NEXUS_PUBLIC_WEB_ORIGINS);
+	//                        empty == CSP falls back to 'self' only, which
+	//                        is the safe default for on-prem Helm deploys.
 
 	// Datastores. Empty values disable the corresponding integration so the
 	// core gateway can boot with zero dependencies (Bifrost-style).
@@ -281,6 +288,7 @@ func Load() Config {
 		PublicGatewayURL: env("NEXUS_PUBLIC_GATEWAY_URL", ""),
 		PublicBaseURL:    env("NEXUS_PUBLIC_BASE_URL", ""),
 		PublicGrafanaURL: env("NEXUS_PUBLIC_GRAFANA_URL", ""),
+		PublicWebOrigins: splitCSV(env("NEXUS_PUBLIC_WEB_ORIGINS", "")),
 		PostgresURL:      env("NEXUS_POSTGRES_URL", ""),
 		ClickHouseURL:    env("NEXUS_CLICKHOUSE_URL", ""),
 		RedisURL:         env("NEXUS_REDIS_URL", ""),
@@ -411,6 +419,24 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitCSV turns a comma-separated env string into a clean slice, trimming
+// whitespace and dropping empties. Used by Config fields whose underlying
+// env var is documented as a CSV (e.g. NEXUS_PUBLIC_WEB_ORIGINS).
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envBool(key string, def bool) bool {
