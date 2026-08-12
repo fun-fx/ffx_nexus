@@ -13,12 +13,14 @@ import (
 
 // Spend handlers expose per-day LLM cost aggregations over gateway_traces.
 //
-// Two scopes, four endpoints:
+// Three endpoints per scope (self + admin):
 //
+//   GET /api/me/spend/summary?days=30
 //   GET /api/me/spend/daily?days=30
 //   GET /api/me/spend/daily/{day}/breakdown
 //     — requireUser: scoped to u.ID
 //
+//   GET /api/users/{id}/spend/summary?days=30
 //   GET /api/users/{id}/spend/daily?days=30
 //   GET /api/users/{id}/spend/daily/{day}/breakdown
 //     — requireAdmin: {id} resolves to a same-org user; admins can also
@@ -135,4 +137,50 @@ func (s *Server) userSpendBreakdown(w http.ResponseWriter, r *http.Request, call
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+// /api/me/spend/summary?days=N — current window + previous-window totals
+// for the Spend-page hero card. The two window rollups ride one
+// ClickHouse query (cur + prev CTEs), so the page's hero loads in lock
+// step with the daily list rather than issuing two round-trips.
+func (s *Server) mySpendSummary(w http.ResponseWriter, r *http.Request, u core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, emptySummary(spendDailyDays(r)))
+		return
+	}
+	days := spendDailyDays(r)
+	out, err := s.reader.DailySpendSummary(r.Context(), days, orgID(r), u.ID)
+	if err != nil {
+		s.log.Error("my spend summary query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// /api/users/{id}/spend/summary?days=N — admin-scoped variant. Same
+// shape as /api/me/spend/summary but the reportable slice is the
+// resolved {id}'s gateway_traces, intercepted at adminSpendUserID so
+// `id=me` reads the admin's own rollup.
+func (s *Server) userSpendSummary(w http.ResponseWriter, r *http.Request, caller core.User) {
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, emptySummary(spendDailyDays(r)))
+		return
+	}
+	days := spendDailyDays(r)
+	out, err := s.reader.DailySpendSummary(r.Context(), days, orgID(r), adminSpendUserID(r, caller))
+	if err != nil {
+		s.log.Error("user spend summary query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// emptySummary returns the zero-value spend summary so the page can
+// still render its hero when the reader is unconfigured (e.g. the dev
+// build without a ClickHouse sink). `days` is preserved so the
+// readout still reads "Last N days" rather than vanishing entirely.
+func emptySummary(days int) observability.DailySpendSummary {
+	return observability.DailySpendSummary{Days: days}
 }

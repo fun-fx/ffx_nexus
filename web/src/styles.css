@@ -3698,3 +3698,334 @@ body.rg-resizing {
   user-select: none;
 }
 
+/* -- Spend page ----------------------------------------------------- */
+
+/* The hero block renders a left-aligned title pair alongside a 1×2
+ * card grid (cost + savings pct) and a four-tile metric strip below
+ * them. Card heights share a baseline so the cost headline and the
+ * savings pct sit on the same horizontal — the layout invariant the
+ * user requested in the mockup. */
+.spend-page-head {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 1.4fr);
+  gap: 24px;
+  padding: 28px 28px 24px;
+  border-radius: var(--r-xl, 18px);
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in oklab, var(--panel) 80%, transparent),
+      color-mix(in oklab, var(--accent-grad-soft) 60%, transparent)
+    );
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-2);
+  margin-bottom: 24px;
+}
+
+.spend-page-head__title .eyebrow {
+  margin-bottom: 14px;
+}
+
+.spend-hero-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+}
+
+.spend-hero-strip {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 1px dashed var(--border);
+}
+
+/* Dominant cost headline tile. The accent gradient on the value
+ * keeps it loud against the soft panel background; the small delta
+ * line below anchors it back to the previous-window comparison. */
+.spend-hero-cost {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 22px;
+  border-radius: var(--r-lg, 14px);
+  background:
+    linear-gradient(
+      140deg,
+      color-mix(in oklab, var(--accent-grad-soft) 30%, transparent),
+      transparent 60%
+    );
+  border: 1px solid var(--border-strong);
+}
+
+.spend-hero-cost__label,
+.spend-hero-card__label {
+  font-size: var(--fs-12);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.spend-hero-cost__value {
+  font-size: var(--fs-32, 36px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  background: var(--accent-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  word-break: break-word;
+}
+
+.spend-hero-cost__sub {
+  font-size: var(--fs-13);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.spend-hero-cost__delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-13);
+}
+
+.spend-hero-cost__delta.is-up {
+  color: var(--warn, #f59e0b);
+}
+
+.spend-hero-cost__delta.is-down {
+  color: var(--ok, #34d399);
+}
+
+.spend-hero-cost__delta-arrow {
+  font-weight: 700;
+}
+
+/* Savings pct tile — quieter than the cost tile but louder than the
+ * strip below, so the eye is drawn to dollars first and to the
+ * savings pct second. Color is the same green/red ramp so the
+ * up/down convention matches the cost-tile delta arrow above it. */
+.spend-hero-savings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 22px;
+  border-radius: var(--r-lg, 14px);
+  background:
+    linear-gradient(
+      140deg,
+      color-mix(in oklab, var(--panel-2) 60%, transparent),
+      transparent 60%
+    );
+  border: 1px solid var(--border-strong);
+  justify-content: center;
+}
+
+.spend-hero-savings__value {
+  font-size: var(--fs-28, 30px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.spend-hero-savings__value.is-positive {
+  color: var(--ok, #34d399);
+}
+
+.spend-hero-savings__value.is-negative {
+  color: var(--warn, #f59e0b);
+}
+
+.spend-hero-savings__value.is-na {
+  color: var(--muted);
+}
+
+.spend-hero-savings__sub {
+  font-size: var(--fs-12);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Metric strip tiles. Tight, uniform; share the `.spend-hero-metric`
+ * namespace so a future row (e.g. "Top vendor") can drop in without
+ * new CSS. */
+.spend-hero-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: var(--r-md, 10px);
+  background: color-mix(in oklab, var(--panel-2) 50%, transparent);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+
+.spend-hero-metric__label {
+  font-size: var(--fs-12);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.spend-hero-metric__value {
+  font-size: var(--fs-20, 22px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  word-break: break-word;
+}
+
+.spend-hero-metric__sub {
+  font-size: var(--fs-12);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 920px) {
+  .spend-page-head {
+    grid-template-columns: 1fr;
+  }
+  .spend-hero-cards,
+  .spend-hero-strip {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 540px) {
+  .spend-hero-cards,
+  .spend-hero-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Daily cost chart: a row of inline-SVG bars painted from the design
+ * tokens so the chart reads at a glance against the rest of the console.
+ * The picked bar lifts to the accent gradient and gets a soft glow so a
+ * reader's eye tracks the open drill-down without having to scan the
+ * day chips. Hover stays muted — clicks, not hovers, reveal picks. */
+.spend-bar {
+  position: relative;
+  padding: 8px 4px 0;
+}
+
+.spend-bar svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Axis labels (the day stamps under each bar). The chart only emits
+ * enough labels to stay legible — every Nth day, with the first and
+ * last always printed — so a 30-day strip doesn't turn into a wall of
+ * overlapping "08-12" stamps. */
+.spend-bar__axis-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  fill: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+/* Default bar fill: the muted accent, low opacity so adjacent bars
+ * stay distinct. The picked bar reads bright + crisp via the gradient
+ * + glow below. */
+.spend-bar__rect {
+  fill: color-mix(in oklab, var(--accent-3) 70%, transparent);
+  cursor: pointer;
+  transition:
+    fill 140ms ease,
+    filter 140ms ease;
+}
+
+.spend-bar__rect:hover {
+  fill: color-mix(in oklab, var(--accent-3) 88%, transparent);
+  filter: drop-shadow(0 0 4px color-mix(in oklab, var(--accent-3) 40%, transparent));
+}
+
+.spend-bar__rect.is-picked {
+  fill: var(--accent);
+  filter: drop-shadow(0 0 8px color-mix(in oklab, var(--accent) 45%, transparent));
+}
+
+/* Sized-to-value ribbon ("$1.23") for the picked bar — sits just above
+ * the bar in the chart's top padding so a hovering cursor finds the
+ * exact number even on a tiny bar. */
+.spend-bar__value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  fill: var(--text);
+  letter-spacing: 0.02em;
+}
+
+/* Footer rail of "drilled: YYYY-MM-DD" pills. The pill persists after
+ * the drill panel is closed (Click the pill → reopen the breakdown for
+ * that day. Click the × → close the drill.) so a reader scrolling
+ * through the chart can pivot back into a day they already saw without
+ * hunting for the day's Drill button on the table below. */
+.spend-drilled-rail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0 0;
+  border-top: 1px dashed var(--border);
+  margin-top: 14px;
+}
+
+.spend-drilled-rail__label {
+  font-size: var(--fs-12);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.spend-drilled-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid color-mix(in oklab, var(--accent-3) 50%, transparent);
+  background: color-mix(in oklab, var(--accent-3) 18%, transparent);
+  font-size: var(--fs-13);
+  font-family: var(--font-mono);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+
+.spend-drilled-chip:hover {
+  border-color: var(--accent-3);
+  background: color-mix(in oklab, var(--accent-3) 28%, transparent);
+}
+
+.spend-drilled-chip:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 24%, transparent);
+}
+
+.spend-drilled-chip__remove {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 999px;
+  transition: color 120ms ease;
+}
+
+.spend-drilled-chip__remove:hover {
+  color: var(--err);
+}
+
