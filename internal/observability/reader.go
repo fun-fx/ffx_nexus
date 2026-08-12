@@ -709,9 +709,9 @@ func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, u
 // UI can also report how many responses the semantic cache served
 // without inventing a synthetic upstream cost.
 type DailySpendRow struct {
-	Day       string  `json:"day"`       // YYYY-MM-DD (UTC)
+	Day       string  `json:"day"` // YYYY-MM-DD (UTC)
 	CostUSD   float64 `json:"cost_usd"`
-	Tokens    int64   `json:"tokens"`    // input_tokens + output_tokens
+	Tokens    int64   `json:"tokens"` // input_tokens + output_tokens
 	Requests  int64   `json:"requests"`
 	CacheHits int64   `json:"cache_hits"`
 }
@@ -721,7 +721,7 @@ type DailySpendRow struct {
 // panel. response_model is empty when cache_hit = 1 (no upstream fan-out)
 // or when only the requested model answered.
 type DailySpendBreakdownRow struct {
-	Model         string  `json:"model"`           // request_model
+	Model         string  `json:"model"` // request_model
 	Provider      string  `json:"provider"`
 	ResponseModel string  `json:"response_model,omitempty"`
 	CostUSD       float64 `json:"cost_usd"`
