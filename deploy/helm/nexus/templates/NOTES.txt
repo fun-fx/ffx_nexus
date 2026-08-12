@@ -52,4 +52,16 @@ Grafana observability toggle is ON.
   {{- end }}
   Alert webhook URL defaults to http://failover-echo.tenant-nexus.svc:8080/alert — override `config.grafana.alertsWebhook` to point at your real receiver.
   {{- end }}
+
+  Verify after `helm upgrade` (worked?):
+    kubectl get grafanadashboard -n {{ .Release.Namespace }}
+    # STATUS column should show empty (or a hash + lastResync) within ~5m.
+    # If the CRs stay in `NO MATCHING INSTANCES` forever:
+    #   - The grafana-operator is missing the `grafana.integreatly.org/v1beta1` CRD.
+    #     Install grafana-operator first or apply dashboards by hand.
+    #   - The operator's Grafana instance is not labeled
+    #     {{- range $k, $v := .Values.config.grafana.instanceSelector.matchLabels }}
+    #     {{ $k }}={{ $v }}{{- end }}.
+    #     Adjust config.grafana.instanceSelector.matchLabels accordingly.
+  See: docs/observability/grafana-helm-toggle.md → "Onboarding scenarios".
 {{- end }}

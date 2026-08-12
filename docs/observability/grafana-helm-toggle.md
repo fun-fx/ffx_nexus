@@ -120,3 +120,80 @@ Apply with `kubectl apply -f 00-tenant.yaml` and CloudNativePG will roll
 the new PVC, the second instance will start, and the existing Grafana
 Deployment will reattach. See `deploy/observability/otlp-no-traffic-runbook.md`
 for the wider "Grafana is up but no data" troubleshooting.
+
+## Onboarding scenarios for a fresh Helm install
+
+A new tenancy cloning this chart for the first time has three
+realistic Grafana setups. Pick the one that matches your cluster
+and apply the values accordingly. The chart will *not* auto-detect
+which case you're in — that decision is yours.
+
+### Scenario A — I have a Cozystack-managed Grafana already
+
+Default Cozystack tenants ship with `cozy-grafana-operator` already
+installed. The chart works out of the box:
+
+```yaml
+config:
+  grafana:
+    enabled: true
+    dashboardsEnabled: true
+    alertsEnabled: false   # until you discover folderUID
+    instanceSelector:
+      matchLabels:
+        dashboards: grafana   # cozy's label
+  publicGrafanaUrl: "https://grafana.<your-tenant-host>"
+```
+
+After `helm upgrade`, three dashboards appear in Grafana under the
+`Nexus` folder within ~5m. The Sidebar's "Open in Grafana" link is
+live.
+
+### Scenario B — I have Grafana but it is not managed by the grafana-operator
+
+The chart's CRs require the `grafana.integreatly.org/v1beta1` CRD.
+If your Grafana was installed via Helm (bitnami/grafana, grafana/grafana)
+without the operator, the CRs will be created but never reconciled
+into the Grafana instance. Two options:
+
+1. **Use the operator-aware path**: install `grafana-operator`
+   (https://grafana-operator.github.io/grafana-operator/), point it
+   at your Grafana, then enable the toggle as in Scenario A.
+2. **Apply dashboards by hand**: keep `config.grafana.enabled: false`
+   and use the stand-alone Grafana Dashboard provisioning system
+   via `deploy/cozystack/09-grafana-dashboards.yaml` (apply
+   out-of-band; the file is in this same repo and works against
+   vanilla Grafana's `/etc/grafana/provisioning/dashboards/` mount).
+
+The Sidebar's "Open in Grafana" link is still safe — it points at
+your `publicGrafanaUrl`. Whether the dashboards inside light up
+depends on which of the two paths you took.
+
+### Scenario C — I do not have Grafana at all
+
+Keep `config.grafana.enabled: false` *and* leave
+`config.publicGrafanaUrl: ""`. The Sidebar omits the "Open in
+Grafana" link entirely (the `ui-observability-link` component
+returns nothing when the URL is empty). The chart stays dep-free.
+
+If you later stand up Grafana in the cluster, follow Scenario A or B
+as appropriate; no upgrade-unsafe state needs cleaning up.
+
+### Deciding which scenario you're in
+
+```sh
+# Is the grafana-operator CRD installed?
+kubectl get crd | grep grafana.integreatly.org
+# -> Scenario A or B (depends on point 1 / 2 below).
+
+# Is there a Grafana instance selected by the default label?
+kubectl get grafanadashboard -A 2>&1 | grep -E 'NAME|nexus-'
+kubectl get pod -A -l dashboards=grafana
+# -> A if both commands return matches; B if only the first returns.
+
+# Nothing matched either -> Scenario C.
+```
+
+The chart's `NOTES.txt` emits a banner with the same diagnostic
+after every `helm install`/`helm upgrade` so the operator can
+correlate Helm output against the cluster state without greppping.
