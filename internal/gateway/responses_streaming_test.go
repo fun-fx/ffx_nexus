@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -155,22 +154,6 @@ func TestResponsesSSEStreamToolCall(t *testing.T) {
 	}
 	if !strings.Contains(body, `event: response.completed`) {
 		t.Fatalf("missing completion event:\n%s", body)
-	}
-}
-
-// helper: pretty-print decoded SSE events from a buffer for debugging
-func dumpSSE(b string) {
-	reader := bufio.NewReader(strings.NewReader(b))
-	for {
-		e, err := readSSEEvent(reader)
-		if err == io.EOF {
-			return
-		}
-		if err != nil {
-			fmt.Println("decode err:", err)
-			return
-		}
-		fmt.Printf("event=%s data=%s\n", e.Event, e.Data)
 	}
 }
 

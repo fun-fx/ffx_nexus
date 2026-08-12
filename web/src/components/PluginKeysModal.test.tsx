@@ -68,7 +68,14 @@ describe("PluginKeysModal", () => {
     fireEvent.change(getByTestId("plugin-keys-input-langfuse-judge-secret_key"), {
       target: { value: "sk-lf-1234567890abcd" },
     });
-    fireEvent.click(getByTestId("plugin-keys-save-langfuse-judge"));
+    await waitFor(() => {
+      // Wrap the click in waitFor so React's intentional batched
+      // setState calls (draft update + onSuccess setState here) all
+      // land before our assertion evaluates — prevents the
+      // "act() warning: state update not wrapped" diagnostic from
+      // running in the test logs.
+      fireEvent.click(getByTestId("plugin-keys-save-langfuse-judge"));
+    });
     const { putPluginKeys } = await import("../api");
     await waitFor(() =>
       expect(putPluginKeys).toHaveBeenCalledWith("langfuse-judge", {

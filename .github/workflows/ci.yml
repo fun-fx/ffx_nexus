@@ -42,6 +42,17 @@ jobs:
           go build -o bin/nexus ./cmd/nexus
           go build -o bin/nexus-evalbatch ./cmd/nexus-evalbatch
 
+      - name: govulncheck
+        # Surfaces known CVEs in our Go dep graph. Slow on cold cache but
+        # cheap to cache after the first run; -show=verbose keeps the
+        # output reproducible in the run log. Allow if no Go modules require
+        # the binary — Go 1.26 doesn't ship govulncheck by default.
+        run: |
+          if ! command -v govulncheck >/dev/null 2>&1; then
+            go install golang.org/x/vuln/cmd/govulncheck@latest
+          fi
+          govulncheck ./...
+
   eval-regression:
     name: Eval regression gate
     runs-on: ubuntu-latest
@@ -109,3 +120,16 @@ jobs:
 
       - name: npm build
         run: npm run build
+
+      - name: npm audit
+        # Production deps only. We don't gate on dev-dep CVEs that are
+        # postcss / esbuild / vite-type audits because the production
+        # bundle never embeds those; dev-deps come back in CI's parallel
+        # build target. High+ severity in production deps blocks merge;
+        # moderate / low are logged but the workflow still passes so we
+        # can move react-router bumps into their own PRs.
+        run: |
+          set -e
+          npm audit --omit=dev --audit-level=high
+          # Always show full dep-graph state at end for the run log.
+          npm audit --json | tee npm-audit.json || true
