@@ -730,10 +730,149 @@ type DailySpendBreakdownRow struct {
 	CacheHits     int64   `json:"cache_hits"`
 }
 
+// DailySpendSummary is the hero-card rollup that backs the Spend page
+// header. It reports the cost + token + cache-hit totals for the
+// currently-selected window (`days`) AND the equivalent totals for
+// the equal-length window immediately preceding it (`days` back), so
+// the UI can render a "before vs after" / savings-pct readout without
+// having to issue a second paginated query for the previous bin.
+//
+// SavingsPct is computed Go-side after the query lands so the wire
+// shape is uniform regardless of ClickHouse arithmetic types. It is
+// the percentage of the previous period the current period saved
+// (negative = the user spent more, positive = the user saved):
+//
+//   delta = current - previous
+//   pct   = (previous - current) / previous * 100
+//
+// When previous = 0 (e.g. brand-new user with no traffic before the
+// window) pct is reported as 0 with a `HasPrevious=false` flag
+// instead of NaN — the UI renders this as "first window" rather than
+// "infinite savings", which would otherwise mislead.
+type DailySpendSummary struct {
+	Days             int     `json:"days"`
+	CurrentCost      float64 `json:"current_cost_usd"`
+	PreviousCost     float64 `json:"previous_cost_usd"`
+	DeltaCost        float64 `json:"delta_cost_usd"`
+	SavingsPct       float64 `json:"savings_pct"`
+	HasPrevious      bool    `json:"has_previous"`
+	CurrentTokens    int64   `json:"current_tokens"`
+	PreviousTokens   int64   `json:"previous_tokens"`
+	CurrentRequests  int64   `json:"current_requests"`
+	PreviousRequests int64   `json:"previous_requests"`
+	CurrentCacheHits int64   `json:"current_cache_hits"`
+	PreviousCacheHits int64  `json:"previous_cache_hits"`
+}
+
+// DailySpendSummary returns the rolled-up totals for the trailing
+// `days` window plus the equal-length window immediately before it,
+// scoped to orgID and (optionally) userID. See DailySpendSummary for
+// the savings-pct semantics.
+//
+// The two intervals share the same placeholder shape so the function
+// can fire a single SELECT (current + previous in one shot, joined in
+// two CTEs); the trailing filter on `user_id` is correctly applied to
+// BOTH intervals so a personal /admin-scoped spend panel never reads
+// from someone else's window.
+func (r *Reader) DailySpendSummary(ctx context.Context, days int, orgID, userID string) (DailySpendSummary, error) {
+	now := time.Now().UTC()
+	curUntil := now
+	curSince := curUntil.Add(-time.Duration(days) * 24 * time.Hour)
+	prevUntil := curSince
+	prevSince := prevUntil.Add(-time.Duration(days) * 24 * time.Hour)
+	args := buildSummaryArgs(orgID, curSince, curUntil, prevSince, prevUntil, userID)
+	row := r.conn.QueryRow(ctx, buildDailySpendSummaryQuery(orgID, userID), args...)
+	var s DailySpendSummary
+	s.Days = days
+	if err := row.Scan(
+		&s.CurrentCost, &s.PreviousCost,
+		&s.CurrentTokens, &s.PreviousTokens,
+		&s.CurrentRequests, &s.PreviousRequests,
+		&s.CurrentCacheHits, &s.PreviousCacheHits,
+	); err != nil {
+		return DailySpendSummary{Days: days}, err
+	}
+	s.DeltaCost = s.CurrentCost - s.PreviousCost
+	s.HasPrevious = s.PreviousCost > 0 || s.PreviousRequests > 0
+	if s.HasPrevious && s.PreviousCost > 0 {
+		s.SavingsPct = (s.PreviousCost - s.CurrentCost) / s.PreviousCost * 100
+	}
+	return s, nil
+}
+
+func buildDailySpendSummaryQuery(orgID, userID string) string {
+	userFilter := ""
+	if userID != "" {
+		userFilter = ` AND user_id = ?`
+	}
+	q := `
+		WITH
+		  cur AS (
+		    SELECT ifNull(sum(cost_usd), 0) AS cost,
+		           toInt64(sum(input_tokens + output_tokens)) AS tokens,
+		           toInt64(count()) AS requests,
+		           toInt64(countIf(cache_hit = 1)) AS cache_hits
+		    FROM gateway_traces
+		    WHERE org_id = ?
+		      AND timestamp >= ?
+		      AND timestamp < ?` + userFilter + `
+		  ),
+		  prev AS (
+		    SELECT ifNull(sum(cost_usd), 0) AS cost,
+		           toInt64(sum(input_tokens + output_tokens)) AS tokens,
+		           toInt64(count()) AS requests,
+		           toInt64(countIf(cache_hit = 1)) AS cache_hits
+		    FROM gateway_traces
+		    WHERE org_id = ?
+		      AND timestamp >= ?
+		      AND timestamp < ?` + userFilter + `
+		  )
+		SELECT cur.cost, prev.cost,
+		       cur.tokens, prev.tokens,
+		       cur.requests, prev.requests,
+		       cur.cache_hits, prev.cache_hits
+		FROM cur, prev`
+	_ = orgID
+	return q
+}
+
+func buildSummaryArgs(orgID string, curSince, curUntil, prevSince, prevUntil time.Time, userID string) []any {
+	args := []any{orgID, curSince, curUntil, orgID, prevSince, prevUntil}
+	if userID != "" {
+		args = append(args, userID, userID)
+	}
+	return args
+}
+
+// BuildEffectiveProvider is the SQL expression the daily + per-day
+// breakdowns group on instead of the raw `provider_name` column. The
+// Grid is Nexus's router-style vendor — a call to it can return
+// `provider_name = 'thegrid', response_model = 'code-prime'` when the
+// Grid 307-redirects to its underlying seller. Operators on the Spend
+// page never want to see that internal hop recorded as "thegrid":
+// they want the underlying supplier they were actually billed for
+// (code-prime, text-prime, ...). When cache_hit = 1, the response_model
+// column is empty (no upstream call fanned out) so we surface "thegrid"
+// (and the cache-only chip in the breakdown panel now reads against
+// that label). This keeps grouping semantics intact for every other
+// provider — openai/openai, anthropic/anthropic, etc. — which pass
+// through unchanged.
+const buildEffectiveProviderExpr = `
+	multiIf(
+		provider_name = 'thegrid' AND cache_hit = 0 AND response_model != '',
+		response_model,
+		provider_name
+	)`
+
 // DailySpendByDay groups gateway_traces by calendar day in the half-open
 // interval [since, until). orgID is mandatory (multi-tenant isolation);
 // userID, when non-empty, narrows the result to that single user (used
 // by /api/me/spend/daily). Order: oldest day first — caller can flip it.
+//
+// Grouping happens against buildEffectiveProviderExpr, not the raw
+// `provider_name` column, so a Grid-routed trace collapses into the
+// underlying supplier's bin rather than "thegrid" (see comments on the
+// expression for the hop semantics).
 func (r *Reader) DailySpendByDay(ctx context.Context, since, until time.Time, orgID, userID string) ([]DailySpendRow, error) {
 	rows, err := r.conn.Query(ctx, buildDailySpendByDayQuery(orgID, userID), buildDailySpendByDayArgs(orgID, since, until, userID)...)
 	if err != nil {
@@ -755,9 +894,14 @@ func (r *Reader) DailySpendByDay(ctx context.Context, since, until time.Time, or
 }
 
 // DailySpendBreakdown groups gateway_traces for exactly one calendar day
-// (UTC) by request_model + provider + response_model. Capped at 200 rows
-// to keep the response bounded for hot days; ORDER BY cost_usd DESC so
-// the page can drop the tail without losing the meaningful bins.
+// (UTC) by (request_model, effective_provider, response_model). Capped at
+// 200 rows to keep the response bounded for hot days; ORDER BY cost_usd
+// DESC so the page can drop the tail without losing the meaningful bins.
+//
+// Effective-provider grouping (see buildEffectiveProviderExpr) means a
+// Grid redirect to code-prime shows up under the code-prime provider
+// bin rather than "thegrid" — the per-day drill panel only lists the
+// actual upstream seller the customer was billed against.
 func (r *Reader) DailySpendBreakdown(ctx context.Context, day time.Time, orgID, userID string) ([]DailySpendBreakdownRow, error) {
 	day = day.UTC()
 	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
@@ -809,7 +953,7 @@ func buildDailySpendByDayArgs(orgID string, since, until time.Time, userID strin
 func buildDailySpendBreakdownQuery(orgID, userID string) string {
 	q := `
 		SELECT request_model,
-		       provider_name,
+		       (` + buildEffectiveProviderExpr + `) AS provider,
 		       response_model,
 		       sum(cost_usd) AS cost_usd,
 		       toInt64(sum(input_tokens + output_tokens)) AS tokens,
@@ -823,7 +967,7 @@ func buildDailySpendBreakdownQuery(orgID, userID string) string {
 		q += ` AND user_id = ?`
 	}
 	return q + `
-		GROUP BY request_model, provider_name, response_model
+		GROUP BY request_model, provider, response_model
 		ORDER BY cost_usd DESC
 		LIMIT 200`
 }

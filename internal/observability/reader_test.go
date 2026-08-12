@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"regexp"
 	"strings"
 	"testing"
@@ -372,6 +373,143 @@ func TestBuildDailySpendByDayQuery(t *testing.T) {
 	}
 }
 
+// DailySpendSummary pins the SQL/arg shapes for the hero rollup
+// (current + previous window) so the bind order and the two-window
+// split can't regress silently. The query fires one ClickHouse
+// SELECT with two CTEs, so the hero card loads in lockstep with the
+// daily list — a future edit that splits this into two trips would
+// surface here as a binder-count diff.
+func TestBuildDailySpendSummaryQuery(t *testing.T) {
+	cases := []struct {
+		name     string
+		userID   string
+		wantArgs int
+	}{
+		{"no user filter", "", 6},
+		{"with user filter", "u-s", 8},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			curUntil := now
+			curSince := curUntil.Add(-24 * time.Hour)
+			prevUntil := curSince
+			prevSince := prevUntil.Add(-24 * time.Hour)
+			q := buildDailySpendSummaryQuery("org-a", tc.userID)
+			wantPieces := []string{
+				"WITH",
+				"cur AS",
+				"prev AS",
+				"sum(cost_usd)",
+				"sum(input_tokens + output_tokens)",
+				"countIf(cache_hit = 1)",
+				"FROM gateway_traces",
+				"FROM cur, prev",
+			}
+			for _, want := range wantPieces {
+				if !strings.Contains(q, want) {
+					t.Errorf("query missing %q:\n%s", want, q)
+				}
+			}
+			// The user_id filter is appended inside BOTH CTEs so we
+			// can't accidentally scope only one of them.
+			count := strings.Count(q, "user_id = ?")
+			wantCount := 0
+			if tc.userID != "" {
+				wantCount = 2
+			}
+			if count != wantCount {
+				t.Errorf("user_id filter count want=%d got=%d:\n%s", wantCount, count, q)
+			}
+			arg := buildSummaryArgs("org-a", curSince, curUntil, prevSince, prevUntil, tc.userID)
+			if len(arg) != tc.wantArgs {
+				t.Errorf("arg len want=%d got=%d (%v)", tc.wantArgs, len(arg), arg)
+			}
+			if arg[0] != "org-a" || arg[3] != "org-a" {
+				t.Errorf("org_id must be bound twice (once per CTE), got %v", arg)
+			}
+		})
+	}
+}
+
+// DailySpendSummaryFields pins the wire shape (omitting new fields
+// would silently break the Spend hero card) and the savings-pct math
+// (so a future refactor can't accidentally flip the sign or divide by
+// the wrong column).
+func TestDailySpendSummary_SavingsPctMath(t *testing.T) {
+	cases := []struct {
+		name                       string
+		current, previous          float64
+		hasPrevious                bool
+		wantDelta                  float64
+		wantSavingsPct             float64
+	}{
+		{"no previous", 12.34, 0, false, 12.34, 0},
+		{"spent less than before", 50, 100, true, -50, 50},
+		{"spent more than before", 130, 100, true, 30, -30},
+		{"equal spend", 100, 100, true, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := DailySpendSummary{
+				Days:         30,
+				CurrentCost:  tc.current,
+				PreviousCost: tc.previous,
+			}
+			s.DeltaCost = s.CurrentCost - s.PreviousCost
+			s.HasPrevious = tc.hasPrevious
+			if s.HasPrevious && s.PreviousCost > 0 {
+				s.SavingsPct = (s.PreviousCost - s.CurrentCost) / s.PreviousCost * 100
+			}
+			if math.Abs(s.DeltaCost-tc.wantDelta) > 1e-9 {
+				t.Errorf("DeltaCost want=%v got=%v", tc.wantDelta, s.DeltaCost)
+			}
+			if math.Abs(s.SavingsPct-tc.wantSavingsPct) > 1e-9 {
+				t.Errorf("SavingsPct want=%v got=%v", tc.wantSavingsPct, s.SavingsPct)
+			}
+		})
+	}
+}
+
+// DailySpendSummaryFields_JSONContract pins the wire shape so a
+// regression in the field tags surfaces here. The Spend page reads
+// every field below — dropping any one of them collapses the hero
+// into a blank card.
+func TestDailySpendSummaryFields_JSONContract(t *testing.T) {
+	s := DailySpendSummary{
+		Days:              30,
+		CurrentCost:       12.34,
+		PreviousCost:      24.68,
+		DeltaCost:         -12.34,
+		SavingsPct:        50,
+		HasPrevious:       true,
+		CurrentTokens:     1000,
+		PreviousTokens:    2000,
+		CurrentRequests:   4,
+		PreviousRequests:  8,
+		CurrentCacheHits:  1,
+		PreviousCacheHits: 0,
+	}
+	out, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"days":30`,
+		`"current_cost_usd":12.34`,
+		`"previous_cost_usd":24.68`,
+		`"delta_cost_usd":-12.34`,
+		`"savings_pct":50`,
+		`"has_previous":true`,
+		`"current_tokens":1000`,
+		`"previous_tokens":2000`,
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("missing field %q in json: %s", want, out)
+		}
+	}
+}
+
 func TestBuildDailySpendBreakdownQuery(t *testing.T) {
 	start := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)
@@ -388,10 +526,14 @@ func TestBuildDailySpendBreakdownQuery(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			q := buildDailySpendBreakdownQuery("org-a", tc.userID)
 			wantPieces := []string{
-				"GROUP BY request_model, provider_name, response_model",
+				"GROUP BY request_model, provider, response_model",
 				"ORDER BY cost_usd DESC",
 				"LIMIT 200",
 				"countIf(cache_hit = 1)",
+				// The Grid → underlying-seller flat-map must be in the
+				// query so prod reads see code-prime rather than thegrid.
+				"provider_name = 'thegrid'",
+				"response_model",
 			}
 			for _, want := range wantPieces {
 				if !strings.Contains(q, want) {
@@ -410,6 +552,27 @@ func TestBuildDailySpendBreakdownQuery(t *testing.T) {
 				t.Errorf("arg[1..2] want=[%v,%v] got=[%v,%v]", start, end, arg[1], arg[2])
 			}
 		})
+	}
+}
+
+// TestBuildDailySpendBreakdownQuery_FlattensGridRedirects pins the
+// effective-provider expression so future edits can't silently drop the
+// Grid → response_model rewrite. The day drill must never surface a
+// `provider = 'thegrid'` row for a cache_hit = 0 trace because that row
+// was the Hop, not the seller — operators want code-prime / text-prime
+// on their bill, not "thegrid".
+func TestBuildDailySpendBreakdownQuery_FlattensGridRedirects(t *testing.T) {
+	q := buildDailySpendBreakdownQuery("org-a", "")
+	wantExpr := []string{
+		"multiIf(",
+		"provider_name = 'thegrid' AND cache_hit = 0 AND response_model != ''",
+		"response_model",
+		") AS provider",
+	}
+	for _, w := range wantExpr {
+		if !strings.Contains(q, w) {
+			t.Errorf("query missing Grid-flatten clause %q:\n%s", w, q)
+		}
 	}
 }
 

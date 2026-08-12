@@ -68,6 +68,53 @@ function renderSpend(me: typeof adminMe | typeof memberMe) {
   return { ...utils, qc, me };
 }
 
+// withSummaryFetch wraps a test-specific stub handler so the
+// self-spend / admin-spend summary endpoints return a deterministic
+// shape even in tests that don't assert on hero data. The summary
+// query runs as soon as the page mounts, so naively falling through
+// to the default `jsonResponse([])` would crash the SpendHero render
+// with a TypeError on its sanitize step.
+//
+// URL detection is anchored: `summary?...` or `summary?days=N` — the
+// query string with `days=` distinguishes it from any future
+// `/summary` prefix that might be added to other endpoints.
+function withSummaryFetch(
+  handler: (url: string, method: string, body: unknown) => Response,
+): (url: string, method: string, body: unknown) => Response {
+  return (url, method, body) => {
+    if (
+      url === "/api/me/spend/summary" ||
+      url.startsWith("/api/me/spend/summary?") ||
+      /^\/api\/users\/[^/]+\/spend\/summary(\?|$)/.test(url)
+    ) {
+      const m = url.match(/days=(\d+)/);
+      const days = m ? Number(m[1]) : 30;
+      return summaryResponse(days, 0, 0, false);
+    }
+    return handler(url, method, body);
+  };
+}
+
+// summaryResponse shapes a /api/{me|users}/spend/summary response.
+// The cast through `unknown` keeps the test stub from leaking the
+// real DailySpendSummary type into unrelated test bodies.
+function summaryResponse(days: number, current = 0, previous = 0, hasPrevious = false): Response {
+  return jsonResponse({
+    days,
+    current_cost_usd: current,
+    previous_cost_usd: previous,
+    delta_cost_usd: current - previous,
+    savings_pct: previous > 0 ? ((previous - current) / previous) * 100 : 0,
+    has_previous: hasPrevious,
+    current_tokens: 0,
+    previous_tokens: 0,
+    current_requests: 0,
+    previous_requests: 0,
+    current_cache_hits: 0,
+    previous_cache_hits: 0,
+  });
+}
+
 beforeEach(() => {
   callLog = [];
 });
@@ -87,7 +134,7 @@ function jsonResponse(data: unknown): Response {
 
 describe("Spend — self view", () => {
   it("hits /api/me/spend/daily with the URL the page assembles", async () => {
-    stubFetch((url) => {
+    stubFetch(withSummaryFetch((url) => {
       if (url === "/api/me") return jsonResponse(adminMe);
       if (url.startsWith("/api/me/spend/daily?days=")) {
         return jsonResponse([
@@ -96,7 +143,7 @@ describe("Spend — self view", () => {
         ]);
       }
       return jsonResponse([]);
-    });
+    }));
 
     renderSpend(adminMe);
 
@@ -114,13 +161,13 @@ describe("Spend — self view", () => {
   });
 
   it("switching the range chip re-fetches with the new value", async () => {
-    stubFetch((url) => {
+    stubFetch(withSummaryFetch((url) => {
       if (url === "/api/me") return jsonResponse(adminMe);
       if (url.startsWith("/api/me/spend/daily?days=")) {
         return jsonResponse([]);
       }
       return jsonResponse([]);
-    });
+    }));
 
     renderSpend(adminMe);
     await waitFor(() => {
@@ -136,7 +183,7 @@ describe("Spend — self view", () => {
   });
 
   it("clicking a day opens the breakdown panel and fires the breakdown fetch", async () => {
-    stubFetch((url) => {
+    stubFetch(withSummaryFetch((url) => {
       if (url === "/api/me") return jsonResponse(adminMe);
       if (url === "/api/me/spend/daily?days=30") {
         return jsonResponse([
@@ -166,7 +213,7 @@ describe("Spend — self view", () => {
         ]);
       }
       return jsonResponse([]);
-    });
+    }));
 
     renderSpend(adminMe);
     // Wait for the daily list to render so the action button is mounted.
@@ -184,13 +231,129 @@ describe("Spend — self view", () => {
     });
     expect(screen.getByText(/2026-08-11 breakdown/)).toBeInTheDocument();
   });
+
+  it("keeps the picked-day chip alive after closing the breakdown, and reopens the panel on chip click", async () => {
+    // The user reported the previous flow dropped the picked day as
+    // soon as they hit "Close drill", so the breakdown could only be
+    // reached again by re-clicking the bar in the chart. The new flow
+    // keeps a `drilled:` chip rail under the chart so a reader can
+    // click back into the same day without scrolling.
+    stubFetch(withSummaryFetch((url) => {
+      if (url === "/api/me") return jsonResponse(adminMe);
+      if (url === "/api/me/spend/daily?days=30") {
+        return jsonResponse([
+          { day: "2026-08-11", cost_usd: 1.23, tokens: 1000, requests: 4, cache_hits: 1 },
+        ]);
+      }
+      if (url === "/api/me/spend/daily/2026-08-11/breakdown") {
+        return jsonResponse([
+          {
+            model: "openai/gpt-4o-mini",
+            provider: "openai",
+            response_model: "gpt-4o-mini-2024-07-18",
+            cost_usd: 1.0,
+            tokens: 800,
+            requests: 3,
+            cache_hits: 0,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    }));
+
+    renderSpend(adminMe);
+    await waitFor(() => {
+      expect(screen.getByTestId("spend-pick-2026-08-11")).toBeInTheDocument();
+    });
+
+    // 1. Pick a day → breakdown panel opens, drill chip rail appears.
+    fireEvent.click(screen.getByTestId("spend-pick-2026-08-11"));
+    await waitFor(() => {
+      expect(screen.getByText(/2026-08-11 breakdown/)).toBeInTheDocument();
+      expect(screen.getByTestId("spend-drilled-rail")).toBeInTheDocument();
+    });
+
+    const breakdownCallsBeforeClose = callLog.filter((c) =>
+      c.url.endsWith("/api/me/spend/daily/2026-08-11/breakdown"),
+    ).length;
+
+    // 2. Close drill → panel hides AND the rail stays visible with the
+    //    same day label printed on the chip.
+    fireEvent.click(screen.getByTestId("spend-close-breakdown"));
+    await waitFor(() => {
+      expect(screen.queryByText(/2026-08-11 breakdown/)).not.toBeInTheDocument();
+      expect(screen.getByTestId("spend-drilled-rail")).toBeInTheDocument();
+      expect(screen.getByTestId("spend-drilled-chip")).toHaveTextContent("2026-08-11");
+    });
+
+    // 3. Click the drill chip → panel re-opens for the same day WITHOUT
+    //    triggering a second breakdown fetch (the cache is already
+    //    warm — the original `breakdownCallsBeforeClose` count should
+    //    hold).
+    fireEvent.click(screen.getByTestId("spend-drilled-chip"));
+    await waitFor(() => {
+      expect(screen.getByText(/2026-08-11 breakdown/)).toBeInTheDocument();
+    });
+    const breakdownCallsAfterReopen = callLog.filter((c) =>
+      c.url.endsWith("/api/me/spend/daily/2026-08-11/breakdown"),
+    ).length;
+    expect(breakdownCallsAfterReopen).toBe(breakdownCallsBeforeClose);
+
+    // 4. Chip × button fully clears the picked day and the rail.
+    fireEvent.click(screen.getByTestId("spend-drilled-chip-remove"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("spend-drilled-rail")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText(/2026-08-11 breakdown/)).not.toBeInTheDocument();
+  });
+
+  it("range chip reset clears the picked day entirely (no orphan rail)", async () => {
+    stubFetch(withSummaryFetch((url) => {
+      if (url === "/api/me") return jsonResponse(adminMe);
+      if (url.startsWith("/api/me/spend/daily?days=")) {
+        return jsonResponse([
+          { day: "2026-08-11", cost_usd: 1.23, tokens: 1000, requests: 4, cache_hits: 1 },
+        ]);
+      }
+      if (url.endsWith("/breakdown")) {
+        return jsonResponse([
+          {
+            model: "openai/gpt-4o-mini",
+            provider: "openai",
+            response_model: "gpt-4o-mini-2024-07-18",
+            cost_usd: 1.0,
+            tokens: 800,
+            requests: 3,
+            cache_hits: 0,
+          },
+        ]);
+      }
+      return jsonResponse([]);
+    }));
+
+    renderSpend(adminMe);
+    await waitFor(() => {
+      expect(screen.getByTestId("spend-pick-2026-08-11")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("spend-pick-2026-08-11"));
+    await waitFor(() => {
+      expect(screen.getByTestId("spend-drilled-rail")).toBeInTheDocument();
+    });
+
+    // Switching to a different range resets the chart; the picked day
+    // is now meaningless in the new window so the rail clears too.
+    fireEvent.click(screen.getByTestId("spend-range-7"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("spend-drilled-rail")).not.toBeInTheDocument();
+    });
+  });
 });
 
 // ---- 2. Admin scope switcher: /api/users/{id}/spend/daily -------------
 
 describe("Spend — admin scope", () => {
   it("lists members and switches fetches to /api/users/{id}/spend/daily", async () => {
-    stubFetch((url) => {
+    stubFetch(withSummaryFetch((url) => {
       if (url === "/api/me") return jsonResponse(adminMe);
       if (url === "/api/users") return jsonResponse([otherUser]);
       if (url.startsWith("/api/me/spend/daily?days=")) return jsonResponse([]);
@@ -200,7 +363,7 @@ describe("Spend — admin scope", () => {
         ]);
       }
       return jsonResponse([]);
-    });
+    }));
 
     renderSpend(adminMe);
     await waitFor(() => {
@@ -218,11 +381,11 @@ describe("Spend — admin scope", () => {
   });
 
   it("does NOT render the user switcher for non-admin", async () => {
-    stubFetch((url) => {
+    stubFetch(withSummaryFetch((url) => {
       if (url === "/api/me") return jsonResponse(memberMe);
       if (url.startsWith("/api/me/spend/daily")) return jsonResponse([]);
       return jsonResponse([]);
-    });
+    }));
 
     renderSpend(memberMe);
     await waitFor(() => {
@@ -232,5 +395,68 @@ describe("Spend — admin scope", () => {
     const usersCall = callLog.find((c) => c.url === "/api/users");
     expect(usersCall).toBeUndefined();
     expect(screen.queryByTestId("spend-scope-me")).toBeNull();
+  });
+});
+
+// ---- 3. Hero card: cost headline + savings pct -----------------------
+
+describe("Spend — hero card", () => {
+  it("renders the trailing-window cost headline as the hero number", async () => {
+    stubFetch((url) => {
+      if (url === "/api/me") return jsonResponse(adminMe);
+      if (url === "/api/me/spend/summary?days=30") {
+        return summaryResponse(30, 1234.56, 1900, true);
+      }
+      if (url.startsWith("/api/me/spend/daily")) return jsonResponse([]);
+      return summaryResponse(30, 0, 0, false);
+    });
+
+    renderSpend(adminMe);
+    // The hero card paints `summary.current_cost_usd` as the headline.
+    // We give the React Query cache a tick to resolve the in-flight
+    // /api/me/spend/summary query — the first render paints a zero
+    // fallback while summary is loading (no data yet).
+    await waitFor(() => {
+      const hero = screen.getByTestId("spend-hero-cost");
+      expect(hero).toHaveTextContent(/\$1\.23K|\$1\.[2-9]K/i);
+    }, { timeout: 3000 });
+    expect(screen.getByTestId("spend-hero-cost")).not.toHaveTextContent(/tokens/i);
+  });
+
+  it("flips the savings pct colour: negative = warn, positive = ok", async () => {
+    stubFetch((url) => {
+      if (url === "/api/me") return jsonResponse(adminMe);
+      if (url === "/api/me/spend/summary?days=30") {
+        // current=1900 previous=1234.56 → cost INCREASED 54.0%
+        return summaryResponse(30, 1900, 1234.56, true);
+      }
+      if (url.startsWith("/api/me/spend/daily")) return jsonResponse([]);
+      return summaryResponse(30, 0, 0, false);
+    });
+
+    renderSpend(adminMe);
+    await waitFor(() => {
+      const tile = screen.getByTestId("spend-hero-savings");
+      expect(tile.querySelector(".is-negative")).not.toBeNull();
+      expect(tile).toHaveTextContent(/-53\.9%/);
+    });
+  });
+
+  it("shows `—` for the savings pct when there is no previous window", async () => {
+    stubFetch((url) => {
+      if (url === "/api/me") return jsonResponse(adminMe);
+      if (url === "/api/me/spend/summary?days=30") {
+        return summaryResponse(30, 100, 0, false);
+      }
+      if (url.startsWith("/api/me/spend/daily")) return jsonResponse([]);
+      return summaryResponse(30, 0, 0, false);
+    });
+
+    renderSpend(adminMe);
+    await waitFor(() => {
+      const tile = screen.getByTestId("spend-hero-savings");
+      expect(tile).toHaveTextContent("—");
+      expect(tile).toHaveTextContent(/no previous window/i);
+    });
   });
 });

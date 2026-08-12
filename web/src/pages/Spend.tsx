@@ -7,11 +7,14 @@ import {
   fetchMe,
   fetchMySpendBreakdown,
   fetchMySpendDaily,
+  fetchMySpendSummary,
   fetchUserSpendBreakdown,
   fetchUserSpendDaily,
+  fetchUserSpendSummary,
   fetchUsers,
   type DailySpendBreakdownRow,
   type DailySpendRow,
+  type DailySpendSummary,
   type User,
 } from "../api";
 
@@ -39,9 +42,21 @@ function spendFetch(scope: Scope, days: number): Promise<DailySpendRow[]> {
   return fetchUserSpendDaily(scope.id, days);
 }
 
+// spendBreakdownFetch picks the per-day breakdown fetcher for the
+// current scope. `id == ""` keeps the call site ready for the not-
+// logged-in branch (the page's <RequireAuth> already masks the UI).
 function spendBreakdownFetch(scope: Scope, day: string): Promise<DailySpendBreakdownRow[]> {
   if (scope.kind === "me") return fetchMySpendBreakdown(day);
   return fetchUserSpendBreakdown(scope.id, day);
+}
+
+// spendSummaryFetch secures the hero rollup (current + previous
+// window totals in one shot). The server-side plan combines the two
+// intervals in a single ClickHouse query so the page doesn't issue a
+// second trip just to render the savings pct.
+function spendSummaryFetch(scope: Scope, days: number): Promise<DailySpendSummary> {
+  if (scope.kind === "me") return fetchMySpendSummary(days);
+  return fetchUserSpendSummary(scope.id, days);
 }
 
 const RANGE_DAYS = [7, 30, 90] as const;
@@ -56,6 +71,12 @@ export function Spend() {
   const [scope, setScope] = useState<Scope>({ kind: "me" });
   const [days, setDays] = useState<number>(30);
   const [pickedDay, setPickedDay] = useState<string | null>(null);
+  // `panelOpen` lets the user close the breakdown panel without
+  // dropping the picked day entirely. The drill chip rail (below the
+  // chart) keeps the picked day visible after a close, so the user can
+  // click the chip to reopen the breakdown instead of having to
+  // re-click the bar in the daily chart.
+  const [panelOpen, setPanelOpen] = useState(false);
 
   const usersQuery = useQuery({
     queryKey: ["users"],
@@ -68,11 +89,30 @@ export function Spend() {
     queryFn: () => spendFetch(scope, days),
   });
 
+  // Summary backs the hero card. Its query key carries the same
+  // [scope, days] pair as the daily list — switching the range or
+  // scope chip triggers both fetches in lockstep, so the hero can't
+  // display a savings figure that lags the chart behind it.
+  const summaryQuery = useQuery({
+    queryKey: ["spend", "summary", scope, days],
+    queryFn: () => spendSummaryFetch(scope, days),
+  });
+
   const breakdownQuery = useQuery({
     queryKey: ["spend", "breakdown", scope, pickedDay],
     queryFn: () => spendBreakdownFetch(scope, pickedDay!),
+    // Fetch as soon as a day is picked; the panel may be closed
+    // momentarily (`panelOpen === false`) but the cache is warm so
+    // re-opening it is instant. Sending the fetch on close would
+    // either be wasteful or wrong, so we keep the exchange simple:
+    // pick ⇒ fetch + open; close ⇒ keep cache + hide panel.
     enabled: pickedDay !== null,
   });
+
+  const pickDay = (d: string) => {
+    setPickedDay((prev) => (prev === d ? null : d));
+    setPanelOpen(true);
+  };
 
   // Aggregates for the page hero stat strip. We compute them locally so
   // picking a range or scope rerenders the stats without an extra API.
@@ -80,40 +120,7 @@ export function Spend() {
 
   return (
     <div className="spend-page">
-      <header className="page-head">
-        <div>
-          <div className="eyebrow">
-            <Icon.wallet size={14} />
-            <span>Workspace · spend</span>
-          </div>
-          <h1 className="page-title">Spend</h1>
-          <p className="page-sub">
-            Per-day LLM cost from <code>gateway_traces</code>. Use the range
-            chips or the scope switcher (admin) to slice the chart and the
-            drill panel. Cache responses show up as <em>cache hits</em> in
-            the daily list — they cost $0 upstream but still occupy capacity
-            on the gateway.
-          </p>
-        </div>
-        <div className="page-stats" aria-label="Spend summary">
-          <SpendStat
-            label={`Last ${days} days`}
-            value={formatUsd(aggregates.totalCost)}
-          />
-          <SpendStat
-            label="Today"
-            value={formatUsd(aggregates.todayCost)}
-          />
-          <SpendStat
-            label="7-day avg"
-            value={formatUsd(aggregates.last7AvgCost)}
-          />
-          <SpendStat
-            label="Cache responses"
-            value={aggregates.totalCacheHits.toLocaleString()}
-          />
-        </div>
-      </header>
+      <SpendHero summary={summaryQuery.data ?? null} days={days} aggregates={aggregates} />
 
       <div className="filter-bar" role="group" aria-label="Range and scope">
         <div className="filter-chips" role="group" aria-label="Range">
@@ -126,6 +133,7 @@ export function Spend() {
               onClick={() => {
                 setDays(d);
                 setPickedDay(null);
+                setPanelOpen(false);
               }}
             >
               {d}d
@@ -141,6 +149,7 @@ export function Spend() {
               onClick={() => {
                 setScope({ kind: "me" });
                 setPickedDay(null);
+                setPanelOpen(false);
               }}
             >
               {meQuery.data?.email ?? "Self"}
@@ -156,6 +165,7 @@ export function Spend() {
                 onClick={() => {
                   setScope({ kind: "user", id: u.id });
                   setPickedDay(null);
+                  setPanelOpen(false);
                 }}
               >
                 {u.email}
@@ -175,30 +185,68 @@ export function Spend() {
         <DailyBar
           rows={dailyQuery.data ?? []}
           pickedDay={pickedDay}
-          onPick={(d) => setPickedDay(d === pickedDay ? null : d)}
+          onPick={pickDay}
         />
+        {pickedDay ? (
+          <div
+            className="spend-drilled-rail"
+            data-testid="spend-drilled-rail"
+            role="group"
+            aria-label="Open drill-downs"
+          >
+            <span className="spend-drilled-rail__label">drilled</span>
+            <span
+              role="button"
+              tabIndex={0}
+              className="spend-drilled-chip"
+              data-testid="spend-drilled-chip"
+              aria-expanded={panelOpen}
+              aria-label={`Reopen drill-down for ${pickedDay}`}
+              onClick={() => setPanelOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setPanelOpen(true);
+                }
+              }}
+            >
+              {pickedDay}
+              <button
+                type="button"
+                className="spend-drilled-chip__remove"
+                data-testid="spend-drilled-chip-remove"
+                aria-label="Close drill-down"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPickedDay(null);
+                  setPanelOpen(false);
+                }}
+              >
+                ×
+              </button>
+            </span>
+          </div>
+        ) : null}
       </section>
 
       <section className="panel" aria-label="Daily spend list">
         <DataTable<DailySpendRow>
           rows={dailyQuery.data ?? []}
-          columns={buildDailyColumns((d) =>
-            setPickedDay((prev) => (prev === d ? null : d)),
-          )}
+          columns={buildDailyColumns(pickDay)}
           rowKey={(r) => r.day}
           storageKey="spend-daily"
           pageSize={20}
         />
       </section>
 
-      {pickedDay ? (
+      {pickedDay && panelOpen ? (
         <section className="panel" aria-label="Per-day breakdown">
           <header className="panel-head">
             <h2>{pickedDay} breakdown</h2>
             <button
               type="button"
               className="btn-ghost btn-small"
-              onClick={() => setPickedDay(null)}
+              onClick={() => setPanelOpen(false)}
               data-testid="spend-close-breakdown"
             >
               Close drill
@@ -230,6 +278,30 @@ function formatUsd(n: number): string {
   if (n < 1) return `$${n.toFixed(4)}`;
   if (n < 100) return `$${n.toFixed(2)}`;
   return `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+// formatUsdLarge handles the hero-card numbers: short-form up to
+// millions so the accent-gradient headline reads like a dashboard
+// rather than a wall of cents. We trade off precision (max 2
+// decimals) for legibility — the underlying summary endpoint already
+// sent raw dollar amounts so the smaller tiles (Today / 7-day avg /
+// Previous-window) keep their full precision via formatUsd.
+function formatUsdLarge(n: number): string {
+  if (!Number.isFinite(n)) return "$0.00";
+  if (Math.abs(n) < 1000) return formatUsd(n);
+  const units: Array<[number, string]> = [
+    [1_000_000_000, "B"],
+    [1_000_000, "M"],
+    [1_000, "K"],
+  ];
+  for (const [unit, suffix] of units) {
+    if (Math.abs(n) >= unit) {
+      const v = n / unit;
+      const digits = Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2;
+      return `$${v.toFixed(digits)}${suffix}`;
+    }
+  }
+  return formatUsd(n);
 }
 
 function aggregateDaily(rows: DailySpendRow[]) {
@@ -378,9 +450,24 @@ function DailyBar({
   // YYYY-MM-DD order; we trust that and skip date math here.
   const maxCost = Math.max(0, ...rows.map((r) => safeRow(r).cost_usd));
   const width = 720;
-  const height = 160;
-  const padTop = 12;
+  // The chart pads the top so the picked value label ("$1.23") sits
+  // comfortably above its bar — picked → 22px clearance, axis labels
+  // (day stamps) live in their own band below the axis so they never
+  // collide with the bars or with the panel padding.
+  const padTop = 22;
+  const axisHeight = 18;
+  const height = 168;
   const barWidth = (width - 8) / Math.max(1, rows.length);
+
+  // Pick which day-stamps to print on the axis. Emitting every label at
+  // 30-day density crowds the chart; we keep ~6 evenly-spaced labels
+  // plus the first and last so the boundaries are always pinned.
+  const axisStride = Math.max(1, Math.ceil(rows.length / 6));
+  // Sanitize the picked day for the value label: NaN guards from the
+  // sanitiser, plus a missing-pick case (no label emitted).
+  const pickedRow = pickedDay
+    ? rows.find((r) => r.day === pickedDay)
+    : undefined;
 
   return (
     <div className="spend-bar">
@@ -395,10 +482,10 @@ function DailyBar({
           const safe = safeRow(r);
           const h =
             maxCost > 0
-              ? Math.max(2, (safe.cost_usd / maxCost) * (height - padTop - 4))
+              ? Math.max(2, (safe.cost_usd / maxCost) * (height - padTop - axisHeight - 4))
               : 2;
           const x = 4 + i * barWidth;
-          const y = height - h;
+          const y = height - axisHeight - h;
           const isPicked = r.day === pickedDay;
           return (
             <g key={r.day}>
@@ -422,18 +509,207 @@ function DailyBar({
             </g>
           );
         })}
+        {/* Day-axis labels: stride-decorated so a 30-day strip stays
+            legible. The labels live below the bars in their own band. */}
+        {rows.map((r, i) => {
+          // First or last day, plus every Nth in the middle. The
+          // boundary days always print so a reader can see the window
+          // edges without enlarging.
+          const isEdge = i === 0 || i === rows.length - 1;
+          const isStrideHit = i % axisStride === 0;
+          if (!isEdge && !isStrideHit) return null;
+          const cx = 4 + i * barWidth + barWidth / 2;
+          return (
+            <text
+              key={`axis-${r.day}`}
+              className="spend-bar__axis-label"
+              x={cx}
+              y={height - 4}
+              textAnchor="middle"
+            >
+              {r.day.slice(5)}
+            </text>
+          );
+        })}
+        {/* Picked-bar value label: the only top-of-bar text we ever
+            print. Keeps the chart visually quiet except where a reader
+            has actively drilled in. */}
+        {pickedRow ? (
+          <text
+            key={`val-${pickedRow.day}`}
+            data-testid={`spend-bar-value-${pickedRow.day}`}
+            className="spend-bar__value"
+            x={4 + rows.findIndex((r) => r.day === pickedRow.day) * barWidth + barWidth / 2}
+            y={Math.max(14, height - axisHeight - (chosenBarHeight(pickedRow, maxCost, height - padTop - axisHeight - 4)) - 6)}
+            textAnchor="middle"
+          >
+            ${formatUsd(safeRow(pickedRow).cost_usd)}
+          </text>
+        ) : null}
       </svg>
     </div>
   );
 }
 
-// --- SpendStat helper --------------------------------------------------
+// chosenBarHeight mirrors the bar-height math used in the render loop
+// (so the value label sits exactly one row above the picked bar's top
+// edge regardless of the picked row's cost). Centralising it here
+// keeps the y-coordinate above the bar honest if the formula later
+// changes.
+function chosenBarHeight(
+  row: DailySpendRow,
+  maxCost: number,
+  usable: number,
+): number {
+  const safe = safeRow(row);
+  if (maxCost <= 0) return 2;
+  return Math.max(2, (safe.cost_usd / maxCost) * usable);
+}
 
-function SpendStat({ label, value }: { label: string; value: string }) {
+// --- SpendHero ---------------------------------------------------------
+//
+// The page's hero block: a left-aligned title pair next to a 1×2 hero
+// card grid. The dominant tile carries the trailing-N-days cost in
+// the design-token accent gradient; the second tile carries the
+// savings pct derived from the equal-length window immediately
+// preceding it. Below that, four smaller tiles recap today / 7-day
+// avg / cache responses / delta-cost — all cost-shaped, no tokens —
+// so an operator looking at the page gets what the Spend page exists
+// for in one glance without having to scroll.
+//
+// Layout contract: `.spend-hero` is a CSS grid — title column +
+// hero cards column at the top, then the 4-chip strip below spanning
+// both columns. Switching to flex would lose the right-edge alignment
+// invariant between the dominant tile and the title block.
+function SpendHero({
+  summary,
+  days,
+  aggregates,
+}: {
+  summary: DailySpendSummary | null;
+  days: number;
+  aggregates: ReturnType<typeof aggregateDaily>;
+}) {
+  const hasPrevious = summary?.has_previous ?? false;
+  const pct = summary?.savings_pct ?? 0;
+  const delta = summary?.delta_cost_usd ?? 0;
+  // HeroCost: the trailing N-days dollar amount in the accent
+  // gradient. Falls back to the existing local aggregate when the
+  // /summary endpoint is still resolving so the page never paints an
+  // empty hero.
+  const heroCost = summary ? summary.current_cost_usd : aggregates.totalCost;
   return (
-    <div className="page-stat">
-      <div className="page-stat-label">{label}</div>
-      <div className="page-stat-value mono">{value}</div>
+    <div className="spend-page-head">
+      <div className="spend-page-head__title">
+        <div className="eyebrow">
+          <Icon.wallet size={14} />
+          <span>Workspace · spend</span>
+        </div>
+        <h1 className="page-title">Spend</h1>
+        <p className="page-sub">
+          Per-day LLM cost from <code>gateway_traces</code>. Use the range
+          chips or the scope switcher (admin) to slice the chart and the
+          drill panel. Cache responses show up as <em>cache hits</em> in
+          the daily list — they cost $0 upstream but still occupy capacity
+          on the gateway.
+        </p>
+      </div>
+
+      <div className="spend-hero-cards" aria-label="Cost hero summary">
+        <article className="spend-hero-cost" data-testid="spend-hero-cost">
+          <div className="spend-hero-cost__label">
+            Last {days} days · total cost
+          </div>
+          <div className="spend-hero-cost__value mono">
+            ${formatUsdLarge(heroCost)}
+          </div>
+          <div className="spend-hero-cost__sub">
+            {hasPrevious ? (
+              <span
+                className={
+                  "spend-hero-cost__delta" +
+                  (delta >= 0 ? " is-up" : " is-down")
+                }
+              >
+                <span className="spend-hero-cost__delta-arrow" aria-hidden="true">
+                  {delta >= 0 ? "↑" : "↓"}
+                </span>
+                ${formatUsd(Math.abs(delta))}{" "}
+                <span className="muted">vs previous {days} days</span>
+              </span>
+            ) : (
+              <span className="muted">
+                First window — comparison unlocks after the next {days} days
+                of traffic
+              </span>
+            )}
+          </div>
+        </article>
+
+        <article className="spend-hero-savings" data-testid="spend-hero-savings">
+          <div className="spend-hero-card__label">Cost change · vs previous {days} days</div>
+          <div
+            className={
+              "spend-hero-savings__value mono" +
+              (hasPrevious ? (pct >= 0 ? " is-positive" : " is-negative") : " is-na")
+            }
+          >
+            {hasPrevious ? `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%` : "—"}
+          </div>
+          <div className="spend-hero-savings__sub muted mono">
+            {hasPrevious
+              ? pct >= 0
+                ? "cost decreased"
+                : "cost increased"
+              : "no previous window"}
+          </div>
+        </article>
+      </div>
+
+      <div className="spend-hero-strip" role="group" aria-label="Spend metric strip">
+        <SpendMetric
+          label="Today"
+          value={formatUsd(aggregates.todayCost)}
+          sub={`${aggregates.dayCount} days tracked`}
+        />
+        <SpendMetric
+          label={`Previous ${days} days`}
+          value={hasPrevious ? formatUsd(summary!.previous_cost_usd) : "—"}
+          sub={`${(summary?.previous_requests ?? 0).toLocaleString()} req`}
+        />
+        <SpendMetric
+          label="7-day avg"
+          value={formatUsd(aggregates.last7AvgCost)}
+          sub="trailing 7 days"
+        />
+        <SpendMetric
+          label="Cache responses"
+          value={aggregates.totalCacheHits.toLocaleString()}
+          sub={`${(summary?.current_cache_hits ?? 0).toLocaleString()} this window`}
+        />
+      </div>
+    </div>
+  );
+}
+
+// SpendMetric is one of the four small tiles below the hero cards
+// (Today / Previous / 7-day avg / Cache responses). Renders label
+// uppercase + big numeric + tiny subline — same grid cell, all cost-
+// shaped, no token-shaped lines so the strip reads consistently.
+function SpendMetric({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}) {
+  return (
+    <div className="spend-hero-metric">
+      <div className="spend-hero-metric__label">{label}</div>
+      <div className="spend-hero-metric__value mono">{value}</div>
+      <div className="spend-hero-metric__sub muted mono">{sub}</div>
     </div>
   );
 }

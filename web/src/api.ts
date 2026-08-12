@@ -1149,6 +1149,89 @@ export async function fetchUserSpendBreakdown(
   return data.map((d) => sanitizeDailySpendBreakdownRow(d as Partial<DailySpendBreakdownRow>));
 }
 
+// DailySpendSummary is the hero-card rollup the Spend page renders in
+// the page head. It bundles current-window totals (`current_*`) with
+// the same-shape totals for the equal-length window immediately
+// preceding the current one (`previous_*`), plus the savings-pct
+// computed server-side from those two cost columns. has_previous is
+// false for first-window users where the comparison would otherwise
+// read as "infinite savings" against a zero baseline.
+export interface DailySpendSummary {
+  days: number;
+  current_cost_usd: number;
+  previous_cost_usd: number;
+  delta_cost_usd: number;
+  savings_pct: number;
+  has_previous: boolean;
+  current_tokens: number;
+  previous_tokens: number;
+  current_requests: number;
+  previous_requests: number;
+  current_cache_hits: number;
+  previous_cache_hits: number;
+}
+
+function sanitizeDailySpendSummary(
+  d: Partial<DailySpendSummary> | undefined | null,
+): DailySpendSummary {
+  const safe = (v: unknown, fb: number) =>
+    typeof v === "number" && Number.isFinite(v) ? v : fb;
+  return {
+    days: typeof d?.days === "number" && d.days > 0 ? d.days : 30,
+    current_cost_usd: safe(d?.current_cost_usd, 0),
+    previous_cost_usd: safe(d?.previous_cost_usd, 0),
+    delta_cost_usd: safe(d?.delta_cost_usd, 0),
+    savings_pct: safe(d?.savings_pct, 0),
+    has_previous: Boolean(d?.has_previous),
+    current_tokens: safe(d?.current_tokens, 0),
+    previous_tokens: safe(d?.previous_tokens, 0),
+    current_requests: safe(d?.current_requests, 0),
+    previous_requests: safe(d?.previous_requests, 0),
+    current_cache_hits: safe(d?.current_cache_hits, 0),
+    previous_cache_hits: safe(d?.previous_cache_hits, 0),
+  };
+}
+
+function emptySummary(days: number): DailySpendSummary {
+  return {
+    days,
+    current_cost_usd: 0,
+    previous_cost_usd: 0,
+    delta_cost_usd: 0,
+    savings_pct: 0,
+    has_previous: false,
+    current_tokens: 0,
+    previous_tokens: 0,
+    current_requests: 0,
+    previous_requests: 0,
+    current_cache_hits: 0,
+    previous_cache_hits: 0,
+  };
+}
+
+export async function fetchMySpendSummary(days: number): Promise<DailySpendSummary> {
+  const res = await fetch(
+    `/api/me/spend/summary?days=${encodeURIComponent(String(days))}`,
+  );
+  if (!res.ok) return emptySummary(days);
+  const data = await res.json();
+  if (!data || typeof data !== "object") return emptySummary(days);
+  return sanitizeDailySpendSummary(data as Partial<DailySpendSummary>);
+}
+
+export async function fetchUserSpendSummary(
+  userID: string,
+  days: number,
+): Promise<DailySpendSummary> {
+  const res = await fetch(
+    `/api/users/${encodeURIComponent(userID)}/spend/summary?days=${encodeURIComponent(String(days))}`,
+  );
+  if (!res.ok) return emptySummary(days);
+  const data = await res.json();
+  if (!data || typeof data !== "object") return emptySummary(days);
+  return sanitizeDailySpendSummary(data as Partial<DailySpendSummary>);
+}
+
 // --- Admin: audit log (v1.1) ---
 
 export interface AuditEntry {
