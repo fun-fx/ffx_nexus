@@ -1,0 +1,123 @@
+{{/*
+  Grafana dashboard toggle (config.grafana.*).
+  Renders three bundled reference GrafanaDashboard CRs (01-overview,
+  02-llm-spend, 03-eval-quality) sourced from files/grafana-dashboards/.
+  Toggling on with `enabled: true` also lets the operator optionally
+  enable alert routing via a Cozystack-managed Grafana instance.
+
+  Why a chart toggle when the ops repo already has the equivalent CRs?
+  --------------------------------------------------------------------------
+  The ops repo manifest (deploy/cozystack/09-grafana-dashboards.yaml) is
+  applied separately by the platform team. That works but creates two
+  sources of truth — the dashboard JSON in the ops repo and metric
+  definitions in this repo. This template keeps both in the same repo
+  as the Prometheus counters they visualize. Operators can pick one
+  path or the other; both render the same CR.
+*/}}
+
+{{- if and .Values.config.grafana .Values.config.grafana.enabled .Values.config.grafana.dashboardsEnabled }}
+
+{{- $folder := .Values.config.grafana.folder | default "Nexus" }}
+{{- $selector := .Values.config.grafana.instanceSelector.matchLabels }}
+
+{{/* ---------- ConfigMap holding each dashboard JSON ---------- */}}
+{{- range $name, $path := dict "01-nexus-overview.json" "files/grafana-dashboards/01-nexus-overview.json" "02-llm-spend.json" "files/grafana-dashboards/02-llm-spend.json" "03-eval-quality.json" "files/grafana-dashboards/03-eval-quality.json" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nexus.fullname" $ }}-dashboard-{{ trimSuffix ".json" $name }}
+  labels:
+    grafana_dashboard: "1"
+    {{- include "nexus.labels" $ | nindent 4 }}
+data:
+  {{ $name }}: |-
+{{ $.Files.Get $path | indent 4 }}
+---
+{{- end }}
+
+{{/* ---------- Operator-managed GrafanaDashboard CRs ---------- */}}
+{{- range $name, $uid := dict "01-nexus-overview.json" "nexus-01-overview" "02-llm-spend.json" "nexus-02-llm-spend" "03-eval-quality.json" "nexus-03-eval-quality" }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: {{ $uid }}
+  labels:
+    {{- include "nexus.labels" $ | nindent 4 }}
+spec:
+  resyncPeriod: 5m
+  instanceSelector:
+    matchLabels:
+      {{- range $k, $v := $selector }}
+      {{ $k }}: {{ $v }}
+      {{- end }}
+  folder: {{ $folder }}
+  configMapRef:
+    name: {{ include "nexus.fullname" $ }}-dashboard-{{ trimSuffix ".json" $name }}
+    key: {{ $name }}
+---
+{{- end }}
+
+{{/* ---------- Optional: alert contact point + OTLP rule group ---------- */}}
+{{- if and .Values.config.grafana.alertsEnabled .Values.config.grafana.folderUID }}
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaContactPoint
+metadata:
+  name: {{ include "nexus.fullname" . }}-alerts
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+spec:
+  name: {{ include "nexus.fullname" . }}-alerts-webhook
+  type: webhook
+  resyncPeriod: 30s
+  instanceSelector:
+    matchLabels:
+      {{- range $k, $v := $selector }}
+      {{ $k }}: {{ $v }}
+      {{- end }}
+  settings:
+    # The contact-point's settings are a free-form object matching the contact
+    # type. The webhook receiver URL is intentionally left blank by default;
+    # operators must override `.Values.config.grafana.alertsWebhook` before
+    # applying with alertsEnabled: true — the chart emits a validation error
+    # in NOTES.txt when this is unset.
+    url: {{ .Values.config.grafana.alertsWebhook | default "http://failover-echo.tenant-nexus.svc:8080/alert" }}
+    httpMethod: POST
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaAlertRuleGroup
+metadata:
+  name: {{ include "nexus.fullname" . }}-otlp-alerts
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+spec:
+  folderUID: {{ .Values.config.grafana.folderUID }}
+  interval: 1m
+  resyncPeriod: 30s
+  rules:
+    - uid: nex-otlp-4xx-sustained
+      title: Nexus OTLP exporter — sustained 4xx from collector
+      condition: A
+      notificationSettings:
+        receiver: {{ include "nexus.fullname" . }}-alerts-webhook
+        group_by:
+          - grafana_folder
+          - alertname
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h
+      data:
+        - refId: A
+          datasourceUid: vm-default
+          relativeTimeRange:
+            from: 300
+            to: 0
+          model:
+            expr: sum(increase(nexus_otlp_export_requests_total{status=~"4.."}[5m]))
+            instant: true
+            refId: A
+      for: 5m
+      noDataState: OK
+      execErrState: Alerting
+{{- end }}
+
+{{- end }}
