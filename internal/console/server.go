@@ -65,10 +65,6 @@ type Server struct {
 	pluginManualFirer PluginManualFirer     // admin-driven drain for manual-trigger plugins
 	pluginKeys        EvalPluginKeys        // in-process plugin key resolver (console keys)
 	benchmarks        BenchmarkRunner       // model-level benchmark runs; nil without Postgres
-	// grafanaURL is the operator-supplied public Grafana base URL surfaced
-	// on Spend / Quality / Traces pages so an operator can click through
-	// to the matching bundled dashboard. Empty == console hides the link.
-	grafanaURL string
 	// cspOrigins is the operator-supplied allow-list for cross-origin
 	// connections the console may make (marketing → console login handoff,
 	// live-trace WSS endpoint on a separate hostname, third-party login
@@ -158,14 +154,6 @@ func (s *Server) SetEvalConfig(src EvalConfigSource, apply EvalConfigApplier) {
 	s.evalConfigApply = apply
 }
 
-// SetPublicGrafanaURL surfaces the operator-supplied Grafana base URL on
-// /api/ui/observability so the console's *Spend* / *Quality* / *Traces*
-// pages can render an "Open in Grafana" link instead of forcing the
-// operator to remember the entrypoint. Empty == the field is omitted and
-// the UI hides the link entirely.
-func (s *Server) SetPublicGrafanaURL(url string) {
-	s.grafanaURL = strings.TrimRight(url, "/")
-}
 
 // SetCSPOrigins sets the operator-supplied allow-list of web origins that
 // the console may connect to. Used by securityHeaders() to assemble the
@@ -315,12 +303,6 @@ func (s *Server) Mux() http.Handler {
 		// the console session has no view of; this endpoint lets the reader
 		// enumerate stock + user-defined providers using their Nexus cookie.
 		r.Get("/me/playground/catalog", s.requireUser(s.playgroundCatalog))
-
-		// Lightweight public read used by the *Spend* / *Quality* / *Traces*
-		// pages to render an "Open in Grafana" link. Public because Grafana
-		// itself is on the open ingress and the URL is non-sensitive; authn
-		// would just gate a CSS rule. Anonymous OK.
-		r.Get("/ui/observability", s.uiObservability)
 
 		// PR #135: per-eval profile CRUD. Visibilities mirror router
 		// models (PR #133): org profiles are visible to every member,
@@ -976,29 +958,4 @@ func SetBuildTag(tag string) {
 		return
 	}
 	responseBuildTag = tag
-}
-
-// uiObservability returns the small bundle of operator-facing URLs the
-// console sidebar needs to render "Open in Grafana" / "Open in Metabase"
-// style shortcuts. Empty fields are omitted entirely so the front-end
-// `ui-observability-link` component renders nothing instead of a broken
-// href. The endpoint is intentionally anonymous because the URLs are
-// non-sensitive (operator-set, public ingress, never carry tenant data).
-// Mirrors the runtime env vars NEXUS_PUBLIC_GRAFANA_URL and (added in a
-// future PR) NEXUS_PUBLIC_METABASE_URL; only the Grafana side is wired
-// up here because Metabase's bundled dashboards ship under Metabase's
-// own URL prefix and embed cleanly without an explicit link handler.
-func (s *Server) uiObservability(w http.ResponseWriter, _ *http.Request) {
-	resp := map[string]any{}
-	if s.grafanaURL != "" {
-		// Three bundled reference dashboards — keep the UIDs in sync
-		// with the GrafanaDashboard CRs in deploy/helm/nexus/.
-		resp["grafana"] = map[string]string{
-			"base":     s.grafanaURL,
-			"overview": s.grafanaURL + "/d/nexus-01-overview/nexus-01-overview",
-			"spend":    s.grafanaURL + "/d/nexus-02-llm-spend/nexus-02-llm-spend",
-			"eval":     s.grafanaURL + "/d/nexus-03-eval-quality/nexus-03-eval-quality",
-		}
-	}
-	writeJSON(w, http.StatusOK, resp)
 }
