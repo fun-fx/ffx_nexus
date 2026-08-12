@@ -381,6 +381,12 @@ func main() {
 		// Console sidebar / Spend / Quality pages render an
 		// "Open in Grafana" link when this is non-empty.
 		consoleSrvHandler.SetPublicGrafanaURL(cfg.PublicGrafanaURL)
+	// CSP allow-list: comma-separated web origins the console may connect to
+	// (marketing site, separate live-trace wss host, etc.). Encoded into the
+	// CSP `connect-src` directive by securityHeaders, replacing the prior
+	// `https://*.ffx.ai` hardcode so multi-tenant Helm deploys do not need
+	// a code change to permit their own origin.
+	consoleSrvHandler.SetCSPOrigins(cfg.PublicWebOrigins)
 		if resolver != nil {
 			evalWorker.SetSecretResolver(resolver.Resolve)
 		}

@@ -7,7 +7,7 @@ This template is intentionally non-recursive: each plugin file is a
 top-level key. The gateway loader (evalplugin.Registry.LoadFromDir)
 walks the directory; aggregated keys keep Helm diffs minimal.
 */}}
-{{- if .Values.eval.plugins.configMaps }}
+{{- if and .Values.eval .Values.eval.plugins .Values.eval.plugins.configMaps }}
 {{- range $cm := .Values.eval.plugins.configMaps }}
 {{- if not $cm.name }}
 {{- fail "eval.plugins.configMaps[].name is required" }}

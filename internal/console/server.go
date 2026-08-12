@@ -69,6 +69,15 @@ type Server struct {
 	// on Spend / Quality / Traces pages so an operator can click through
 	// to the matching bundled dashboard. Empty == console hides the link.
 	grafanaURL string
+	// cspOrigins is the operator-supplied allow-list for cross-origin
+	// connections the console may make (marketing → console login handoff,
+	// live-trace WSS endpoint on a separate hostname, third-party login
+	// portals). Wired from Config.PublicWebOrigins
+	// (NEXUS_PUBLIC_WEB_ORIGINS, comma-separated) at boot. Empty list
+	// degrades the CSP connect-src to 'self' only, which is safe for
+	// on-prem Helm deploys that never serve a separate marketing origin
+	// — see securityHeaders() for the policy assembly.
+	cspOrigins []string
 	// qualityRouter exposes the in-memory router state to the console
 	// so /api/eval/benchmarks/quality can answer "what is the
 	// router actually doing right now". nil when the router is not
@@ -156,6 +165,27 @@ func (s *Server) SetEvalConfig(src EvalConfigSource, apply EvalConfigApplier) {
 // the UI hides the link entirely.
 func (s *Server) SetPublicGrafanaURL(url string) {
 	s.grafanaURL = strings.TrimRight(url, "/")
+}
+
+// SetCSPOrigins sets the operator-supplied allow-list of web origins that
+// the console may connect to. Used by securityHeaders() to assemble the
+// Content-Security-Policy `connect-src` directive without hardcoding any
+// company's domain. Whitespace and trailing slashes are trimmed; an empty
+// resulting list is preserved (securityHeaders treats empty as 'self'-only,
+// which is the desired safe default for on-prem deploys).
+//
+// Splitting on comma lets one Helm `config.publicWebOrigins` value carry
+// multiple origins (e.g. `https://marketing.<tenant>,https://live-trace.<tenant>`).
+func (s *Server) SetCSPOrigins(origins []string) {
+	out := make([]string, 0, len(origins))
+	for _, o := range origins {
+		o = strings.TrimSpace(o)
+		o = strings.TrimRight(o, "/")
+		if o != "" {
+			out = append(out, o)
+		}
+	}
+	s.cspOrigins = out
 }
 
 // SetEvalProfiles attaches the profile store used by PR #135 per-eval

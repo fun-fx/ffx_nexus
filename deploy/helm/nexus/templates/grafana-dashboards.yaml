@@ -5,27 +5,42 @@
   Toggling on with `enabled: true` also lets the operator optionally
   enable alert routing via a Cozystack-managed Grafana instance.
 
-  Why a chart toggle when the ops repo already has the equivalent CRs?
+  Cross-namespace name safety:
   --------------------------------------------------------------------------
-  The ops repo manifest (deploy/cozystack/09-grafana-dashboards.yaml) is
-  applied separately by the platform team. That works but creates two
-  sources of truth — the dashboard JSON in the ops repo and metric
-  definitions in this repo. This template keeps both in the same repo
-  as the Prometheus counters they visualize. Operators can pick one
-  path or the other; both render the same CR.
+  GrafanaDashboard CR names must be unique WITHIN a single Grafana instance's
+  scope of reconciliation — and two CRs in different namespaces but with the
+  same `metadata.name` are treated as the same logical dashboard by the
+  grafana-operator. The legacy path (deploy/cozystack/09-grafana-dashboards.yaml
+  in this repo's ops neighbour) used bare names like `nexus-01-overview` in the
+  `tenant-root` namespace; to coexist with that legacy apply AND make this
+  chart's CRs an independently-removable source of truth, we prefix every
+  name with the release's full Helm name. After migrating off the legacy
+  apply path, the prefix can be dropped by setting `config.grafana.namePrefix`
+  to "" — but for now operators need both to coexist.
+
+  Console link path:
+  --------------------------------------------------------------------------
+  The console's `/api/ui/observability` endpoint (PR #241) hardcodes the
+  bare-name path `/d/nexus-01-overview/nexus-01-overview`. That path matches
+  the legacy operator-installed dashboards. This chart emits prefixed CRs,
+  so the console's link is correct against the legacy dashboards — and the
+  chart-managed dashboards render at `/d/<fullName>-01-overview/fullName-01-overview`
+  for anyone who explicitly wants the chart-managed copy (browse the folder
+  in Grafana's sidebar to find it).
 */}}
 
 {{- if and .Values.config.grafana .Values.config.grafana.enabled .Values.config.grafana.dashboardsEnabled }}
 
 {{- $folder := .Values.config.grafana.folder | default "Nexus" }}
 {{- $selector := .Values.config.grafana.instanceSelector.matchLabels }}
+{{- $prefix := .Values.config.grafana.namePrefix | default "chart-" }}
 
 {{/* ---------- ConfigMap holding each dashboard JSON ---------- */}}
 {{- range $name, $path := dict "01-nexus-overview.json" "files/grafana-dashboards/01-nexus-overview.json" "02-llm-spend.json" "files/grafana-dashboards/02-llm-spend.json" "03-eval-quality.json" "files/grafana-dashboards/03-eval-quality.json" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "nexus.fullname" $ }}-dashboard-{{ trimSuffix ".json" $name }}
+  name: {{ $prefix }}dashboard-{{ trimSuffix ".json" $name }}
   labels:
     grafana_dashboard: "1"
     {{- include "nexus.labels" $ | nindent 4 }}
@@ -40,7 +55,7 @@ data:
 apiVersion: grafana.integreatly.org/v1beta1
 kind: GrafanaDashboard
 metadata:
-  name: {{ $uid }}
+  name: {{ $prefix }}{{ $uid }}
   labels:
     {{- include "nexus.labels" $ | nindent 4 }}
 spec:
@@ -52,7 +67,7 @@ spec:
       {{- end }}
   folder: {{ $folder }}
   configMapRef:
-    name: {{ include "nexus.fullname" $ }}-dashboard-{{ trimSuffix ".json" $name }}
+    name: {{ $prefix }}dashboard-{{ trimSuffix ".json" $name }}
     key: {{ $name }}
 ---
 {{- end }}
