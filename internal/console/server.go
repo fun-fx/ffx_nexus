@@ -20,6 +20,7 @@ import (
 
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/core"
+	docsserver "github.com/ffxnexus/nexus/internal/docs"
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
@@ -458,6 +459,15 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/credentials", s.requireAdmin(s.createCredential))
 		r.Post("/credentials/{id}/rotate", s.requireAdmin(s.rotateCredential))
 		r.Delete("/credentials/{id}", s.requireAdmin(s.deleteCredential))
+
+		// Documentation: in-binary markdown tree, served verbatim so
+		// the console's Docs page can render it with the thegrid.ai
+		// look. Mounted under /api so the existing auth middleware
+		// (requireUser on every authenticated route) protects it
+		// without an explicit gate; the bundle itself is not a
+		// secret, but routing through the same handler avoids a
+		// separate path that other middleware might miss.
+		r.Mount("/docs", docsserver.Routes())
 	})
 
 	// Same-origin /v1 for Playground + model discovery when the console is on

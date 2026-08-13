@@ -23,6 +23,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
 	"github.com/ffxnexus/nexus/internal/cron"
+	docsserver "github.com/ffxnexus/nexus/internal/docs"
 	"github.com/ffxnexus/nexus/internal/evalplugin"
 	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/evaluators/external"
@@ -388,6 +389,18 @@ func main() {
 			evalWorker.SetSecretResolver(resolver.Resolve)
 		}
 		consoleSrvHandler.SetEvalProfiles(erc)
+
+		// Bind the docs root once the rest of the console is wired.
+		// cfg.DocsDir is empty by default; the docs package falls back
+		// to ./docs relative to the binary (which matches `go run`).
+		if cfg.DocsDir != "" {
+			if err := docsserver.SetSourceDir(cfg.DocsDir); err != nil {
+				slog.Warn("docs: override source dir failed; using default",
+					"configured", cfg.DocsDir, "error", err)
+			} else {
+				slog.Info("docs: serving from override", "dir", cfg.DocsDir)
+			}
+		}
 
 		// Eval-plugin store + dispatcher + collector (Phases B/C).
 		// The registry absorbs Helm-mounted ConfigMap plugins at

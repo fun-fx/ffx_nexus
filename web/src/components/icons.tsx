@@ -173,6 +173,10 @@ export const Icon = {
     ),
   chevron: (p: IconProps) =>
     base(<path d="M9 6l6 6-6 6" />, p),
+  "chevron-down": (p: IconProps) =>
+    base(<path d="M6 9l6 6 6-6" />, p),
+  "chevron-right": (p: IconProps) =>
+    base(<path d="M9 6l6 6-6 6" />, p),
   dash: (p: IconProps) => base(<path d="M5 12h14" />, p),
   wallet: (p: IconProps) =>
     base(

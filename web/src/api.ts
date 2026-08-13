@@ -1809,3 +1809,70 @@ export async function fetchUIObservability(): Promise<UIObservability> {
   if (!res.ok) return {};
   return jsonOrError<UIObservability>(res);
 }
+
+// === docs =================================================================
+//
+// The /api/docs surface mirrors thegrid.ai/docs's "index page plus
+// per-slug md" contract: a backend walker turns /docs into a
+// sidebar-shaped catalogue (slug → title → summary → category →
+// status) and renders each page as the body of the markdown file
+// verbatim. The Docs page in the console re-reads the index and the
+// page body through these two calls — no in-tree React renderer or
+// shadow copy of the prose lives here.
+
+export interface DocEntry {
+  path: string;
+  title: string;
+  summary?: string;
+  category: string;
+  order: number;
+  status?: string;
+  updated_at?: string;
+  source_path?: string;
+  bytes: number;
+}
+
+export interface DocCategory {
+  slug: string;
+  title: string;
+  entries: DocEntry[];
+}
+
+export interface DocsIndex {
+  title: string;
+  tagline?: string;
+  categories: DocCategory[];
+  quick_links: DocEntry[];
+}
+
+export interface DocPage {
+  path: string;
+  title: string;
+  summary?: string;
+  category: string;
+  order: number;
+  status?: string;
+  source_path?: string;
+  bytes: number;
+  body: string;
+}
+
+export async function fetchDocsIndex(): Promise<DocsIndex> {
+  const res = await fetch("/api/docs");
+  if (!res.ok) {
+    return { title: "Docs", categories: [], quick_links: [] };
+  }
+  return jsonOrError<DocsIndex>(res);
+}
+
+export async function fetchDocPage(slug: string): Promise<DocPage | null> {
+  // The slug is a /-separated URL path the backend takes from
+  // chi.URLParam. EncodeURI keeps dashes and dots intact while
+  // turning backslashes (allowed in some legacy paths) into the
+  // /api/docs/{slug} url-safe form.
+  const safe = encodeURI(slug).replace(/^\/+/, "");
+  const res = await fetch(`/api/docs/${safe}`);
+  if (res.status === 404) return null;
+  if (!res.ok) return null;
+  return jsonOrError<DocPage>(res);
+}

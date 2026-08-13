@@ -16,6 +16,7 @@ import { Benchmarks } from "./pages/Benchmarks";
 import { Audit } from "./pages/Audit";
 import { Playground } from "./pages/Playground";
 import { Spend } from "./pages/Spend";
+import { Docs } from "./pages/Docs";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -57,6 +58,8 @@ export function App() {
                 <Route path="credentials" element={<Credentials />} />
                 <Route path="audit" element={<Audit />} />
                 <Route path="playground" element={<Playground />} />
+                <Route path="docs" element={<Docs />} />
+                <Route path="docs/*" element={<Docs />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
             </Route>
