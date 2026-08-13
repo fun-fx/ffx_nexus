@@ -1,0 +1,203 @@
+{{/*
+  Optional Basic-Auth proxy for the Tailscale-facing Grafana URL.
+
+  When `config.grafana.authProxy.enabled: true`, this template deploys a
+  minimal Caddy sidecar that:
+    * Exposes a Tailscale Ingress (tailscale.com/proxy-class: kernel-mode)
+      so the same MagicDNS hostname resolution works for operator browsers.
+    * Attaches an `Authorization: Basic <encoded>` header sourced from
+      Grafana's admin credentials (read from the platform
+      `grafana-admin-password` Secret) so the operator's browser reaches
+      Grafana's deep-link dashboards without an interactive Grafana login.
+      The user never types the admin password — the chart pulls it from
+      the same Opaque Secret that grafana-operator already mounts.
+    * Reverse-proxies to the in-cluster Grafana service
+      (`grafana-service.tenant-root.svc.cluster.local:3000`).
+
+  Why this exists:
+  --------------------------------------------------------------------------
+  Cozystack's Grafana ships with `auth.anonymous.enabled=false`. When the
+  Nexus console's *Open in Grafana* link goes to a deep-link like
+  `/d/nexus-01-overview/...`, an unauthenticated browser session is either
+  redirected to Grafana's login page or, if the operator never logs in, to
+  the root URL — which the user experiences as "404 Not Found". Enabling
+  `auth.anonymous` would also expose dashboards publicly (anyone with the
+  URL can read it). This proxy layers Basic Auth on Tailscale-only Ingress
+  traffic, so the operator never has to interactively log in *and* the
+  dashboard stays inside the Tailscale trust boundary.
+
+  Operator trust boundary: same as the upstream `grafana-ts` Ingress.
+  Whoever can reach the new `nexus-grafana` MagicDNS hostname can read
+  dashboards, because requests are authenticated as Grafana's `admin`.
+*/}}
+
+{{- if and .Values.config.grafana .Values.config.grafana.authProxy .Values.config.grafana.authProxy.enabled -}}
+
+{{- $fullName := include "nexus.fullname" . -}}
+{{- $ap := .Values.config.grafana.authProxy -}}
+{{- $imageRepo := ((default (dict) $ap.image).repository | default "caddy") -}}
+{{- $imageTag := ((default (dict) $ap.image).tag | default "2-alpine") -}}
+{{- $imagePull := ((default (dict) $ap.image).pullPolicy | default "IfNotPresent") -}}
+{{- $upstream := $ap.upstreamService | default "grafana-service.tenant-root.svc.cluster.local:3000" -}}
+{{- $adminSec := $ap.adminSecret | default "grafana-admin-password" -}}
+{{- $runAsUser := $ap.runAsUser | default 0 -}}
+
+{{/*
+  The Caddyfile is rendered as a YAML literal block (|-). We avoid colons
+  at column 0 to keep the block well-formed, and we keep all dynamic
+  interpolations in one place so an editor can grep for them.
+
+  * {$GF_BASIC_AUTH} is exposed by the entrypoint below.
+  * {$GRAFANA_UPSTREAM} exposes the upstream FQDN so we don't bake the
+    suffix into the config and can run the chart against any Grafana
+    instance with one knob.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-grafana-auth-proxy
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+data:
+  Caddyfile: |-
+    :8080
+    @grafana path /d/* /api/* /login /logout /admin/* /avatar /public/*
+    handle @grafana {
+      reverse_proxy {$GRAFANA_UPSTREAM} {
+        header_up Authorization "Basic {$GF_BASIC_AUTH}"
+      }
+    }
+    handle {
+      reverse_proxy {$GRAFANA_UPSTREAM} {
+        header_up Authorization "Basic {$GF_BASIC_AUTH}"
+      }
+    }
+  entrypoint.sh: |-
+    #!/bin/sh
+    set -eu
+    # Caddy reads env at startup; we just need the URL-safe base64 pair.
+    BASIC=$(printf '%s:%s' "${GF_USER}" "${GF_PASSWORD}" | base64 -w0)
+    export GF_BASIC_AUTH="${BASIC}"
+    export GRAFANA_UPSTREAM="${GRAFANA_UPSTREAM}"
+    exec caddy run --config /etc/caddy/Caddyfile --adapter ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}-grafana-auth-proxy
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: grafana-auth-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: grafana-auth-proxy
+    spec:
+      # The caddy:2-alpine image runs as root by default; we constrain
+      # the securityContext so it fits a hardened PSP. (Root is needed
+      # for Caddy to bind non-priv ports below 1024 if we ever expose
+      # 80/443; we use 8080 only, but we still drop caps.)
+      securityContext:
+        runAsUser: {{ $runAsUser }}
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false
+        capabilities:
+          drop:
+            - NET_BIND_SERVICE
+      containers:
+        - name: caddy
+          image: "{{ $imageRepo }}:{{ $imageTag }}"
+          imagePullPolicy: {{ $imagePull }}
+          command:
+            - /bin/sh
+            - /etc/caddy/entrypoint.sh
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: GF_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $adminSec }}
+                  key: user
+            - name: GF_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $adminSec }}
+                  key: password
+            - name: GRAFANA_UPSTREAM
+              value: {{ $upstream }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml (default (dict) $ap.resources) | nindent 12 }}
+          volumeMounts:
+            - name: caddy-config
+              mountPath: /etc/caddy
+              readOnly: true
+      volumes:
+        - name: caddy-config
+          configMap:
+            name: {{ $fullName }}-grafana-auth-proxy
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-grafana-auth-proxy
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nexus.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana-auth-proxy
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-grafana
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+  annotations:
+    tailscale.com/proxy-class: kernel-mode
+spec:
+  ingressClassName: tailscale
+  defaultBackend:
+    service:
+      name: {{ $fullName }}-grafana-auth-proxy
+      port:
+        name: http
+  tls:
+    - hosts:
+        - {{ $ap.host | default "nexus-grafana" | quote }}
+{{- end }}

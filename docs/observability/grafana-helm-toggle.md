@@ -197,3 +197,87 @@ kubectl get pod -A -l dashboards=grafana
 The chart's `NOTES.txt` emits a banner with the same diagnostic
 after every `helm install`/`helm upgrade` so the operator can
 correlate Helm output against the cluster state without greppping.
+
+## Optional Basic-Auth proxy for the *Open in Grafana* link
+
+When Grafana ships with `auth.anonymous.enabled=false` (the Cozystack
+default), the console's *Open in Grafana* deep-link bounces the
+operator through Grafana's login page — or, if the operator never logs
+in, lands on the Grafana root and looks like *404 Not Found*. Setting
+`config.grafana.authProxy.enabled: true` deploys a tiny Caddy sidecar
+in `tenant-nexus` that:
+
+1. Reads `user`/`password` from the platform Secret (`grafana-admin-password`
+   by default — same Secret the Grafana operator already mounts inside
+   its pod).
+2. Exposes a Tailscale Ingress with the operator's MagicDNS name (e.g.
+   `nexus-grafana.tail-nexus.ts.net`).
+3. On every request, attaches `Authorization: Basic <b64>` so Grafana
+   sees a logged-in `admin`.
+
+The operator's browser transparently reaches the dashboard with no
+interaction — they never type the admin password. The trust boundary
+is identical to the upstream `grafana-ts` Ingress: anyone who can
+resolve the new MagicDNS name on the Tailscale tailnet can read
+dashboards, because the proxy authenticates as `admin`. We do NOT
+enable Grafana's `auth.anonymous` because that would expose
+dashboards publicly (anyone with the URL).
+
+```yaml
+config:
+  grafana:
+    ...
+    authProxy:
+      enabled: true                     # master switch
+      host:     nexus-grafana           # MagicDNS label, becomes
+                                        # nexus-grafana.<tailnet-suffix>
+      upstreamService: grafana-service.tenant-root.svc.cluster.local:3000
+      adminSecret: grafana-admin-password
+      image:
+        repository: caddy
+        tag:        2-alpine
+      runAsUser:    0
+      resources:
+        requests: { cpu: 10m,  memory: 32Mi }
+        limits:   { cpu: 100m, memory: 64Mi }
+```
+
+Pair this with `config.publicGrafanaUrl: "https://<host>.<tailnet-suffix>"`
+so the console's Sidebar link points at the proxied hostname. The
+console's `/api/ui/observability` reads `NEXUS_PUBLIC_GRAFANA_URL`
+verbatim — the deep-link `/d/nexus-01-overview/nexus-01-overview`
+appended to the URL surfaces the same dashboard regardless of whether
+Grafana is reached directly (legacy) or via the proxy.
+
+### Why a sidecar proxy instead of `auth.anonymous`
+
+- **Tailscale stays the trust boundary.** Anonymous access would expose
+  every dashboard to anyone with the URL; the proxy only admits Tailscale
+  members and authenticates them as our `admin` (read-only by intent:
+  the proxy doesn't expose a way to mutate Grafana through it).
+- **No password typed by humans.** Operators never see the admin
+  password. Helm + Secret pulls it from the cluster Secret.
+- **Same code path for everyone.** Other Nexus deployments reuse the
+  same chart and the same proxy; the only knobs an operator needs
+  are `host` (the MagicDNS label) and `upstreamService` (their
+  in-cluster Grafana location).
+
+### Diagnostic post-`helm upgrade`
+
+```sh
+# Did the proxy get rolled?
+kubectl -n tenant-nexus get deploy,svc,ingress -l app.kubernetes.io/component=grafana-auth-proxy
+
+# Is the proxy pod ready?
+kubectl -n tenant-nexus logs -l app.kubernetes.io/component=grafana-auth-proxy --tail=50
+
+# Does the Ingress resolve on Tailscale?
+nslookup nexus-grafana.tail-<your-tailnet>.ts.net
+# or `tailscale status | grep nexus-grafana` if you have the cli.
+
+# Does the deep-link load?
+curl -v "https://nexus-grafana.tail-<tailnet>.ts.net/d/nexus-01-overview/nexus-01-overview"
+# -> 200 OK with the dashboard HTML. If you see Grafana's login page,
+#    the proxy's Authorization header isn't reaching Grafana — verify
+#    the upstreamService FQDN resolves from the proxy pod's namespace.
+```
