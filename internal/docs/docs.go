@@ -48,7 +48,11 @@ const DefaultRoot = "docs"
 // An invalid root (missing or unreadable) keeps the previous
 // cached index unchanged so a transient mount problem in a
 // container does not silently leave the console serving a stale
-// empty index.
+// empty index. The most recent failure is also captured in
+// builtErr below so the boot logs can surface the reason through
+// Err() rather than disguising a config-time mistake as a
+// successful empty index.
+//
 // built has the index the routes / List / Get read. walkErr
 // captures the most recent walk failure so /api/docs can surface
 // the failure reason through the response body and a future
@@ -57,10 +61,10 @@ const DefaultRoot = "docs"
 // Index and the console would render an empty page that looked
 // identical to "everything is fine".
 var (
-	rootDir   = DefaultRoot
-	built     Index
-	builtSet  bool
-	builtErr  error
+	rootDir  = DefaultRoot
+	built    Index
+	builtSet bool
+	builtErr error
 )
 
 // SetSourceDir rebinds SourceDir. main or the API conf loader calls
