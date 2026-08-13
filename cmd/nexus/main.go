@@ -378,9 +378,6 @@ func main() {
 		erc := newEvalRuntimeController(cfg, evalWorker, modelRouter, gwHandler, stack.ScoreStore, stack.TraceStore, stack.RoutingStatsStore, profileStore, resolver, pluginStore)
 		consoleSrvHandler.SetEvalConfig(erc, erc)
 		erc.SeedProfilesFromConfig(ctx)
-		// Console sidebar / Spend / Quality pages render an
-		// "Open in Grafana" link when this is non-empty.
-		consoleSrvHandler.SetPublicGrafanaURL(cfg.PublicGrafanaURL)
 		// CSP allow-list: comma-separated web origins the console may connect to
 		// (marketing site, separate live-trace wss host, etc.). Encoded into the
 		// CSP `connect-src` directive by securityHeaders, replacing the prior

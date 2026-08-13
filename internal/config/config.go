@@ -14,20 +14,17 @@ import (
 // Config holds all runtime configuration for the Nexus gateway.
 type Config struct {
 	// HTTP
-	GatewayAddr      string // gateway proxy listen address
-	ConsoleAddr      string // console API / dashboard listen address
-	PublicGatewayURL string // user-facing base URL shown in the console (optional)
-	PublicBaseURL    string // user-facing base URL for vendor-side webhook URLs (optional)
-	PublicGrafanaURL string // user-facing Grafana base URL surfaced on the
-	//                       console's *Spend* / *Quality* / *Traces* pages
-	//                       (optional; empty == console hides the link).
+	GatewayAddr      string   // gateway proxy listen address
+	ConsoleAddr      string   // console API / dashboard listen address
+	PublicGatewayURL string   // user-facing base URL shown in the console (optional)
+	PublicBaseURL    string   // user-facing base URL for vendor-side webhook URLs (optional)
 	PublicWebOrigins []string // operator-supplied allow-list of web origins
-	//                        that the console may connect to. Wired into
-	//                        the CSP `connect-src` directive so the policy
-	//                        no longer hardcodes any company's domain.
-	//                        Comma-separated env (NEXUS_PUBLIC_WEB_ORIGINS);
-	//                        empty == CSP falls back to 'self' only, which
-	//                        is the safe default for on-prem Helm deploys.
+	//                     that the console may connect to. Wired into
+	//                     the CSP `connect-src` directive so the policy
+	//                     no longer hardcodes any company's domain.
+	//                     Comma-separated env (NEXUS_PUBLIC_WEB_ORIGINS);
+	//                     empty == CSP falls back to 'self' only, which
+	//                     is the safe default for on-prem Helm deploys.
 
 	// Datastores. Empty values disable the corresponding integration so the
 	// core gateway can boot with zero dependencies (Bifrost-style).
@@ -287,7 +284,6 @@ func Load() Config {
 		ConsoleAddr:      env("NEXUS_CONSOLE_ADDR", ":8081"),
 		PublicGatewayURL: env("NEXUS_PUBLIC_GATEWAY_URL", ""),
 		PublicBaseURL:    env("NEXUS_PUBLIC_BASE_URL", ""),
-		PublicGrafanaURL: env("NEXUS_PUBLIC_GRAFANA_URL", ""),
 		PublicWebOrigins: splitCSV(env("NEXUS_PUBLIC_WEB_ORIGINS", "")),
 		PostgresURL:      env("NEXUS_POSTGRES_URL", ""),
 		ClickHouseURL:    env("NEXUS_CLICKHOUSE_URL", ""),
