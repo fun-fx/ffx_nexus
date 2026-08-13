@@ -22,6 +22,11 @@ type Config struct {
 	//                     that the console may connect to. Wired into
 	//                     the CSP `connect-src` directive so the policy
 	//                     no longer hardcodes any company's domain.
+	// DocsDir is the on-disk path the console serves documentation
+	// from. Empty falls back to ./docs relative to the binary, which
+	// matches a `go run ./cmd/nexus` invocation; production
+	// deployments typically mount the repo's /docs sub-tree.
+	DocsDir string
 	//                     Comma-separated env (NEXUS_PUBLIC_WEB_ORIGINS);
 	//                     empty == CSP falls back to 'self' only, which
 	//                     is the safe default for on-prem Helm deploys.
@@ -285,6 +290,7 @@ func Load() Config {
 		PublicGatewayURL: env("NEXUS_PUBLIC_GATEWAY_URL", ""),
 		PublicBaseURL:    env("NEXUS_PUBLIC_BASE_URL", ""),
 		PublicWebOrigins: splitCSV(env("NEXUS_PUBLIC_WEB_ORIGINS", "")),
+		DocsDir:          env("NEXUS_DOCS_DIR", ""),
 		PostgresURL:      env("NEXUS_POSTGRES_URL", ""),
 		ClickHouseURL:    env("NEXUS_CLICKHOUSE_URL", ""),
 		RedisURL:         env("NEXUS_REDIS_URL", ""),

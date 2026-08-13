@@ -1,3 +1,9 @@
+<!--
+category: concepts
+title: Quickstart
+summary: Five minutes from `curl ... | bash` to your first chat completion.
+order: 1
+-->
 # Nexus Quickstart
 
 Five minutes from `curl ... | bash` to your first chat completion. Runs
