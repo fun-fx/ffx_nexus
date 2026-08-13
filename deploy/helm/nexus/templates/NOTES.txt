@@ -64,4 +64,35 @@ Grafana observability toggle is ON.
     #     {{ $k }}={{ $v }}{{- end }}.
     #     Adjust config.grafana.instanceSelector.matchLabels accordingly.
   See: docs/observability/grafana-helm-toggle.md → "Onboarding scenarios".
-{{- end }}
+
+{{- if and .Values.config.grafana .Values.config.grafana.authProxy .Values.config.grafana.authProxy.enabled }}
+
+Grafana basic-auth proxy is ON.
+  - Tailscale hostname: {{ .Values.config.grafana.authProxy.host | default "nexus-grafana" }}.tail-<tailnet>.ts.net
+  - Upstream Grafana:   {{ .Values.config.grafana.authProxy.upstreamService | default "grafana-service.tenant-root.svc.cluster.local:3000" }}
+  - Admin secret:       {{ .Values.config.grafana.authProxy.adminSecret | default "grafana-admin-password" }}
+  - Console link:       {{ .Values.config.publicGrafanaUrl | default "(unset)" }}
+
+  Verify after `helm upgrade` (worked?):
+    kubectl -n {{ .Release.Namespace }} get deploy,svc,ingress -l app.kubernetes.io/component=grafana-auth-proxy
+    # Pod should be 1/1 Running within ~30s. Caddy's admin endpoint logs the
+    # decoded Authorization header on each request; tail pod logs to confirm
+    # the upstream is reachable:
+    kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=grafana-auth-proxy
+    # The config maps the proxy's host to the operator's Tailscale MagicDNS
+    # name on the tailnet. If the operator's tailnet differs from the
+    # default the URL is `https://<host>.<tailnet-suffix>`.
+
+  Sanity-check the deep-link:
+    1. Pick the URL Nexus surfaces: open the console sidebar → "Open in Grafana".
+    2. Confirm the deep-link lands on a Grafana dashboard (NOT the login
+       page) — the proxy attaches Basic Auth so the operator doesn't need
+       to authenticate interactively.
+    3. If the browser STILL shows Grafana's login page, the proxy Authorization
+       header isn't reaching Grafana. Check Caddy's log line:
+         "Authorization": "Basic <b64>"
+       The base64 decodes to `admin:<password>`. If the decoded value is
+       empty or wrong, the `grafana-admin-password` Secret in the
+       tenant-root namespace has rotated and the chart's caching of the
+       encoded pair is stale — `helm upgrade` again to refresh.
+{{- end }}{{- end }}

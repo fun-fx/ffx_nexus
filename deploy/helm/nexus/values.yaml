@@ -302,6 +302,79 @@ metrics:
     # reconciling the same logical UID.
     namePrefix: "chart-"
 
+    # --- Optional Basic Auth proxy for the Tailscale-facing Grafana URL ---
+    # Cozystack/Tailscale Grafana runs with `auth.anonymous.enabled=false`, so
+    # a regular browser session clicking the *Open in Grafana* link gets
+    # redirected to the Grafana login page (and if the operator hasn't logged
+    # in yet, the deep-link renders an internal "Not Found" error).
+    #
+    # When `authProxy.enabled: true`, this chart deploys a tiny in-cluster
+    # nginx sidecar that:
+    #   * Exposes a Tailscale Ingress (tailscale.com/proxy-class: kernel-mode)
+    #     so the same MagicDNS hostname resolution works for operator browsers.
+    #   * On every request, attaches an `Authorization: Basic <encoded>`
+    #     header using Grafana's admin credentials (read from the platform
+    #     `grafana-admin-password` Secret — operators do NOT have to know the
+    #     admin password; the chart pulls it from the same Secret that
+    #     grafana-operator already mounts).
+    #   * Reverse-proxies to the in-cluster Grafana service
+    #     (`grafana-service.tenant-root.svc.cluster.local:3000`).
+    # The result: a one-step click-through from the Nexus console's
+    # *Open in Grafana* link to the dashboard, without asking the operator to
+    # type credentials in Grafana, and without enabling `auth.anonymous`
+    # (which would also expose dashboards to anyone with the public URL,
+    # regardless of Tailscale membership).
+    #
+    # The proxy is *read-only by intent and by implementation*: it just sets
+    # the Basic Auth header and forwards. Because the proxy authenticates as
+    # Grafana's `admin` user, an operator deploying this chart MUST trust
+    # anyone who can reach the Tailscale Ingress — that's the security
+    # boundary, same as the upstream `grafana-ts` Ingress.
+    authProxy:
+      # Master switch. Set to false (default) to skip deploying the proxy
+      # entirely; Console still reads `config.publicGrafanaUrl` and emits
+      # `Open in Grafana` if it's set, in which case the link points at a
+      # human-typed Credentials path (or anonymous, if enabled cluster-side).
+      enabled: false
+      # MagicDNS hostname registered by the Tailscale Ingress. Combined
+      # with the cluster's tailnet suffix this becomes the public URL.
+      # Default mirrors the existing `nexus-console` Ingress style.
+      host: nexus-grafana
+      # Grafana FQDN to proxy to. The default targets the Cozystack-managed
+      # Grafana service in `tenant-root`. Override when running in a
+      # cluster where Grafana lives elsewhere (e.g. namespaced or external).
+      upstreamService: grafana-service.tenant-root.svc.cluster.local:3000
+      # Secret containing the Grafana admin credentials. Must expose two
+      # keys: `user` and `password` (matching the legacy `grafana-admin-password`
+      # Opaque Secret's shape). Operators that ship a different Secret
+      # (different keys / different namespace) can rename it; the proxy
+      # reads the values via envFrom.
+      adminSecret: grafana-admin-password
+      # Image used for the sidecar. Pinned to a small, unprivileged,
+      # read-only-friendly web server (Caddy has built-in JSON logging +
+      # reverse_proxy with header rewriting, which is the tidy set of
+      # primitives we need to forward a Basic Auth header); override to a
+      # corporate mirror if your network policy blocks the default registry.
+      image:
+        repository: caddy
+        tag: 2-alpine
+        pullPolicy: IfNotPresent
+      # `runAsUser` controls the PID-1 uid inside the container. Caddy's
+      # alpine image runs as root and switches internally to uid 1001; we
+      # mirror that by leaving `runAsUser` unset by default. Set to a
+      # specific uid if your cluster's PodSecurityPolicy forbids a root
+      # start; in that case an init container is required because Caddy
+      # can't change ownership on a read-only root filesystem.
+      runAsUser: 0
+      # Resources kept tiny — the proxy is stateless and CPU-cheap.
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+
   # --- V5 high-concurrency tuning ---------------------------------------------
   # These map directly to the Go runtime env vars GOMEMLIMIT and GOGC. Set
   # `gomemlimit` to roughly `0.85 * container.limits.memory` to give the GC
