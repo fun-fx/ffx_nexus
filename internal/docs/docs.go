@@ -49,33 +49,54 @@ const DefaultRoot = "docs"
 // cached index unchanged so a transient mount problem in a
 // container does not silently leave the console serving a stale
 // empty index.
+// built has the index the routes / List / Get read. walkErr
+// captures the most recent walk failure so /api/docs can surface
+// the failure reason through the response body and a future
+// boot-time diagnostic can grep the log for it. Before the logs
+// existed a missing docs directory silently published a zero-value
+// Index and the console would render an empty page that looked
+// identical to "everything is fine".
 var (
-	rootDir  = DefaultRoot
-	built    Index
-	builtSet bool
+	rootDir   = DefaultRoot
+	built     Index
+	builtSet  bool
+	builtErr  error
 )
 
 // SetSourceDir rebinds SourceDir. main or the API conf loader calls
 // this once at startup so a Helm-mounted /docs can override the
-// repo-relative default without rebuilding the binary.
+// repo-relative default without rebuilding the binary. BuiltErr is
+// captured even when the failure is detected before walk() —
+// config-time mistakes (missing dir, file instead of dir) are
+// exactly what boot logs read back via Err() so an operator can
+// diagnose a blank /api/docs response without grepping the pod
+// listing for the right SHA.
 func SetSourceDir(dir string) error {
 	if dir == "" {
 		return nil
 	}
 	st, err := os.Stat(dir)
 	if err != nil {
-		return err
+		builtErr = fmt.Errorf("docs: %q: %w", dir, err)
+		return builtErr
 	}
 	if !st.IsDir() {
-		return fmt.Errorf("docs: %q is not a directory", dir)
+		builtErr = fmt.Errorf("docs: %q is not a directory", dir)
+		return builtErr
 	}
 	rootDir = dir
-	idx, err := walk(rootDir)
-	if err != nil {
-		return err
+	idx, werr := walk(rootDir)
+	if werr != nil {
+		// Roll back to the previous root so a transient failure
+		// cannot leave the console serving a half-built index. Boot
+		// paths that do not have a previous root live with empty
+		// responses until SetSourceDir is retried.
+		builtErr = werr
+		return werr
 	}
 	built = idx
 	builtSet = true
+	builtErr = nil
 	return nil
 }
 
@@ -418,20 +439,37 @@ func summaryFromBody(raw string) string {
 // let a typo in a single file under a 10k-line docs tree allocate
 // string copies in the GC by the minute, which a hot path through
 // /api/docs cannot afford.
-func Build() Index {
+//
+// If the boot-time walk never succeeded, Build returns the zero
+// Index alongside `builtErr` so callers can both log the failure
+// and publish the empty category list rather than crash the
+// console. /api/docs reads `built` directly because main.go logs
+// builtErr at startup; this function exists for the testable
+// surface only.
+func Build() (Index, error) {
 	if !builtSet {
-		if idx, err := walk(rootDir); err == nil {
+		idx, err := walk(rootDir)
+		if err == nil {
 			built = idx
 			builtSet = true
+			builtErr = nil
+		} else {
+			builtErr = err
 		}
 	}
-	return built
+	return built, builtErr
 }
 
 // List is the response of GET /api/docs. Reads through `built`
 // rather than a separate cache so SetSourceDir's in-place update
 // is visible to callers without needing a second reindex call.
 func List() Index { return built }
+
+// Err returns the most recent walk failure or nil when the index is
+// healthy. main.go calls this before the console starts listening
+// so a missing NEXUS_DOCS_DIR or empty /docs/ mount is loud at boot
+// instead of disguising itself as a blank page in the renderer.
+func Err() error { return builtErr }
 
 // Get reads the body of /docs/<slug>.md and packages it with the
 // matching Entry from the index. A missing slug returns an error

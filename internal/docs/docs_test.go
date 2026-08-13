@@ -41,10 +41,17 @@ func withTempDocs(t *testing.T, files map[string]string) {
 // production SetSourceDir already reindexes the cached `built`
 // value, so this is only needed after the cleanup function reverts
 // rootDir back to the previous root — the swap leaves `built`
-// pointing at the temp dir, so a manual refresh is required.
+// pointing at the temp dir, so a manual refresh is required. The
+// error is intentionally swallowed here: the cleanup path is
+// only used after a successful SetSourceDir in the same test, so
+// a transient walk failure would be a code change, not a test
+// concern that this surface is meant to flag.
 func BuiltReindex() {
 	builtSet = false
-	built = Build()
+	var err error
+	built, err = Build()
+	_ = err
+	builtErr = nil
 }
 
 func TestIndexCategoryInference(t *testing.T) {
@@ -217,4 +224,43 @@ func quickTitles(idx Index) []string {
 		out[i] = e.Title
 	}
 	return out
+}
+
+// TestBootReportsMissingRoot documents the contract main.go
+// relies on: when the configured docs root is missing, Err()
+// returns a non-nil error so the boot logs print
+// "docs: NEXUS_DOCS_DIR is set but not walkable" exactly once. A
+// silent failure used to expose an empty /api/docs response that
+// looked identical to a healthy response with no docs in the
+// tree. The test catches both regressions: Err returning nil
+// when walk failed, and Err returning an error when walk
+// succeeded.
+func TestBootReportsMissingRoot(t *testing.T) {
+	// Start from a clean cache so SetSourceDir's walk failure is
+	// the sole contribution to builtErr.
+	prev := rootDir
+	t.Cleanup(func() {
+		rootDir = prev
+		BuiltReindex()
+	})
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if err := SetSourceDir(missing); err == nil {
+		t.Fatal("SetSourceDir against a missing dir should fail")
+	}
+	if Err() == nil {
+		t.Fatal("Err() should be non-nil when the walk fails — this is what the boot log greps for")
+	}
+}
+
+// TestBootReportsSuccess documents the happy-path complement:
+// when the docs root is walkable, Err() returns nil so the boot
+// log prints "serving from …" rather than the error banner.
+func TestBootReportsSuccess(t *testing.T) {
+	withTempDocs(t, map[string]string{
+		"hello.md": "# Hello\n",
+	})
+	if Err() != nil {
+		t.Fatalf("Err() should be nil when walk succeeded, got %v", Err())
+	}
 }

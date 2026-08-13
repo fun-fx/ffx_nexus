@@ -57,6 +57,16 @@ config:
   upstreamTimeout: "120s"
   openaiBaseUrl: ""
 
+  # Documentation tree served at /docs in the console. The image
+  # ships /etc/nexus/docs (see Dockerfile); override via Helm when
+  # deploying an extension overlay (ConfigMap mount, additional
+  # runbooks, or a docs fork). Empty string keeps the bundled copy.
+  #
+  #   config:
+  #     docsDir: /etc/nexus/docs     # default, bundled into the image
+  #
+  docsDir: "/etc/nexus/docs"
+
   # BYOK / multi-tenancy: how upstream provider keys are resolved per request.
   # "shared" (default) uses org/env keys for everyone; "byok" prefers each
   # caller's own stored key (falling back to org -> env); "strict_byok" requires
