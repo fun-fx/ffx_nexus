@@ -114,8 +114,8 @@ func TestIndexCategoryInference(t *testing.T) {
 
 func TestFrontMatterOverrides(t *testing.T) {
 	withTempDocs(t, map[string]string{
-		`a.md`:  "<!--\ncategory: reference\ntitle: Override A\norder: 9\n-->\n# Override A\n\nFirst para.\n",
-		"b.md":  "# Override B\n\nSecond one.\n",
+		`a.md`: "<!--\ncategory: reference\ntitle: Override A\norder: 9\n-->\n# Override A\n\nFirst para.\n",
+		"b.md": "# Override B\n\nSecond one.\n",
 	})
 
 	idx := List()

@@ -101,7 +101,7 @@ func walk(root string) (Index, error) {
 		bucket[c.Slug] = i
 	}
 	// Fallback for any front-matter category we did not register.
-	miscIdx := bucket["misc"] 
+	miscIdx := bucket["misc"]
 
 	var walkErr error
 	err := filepath.WalkDir(root, func(abs string, d fs.DirEntry, err error) error {
@@ -240,16 +240,16 @@ func walk(root string) (Index, error) {
 // so a freshly-added page lands at a sensible place without
 // renumbering everything.
 type Entry struct {
-	Path        string `json:"path"`
-	Title       string `json:"title"`
-	Summary     string `json:"summary,omitempty"`
-	Category    string `json:"category"`
-	Order       int    `json:"order"`
-	Status      string `json:"status,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
-	SourcePath  string `json:"source_path,omitempty"`
-	Bytes       int    `json:"bytes"`
-	Children    []Entry `json:"children,omitempty"`
+	Path       string  `json:"path"`
+	Title      string  `json:"title"`
+	Summary    string  `json:"summary,omitempty"`
+	Category   string  `json:"category"`
+	Order      int     `json:"order"`
+	Status     string  `json:"status,omitempty"`
+	UpdatedAt  string  `json:"updated_at,omitempty"`
+	SourcePath string  `json:"source_path,omitempty"`
+	Bytes      int     `json:"bytes"`
+	Children   []Entry `json:"children,omitempty"`
 }
 
 // Page is the body returned by /api/docs/{path}. SourcePath is the
@@ -275,10 +275,10 @@ type Category struct {
 // order determined by CategoryOrder below so the sidebar opens in
 // the same sequence on every deployment.
 type Index struct {
-	Title       string     `json:"title"`
-	Tagline     string     `json:"tagline,omitempty"`
-	Categories  []Category `json:"categories"`
-	QuickLinks  []Entry    `json:"quick_links"`
+	Title      string     `json:"title"`
+	Tagline    string     `json:"tagline,omitempty"`
+	Categories []Category `json:"categories"`
+	QuickLinks []Entry    `json:"quick_links"`
 }
 
 // CategoryOrder pins the sidebar order. The choice mirrors
@@ -356,7 +356,7 @@ func parseFrontMatter(raw string) frontMatter {
 	if end < 0 {
 		return fm
 	}
-	inner := raw[len("<!--") : end]
+	inner := raw[len("<!--"):end]
 	inner = strings.TrimSpace(inner)
 	if inner == "" {
 		return fm
