@@ -14,10 +14,10 @@ import (
 // Config holds all runtime configuration for the Nexus gateway.
 type Config struct {
 	// HTTP
-	GatewayAddr      string // gateway proxy listen address
-	ConsoleAddr      string // console API / dashboard listen address
-	PublicGatewayURL string // user-facing base URL shown in the console (optional)
-	PublicBaseURL    string // user-facing base URL for vendor-side webhook URLs (optional)
+	GatewayAddr      string   // gateway proxy listen address
+	ConsoleAddr      string   // console API / dashboard listen address
+	PublicGatewayURL string   // user-facing base URL shown in the console (optional)
+	PublicBaseURL    string   // user-facing base URL for vendor-side webhook URLs (optional)
 	PublicWebOrigins []string // operator-supplied allow-list of web origins
 	//                     that the console may connect to. Wired into
 	//                     the CSP `connect-src` directive so the policy

@@ -154,7 +154,6 @@ func (s *Server) SetEvalConfig(src EvalConfigSource, apply EvalConfigApplier) {
 	s.evalConfigApply = apply
 }
 
-
 // SetCSPOrigins sets the operator-supplied allow-list of web origins that
 // the console may connect to. Used by securityHeaders() to assemble the
 // Content-Security-Policy `connect-src` directive without hardcoding any
