@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -20,12 +21,14 @@ import (
 // handlers' tests. The non-schedule methods are stubs because the
 // schedule handlers do not call them.
 type scheduleStub struct {
-	runs        []core.BenchmarkSchedule
-	createErr   error
-	listErr     error
-	getErr      error
-	deleteErr   error
-	lastCreated core.BenchmarkSchedule
+	runs          []core.BenchmarkSchedule
+	createErr     error
+	listErr       error
+	getErr        error
+	deleteErr     error
+	lastCreated   core.BenchmarkSchedule
+	lastEnabled   bool
+	lastEnabledID string
 }
 
 func (s *scheduleStub) Launch(_ context.Context, _ benchmark.LaunchSpec) (core.BenchmarkRun, error) {
@@ -93,6 +96,27 @@ func (s *scheduleStub) DeleteSchedule(_ context.Context, id string) error {
 	return errors.New("not found")
 }
 
+// SetScheduleEnabled toggles the on/off bit and re-stamps
+// NextLaunchAt. The stub records the last action so pause/resume
+// tests can assert the contract without binding to the database.
+func (s *scheduleStub) SetScheduleEnabled(
+	_ context.Context, id string, enabled bool, nextLaunchAt time.Time,
+) error {
+	for i := range s.runs {
+		if s.runs[i].ID != id {
+			continue
+		}
+		s.lastEnabled = enabled
+		s.lastEnabledID = id
+		s.runs[i].Enabled = enabled
+		if !nextLaunchAt.IsZero() {
+			s.runs[i].NextLaunchAt = nextLaunchAt
+		}
+		return nil
+	}
+	return errors.New("not found")
+}
+
 func (s *scheduleStub) GetLatestSettledByModel(_ context.Context, _ string) (core.BenchmarkRun, error) {
 	return core.BenchmarkRun{}, errors.New("not found")
 }
@@ -135,6 +159,12 @@ func (s *Server) installScheduleRoutes() http.Handler {
 	})
 	r.Delete("/api/eval/benchmarks/schedules/{id}", func(w http.ResponseWriter, req *http.Request) {
 		s.deleteBenchmarkSchedule(w, req, core.User{Email: "test@local"})
+	})
+	r.Post("/api/eval/benchmarks/schedules/{id}/pause", func(w http.ResponseWriter, req *http.Request) {
+		s.pauseBenchmarkSchedule(w, req, core.User{Email: "test@local"})
+	})
+	r.Post("/api/eval/benchmarks/schedules/{id}/resume", func(w http.ResponseWriter, req *http.Request) {
+		s.resumeBenchmarkSchedule(w, req, core.User{Email: "test@local"})
 	})
 	return r
 }
@@ -269,3 +299,100 @@ func TestScheduleDeleteUnknownReturnsError(t *testing.T) {
 // Server would change every existing benchmark test, so we keep it
 // local.
 var _ = newScheduleServer
+
+func TestSchedulePauseFlipsEnabledWithoutRestamping(t *testing.T) {
+	stub := &scheduleStub{runs: []core.BenchmarkSchedule{
+		{
+			ID:             "schd-1",
+			CadenceSeconds: 86400,
+			Enabled:        true,
+			NextLaunchAt:   time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC),
+		},
+	}}
+	srv := &Server{}
+	srv.SetBenchmarks(stub)
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/eval/benchmarks/schedules/schd-1/pause", nil)
+	rec := httptest.NewRecorder()
+	srv.installScheduleRoutes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if stub.lastEnabled {
+		t.Fatal("pause should set enabled=false on the runner call")
+	}
+	if stub.lastEnabledID != "schd-1" {
+		t.Fatalf("pause should target the requested id, got %q", stub.lastEnabledID)
+	}
+	// Pause is a no-op for NextLaunchAt — keep the existing stamp so
+	// a future resume can use it as the "fire from here" anchor.
+	if !stub.runs[0].NextLaunchAt.Equal(time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("pause altered NextLaunchAt: %v", stub.runs[0].NextLaunchAt)
+	}
+	if stub.runs[0].Enabled {
+		t.Fatal("pause did not flip Enabled to false on the stored row")
+	}
+}
+
+func TestScheduleResumeRestampsNextLaunchAt(t *testing.T) {
+	stub := &scheduleStub{runs: []core.BenchmarkSchedule{
+		{
+			ID:             "schd-1",
+			CadenceSeconds: 86400,
+			Enabled:        false,
+			NextLaunchAt:   time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+	}}
+	srv := &Server{}
+	srv.SetBenchmarks(stub)
+
+	before := time.Now().UTC()
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/eval/benchmarks/schedules/schd-1/resume", nil)
+	rec := httptest.NewRecorder()
+	srv.installScheduleRoutes().ServeHTTP(rec, req)
+	after := time.Now().UTC()
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !stub.lastEnabled {
+		t.Fatal("resume should set enabled=true on the runner call")
+	}
+	// Resume re-stamps to "now + cadence", inside a tolerance window
+	// so the test is not gated on test-machine clock skew. The new
+	// timestamp must be strictly later than the stale 2020 anchor.
+	if !stub.runs[0].NextLaunchAt.After(before.Add(23 * time.Hour)) {
+		t.Fatalf("resume did not re-stamp NextLaunchAt forward: %v", stub.runs[0].NextLaunchAt)
+	}
+	if stub.runs[0].NextLaunchAt.After(after.Add(25 * time.Hour)) {
+		t.Fatalf("resume re-stamp overruns cadence: %v", stub.runs[0].NextLaunchAt)
+	}
+	if !stub.runs[0].Enabled {
+		t.Fatal("resume did not flip Enabled to true on the stored row")
+	}
+}
+
+func TestScheduleResumeRejectsMismatchedBody(t *testing.T) {
+	stub := &scheduleStub{runs: []core.BenchmarkSchedule{
+		{ID: "schd-1", CadenceSeconds: 86400, Enabled: false},
+	}}
+	srv := &Server{}
+	srv.SetBenchmarks(stub)
+
+	body := bytes.NewReader([]byte(`{"enabled": false}`))
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/eval/benchmarks/schedules/schd-1/resume", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.installScheduleRoutes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if stub.lastEnabledID != "" {
+		t.Fatal("body mismatch should not have called the runner")
+	}
+}

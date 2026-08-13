@@ -218,6 +218,40 @@ func (s *Store) DeleteBenchmarkSchedule(ctx context.Context, id string) error {
 	return nil
 }
 
+// SetBenchmarkScheduleEnabled toggles a schedule on or off without
+// tearing it down. Distinct from a full update because the audit log
+// wants to attribute the change to the operator who clicked the
+// toggle, not to whoever originally created the row, and a stale
+// "next_launch_at" would otherwise hold a paused row at the front of
+// the runner's scan queue — pushing the timestamp forward on resume
+// is the contract that keeps a paused-then-resumed row from firing
+// every tick thereafter. Delete-then-create is the supported way to
+// edit cadence and the run shape (per the schedule_handlers.go doc
+// note); only the on/off bit is mutable in place.
+func (s *Store) SetBenchmarkScheduleEnabled(
+	ctx context.Context, id string, enabled bool, nextLaunchAt time.Time,
+) error {
+	if s == nil || s.pool == nil {
+		return errors.New("core: store not configured")
+	}
+	if id == "" {
+		return errors.New("core: schedule id is required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE benchmark_schedules
+		SET enabled = $2,
+		    next_launch_at = $3,
+		    updated_at = NOW()
+		WHERE id = $1`, id, enabled, nextLaunchAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // GetBenchmarkSchedule reads one schedule by id. Mainly used by the
 // console to round-trip a single row for editing; the runner never
 // needs this path because it scans by due time.

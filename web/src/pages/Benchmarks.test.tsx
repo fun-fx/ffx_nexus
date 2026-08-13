@@ -66,6 +66,10 @@ interface Calls {
   deleted: string[];
   credential: Array<Record<string, unknown>>;
   validate: Array<Record<string, unknown>>;
+  schedulesCreated: Array<Record<string, unknown>>;
+  schedulesPaused: string[];
+  schedulesResumed: string[];
+  schedulesDeleted: string[];
 }
 
 function setup(opts: StubOptions = {}) {
@@ -80,6 +84,10 @@ function setup(opts: StubOptions = {}) {
     deleted: [],
     credential: [],
     validate: [],
+    schedulesCreated: [],
+    schedulesPaused: [],
+    schedulesResumed: [],
+    schedulesDeleted: [],
   };
 
   vi.stubGlobal(
@@ -141,6 +149,48 @@ function setup(opts: StubOptions = {}) {
         calls.deleted.push(del[1]);
         return jsonRes({ ok: true });
       }
+      // Schedules: list, create, and the explicit pause/resume/delete
+      // actions wired through the schedule_handlers endpoints. The
+      // stub answers with the row the operator just typed in so the
+      // UI can render the in-place list update without a fetch round.
+      if (url === "/api/eval/benchmarks/schedules" && method === "GET") {
+        return jsonRes({ schedules: [] });
+      }
+      const scheduleCreate = url === "/api/eval/benchmarks/schedules" && method === "POST";
+      if (scheduleCreate) {
+        calls.schedulesCreated.push(JSON.parse(String(init?.body ?? "{}")));
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        return jsonRes({
+          id: "schd-1",
+          org_id: "o1",
+          name: body.name ?? "",
+          environments: body.environments ?? [],
+          model: body.model ?? "",
+          num_examples: body.num_examples ?? 0,
+          rollouts: body.rollouts ?? 0,
+          via_gateway: body.via_gateway ?? false,
+          cadence_seconds: body.cadence_seconds ?? 0,
+          next_launch_at: new Date(Date.now() + (body.cadence_seconds ?? 0) * 1000).toISOString(),
+          enabled: body.enabled ?? true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, 201);
+      }
+      const schedulePause = url.match(/^\/api\/eval\/benchmarks\/schedules\/([^/]+)\/pause$/);
+      if (schedulePause && method === "POST") {
+        calls.schedulesPaused.push(schedulePause[1]);
+        return jsonRes({ ok: true, id: schedulePause[1], enabled: false, next_launch_at: new Date().toISOString() });
+      }
+      const scheduleResume = url.match(/^\/api\/eval\/benchmarks\/schedules\/([^/]+)\/resume$/);
+      if (scheduleResume && method === "POST") {
+        calls.schedulesResumed.push(scheduleResume[1]);
+        return jsonRes({ ok: true, id: scheduleResume[1], enabled: true, next_launch_at: new Date().toISOString() });
+      }
+      const scheduleDel = url.match(/^\/api\/eval\/benchmarks\/schedules\/([^/]+)$/);
+      if (scheduleDel && method === "DELETE") {
+        calls.schedulesDeleted.push(scheduleDel[1]);
+        return jsonRes({ ok: true });
+      }
       return jsonRes({});
     }),
   );
@@ -164,6 +214,19 @@ function jsonRes(body: unknown, status = 200) {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+// Cleaning up after every setup() call keeps two renders in the
+// same Vitest file from clobbering each other: testing-library
+// appends to a single jsdom DOM by default, so an unmounted prior
+// render would still own the screen. Without this, the second
+// `setup()` only stubs a new fetch and re-renders, leaving the
+// previous component's state (and DOM nodes) on screen.
+afterEach(() => {
+  // The setup helper exposes its render-result via utils; a
+  // "global" cleanup that walks the document is the safest
+  // backstop in case a test forgoes the helper.
+  document.body.innerHTML = "";
+});
 
 describe("<Benchmarks /> run list", () => {
   it("shows each run with its status and average score", async () => {
@@ -454,5 +517,83 @@ describe("<Benchmarks /> credential", () => {
     setup({ configured: false });
     expect(await screen.findByText("not set")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+});
+
+describe("<Benchmarks /> recipient hint", () => {
+  it("surfaces the recipient-model note only when gateway routing is available", async () => {
+    // The hint explains "with via gateway, the Model field is the
+    // recipient id", and that explanation only makes sense when
+    // gateway routing is part of the form. Showing it on an
+    // unconfigured cluster would be page-furniture for nothing.
+    setup({ runs: [] });
+    expect(await screen.findByTestId("bench-recipient-hint")).toBeInTheDocument();
+  });
+
+  it("hides the recipient-model note when gateway routing is unavailable", async () => {
+    setup({ runs: [], gatewayAvailable: false });
+    await screen.findByRole("button", { name: "Launch run" });
+    expect(screen.queryByTestId("bench-recipient-hint")).not.toBeInTheDocument();
+  });
+});
+
+describe("<Benchmarks /> schedules panel", () => {
+  it("renders the Schedules section header and an empty-state hint", async () => {
+    setup({ runs: [] });
+    const header = await screen.findByRole("heading", { name: "Schedules", level: 2 });
+    expect(header).toBeInTheDocument();
+    expect(screen.getByTestId("bench-schedule-open-drawer")).toBeInTheDocument();
+  });
+
+  it("renders an existing schedule row with cadence description and status chip", async () => {
+    vi.unstubAllGlobals();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/eval/benchmarks") {
+        return jsonRes({ runs: [], gateway_routing_available: true, max_total_samples: 500 });
+      }
+      if (url === "/api/eval/benchmarks/schedules") {
+        return jsonRes({
+          schedules: [
+            {
+              id: "schd-1",
+              org_id: "o1",
+              name: "nightly gsm8k",
+              environments: ["primeintellect/gsm8k"],
+              model: "openai/gpt-4o-mini",
+              num_examples: 5,
+              rollouts: 1,
+              via_gateway: false,
+              cadence_seconds: 86_400,
+              next_launch_at: new Date(Date.now() + 86_400 * 1000).toISOString(),
+              enabled: true,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          ],
+        });
+      }
+      if (url === "/api/eval/benchmarks/push-report") return jsonRes({ reports: [] });
+      if (url === "/api/eval/benchmarks/credential") {
+        return jsonRes({ provider: "primeintellect", configured: true, team_id: "team_stored" });
+      }
+      if (url === "/api/eval/benchmarks/models") return jsonRes({ models: [] });
+      return jsonRes({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={qc}>
+          <Benchmarks />
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+
+    const list = await screen.findByTestId("bench-schedule-list");
+    expect(list).toHaveTextContent("nightly gsm8k");
+    expect(list).toHaveTextContent("every 1d");
+    expect(list).toHaveTextContent("armed");
   });
 });
