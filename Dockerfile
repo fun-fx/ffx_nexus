@@ -42,6 +42,17 @@ RUN apk add --no-cache ca-certificates tzdata \
     && adduser -D -H -u 65532 nexus
 COPY --from=build /out/nexus /usr/local/bin/nexus
 
+# Bundled documentation tree. The console serves everything under
+# /etc/nexus/docs verbatim so the operator sees the same markdown
+# that the binary was built against. A Helm overlay at /etc/nexus/docs
+# is the supported way to extend or replace this tree at deploy time
+# without rebuilding the image.
+COPY --from=build /src/docs /etc/nexus/docs
+# Files inside /etc/nexus/docs must remain world-readable; the
+# runtime CDK drops privileges to UID 65532 (nexus) with no group
+# write access, so a more restrictive mode here would silent-fail
+# the walk() at boot and present an empty /api/docs response.
+RUN chmod -R a+rX /etc/nexus/docs
 USER nexus
 EXPOSE 8080 8081
 

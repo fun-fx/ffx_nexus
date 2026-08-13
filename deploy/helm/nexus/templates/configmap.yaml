@@ -30,6 +30,14 @@ data:
   {{- with .Values.config.keyMode }}
   NEXUS_KEY_MODE: {{ . | quote }}
   {{- end }}
+
+  {{- /* Docs tree served by /api/docs and rendered at /docs in the
+       console. The image bundles /etc/nexus/docs (see Dockerfile).
+       Override here for an extension overlay — ConfigMap mount,
+       extra runbooks, a docs fork — without rebuilding the image.
+       Empty/unset leaves the bundled tree in place. */}}
+  NEXUS_DOCS_DIR: {{ .Values.config.docsDir | default "/etc/nexus/docs" | quote }}
+
   NEXUS_ALLOW_SIGNUP: {{ .Values.config.allowSignup | quote }}
 
   {{- /* Quality-aware routing */}}

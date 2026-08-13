@@ -393,12 +393,25 @@ func main() {
 		// Bind the docs root once the rest of the console is wired.
 		// cfg.DocsDir is empty by default; the docs package falls back
 		// to ./docs relative to the binary (which matches `go run`).
+		// Any failure surfaces here loudest: missing directory on a
+		// cluster deploy shows up in pod logs at boot rather than as
+		// a blank page that looks identical to a healthy /docs view.
+		docsBound := false
 		if cfg.DocsDir != "" {
 			if err := docsserver.SetSourceDir(cfg.DocsDir); err != nil {
-				slog.Warn("docs: override source dir failed; using default",
+				slog.Error("docs: NEXUS_DOCS_DIR is set but not walkable",
 					"configured", cfg.DocsDir, "error", err)
 			} else {
 				slog.Info("docs: serving from override", "dir", cfg.DocsDir)
+				docsBound = true
+			}
+		}
+		if !docsBound {
+			if err := docsserver.Err(); err != nil {
+				slog.Error("docs: no usable docs directory; /api/docs will return an empty index",
+					"default_root", docsserver.DefaultRoot, "error", err)
+			} else {
+				slog.Info("docs: serving from default location", "dir", docsserver.DefaultRoot)
 			}
 		}
 
