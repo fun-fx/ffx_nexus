@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -39,10 +40,15 @@ type BenchmarkRunner interface {
 	// Schedules: re-fire plans driven by internal/cron. The runner
 	// exposes them as plain CRUD so the console can list, create and
 	// delete without a separate dependency on internal/cron.
+	//
+	// SetScheduleEnabled toggles a row on or off without touching the
+	// cadence or the run shape — those are still edited via
+	// delete-then-create, per the design note in schedule_handlers.go.
 	CreateSchedule(ctx context.Context, row core.BenchmarkSchedule) (core.BenchmarkSchedule, error)
 	ListSchedules(ctx context.Context, orgID string, limit int) ([]core.BenchmarkSchedule, error)
 	GetSchedule(ctx context.Context, id string) (core.BenchmarkSchedule, error)
 	DeleteSchedule(ctx context.Context, id string) error
+	SetScheduleEnabled(ctx context.Context, id string, enabled bool, nextLaunchAt time.Time) error
 
 	// GetLatestSettledByModel returns the most-recent settled run
 	// for a model, including MinScore / MaxScore / TotalSamples.

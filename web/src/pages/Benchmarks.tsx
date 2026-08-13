@@ -3,17 +3,24 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   cancelBenchmark,
   clearBenchmarkCredential,
-  deleteBenchmark,
+  createBenchmarkSchedule,
+  deleteBenchmark as deleteBenchmarkRun,
+  deleteBenchmarkSchedule,
   dryRunBenchmark,
   fetchBenchmarkCredential,
   fetchBenchmarkLogs,
   fetchBenchmarkModels,
+  fetchBenchmarkSchedules,
   fetchEnvPushReports,
   fetchBenchmarks,
   launchBenchmark,
+  pauseBenchmarkSchedule,
   refreshBenchmarks,
+  resumeBenchmarkSchedule,
   saveBenchmarkCredential,
   type BenchmarkRun,
+  type BenchmarkSchedule,
+  type CreateBenchmarkScheduleBody,
 } from "../api";
 import { Chip, type ChipTone } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
@@ -85,6 +92,41 @@ function formatWhen(iso?: string): string {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
+// Cadence is stored as integer seconds so the SQL layer can do a
+// plain `+ INTERVAL` rather than a jsonb walker; the UI translates
+// that into a human "every Xh/Yd" string and back. Keeping the
+// conversion here is intentional — the wire is stable, the display
+// is editorial, and the editor will iterate more than the schema.
+function describeCadence(seconds: number): { short: string; long: string } {
+  if (seconds <= 0) return { short: "—", long: "—" };
+  if (seconds < 3600) {
+    const m = Math.max(1, Math.round(seconds / 60));
+    return { short: `every ${m}m`, long: `${m} minute${m === 1 ? "" : "s"}` };
+  }
+  if (seconds < 86_400) {
+    const h = seconds / 3600;
+    if (Number.isInteger(h)) return { short: `every ${h}h`, long: `${h} hours` };
+    return { short: `every ~${h.toFixed(1)}h`, long: `${h.toFixed(2)} hours` };
+  }
+  const days = seconds / 86_400;
+  if (Number.isInteger(days)) return { short: `every ${days}d`, long: `${days} day${days === 1 ? "" : "s"}` };
+  return { short: `every ~${days.toFixed(1)}d`, long: `${days.toFixed(2)} days` };
+}
+
+// A round of "what four future launches look like" is enough to give
+// the operator a feel for cadence without dropping them into a full
+// cron tutorial. We add `cadence_seconds` once for each row, since
+// the runner does not implement any other calendar arithmetic.
+function previewNextLaunches(seconds: number, from: Date, n: number): Date[] {
+  const out: Date[] = [];
+  let cur = new Date(from.getTime() + seconds * 1000);
+  for (let i = 0; i < n; i++) {
+    out.push(cur);
+    cur = new Date(cur.getTime() + seconds * 1000);
+  }
+  return out;
+}
+
 export function Benchmarks() {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -129,7 +171,7 @@ export function Benchmarks() {
     onError: report,
   });
   const deleteM = useMutation({
-    mutationFn: deleteBenchmark,
+    mutationFn: deleteBenchmarkRun,
     onSuccess: () => {
       setError(null);
       invalidate();
@@ -353,6 +395,20 @@ export function Benchmarks() {
               ? "Loading…"
               : "No benchmark runs yet. Launch one above once a provider key and a published environment are in place."
           }
+        />
+      </section>
+
+      <section className="panel">
+        <SchedulesPanel
+          credentialConfigured={configured}
+          gatewayAvailable={gatewayAvailable}
+          maxSamples={maxSamples}
+          onChange={(msg) => {
+            setError(null);
+            setNotice(msg);
+            invalidate();
+          }}
+          onError={report}
         />
       </section>
 
@@ -666,6 +722,16 @@ function LaunchPanel({
 
         <label className="field-row">
           <span className="field-label">Model</span>
+          {gatewayAvailable && (
+            <span className="muted bench-recipient-hint" data-testid="bench-recipient-hint">
+              When <em>via gateway</em> is on, the model field is the
+              recipient id the gateway will forward to — pick the
+              entry that routes to your target (for example{" "}
+              <code>code-prime</code> for the grid). Prime&apos;s own
+              catalogue is fine when you want to compare the same
+              model off-gateway.
+            </span>
+          )}
           {models.data && models.data.length > 0 ? (
             <select
               className="bench-input"
@@ -812,7 +878,538 @@ function LaunchPanel({
           </li>
         </ul>
       </details>
+      <details className="bench-help">
+        <summary>How a benchmark score reaches the router</summary>
+        <p className="muted">
+          A benchmark score is one of two quality signals the router
+          blends when it picks a model for a request. The other signal
+          comes from the live rolling judge on traces; this page is
+          about the model-level measurement that runs on Prime.
+        </p>
+        <ul>
+          <li>
+            <strong>Router weight:</strong>{" "}
+            <code>NEXUS_ROUTE_W_BENCH</code> starts at <code>0.5</code>.
+            A fresh benchmark (settled within the half-life window of{" "}
+            <code>NEXUS_ROUTE_BENCH_HALF_LIFE</code>, default 7 days)
+            counts toward that share; older results decay exponentially
+            rather than dropping to zero, so the router always has
+            something to lean on. Setting the weight to <code>0</code>{" "}
+            disables the bench blend entirely.
+          </li>
+          <li>
+            <strong>Plugin-only vs grid:</strong> when{" "}
+            <code>NEXUS_EVAL_PLUGIN_ONLY</code> is on, the in-process
+            heuristic evaluators (<code>contains</code>, <code>pii</code>, ...{" "}
+            ) are not seeded, and the router&apos;s quality signal comes
+            solely from whichever external coverage the operator wires
+            up — Langfuse, LangSmith, Confident AI, Datadog, Arize
+            Phoenix, etc. A benchmark run still scores the &quot;model as we
+            serve it&quot; even when plugin-only is on; the two layers
+            complement rather than replace each other.
+          </li>
+          <li>
+            <strong>Grid-routed benchmarks:</strong> with{" "}
+            <code>NEXUS_PUBLIC_GATEWAY_URL</code> set, a benchmark can
+            point its inference back through this gateway. Setting{" "}
+            <em>Model</em> to a recipient id that the router maps onto
+            a virtual model — for example <code>code-prime</code> for
+            the grid — lets the host system measure the entire routing
+            surface (cache, retry, vendor mix) as a single target. The
+            score covers that surface, not whichever underlying model
+            the router chose for any single prompt.
+          </li>
+          <li>
+            <strong>Scheduling and drift:</strong> a schedule re-fires
+            the same run shape on a cadence. If a model stays at the
+            top of the leaderboard but no fresh run arrives, decay
+            drives the bench share down and the router falls back to
+            the judge. A schedule whose cadence is shorter than the
+            half-life keeps the score fresh; one longer than that does
+            little more than nominal coverage.
+          </li>
+        </ul>
+      </details>
     </section>
+  );
+}
+
+// SchedulesPanel is the recurring-fire view. One row per schedule,
+// with the on/off bit surfaced as a button (resume re-stamps the
+// next launch to "now + cadence"; pause preserves the existing
+// stamp so a future resume can use it as the anchor). Cadence is
+// rendered as a friendly "every Xh/Yd" rather than a raw number
+// because the cron package downstream is the integer-second store
+// the operator has no business editing by hand.
+function SchedulesPanel({
+  credentialConfigured,
+  gatewayAvailable,
+  maxSamples,
+  onChange,
+  onError,
+}: {
+  credentialConfigured: boolean;
+  gatewayAvailable: boolean;
+  maxSamples: number;
+  onChange: (notice: string) => void;
+  onError: (e: unknown) => void;
+}) {
+  const qc = useQueryClient();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const schedulesQ = useQuery({
+    queryKey: ["benchmark-schedules"],
+    queryFn: fetchBenchmarkSchedules,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+
+  const deleteM = useMutation({
+    mutationFn: deleteBenchmarkSchedule,
+    onSuccess: () => {
+      onChange("Schedule deleted.");
+      void qc.invalidateQueries({ queryKey: ["benchmark-schedules"] });
+    },
+    onError,
+  });
+
+  const pauseM = useMutation({
+    mutationFn: pauseBenchmarkSchedule,
+    onSuccess: (row) => {
+      onChange(`Paused ${row.name || row.model}.`);
+      void qc.invalidateQueries({ queryKey: ["benchmark-schedules"] });
+    },
+    onError,
+  });
+
+  const resumeM = useMutation({
+    mutationFn: resumeBenchmarkSchedule,
+    onSuccess: (row) => {
+      onChange(`Resumed ${row.name || row.model}. Next launch: ${formatWhen(row.next_launch_at)}.`);
+      void qc.invalidateQueries({ queryKey: ["benchmark-schedules"] });
+    },
+    onError,
+  });
+
+  const rows = schedulesQ.data ?? [];
+
+  return (
+    <>
+      <div className="panel-head">
+        <h2>Schedules</h2>
+        <button
+          type="button"
+          className="btn-ghost btn-small"
+          disabled={!credentialConfigured}
+          onClick={() => setDrawerOpen(true)}
+          data-testid="bench-schedule-open-drawer"
+        >
+          New schedule
+        </button>
+      </div>
+      {!credentialConfigured && (
+        <p className="hint-tag warn">Schedules require a stored PrimeIntellect API key.</p>
+      )}
+      <p className="hint">
+        A schedule re-fires the same run shape on a cadence. On a run
+        settlement, the schedule row links the produced run via{" "}
+        <code>last_run_id</code>; the cron goroutine picks up the next
+        row at its stamp and the router blends the new score in
+        according to <code>NEXUS_ROUTE_W_BENCH</code> and{" "}
+        <code>NEXUS_ROUTE_BENCH_HALF_LIFE</code>.
+      </p>
+      {schedulesQ.isLoading && <p className="muted">Loading…</p>}
+      {schedulesQ.isError && (
+        <p className="hint-tag warn">
+          {schedulesQ.error instanceof Error
+            ? schedulesQ.error.message
+            : "Could not load schedules"}
+        </p>
+      )}
+      {!schedulesQ.isLoading && rows.length === 0 && (
+        <p className="muted">
+          No schedules yet. Press <em>New schedule</em> for a recurring
+          run, or keep using <em>Launch run</em> above for one-offs.
+        </p>
+      )}
+      {rows.length > 0 && (
+        <ul className="bench-schedule-list" data-testid="bench-schedule-list">
+          {rows.map((s) => {
+            const cadence = describeCadence(s.cadence_seconds);
+            const status: ChipTone = !s.enabled
+              ? "neutral"
+              : new Date(s.next_launch_at).getTime() < Date.now()
+                ? "warn"
+                : "ok";
+            const statusLabel = !s.enabled
+              ? "paused"
+              : new Date(s.next_launch_at).getTime() < Date.now()
+                ? "overdue"
+                : "armed";
+            return (
+              <li key={s.id} className="bench-schedule-row">
+                <div className="bench-schedule-head">
+                  <div className="bench-schedule-name">
+                    <strong>{s.name || s.model}</strong>
+                    <span className="muted bench-schedule-model">{s.model}</span>
+                  </div>
+                  <Chip tone={status}>{statusLabel}</Chip>
+                </div>
+                <div className="bench-schedule-meta">
+                  <span title={cadence.long}>
+                    {s.via_gateway ? (
+                      <Chip tone="accent">via gateway</Chip>
+                    ) : (
+                      <Chip tone="neutral">provider</Chip>
+                    )}{" "}
+                    <span className="muted">{cadence.short}</span>
+                  </span>
+                  <span className="muted">
+                    Next: <strong>{formatWhen(s.next_launch_at)}</strong>
+                  </span>
+                  <span className="muted">
+                    Last launch:{" "}
+                    {s.last_launched_at ? formatWhen(s.last_launched_at) : "—"}
+                  </span>
+                </div>
+                <div className="bench-schedule-env">
+                  {s.environments.map((e) => (
+                    <code key={e} className="bench-env">
+                      {e}
+                    </code>
+                  ))}
+                </div>
+                <div className="bench-schedule-actions">
+                  {!s.enabled ? (
+                    <button
+                      type="button"
+                      className="btn-neon btn-small"
+                      data-testid="bench-schedule-resume"
+                      disabled={resumeM.isPending}
+                      onClick={() => resumeM.mutate(s.id)}
+                    >
+                      Resume
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn-ghost btn-small"
+                      data-testid="bench-schedule-pause"
+                      disabled={pauseM.isPending}
+                      onClick={() => pauseM.mutate(s.id)}
+                    >
+                      Pause
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-ghost btn-small"
+                    disabled={deleteM.isPending}
+                    onClick={() => {
+                      if (window.confirm(`Delete schedule "${s.name || s.model}"?`)) {
+                        deleteM.mutate(s.id);
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <ScheduleDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        gatewayAvailable={gatewayAvailable}
+        maxSamples={maxSamples}
+        onCreated={(row) => {
+          onChange(`Schedule "${row.name || row.model}" created.`);
+          void qc.invalidateQueries({ queryKey: ["benchmark-schedules"] });
+        }}
+        onError={onError}
+      />
+    </>
+  );
+}
+
+// ScheduleDrawer is the create form. Cadence is presented as a small
+// set of safe choices plus a freeform preview of the next few
+// launches; the cron package will accept anything in [60, 7d] but a
+// deliberate preset list keeps the audit trail of runs on the same
+// cadence, which matters more than an arbitrary cron string.
+const SCHEDULE_PRESETS: { label: string; seconds: number }[] = [
+  { label: "every 1 hour", seconds: 3600 },
+  { label: "every 6 hours", seconds: 6 * 3600 },
+  { label: "every 12 hours", seconds: 12 * 3600 },
+  { label: "every 24 hours", seconds: 86_400 },
+  { label: "every 3 days", seconds: 3 * 86_400 },
+  { label: "every 7 days", seconds: 7 * 86_400 },
+];
+
+function ScheduleDrawer({
+  open,
+  onClose,
+  gatewayAvailable,
+  maxSamples,
+  onCreated,
+  onError,
+}: {
+  open: boolean;
+  onClose: () => void;
+  gatewayAvailable: boolean;
+  maxSamples: number;
+  onCreated: (row: BenchmarkSchedule) => void;
+  onError: (e: unknown) => void;
+}) {
+  // Same shape LaunchPanel exports keeps the harness reading one
+  // copy of the rules; the operator's mental model is "a schedule
+  // is an automated launch" so the form fields should mirror.
+  const [name, setName] = useState("");
+  const [cadenceSeconds, setCadenceSeconds] = useState<number>(86_400);
+  const [model, setModel] = useState("");
+  const [envs, setEnvs] = useState<{ slug: string; custom: boolean }[]>([
+    { slug: "primeintellect/gsm8k", custom: false },
+  ]);
+  const [numExamples, setNumExamples] = useState(5);
+  const [rollouts, setRollouts] = useState(1);
+  const [viaGateway, setViaGateway] = useState(false);
+
+  // Reset on close so a second open does not carry form state from
+  // the previous session — the schedule is created via /api, not
+  // tracked locally.
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setCadenceSeconds(86_400);
+      setModel("");
+      setEnvs([{ slug: "primeintellect/gsm8k", custom: false }]);
+      setNumExamples(5);
+      setRollouts(1);
+      setViaGateway(false);
+    }
+  }, [open]);
+
+  const envList = Array.from(new Set(envs.map((e) => e.slug.trim()).filter(Boolean)));
+  const totalSamples = Math.max(0, numExamples) * Math.max(0, rollouts);
+  const overCap = maxSamples > 0 && totalSamples > maxSamples;
+  const canSubmit =
+    envList.length > 0 && model.trim() !== "" && !overCap && cadenceSeconds >= 60;
+
+  const createM = useMutation({
+    mutationFn: createBenchmarkSchedule,
+    onSuccess: (row) => {
+      onCreated(row);
+      onClose();
+    },
+    onError,
+  });
+
+  // Live preview: "next 4 launches" off the just-chosen cadence.
+  // Counts from now because the runner stamps NextLaunchAt = now +
+  // cadence on insert, not from any prior schedule.
+  const previewBase = new Date();
+  const preview = cadenceSeconds >= 60 ? previewNextLaunches(cadenceSeconds, previewBase, 4) : [];
+
+  return (
+    <Drawer open={open} onClose={onClose} title="New benchmark schedule">
+      <div className="bench-form-grid">
+        <label className="field-row">
+          <span className="field-label">Name (optional)</span>
+          <input
+            className="bench-input"
+            placeholder="nightly gsm8k"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+
+        <label className="field-row">
+          <span className="field-label">Cadence</span>
+          <select
+            className="bench-input"
+            value={cadenceSeconds}
+            onChange={(e) => setCadenceSeconds(Number(e.target.value))}
+            data-testid="bench-schedule-cadence"
+          >
+            {SCHEDULE_PRESETS.map((p) => (
+              <option key={p.seconds} value={p.seconds}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="field-row bench-field-wide">
+          <span className="field-label">Environments</span>
+          <div className="bench-env-preset-row">
+            <select
+              className="bench-input bench-env-preset"
+              aria-label="Add a built-in environment"
+              defaultValue=""
+              onChange={(e) => {
+                const slug = e.target.value;
+                if (!slug) return;
+                setEnvs((prev) =>
+                  prev.some((p) => p.slug === slug) ? prev : [...prev, { slug, custom: false }],
+                );
+                e.target.value = "";
+              }}
+            >
+              <option value="">Add a built-in environment…</option>
+              {ENVIRONMENT_PRESETS.map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.slug} — {p.label}
+                </option>
+              ))}
+            </select>
+            <form
+              className="bench-env-custom"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const form = e.currentTarget;
+                const input = form.elements.namedItem("custom-slug") as HTMLInputElement | null;
+                const slug = (input?.value ?? "").trim();
+                if (!slug) return;
+                setEnvs((prev) =>
+                  prev.some((p) => p.slug === slug) ? prev : [...prev, { slug, custom: true }],
+                );
+                if (input) input.value = "";
+              }}
+            >
+              <input
+                name="custom-slug"
+                className="bench-input bench-env-custom-input"
+                placeholder="your-org/<dataset-slug>"
+                aria-label="Add a custom environment slug"
+              />
+              <button type="submit" className="btn-neon btn-ghost btn-small">
+                Add
+              </button>
+            </form>
+          </div>
+          <ul className="bench-env-chips" aria-label="Selected environments">
+            {envs.map((e, idx) => (
+              <li key={`${e.slug}-${idx}`} className="bench-env-chip-row">
+                <code className="bench-env">{e.slug}</code>
+                <span className="muted bench-env-chip-note">
+                  {e.custom ? "custom" : presetFor(e.slug)?.label ?? "preset"}
+                </span>
+                <button
+                  type="button"
+                  className="chip-remove"
+                  aria-label={`Remove ${e.slug}`}
+                  onClick={() => setEnvs((prev) => prev.filter((_, i) => i !== idx))}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        </label>
+
+        <label className="field-row">
+          <span className="field-label">Model</span>
+          <input
+            className="bench-input"
+            placeholder="openai/gpt-4.1-mini"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+        </label>
+        <label className="field-row">
+          <span className="field-label">Examples</span>
+          <input
+            className="bench-input"
+            type="number"
+            min={1}
+            value={numExamples}
+            onChange={(e) => setNumExamples(Number(e.target.value))}
+          />
+        </label>
+        <label className="field-row">
+          <span className="field-label">Rollouts per example</span>
+          <input
+            className="bench-input"
+            type="number"
+            min={1}
+            value={rollouts}
+            onChange={(e) => setRollouts(Number(e.target.value))}
+          />
+        </label>
+      </div>
+
+      <label className="bench-check">
+        <input
+          type="checkbox"
+          checked={viaGateway && gatewayAvailable}
+          disabled={!gatewayAvailable}
+          onChange={(e) => setViaGateway(e.target.checked)}
+        />
+        <span>
+          <strong>Send the provider&apos;s inference through this gateway</strong>
+          <span className="muted bench-check-sub">
+            {gatewayAvailable
+              ? "Recommended for grid-routed benchmarks."
+              : "Unavailable: NEXUS_PUBLIC_GATEWAY_URL is not set."}
+          </span>
+        </span>
+      </label>
+
+      <p className="hint">
+        {totalSamples} sample{totalSamples === 1 ? "" : "s"} ({numExamples} ×{" "}
+        {rollouts}){overCap ? ` — over the ${maxSamples} cap` : ""}
+      </p>
+
+      <details className="bench-help">
+        <summary>Preview next launches</summary>
+        {preview.length === 0 ? (
+          <p className="muted">Pick a cadence to see the projected fire times.</p>
+        ) : (
+          <ul>
+            {preview.map((d, i) => (
+              <li key={d.toISOString()} className="muted">
+                #{i + 1}: {d.toLocaleString()}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="muted">
+          The runner stamps the first <code>next_launch_at</code> at
+          creation time as <code>now + cadence</code>. Edit cadence and
+          the run shape by deleting and re-creating — in-place edits
+          are deliberately not supported.
+        </p>
+      </details>
+
+      <div className="bench-submit-row">
+        <button type="button" className="btn-ghost btn-small" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn-neon"
+          disabled={!canSubmit || createM.isPending}
+          data-testid="bench-schedule-submit"
+          onClick={() => {
+            const body: CreateBenchmarkScheduleBody = {
+              name: name.trim(),
+              environments: envList,
+              model: model.trim(),
+              num_examples: numExamples,
+              rollouts,
+              via_gateway: viaGateway && gatewayAvailable,
+              cadence_seconds: cadenceSeconds,
+            };
+            createM.mutate(body);
+          }}
+        >
+          {createM.isPending ? "Creating…" : "Create schedule"}
+        </button>
+      </div>
+    </Drawer>
   );
 }
 

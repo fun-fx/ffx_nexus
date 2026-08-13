@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ffxnexus/nexus/internal/benchmark"
 	"github.com/ffxnexus/nexus/internal/core"
@@ -32,6 +33,11 @@ type fakeRunner struct {
 	gateway   bool
 	cancelled []string
 	deleted   []string
+
+	// lastEnabled records the most recent pause/resume bit the
+	// handler asked for. Tests assert the right value goes in
+	// without binding to what nextLaunchAt was passed.
+	lastEnabled bool
 
 	// DryRun records whether the handler invoked it. The dedicated
 	// slice lets a test assert that probe order is POST-then-cancel
@@ -85,6 +91,13 @@ func (f *fakeRunner) GetSchedule(_ context.Context, _ string) (core.BenchmarkSch
 }
 
 func (f *fakeRunner) DeleteSchedule(_ context.Context, _ string) error { return nil }
+
+func (f *fakeRunner) SetScheduleEnabled(
+	_ context.Context, _ string, enabled bool, _ time.Time,
+) error {
+	f.lastEnabled = enabled
+	return nil
+}
 
 func (f *fakeRunner) GetLatestSettledByModel(_ context.Context, _ string) (core.BenchmarkRun, error) {
 	return core.BenchmarkRun{}, errors.New("not found")

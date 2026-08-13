@@ -1602,6 +1602,81 @@ export async function clearBenchmarkCredential(): Promise<void> {
   await jsonOrError<{ ok: boolean }>(res);
 }
 
+// --- Scheduled benchmarks ----------------------------------------------
+//
+// `benchmark_schedules` is the operator-side intent table: one row per
+// recurring fire plan, with cadence and the run-shape fields lifted
+// from the same LaunchSpec the manual scheduler posts. The console
+// reads these via /api/eval/benchmarks/schedules/ and toggles them
+// through the explicit pause/resume POSTs — see schedule_handlers.go
+// for why we deliberately do not implement PATCH here.
+export interface BenchmarkSchedule {
+  id: string;
+  org_id: string;
+  name: string;
+  environments: string[];
+  model: string;
+  num_examples: number;
+  rollouts: number;
+  via_gateway: boolean;
+  cadence_seconds: number;
+  next_launch_at: string;
+  enabled: boolean;
+  last_run_id?: string;
+  last_launched_at?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateBenchmarkScheduleBody {
+  name?: string;
+  environments: string[];
+  model: string;
+  num_examples: number;
+  rollouts: number;
+  via_gateway?: boolean;
+  cadence_seconds: number;
+  enabled?: boolean;
+}
+
+export async function fetchBenchmarkSchedules(): Promise<BenchmarkSchedule[]> {
+  const res = await fetch("/api/eval/benchmarks/schedules");
+  if (!res.ok) return [];
+  const data = await jsonOrError<{ schedules: BenchmarkSchedule[] }>(res);
+  return Array.isArray(data.schedules) ? data.schedules : [];
+}
+
+export async function createBenchmarkSchedule(
+  body: CreateBenchmarkScheduleBody,
+): Promise<BenchmarkSchedule> {
+  const res = await fetch("/api/eval/benchmarks/schedules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrError<BenchmarkSchedule>(res);
+}
+
+export async function deleteBenchmarkSchedule(id: string): Promise<void> {
+  const res = await fetch(`/api/eval/benchmarks/schedules/${id}`, {
+    method: "DELETE",
+  });
+  await jsonOrError<{ ok: boolean }>(res);
+}
+
+export async function pauseBenchmarkSchedule(id: string): Promise<BenchmarkSchedule> {
+  return jsonOrError<BenchmarkSchedule>(
+    await fetch(`/api/eval/benchmarks/schedules/${id}/pause`, { method: "POST" }),
+  );
+}
+
+export async function resumeBenchmarkSchedule(id: string): Promise<BenchmarkSchedule> {
+  return jsonOrError<BenchmarkSchedule>(
+    await fetch(`/api/eval/benchmarks/schedules/${id}/resume`, { method: "POST" }),
+  );
+}
+
 // --- Manual-trigger plugin run ----------------------------------------
 //
 // `Send.trigger: manual` means inline traces are silently dropped

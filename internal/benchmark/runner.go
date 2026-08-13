@@ -31,6 +31,10 @@ type Store interface {
 	GetBenchmarkSchedule(ctx context.Context, id string) (core.BenchmarkSchedule, error)
 	ListBenchmarkSchedules(ctx context.Context, orgID string, limit int) ([]core.BenchmarkSchedule, error)
 	DeleteBenchmarkSchedule(ctx context.Context, id string) error
+	// SetBenchmarkScheduleEnabled toggles a schedule's on/off bit
+	// and re-stamps NextLaunchAt so a paused row does not sit at
+	// the front of the runner's due-time scan.
+	SetBenchmarkScheduleEnabled(ctx context.Context, id string, enabled bool, nextLaunchAt time.Time) error
 }
 
 // Keys mints and revokes the gateway credential handed to the provider
@@ -617,6 +621,23 @@ func (r *Runner) DeleteSchedule(ctx context.Context, id string) error {
 		return errors.New("benchmark: runner not configured")
 	}
 	return r.store.DeleteBenchmarkSchedule(ctx, id)
+}
+
+// SetScheduleEnabled toggles a schedule on or off and re-stamps
+// NextLaunchAt so a paused row does not sit at the front of the
+// runner's scan queue. Resume fires a fresh launch one cadence out,
+// not the one that was already due when the row was paused: a paused
+// run with a stale timestamp would otherwise drown the queue.
+func (r *Runner) SetScheduleEnabled(
+	ctx context.Context, id string, enabled bool, nextLaunchAt time.Time,
+) error {
+	if r == nil || r.store == nil {
+		return errors.New("benchmark: runner not configured")
+	}
+	if id == "" {
+		return fmt.Errorf("%w: schedule id is required", ErrInvalidRequest)
+	}
+	return r.store.SetBenchmarkScheduleEnabled(ctx, id, enabled, nextLaunchAt)
 }
 
 // GetLatestSettledByModel is the leaderboard's primary input.

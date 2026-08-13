@@ -151,3 +151,76 @@ func (s *Server) deleteBenchmarkSchedule(w http.ResponseWriter, r *http.Request,
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
+
+// schedulePauseResume is the explicit pause/resume action: a POST with
+// {"enabled": false} pauses the row, a POST with {"enabled": true}
+// resumes it.
+//
+// Cadence and the run shape cannot be edited in place; this endpoint
+// only flips the on/off bit. Resume re-stamps NextLaunchAt to "now +
+// cadence" so a long-paused row does not trap the runner at the front
+// of its scan queue the moment the toggle goes back to true.
+type scheduleEnableBody struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (s *Server) pauseBenchmarkSchedule(w http.ResponseWriter, r *http.Request, u core.User) {
+	s.setBenchmarkScheduleEnabled(w, r, u, false)
+}
+
+func (s *Server) resumeBenchmarkSchedule(w http.ResponseWriter, r *http.Request, u core.User) {
+	s.setBenchmarkScheduleEnabled(w, r, u, true)
+}
+
+func (s *Server) setBenchmarkScheduleEnabled(
+	w http.ResponseWriter, r *http.Request, u core.User, enabled bool,
+) {
+	if s.benchmarks == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "benchmarks not configured"})
+		return
+	}
+	id := chi.URLParam(r, "id")
+	row, err := s.benchmarks.GetSchedule(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
+		return
+	}
+	if u.OrgID != "" && row.OrgID != "" && u.OrgID != row.OrgID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "schedule belongs to a different org"})
+		return
+	}
+	// Body is accepted but optional — an empty POST with the URL alone
+	// is enough to act. The body's "enabled" field, when present, must
+	// agree with the route; otherwise we 400 the call.
+	var body scheduleEnableBody
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+			return
+		}
+		if body.Enabled != enabled {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "body.enabled must match the route",
+			})
+			return
+		}
+	}
+	// Resume re-stamps to "now + cadence" so the row pauses its wait
+	// from the moment of resume rather than firing the date that was
+	// already due. Pause keeps the existing NextLaunchAt so the row
+	// can be resumed "as if no time had passed" by re-using it.
+	next := time.Time{}
+	if enabled && row.CadenceSeconds > 0 {
+		next = time.Now().UTC().Add(time.Duration(row.CadenceSeconds) * time.Second)
+	}
+	if err := s.benchmarks.SetScheduleEnabled(r.Context(), id, enabled, next); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	row, err = s.benchmarks.GetSchedule(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, row)
+}

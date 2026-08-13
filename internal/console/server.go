@@ -387,11 +387,21 @@ func (s *Server) Mux() http.Handler {
 			// relaunching runs. Schedules survive a restart because
 			// the table is durable; the cron goroutine picks them
 			// up on its next tick.
+			//
+			// Pause and resume are explicit POSTed actions rather
+			// than a generic PATCH: deleting the row and re-creating
+			// it is the supported way to edit cadence and run shape
+			// (see schedule_handlers.go), and a single-purpose pair
+			// of endpoints reads cleaner than a JSON-patch dialect
+			// that the cron package would then have to support for
+			// the on/off bit only.
 			r.Route("/schedules", func(r chi.Router) {
 				r.Get("/", s.requireAdmin(s.listBenchmarkSchedules))
 				r.Post("/", s.requireAdmin(s.createBenchmarkSchedule))
 				r.Get("/{id}", s.requireAdmin(s.getBenchmarkSchedule))
 				r.Delete("/{id}", s.requireAdmin(s.deleteBenchmarkSchedule))
+				r.Post("/{id}/pause", s.requireAdmin(s.pauseBenchmarkSchedule))
+				r.Post("/{id}/resume", s.requireAdmin(s.resumeBenchmarkSchedule))
 			})
 
 			// Validate is the safest way to check that the credential the

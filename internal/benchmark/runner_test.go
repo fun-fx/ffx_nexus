@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ffxnexus/nexus/internal/core"
 )
@@ -71,6 +72,28 @@ func (f *fakeStore) DeleteBenchmarkSchedule(_ context.Context, id string) error 
 			f.scheds = append(f.scheds[:i], f.scheds[i+1:]...)
 			return nil
 		}
+	}
+	return errors.New("not found")
+}
+
+// SetBenchmarkScheduleEnabled toggles the on/off bit and re-stamps
+// NextLaunchAt when supplied. The fake mirrors what *core.Store
+// does on the production side, but with no error surface other than
+// "not found".
+func (f *fakeStore) SetBenchmarkScheduleEnabled(
+	_ context.Context, id string, enabled bool, nextLaunchAt time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.scheds {
+		if f.scheds[i].ID != id {
+			continue
+		}
+		f.scheds[i].Enabled = enabled
+		if !nextLaunchAt.IsZero() {
+			f.scheds[i].NextLaunchAt = nextLaunchAt
+		}
+		return nil
 	}
 	return errors.New("not found")
 }
