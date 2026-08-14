@@ -119,10 +119,18 @@ func walk(root string) (Index, error) {
 	// surface inside idx.Categories when the caller reads it. The
 	// map keeps the layout flat and the loop in WalkDir stays a
 	// single bucket lookup instead of a nested search.
+	//
+	// Each Category is initialised with an explicit empty Entries slice
+	// rather than relying on Go's nil-slice default. json.Marshal emits
+	// `null` for a nil slice, and at least one downstream consumer (the
+	// React docs UI's `.map((e) => …)` call) crashes when it hits a null
+	// instead of `[]`. The wire port "always empty array" matches the
+	// "do not pretend a category is missing entries when it's just empty"
+	// expectation easy to defend in code review.
 	bucket := map[string]int{}
 	for i := range CategoryOrder {
 		c := CategoryOrder[i]
-		idx.Categories = append(idx.Categories, Category{Slug: c.Slug, Title: c.Title})
+		idx.Categories = append(idx.Categories, Category{Slug: c.Slug, Title: c.Title, Entries: []Entry{}})
 		bucket[c.Slug] = i
 	}
 	// Fallback for any front-matter category we did not register.

@@ -173,6 +173,66 @@ describe("Docs", () => {
     expect((await screen.findAllByText("Model benchmarks")).length).toBeGreaterThanOrEqual(1);
   });
 
+  it("renders gracefully when a category has empty entries", async () => {
+    // Some categories on a freshly indexed tree return an empty (or
+    // historically null) entries list. The page must not crash on
+    // `.map((e) => …)` against an empty array; the live cluster
+    // surfaced a black screen with `Cannot read properties of null
+    // (reading 'length')` before this branch shipped. We exercise
+    // the same shape the backend serialised at cluster boot — an
+    // explicitly empty entries array — and assert the page mounts
+    // the hero (i.e. did not throw on the way through the sidebar /
+    // section grids) and that the sidebar still includes the empty
+    // category's toggle button. The toggle label readback uses
+    // textContent rather than innerText because jsdom does not lay
+    // out the markup so innerText is undefined there.
+    const idx = {
+      ...docIndex,
+      categories: docIndex.categories.map((c) =>
+        c.slug === "concepts"
+          ? { ...c, entries: [] as unknown[] as typeof c.entries }
+          : c,
+      ),
+    };
+    mockFetch([
+      {
+        match: (url) => url === "/api/docs",
+        respond: () => Promise.resolve({ status: 200, body: idx }),
+      },
+    ]);
+    renderDocs("/docs");
+    await screen.findAllByText(docIndex.tagline, {}, { timeout: 2000 });
+    const buttons = await screen.findAllByRole("button");
+    expect(
+      buttons.some((b) => (b.textContent ?? "").includes("Concepts")),
+    ).toBe(true);
+  });
+
+  it("renders gracefully when a category has null entries", async () => {
+    // Pre-fix, the backend marshalled a Category with no contributing
+    // files as `"entries": null` rather than `"entries": []`. The
+    // React docs page fed `null` into `.map((e) => …)` and the entire
+    // tree crashed into a black screen. This test pins the contract:
+    // the page must accept `null` defensively even now that the
+    // backend stops emitting it (defense in depth).
+    const idx = {
+      ...docIndex,
+      categories: docIndex.categories.map((c) =>
+        c.slug === "reference"
+          ? { ...c, entries: null as unknown as typeof c.entries }
+          : c,
+      ),
+    };
+    mockFetch([
+      {
+        match: (url) => url === "/api/docs",
+        respond: () => Promise.resolve({ status: 200, body: idx }),
+      },
+    ]);
+    renderDocs("/docs");
+    await screen.findAllByText(docIndex.tagline, {}, { timeout: 2000 });
+  });
+
   it("highlights the active page in the sidebar", async () => {
     mockFetch([
       {
