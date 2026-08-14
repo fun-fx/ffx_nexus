@@ -61,6 +61,8 @@ func TestIndexCategoryInference(t *testing.T) {
 		"enterprise-model.md":     "# Enterprise model\n\nBYO keys, multi-tenant.\n",
 		"model-benchmarks.md":     "# Model benchmarks\n\nDistributed eval.\n",
 		"eval-plugins.md":         "# Eval plugins\n\nPer-trace scoring.\n",
+		"eval-tab.md":             "<!--\ncategory: operations\ntitle: Eval tab in the console\n-->\n# Eval tab in the console\n\nUI walkthrough.\n",
+		"benchmark-tab.md":        "<!--\ncategory: operations\ntitle: Benchmark tab in the console\n-->\n# Benchmark tab in the console\n\nUI walkthrough.\n",
 		"packaging.md":            "# Packaging\n\nHelm chart walkthrough.\n",
 		"observability/README.md": "# Observability\n\nOTLP pipelines.\n",
 		"release-notes/v0.1.0.md": "# v0.1.0\n\nPilot release.\n",
@@ -73,7 +75,7 @@ func TestIndexCategoryInference(t *testing.T) {
 	// when matches exist; the absence of any one ticket should
 	// leave the others in place rather than dropping the whole
 	// grid.
-	wantQuick := []string{"Quickstart", "Onboarding", "Enterprise model", "Model benchmarks", "Eval plugins", "Packaging"}
+	wantQuick := []string{"Quickstart", "Onboarding", "Enterprise model", "Model benchmarks", "Eval plugins", "Eval tab in the console", "Benchmark tab in the console", "Packaging"}
 	if len(idx.QuickLinks) != len(wantQuick) {
 		t.Fatalf("quick links: want %d, got %d (%v)", len(wantQuick), len(idx.QuickLinks), quickTitles(idx))
 	}
@@ -108,7 +110,10 @@ func TestIndexCategoryInference(t *testing.T) {
 	if !wantMatch(conceptsWant, catBuckets["concepts"]) {
 		t.Fatalf("concepts bucket missing a file: %s", gotConcepts)
 	}
-	if got := strings.Join(catBuckets["operations"], ","); got != "observability/README" {
+	// eval-tab and benchmark-tab declare `category: operations` in
+	// their front-matter so they sit alongside the other console-tab
+	// docs rather than smeared into Concepts.
+	if got := strings.Join(catBuckets["operations"], ","); got != "benchmark-tab,eval-tab,observability/README" {
 		t.Fatalf("operations bucket: %s", got)
 	}
 	if got := strings.Join(catBuckets["release-notes"], ","); got != "release-notes/v0.1.0" {
