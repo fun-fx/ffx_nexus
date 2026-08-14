@@ -1,8 +1,7 @@
 <!--
 category: operations
 title: Eval tab in the console
-summary: A walkthrough of what the Eval tab does, which controls are
-exposed, and which env vars / cheat-codes shape the UI.
+summary: A walkthrough of what the Eval tab does, which controls are exposed, and which env vars / cheat-codes shape the UI.
 order: 30
 status: stable
 -->

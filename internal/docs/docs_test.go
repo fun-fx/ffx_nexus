@@ -296,3 +296,46 @@ func TestEntriesAlwaysJSONArray(t *testing.T) {
 		}
 	}
 }
+
+// TestFrontMatterMultiLineSummaryFailsCleanly pins the contract that a
+// multi-line `summary:` value in the <!-- ... --> front-matter block
+// is folded into a single-line scalar before the YAML library sees
+// it.
+//
+// This is the regression that landed in PR #251's first deploy: the
+// shipped `docs/eval-tab.md` had a two-line summary that ran into
+// sigs.k8s.io/yaml's `could not find expected ':'` failure, dropping
+// every key that came after the unterminated scalar — including the
+// `category: operations` the file wanted. The file therefore entered
+// the Concepts bucket instead of Operations on the live cluster.
+//
+// The fix is split: editor-side (single-line summary is the simple
+// recommended format) AND parser-side (parseFrontMatter folds the
+// continuation lines before YAML sees them so a pasted-line typo
+// does not silently drop into the wrong sidebar category).
+//
+// The test exercises the parser-side fold. If a future change
+// removes foldFrontMatter, this test fails with a multi-line
+// summary producing a partial or empty front-matter — exactly the
+// regression shape the original deploy shipped with.
+func TestFrontMatterMultiLineSummaryFailsCleanly(t *testing.T) {
+	// The front-matter is wrapped in <!-- ... --> so the helper
+	// reaches the YAML parser rather than returning the zero
+	// frontMatter at the early no-prefix guard. The two-line summary
+	// is exactly the shape from the original `docs/eval-tab.md`
+	// that bit the live cluster.
+	raw := "<!--\ncategory: operations\ntitle: Eval tab\nsummary: a walkthrough\nof what the eval tab does\norder: 30\nstatus: stable\n-->\n"
+	fm := parseFrontMatter(raw)
+	if fm.Category != "operations" {
+		t.Errorf("multi-line summary should still parse `category:` cleanly via foldFrontMatter; got category=%q (full fm: %+v)", fm.Category, fm)
+	}
+	if fm.Title != "Eval tab" {
+		t.Errorf("title should be preserved; got %q", fm.Title)
+	}
+	if fm.Order != 30 {
+		t.Errorf("order should be preserved; got %d", fm.Order)
+	}
+	if !strings.Contains(fm.Summary, "of what the eval tab does") {
+		t.Errorf("summary should be folded into a single-line scalar that includes the continuation; got %q", fm.Summary)
+	}
+}

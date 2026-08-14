@@ -396,8 +396,77 @@ func parseFrontMatter(raw string) frontMatter {
 	if inner == "" {
 		return fm
 	}
+	// Fold continuation lines into a single scalar before passing to
+	// the YAML library. A line break in the middle of a value's text
+	// (e.g. an editor that pasted a long summary across two lines
+	// for readability) used to drop the entire front-matter: sigs.k8s.io/yaml
+	// sees the unterminated scalar and reports "could not find
+	// expected ':'" on the next line, leaving every key after the
+	// break unparsed. The shipped symptom was a file silently
+	// landing in the wrong sidebar category on prod.
+	//
+	// The fold is simple: any line break that is NOT immediately
+	// preceded by `key:` (or is part of a YAML block indicator like
+	// `|` / `>`) becomes a space. The frontend's existing fixture
+	// case is preserved because the editor-side single-line format
+	// is still the recommended one — the fold is a safety net for
+	// typos, not an invitation to write multi-line values.
+	inner = foldFrontMatter(inner)
 	_ = yaml.Unmarshal([]byte(inner), &fm)
 	return fm
+}
+
+// foldFrontMatter joins any line that does not start with a YAML
+// field name into the previous line. Fields look like `key:`, `key:
+// value`, or a block scalar header (`key: |`); the fold turns the
+// spaces-then-text into a single-line `key: value` so the YAML
+// parser sees a clean scalar. Block scalar headers and lists are
+// left untouched because the join is `key:`-anchored.
+func foldFrontMatter(inner string) string {
+	lines := strings.Split(inner, "\n")
+	var out []string
+	for _, ln := range lines {
+		trimmed := strings.TrimSpace(ln)
+		if len(out) == 0 {
+			out = append(out, ln)
+			continue
+		}
+		// A new top-level field starts at column 0 with `key:`. YAML
+		// only requires the colon; whitespace and key case are
+		// flexible. We don't try to parse every scalar — a leading
+		// `- ` is also a top-level token (sequence element).
+		if strings.HasPrefix(trimmed, "- ") || looksLikeField(trimmed) {
+			out = append(out, ln)
+			continue
+		}
+		// Continuation line: join to the previous one with a space.
+		// Strip the leading whitespace of the continuation so the
+		// result is `previous-line-with-space + text`.
+		if len(out) > 0 {
+			out[len(out)-1] = out[len(out)-1] + " " + strings.TrimSpace(ln)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// looksLikeField reports whether a trimmed line is a YAML top-level
+// mapping key (i.e. `word:` or `word: value`). It does not attempt
+// to detect block scalars (`key: |`) precisely — those stay on
+// their own line and the continuation-join is fine because the
+// block's indented children don't match the trimmed prefix.
+func looksLikeField(trimmed string) bool {
+	colon := strings.Index(trimmed, ":")
+	if colon <= 0 {
+		return false
+	}
+	// The first token (before the colon) should not contain
+	// whitespace — keeps us from folding list items with embedded
+	// colons like `- foo: bar`.
+	head := trimmed[:colon]
+	if strings.ContainsAny(head, " \t") {
+		return false
+	}
+	return true
 }
 
 // titleFromBody pulls the first H1 of a markdown file. The /docs
