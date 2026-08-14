@@ -1,9 +1,7 @@
 <!--
 category: operations
 title: Benchmark tab in the console
-summary: A walkthrough of the Benchmark tab — credential setup,
-one-off runs, recurring schedules, and the launcher's two
-routing modes (via_gateway vs direct-to-provider).
+summary: A walkthrough of the Benchmark tab — credential setup, one-off runs, recurring schedules, and the launcher's two routing modes (via_gateway vs direct-to-provider).
 order: 35
 status: stable
 -->
