@@ -57,25 +57,21 @@ func BuiltReindex() {
 func TestIndexCategoryInference(t *testing.T) {
 	withTempDocs(t, map[string]string{
 		"quickstart.md":           "# Quickstart\n\nFive minutes to first call.\n",
-		"onboarding.md":           "# Onboarding\n\nWelcome aboard.\n",
+		"onboarding.md":           "# Team onboarding\n\nWelcome aboard.\n",
 		"enterprise-model.md":     "# Enterprise model\n\nBYO keys, multi-tenant.\n",
 		"model-benchmarks.md":     "# Model benchmarks\n\nDistributed eval.\n",
-		"eval-plugins.md":         "# Eval plugins\n\nPer-trace scoring.\n",
 		"eval-tab.md":             "<!--\ncategory: operations\ntitle: Eval tab in the console\n-->\n# Eval tab in the console\n\nUI walkthrough.\n",
 		"benchmark-tab.md":        "<!--\ncategory: operations\ntitle: Benchmark tab in the console\n-->\n# Benchmark tab in the console\n\nUI walkthrough.\n",
-		"packaging.md":            "# Packaging\n\nHelm chart walkthrough.\n",
-		"observability/README.md": "# Observability\n\nOTLP pipelines.\n",
 		"release-notes/v0.1.0.md": "# v0.1.0\n\nPilot release.\n",
-		"adr/0001-foo.md":         "# 0001\n\nKeep model ids.\n",
 	})
 
 	idx := List()
 
-	// Quick links subset: the six pinned titles should be promoted
-	// when matches exist; the absence of any one ticket should
-	// leave the others in place rather than dropping the whole
-	// grid.
-	wantQuick := []string{"Quickstart", "Onboarding", "Enterprise model", "Model benchmarks", "Eval plugins", "Eval tab in the console", "Benchmark tab in the console", "Packaging"}
+	// Quick links subset: the pinned titles on the index page. The
+	// list is editor-controlled; the order in `quickWant` is the
+	// order they're promoted. A title absent from the index drops
+	// the slot rather than collapsing the grid.
+	wantQuick := []string{"Quickstart", "Eval tab in the console", "Benchmark tab in the console", "Model benchmarks", "Enterprise model", "Team onboarding"}
 	if len(idx.QuickLinks) != len(wantQuick) {
 		t.Fatalf("quick links: want %d, got %d (%v)", len(wantQuick), len(idx.QuickLinks), quickTitles(idx))
 	}
@@ -87,7 +83,8 @@ func TestIndexCategoryInference(t *testing.T) {
 
 	// Category inference: top-level files default to "concepts";
 	// nested directories default to "operations" / "release-notes"
-	// / "adr" based on the first segment.
+	// based on the first segment. Smaller trees reduce the category
+	// list down to what is actually populated.
 	catBuckets := map[string][]string{}
 	for _, c := range idx.Categories {
 		for _, e := range c.Entries {
@@ -106,21 +103,25 @@ func TestIndexCategoryInference(t *testing.T) {
 		return true
 	}
 	gotConcepts := strings.Join(catBuckets["concepts"], ",")
-	conceptsWant := []string{"quickstart", "onboarding", "enterprise-model", "model-benchmarks", "eval-plugins", "packaging"}
+	conceptsWant := []string{"quickstart", "onboarding", "enterprise-model", "model-benchmarks"}
 	if !wantMatch(conceptsWant, catBuckets["concepts"]) {
 		t.Fatalf("concepts bucket missing a file: %s", gotConcepts)
 	}
-	// eval-tab and benchmark-tab declare `category: operations` in
-	// their front-matter so they sit alongside the other console-tab
-	// docs rather than smeared into Concepts.
-	if got := strings.Join(catBuckets["operations"], ","); got != "benchmark-tab,eval-tab,observability/README" {
+	// The two console-tab pages declare `category: operations` via
+	// front-matter so they live alongside Operations-side material
+	// rather than smeared into Concepts.
+	if got := strings.Join(catBuckets["operations"], ","); got != "benchmark-tab,eval-tab" {
 		t.Fatalf("operations bucket: %s", got)
 	}
 	if got := strings.Join(catBuckets["release-notes"], ","); got != "release-notes/v0.1.0" {
 		t.Fatalf("release-notes bucket: %s", got)
 	}
-	if got := strings.Join(catBuckets["adr"], ","); got != "adr/0001-foo" {
-		t.Fatalf("adr bucket: %s", got)
+	// The trimmed CategoryOrder means reference / runbooks / adr /
+	// misc are absent rather than presenting empty buckets.
+	for _, gone := range []string{"reference", "runbooks", "adr", "misc"} {
+		if _, ok := catBuckets[gone]; ok {
+			t.Errorf("expected %q to be absent from the trimmed category set, got %v", gone, catBuckets[gone])
+		}
 	}
 }
 

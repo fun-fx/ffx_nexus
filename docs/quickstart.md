@@ -1,382 +1,46 @@
-<!--
-category: concepts
-title: Quickstart
-summary: Five minutes from `curl ... | bash` to your first chat completion.
-order: 1
--->
-# Nexus Quickstart
+# Quickstart
 
-Five minutes from `curl ... | bash` to your first chat completion. Runs
-entirely on your laptop or server — **no SaaS lock-in**, no account on
-nexus.ffx.ai required. You only need Docker and Git.
+Nexus is a single Go binary that fronts every LLM API call behind a
+gateway, a router, an eval layer, and a benchmark integration — and
+ships with a console that drives all four from one screen.
 
-> **TL;DR**
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/fun-fx/ffx_nexus/main/scripts/install.sh | bash
-> # or, once DNS is wired up:
-> # curl -fsSL https://install.nexus.ffx.ai | bash
-> # then open http://localhost:8091 in your browser
-> ```
->
-> **Ports cheat-sheet**
->
-> | Path | Gateway | Console |
-> | --- | --- | --- |
-> | One-line `install.sh` (TL;DR above) | `:8090` | `:8091` |
-> | Manual `go run ./cmd/nexus` / Docker | `:8080` | `:8081` |
->
-> The installer picks `:8090`/`:8091` to dodge common collisions on a fresh
-> laptop; running the binary directly uses the upstream defaults `:8080`/`:8081`.
-> You can override either side with `NEXUS_GATEWAY_ADDR` / `NEXUS_CONSOLE_ADDR`
-> (or, for the installer, `NEXUS_GATEWAY_PORT` / `NEXUS_CONSOLE_PORT`).
+The four parts each answer a separate question:
 
----
-
-## 0. Prerequisites
-
-| Tool | Why | Install |
-| --- | --- | --- |
-| **Git** | Clone the repo | <https://git-scm.com/downloads> |
-| **Docker** (Desktop or Engine) + `docker compose` v2 | Postgres / Redis / ClickHouse / (optional) Ollama | <https://docs.docker.com/get-docker/> |
-| **Go 1.22+** | Build the Nexus binary | <https://go.dev/dl/> |
-| ~3 GB free RAM | ClickHouse + Ollama are the heaviest components | — |
-
-A `curl` and a modern browser (Chrome / Safari / Edge) are assumed.
-
-> **No LLM provider key is required up front.** Nexus starts in zero-
-> dependency mode and will load your provider key from `.env` (env mode)
-> or from the encrypted credential store (BYOK mode).
-
----
-
-## 1. Install
-
-### Dev container (recommended for contributors)
-
-The fastest path to a reproducible toolchain — Cursor / VS Code attach to
-the same container the rest of the contributors use, so the build never
-drifts across machines. Requires Docker Desktop (or Engine) plus
-`docker compose` v2; no Go toolchain install on the host.
-
-```bash
-# 1. Clone
-git clone https://github.com/fun-fx/ffx_nexus.git
-cd ffx_nexus
-
-# 2. Open in Cursor/VSCode; pick "Reopen in Container" when prompted.
-#    First build takes ~3 minutes (Go 1.26 + Docker-in-Docker).
-#    Subsequent attach is instant — Go mod / build caches live in named
-#    volumes so they survive container rebuilds.
-# 3. From the integrated terminal:
-docker compose -f deploy/docker-compose.yml --profile dev up -d
-```
-
-What the dev profile brings up under one command:
-
-| Service | URL | Notes |
-| --- | --- | --- |
-| **Nexus gateway** | <http://localhost:8080> | OpenAI-compatible API |
-| **Nexus console (UI)** | <http://localhost:8081> | React dashboard + WebSocket live feed |
-| **Grafana** | <http://localhost:3000> | Pre-baked Nexus dashboards (admin / admin) |
-| **Prometheus** | <http://localhost:9090> | Scrapes `nexus:9101/metrics` |
-| **OTel Collector (HTTP)** | <http://localhost:4318> | Receives OTLP from `NEXUS_OTLP_ENDPOINT` |
-| **Mock LLM upstream** | <http://localhost:9102> | `ttft`, `chunk-ms`, `workers` flags for realistic load |
-| **Metabase** (opt-in) | <http://localhost:3001> | `--profile bi` together with `dev` seeds dashboards |
-
-> **Why a mock upstream?** V5 stress scripts (1000 concurrent burst), V2
-> multi-node e2e, and the failover-alert smoke tests need a *realistic*
-> upstream with configurable TTFT, per-chunk delays, and bounded worker
-> pools. The mock lets you exercise the path without burning real
-> provider quota. The dev profile wires Nexus → mock-upstream by default;
-> switch to a real provider with `docker compose --profile dev up -d` +
-> `NEXUS_LLM_BASE_URL=https://api.openai.com/v1` in `deploy/docker-compose.yml`.
-
-### One-line installer (recommended for non-contributors)
-
-```bash
-curl -fsSL https://install.nexus.ffx.ai | bash
-```
-
-The installer detects your OS, clones the repo to `~/.nexus/src`, starts
-the dev stack via `docker compose`, builds the Go binary, and launches
-Nexus in the background. When complete, it prints:
-
-```
-Console (UI):  http://localhost:8091
-Gateway (API): http://localhost:8090
-```
-
-Open the console in your browser. Continue with step 2.
-
-### Manual install (if you prefer to see what's happening)
-
-```bash
-# 1. Clone
-git clone https://github.com/fun-fx/ffx_nexus.git
-cd ffx_nexus
-
-# 2. Start the dev stack (Postgres, Redis, ClickHouse, Ollama)
-docker compose -f deploy/docker-compose.yml up -d postgres redis clickhouse ollama
-
-# 3. Wait for the consoles to be ready (~30s)
-curl -fsS http://localhost:8123/ping
-
-# 4. Build the gateway binary
-go build -o ./bin/nexus ./cmd/nexus
-
-# 5. Pick at least one provider key from .env, then launch
-export GEMINI_API_KEY=sk-...      # or OPENAI_API_KEY, ANTHROPIC_API_KEY, ...
-./bin/nexus
-# (override the listen ports if 8080/8081 are taken on this box:
-#   NEXUS_GATEWAY_ADDR=:9090 NEXUS_CONSOLE_ADDR=:9091 ./bin/nexus)
-```
-
-Console: <http://localhost:8081>
-Gateway: <http://localhost:8080>
-
-**Eval without ClickHouse:** the eval worker runs heuristics (PII/completeness) by default
-(`NEXUS_EVAL_ENABLED=true`). Without `NEXUS_CLICKHOUSE_URL`, scores can still persist to
-**Postgres** when `NEXUS_POSTGRES_URL` is set; otherwise they are discarded (noop sink).
-Quality-aware routing and trace history in Overview still need ClickHouse.
-
-**Plugin-only mode:** flip `NEXUS_EVAL_PLUGIN_ONLY=true` (or set `config.evalPluginOnly: true` in
-the Helm chart) to suppress seeding of the built-in heuristic profiles (PII, Completeness) and
-the legacy `slm_judge` / `remote_eval` profiles. Scoring then comes exclusively from external
-EvalPlugins configured in the console (LangSmith, Langfuse, Datadog, Confident AI, …). The
-toggle alone is non-destructive — rows already in the profile store are not deleted.
-
-For a clean slate on every boot, opt into the destructive companion: set
-`NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT=true` (or `config.purgeLegacyProfilesOnBoot: true`)
-alongside `NEXUS_EVAL_PLUGIN_ONLY=true`. The controller then hard-deletes the four well-known
-seed rows (`default-pii`, `default-completeness`, `default-judge`, `default-remote`) on every
-boot, and the console surfaces a danger-tone banner. Confirm your EvalPlugins cover PII
-detection before flipping this on — the deleted `default-pii` row leaves no fallback if the
-plugin does not catch the violation.
-
-> **Tip:** the manual path uses the binary's upstream defaults (`:8080`/`:8081`).
-> If you arrived here from the one-line installer at the top of this page, your
-> Console is on <http://localhost:8091> and your Gateway on <http://localhost:8090>.
-
----
-
-## 2. Create your first account
-
-1. Open <http://localhost:8091>.
-2. Click **Sign in** → **Create account**.
-3. Fill in:
-   * **email** + **password** (8 characters or more).
-   * **provider** dropdown — pick whichever LLM provider you use
-     (Gemini / OpenAI / Anthropic / ...).
-   * **your LLM API key** — paste the key from your provider. Nexus
-     encrypts it at rest with AES-GCM under `NEXUS_MASTER_KEY` and never
-     logs it in plaintext.
-4. Click **Create account**.
-5. The next screen shows a **virtual key** (`nxs_live_...`). This is the
-   only time it is shown — copy it to a safe place (1Password, your
-   shell's secret manager, etc.).
-
-> **Why two keys?** Your *provider* key pays the upstream LLM bill and
-> stays in the provider's account. Your *virtual* key authenticates
-> requests to Nexus and carries policy (allowed models, budget, RPM).
-> Apps use the virtual key — never the provider key.
-
----
-
-## 3. Validate the key
-
-```bash
-curl http://localhost:8090/v1/models \
-  -H "Authorization: Bearer nxs_live_..."
-```
-
-You should see a JSON list of available models. If you get a 401, the
-key was mistyped — re-create it from the **Account → My virtual keys**
-panel.
-
----
-
-## 4. Make your first chat completion
-
-```bash
-curl http://localhost:8090/v1/chat/completions \
-  -H "Authorization: Bearer nxs_live_..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-2.5-flash",
-    "messages": [{"role": "user", "content": "Say hi in five words"}]
-  }'
-```
-
-If you have the OpenAI / Anthropic Python SDK already installed, swap
-the base URL instead of altering the request shape:
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://localhost:8090/v1",  # ← Nexus, not OpenAI
-    api_key="nxs_live_...",
-)
-resp = client.chat.completions.create(
-    model="gemini-2.5-flash",
-    messages=[{"role": "user", "content": "Hello, Nexus."}],
-)
-print(resp.choices[0].message.content)
-```
-
----
-
-## 5. Watch your traffic in real time
-
-Go back to <http://localhost:8091> and look at:
-
-* **Cards** (top) — requests (1h), error rate, avg & p95 latency, cache
-  hit rate, guardrail events, tokens, cost.
-* **Model routing** table — per-model effective quality / safety /
-  latency / cost.
-* **Eval scores (24h)** table — heuristic + external judge scores.
-* **Recent traces** table — every request, with `cache`, `blocked`, and
-  `byok` flags where applicable. Refreshes every 5 s; the **LIVE** dot
-  in the top right indicates the WebSocket is connected.
-
-> **Try this:** send the same chat completion twice in a row. The second
-> should come back in tens of milliseconds (the latency column drops) and
-> show a `cache` badge. That is the **semantic cache** kicking in.
-
----
-
-## 6. What you can do next
-
-| Your goal | Where in the UI |
+| Layer | Question it answers |
 | --- | --- |
-| Add a second provider key (BYOK) so you can mix models | **Account → My provider keys (BYOK)** |
-| Mint a separate virtual key per app or teammate | **Account → My virtual keys** |
-| Set monthly budget / RPM per virtual key | API: `POST /api/keys` (`monthly_budget_usd`, `rpm_limit`) |
-| Block PII / prune unsafe prompts | Set `NEXUS_GUARDRAILS_ENABLED=true` (Azure-side: see [guardrails](security.md)) |
-| See what users actually do (admin only) | **Audit** tab |
-| Run the same prompt in dev vs prod | Repeat at the prod ingress URL; same trace shape |
-| Onboard a teammate on shared prod | [`onboarding.md`](onboarding.md) — VPN, BYOK, virtual key, Cursor |
+| Gateway | Will my call reach the model, and what did it cost? |
+| Router | Which model should this particular call go to? |
+| Evaluator | Was the answer worth the spend? |
+| Benchmark | Is the model I've picked still the model I want? |
 
-### 6.1 Plug in an external evaluation service (5 steps, no kubectl / no helm)
+Each layer is configurable independently, but they compose — the
+router's quality-aware blend reads from the evaluator's `eval_scores`
+table and the benchmark's `benchmark_runs` table, so a model that
+drifts downward over a week slips out of the preferred list without
+a tactical decision.
 
-> **Why this section exists.** Prior to this release, plugging in Langfuse
-> or LangSmith required a Kubernetes Secret, a Helm overlay file, and a
-> console-side restart. The console-key path (added in PR #171, hardened
-> in #173) replaces that with five symmetric UI steps. Nothing about
-> this requires cluster-admin — every operator with plugin-edit permission
-> can do it.
+Going further, the docs are organised around the console tabs that
+drive each piece:
 
-1. Open **Console → Eval → Plugins** and click **New plugin**. Pick
-   `service.type` (e.g. `langfuse`, `langsmith`, `arize_phoenix`,
-   `confident_ai`) from the dropdown. The vendor defaults fill in the
-   remaining fields automatically.
-2. Set `spec.service.endpoint` to your vendor URL
-   (`https://cloud.langfuse.com`, `https://api.smith.langchain.com`,
-   etc.). The Test button (right side of the row) returns 200 OK when
-   the endpoint is reachable — this exercises the *transport* but
-   not the credentials yet.
-3. Click **Keys** in the row. The modals lists every keyRef the
-   manifest declared (Langfuse wants `public_key|secret_key`;
-   LangSmith wants `api_key`). Paste the values; click **Save**. The
-   values never leave the gateway process — they live in the
-   `consoleKeyResolver`, not on disk and not in Helm.
-4. Click **Test** again. You now get the structured `PluginTestResult`
-   body back: `{"ok":true,"message":"auth ok"}` on success, or a
-   vendor-specific error (`status_401`, `unauthorized`, etc.) on
-   failure. The previous 502-from-Cloudflare failure mode (where the
-   tunnel swallowed the underlying error and replaced it with HTML)
-   is fixed by returning HTTP 200 with `ok:false` instead.
-5. Flip the **Enabled** toggle. The plugin now ships every enabled
-   trace to the vendor via OTLP/HTTP or vendor-native /v1/* endpoints.
-   Eval scores come back through the **Webhook URL** rendered at the
-   top of the row — point your vendor's webhook UI at that URL and
-   the score lands in `eval_scores` within one request.
+- **[Eval tab in the console](eval-tab.md)** — how the eval layer
+  and the quality-aware router are configured at runtime.
+- **[Benchmark tab in the console](benchmark-tab.md)** — how model
+  benchmarks are launched on the hosted-verifier provider.
+- **[Team onboarding](onboarding.md)** — bringing a new team onto a
+  running Nexus instance.
 
-> **No restart needed.** Steps 3-4 are immediate: the plugin
-> re-registers in the in-memory `evalplugin.Registry` on every Save,
-> and the dispatcher re-evaluates org-scoped plugin enablement on
-> the next request. Hot-reload was a precondition for the GUI to
-> expose the "Keys" affordance; see PR #171 / cmd/nexus/plugin_keys.go.
+## Why it's different
 
-### 6a. Add Prometheus + Grafana (one command)
+A traditional LLM gateway routes the cheapest available model;
+Nexus routes the model whose recent **scored** quality justifies the
+cost. A traditional LLM eval adds an async LLM-as-judge on the side;
+Nexus's eval layer keeps a small set of heuristic rules synchronous
+in the gateway worker, and the rest stays on the operator's choice
+of evaluator (Langfuse, LangSmith, Datadog, Braintrust, Arize,
+Confident AI, Arize Phoenix, OTLP collector, or a webhook into your
+own scorer).
 
-Bring up an end-to-end observability stack — Nexus gateway + Prometheus +
-Grafana with a pre-baked dashboard that auto-populates from live traces.
-Stay in this directory:
-
-```bash
-docker compose -f deploy/docker-compose.yml --profile observability up -d
-```
-
-Then open:
-
-- Grafana: <http://localhost:3000> (admin / admin)
-- Prometheus: <http://localhost:9090>
-- Nexus gateway: <http://localhost:8080>
-- Nexus console: <http://localhost:8081>
-
-The bundled dashboard (`Nexus · LLM Gateway Overview`) shows p50/p95/p99
-latency per model, requests/sec, semantic-cache hit rate, hourly cost,
-failover events, BYOK adoption, and rolling judge quality score. Each
-panel queries a `gen_ai.*`-labelled metric that Nexus exports in the
-Prometheus exposition format on `/metrics`. Add `--profile full` if you
-also want the OTLP collector exposed on `:4317` / `:4318`.
-
-Use `NEXUS_METRICS_ADDR` (or `config.metricsAddr:` in the Helm chart) to
-expose `/metrics` from the binary directly when you already run an
-external Prometheus — leave it empty to keep the zero-dep fast path.
-
----
-
-## 7. Stop / restart / wipe
-
-```bash
-# Stop the gateway only (keeps Postgres/Redis/ClickHouse running)
-kill "$(cat ~/.nexus/nexus.pid)"
-
-# Stop the entire dev stack (data preserved)
-docker compose -f ~/.nexus/src/deploy/docker-compose.yml down
-
-# Wipe everything (Postgres data, ClickHouse traces, etc.)
-docker compose -f ~/.nexus/src/deploy/docker-compose.yml down -v
-rm -rf ~/.nexus
-```
-
----
-
-## Troubleshooting
-
-**`docker daemon is not running — start Docker and retry`** — Open
-Docker Desktop (or `systemctl start docker` on Linux) and run the
-installer again.
-
-**`scripts/install.sh` exits with code 40 / "go toolchain missing"** —
-Install Go 1.22+ (`brew install go` on macOS) and rerun, or just use the
-dev container path (no host Go install required).
-
-**Dev container: "Docker-in-Docker" feature stalls** — the dev
-container's Docker daemon is provisioned by the devcontainers feature.
-On macOS it shares the host socket (Felix-friendly), so you don't need
-extra config. On Windows / older Linux kernels, ensure
-`/var/run/docker.sock` is bind-mountable; otherwise set
-`"docker-in-docker"` to `false` in `.devcontainer/devcontainer.json`.
-
-**Dev container first build is slow (>5 min)** — that's the Go 1.26 +
-Docker engine image pull. Subsequent attaches are instant because the
-Go caches live in named volumes `nexus-go-mod-cache` and
-`nexus-go-build-cache`. To force a clean rebuild: `docker volume rm
-nexus-go-mod-cache nexus-go-build-cache`.
-
-**Browser shows the UI but `/v1/models` returns 401** — your virtual key
-is wrong or was revoked. Mint a new one in **Account → My virtual
-keys**.
-
-**Request returns 403 `no API key registered for provider X`** — your
-account is in `strict_byok` mode and you haven't added a provider key
-for that provider yet. Add one in **Account → My provider keys (BYOK)**.
-
-**Gateway stays on /healthz but requests are slow** — this is almost
-always the first call caching an embedding or compiling a model. From
-the second request onward latency should drop.
-
-For anything else, see <https://github.com/fun-fx/ffx_nexus/issues>.
+The console is one screen for every layer — there is no separate
+ops console and no separate benchmark console. A signed-in
+operator sees quality, cost, and latency at the top of the page
+and the four layers stack below.

@@ -210,13 +210,11 @@ func walk(root string) (Index, error) {
 	// filenames; pinning the order here keeps editorial control.
 	quickWant := []string{
 		"Quickstart",
-		"Onboarding",
-		"Enterprise model",
-		"Model benchmarks",
-		"Eval plugins",
 		"Eval tab in the console",
 		"Benchmark tab in the console",
-		"Packaging",
+		"Model benchmarks",
+		"Enterprise model",
+		"Team onboarding",
 	}
 	// Quick-want loop walks each desired title in the order the
 	// sidebar should display them, finds the first matching entry
@@ -317,21 +315,20 @@ type Index struct {
 }
 
 // CategoryOrder pins the sidebar order. The choice mirrors
-// thegrid.ai's \"Start here · Concepts · Operations · Reference\"
-// rhyme: a newcomer starts at Quick Links, then walks Concepts
-// (the why), Operations (the how), Reference (the lookup tables),
-// and finally any Runbooks directory the operator creates.
+// thegrid.ai's "Start here · Concepts · Operations" rhyme: a
+// newcomer starts at Quick Links, then walks Concepts (the why)
+// and Operations (the how). Empty categories are dropped to keep
+// the sidebar flat — the categories that exist here are the ones
+// that have at least one entry in the current tree. Slugs not in
+// this list do not crash; the walker logs a discovery-time warning
+// and treats the file as "concepts".
 var CategoryOrder = []struct {
 	Slug  string
 	Title string
 }{
 	{"concepts", "Concepts"},
 	{"operations", "Operations"},
-	{"reference", "Reference"},
-	{"runbooks", "Runbooks"},
 	{"release-notes", "Release notes"},
-	{"adr", "Architecture decisions"},
-	{"misc", "Misc"},
 }
 
 // DefaultCategoryFromPath maps a /docs/<dir>/... path to one of the
@@ -344,12 +341,8 @@ func DefaultCategoryFromPath(rel string) string {
 	switch seg {
 	case "operations", "observability":
 		return "operations"
-	case "adr":
-		return "adr"
 	case "release-notes":
 		return "release-notes"
-	case "runbooks":
-		return "runbooks"
 	}
 	if strings.Contains(rel, "/") {
 		return "operations"
