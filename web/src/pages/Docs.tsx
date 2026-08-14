@@ -18,11 +18,19 @@ import { Icon } from "../components/icons";
 // 200 kB of remark/rehype just to produce headings/lists/code.
 
 async function loadIndex(): Promise<DocsIndex> {
-  return fetchDocsIndex();
+  // Errors are caught by react-query and surfaced through `isError`,
+  // not thrown out of the closure. Surfacing them lets the page
+  // render a real "you need to sign in" panel rather than a generic
+  // loading spinner of indeterminate length when the visitor's
+  // session is unauthenticated (401) or the docs tree is unreachable
+  // (5xx). Without this branch the page renders an empty hero that
+  // looks identical to "everything is fine but blank" — the exact
+  // layout we observed in the live cluster.
+  return await fetchDocsIndex();
 }
 
 async function loadPage(path: string): Promise<DocPage | null> {
-  return fetchDocPage(path);
+  return await fetchDocPage(path);
 }
 
 export function Docs() {
@@ -36,15 +44,35 @@ export function Docs() {
   const slugPath = (params["*"] as string | undefined) ?? "";
   const isIndex = !slugPath;
 
-  const { data: index, isLoading: indexLoading } = useQuery({
+  const {
+    data: index,
+    isLoading: indexLoading,
+    isError: indexError,
+    error: indexErrorValue,
+  } = useQuery({
     queryKey: ["docs-index"],
     queryFn: loadIndex,
   });
-  const { data: page, isLoading: pageLoading } = useQuery({
+  const {
+    data: page,
+    isLoading: pageLoading,
+    isError: pageError,
+  } = useQuery({
     queryKey: ["docs-page", slugPath],
     queryFn: () => loadPage(slugPath),
     enabled: !isIndex,
   });
+
+  // The index failed (usually 401 when the visitor is unauthenticated).
+  // Render a single sign-in panel rather than letting DocsIndexPage
+  // sit on an empty `index` and produce a blank hero. The sidebar
+  // also reads from `index`, so we render it in an empty placeholder
+  // shape that still preserves the visual rhythm of the page (the
+  // empty sidebar tells the user the layout is loading-the-content,
+  // not the app is broken).
+  if (indexError) {
+    return <DocsSignInGate error={indexErrorValue} />;
+  }
 
   return (
     <div className="docs-shell">
@@ -53,12 +81,60 @@ export function Docs() {
         {isIndex ? (
           <DocsIndexPage index={index} loading={indexLoading} />
         ) : (
-          <DocsArticle page={page} loading={pageLoading} slugPath={slugPath} />
+          <DocsArticle page={page} loading={pageLoading} slugPath={slugPath} pageError={pageError} />
         )}
       </div>
       {!isIndex && page ? (
         <DocsTOC headings={headingsFromBody(page.body)} />
       ) : null}
+    </div>
+  );
+}
+
+// === sign-in gate ========================================================
+//
+// Surfaces 401 from /api/docs (and from any other docs endpoint) so the
+// unauthenticated visitor sees a clear pane instead of an empty hero
+// that reads as a black-screen render. Keeps the docs sidebar layout
+// visible so the page composition is still recognizable as the docs
+// UI rather than a generic error page.
+function DocsSignInGate({ error }: { error: unknown }) {
+  const status =
+    (error as { status?: number } | null)?.status ??
+    (typeof error === "object" && error && "message" in error ? 0 : 0);
+  const needsLogin = status === 401 || status === 403;
+  return (
+    <div className="docs-shell">
+      <DocsSidebar index={undefined} active="" />
+      <div className="docs-main">
+        <div className="docs-page">
+          <div className="docs-hero">
+            <div className="docs-hero-title">
+              {needsLogin ? "Sign in to read the docs" : "Docs are temporarily unavailable"}
+            </div>
+            <div className="docs-hero-sub">
+              {needsLogin
+                ? "The Nexus documentation is bundled into every cluster but requires an authenticated session, same as the rest of the console."
+                : "The docs endpoint returned a 5xx error. Check the console pod logs (`kubectl logs -l app.kubernetes.io/name=nexus`) for the underlying cause."}
+            </div>
+            <div className="docs-hero-cta">
+              {needsLogin ? (
+                <a className="docs-cta-primary" href="/login?next=%2Fdocs">
+                  Sign in →
+                </a>
+              ) : (
+                <button
+                  className="docs-cta-primary"
+                  type="button"
+                  onClick={() => window.location.reload()}
+                >
+                  Reload page
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -522,12 +598,20 @@ function DocsArticle({
   page,
   loading,
   slugPath,
+  pageError,
 }: {
   page: DocPage | undefined | null;
   loading: boolean;
   slugPath: string;
+  pageError: boolean;
 }) {
   const blocks = useMemo(() => (page ? parseBlocks(page.body) : []), [page]);
+  if (pageError) {
+    // /api/docs/{slug} 401 — the visitor is unauthenticated. Redirect
+    // to the sign-in gate so the page does not render the empty
+    // skeleton + black background the cluster was surfacing before.
+    return <DocsSignInGate error={{ status: 401 }} />;
+  }
   if (loading) {
     return (
       <div className="docs-page">

@@ -225,4 +225,45 @@ describe("Docs", () => {
     expect(await screen.findByText("No such page")).toBeTruthy();
     expect(await screen.findByText("the index")).toBeTruthy();
   });
+
+  it("renders a sign-in gate when /api/docs returns 401", async () => {
+    mockFetch([
+      {
+        match: (url) => url === "/api/docs",
+        respond: () =>
+          Promise.resolve({
+            status: 401,
+            body: { error: "login required" },
+          }),
+      },
+    ]);
+    renderDocs("/docs");
+    // Two elements render "Sign in" — the hero copy and the link label
+    // — because both are intentional parts of the gate (the copy
+    // explains *what* to do, the link is the *how*). Demand at least
+    // one so the test does not depend on exact-match.
+    expect((await screen.findAllByText(/sign in/i)).length).toBeGreaterThanOrEqual(1);
+    const allLinks = await screen.findAllByRole("link");
+    const loginLink = allLinks.find(
+      (a) =>
+        a.getAttribute("href")?.startsWith("/login") &&
+        a.getAttribute("href")?.includes("%2Fdocs"),
+    );
+    expect(loginLink).toBeTruthy();
+  });
+
+  it("renders a 'temporarily unavailable' panel when /api/docs returns 5xx", async () => {
+    mockFetch([
+      {
+        match: (url) => url === "/api/docs",
+        respond: () =>
+          Promise.resolve({
+            status: 503,
+            body: { error: "docs not configured" },
+          }),
+      },
+    ]);
+    renderDocs("/docs");
+    expect(await screen.findByText(/temporarily unavailable/i)).toBeTruthy();
+  });
 });
