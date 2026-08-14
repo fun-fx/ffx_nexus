@@ -2,7 +2,7 @@ module github.com/ffxnexus/nexus
 
 go 1.26.3
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
