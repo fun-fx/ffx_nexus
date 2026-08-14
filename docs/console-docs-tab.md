@@ -1,44 +1,30 @@
-# Docs tab in the console
+# Docs in the console
 
 The console's Docs page mirrors [thegrid.ai/docs](https://thegrid.ai/docs):
 a left-hand sidebar of foldable categories, an on-this-page rail on
-the right, and a body that renders the verbatim Markdown we
-already keep in `/docs`. The same files that ship in the repo's
-git tree are what the operator sees — no shadow copy, no
-copy-paste between the repo and the on-line HTML.
+the right, and a body that renders the verbatim Markdown we keep in
+`/docs`. The same files that ship in the repo's git tree are what
+the operator sees — no shadow copy, no copy-paste between the repo
+and the on-line HTML.
 
-## Source-of-truth contract
+## Two surfaces on one tree
 
-* The walking, indexing, and serving live in `internal/docs`.
-* Front-matter is honoured: `<!-- category: foo -->` /
-  `<!-- title: ... -->` / `<!-- order: N -->` / `<!-- status: v1beta -->`.
-* Without front-matter a file's category is inferred from its
-  path: top-level files → Concepts, files under `docs/operations*`/
-  `docs/observability*` → Operations, `docs/adr/*` → Architecture
-  decisions, `docs/release-notes/*` → Release notes.
+The same Markdown tree drives both surfaces:
 
-## Agent surfaces
+- The HTML page (this one) — for a human reader.
+- The agent surfaces (`GET /api/docs`, `GET /api/docs/{slug}`,
+  `GET /api/docs/llms.txt`) — for tooling that prefers raw Markdown
+  or a flat index.
 
-Two non-HTML endpoints expose the same data for tooling that
-prefers raw Markdown:
+A file present in `/docs` is reachable on both without
+configuration: front-matter overrides the inferred category, but
+the file otherwise lands by path.
 
-* `GET /api/docs` returns the sidebar index JSON.
-* `GET /api/docs/{slug}` returns a single page JSON with the
-  markdown body.
-* `GET /api/docs/llms.txt` returns the human-typed plain-text
-  index, matching [thegrid.ai/docs/llms.txt](https://thegrid.ai/docs/llms.txt).
+## What lives here
 
-## Customising the docs root
-
-The package reads from `./docs` by default. Operators that mount
-a different tree (for example, a Helm ConfigMap that overlays the
-cluster's own runbooks) point `NEXUS_DOCS_DIR` at it. The
-console logs the resolved path at boot.
-
-## Defining the Quick Links grid
-
-`internal/docs/docs.go` carries a fixed six-tile list (Quickstart,
-Onboarding, Enterprise model, Model benchmarks, Eval plugins,
-Packaging). A file present in `/docs` gets matched by title — case
-insensitive — and surfaces on the index page. Re-order by editing
-the slice; the order there governs the grid on the index page.
+The Docs tree is the surface where Nexus describes itself:
+what it does, why it does it that way, and how its three
+operator-facing tabs behave. The vendor-specific recipe material —
+Helm-rendered manifests, secret wiring, `values.yaml` overrides,
+debug runbooks — is removed so this page reads like marketing,
+not a manual.

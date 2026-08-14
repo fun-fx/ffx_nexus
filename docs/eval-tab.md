@@ -1,7 +1,7 @@
 <!--
 category: operations
 title: Eval tab in the console
-summary: A walkthrough of what the Eval tab does, which controls are exposed, and which env vars / cheat-codes shape the UI.
+summary: A walkthrough of what the Eval tab does, which controls are exposed, and which env vars shape the UI.
 order: 30
 status: stable
 -->
@@ -9,13 +9,9 @@ status: stable
 
 The console's **Eval** tab is where the cluster's quality-control
 layer is operated at runtime. It is the user-facing front end for
-[`internal/evalplugin/`](../web/src/api.ts) (heuristic evaluators and
-plugin manifests) and the quality-aware router's weight knobs. The
-deeper operator-tier reference — the YAML `v1alpha1` schema, vendor
-adapter quirks, the closed enum of `metric.name`, and Helm rendering
-of `configMaps` — lives in
-[`docs/eval-plugins.md`](../docs/eval-plugins.md). This page is the
-**UI walkthrough** a signed-in admin needs to drive the page.
+the heuristic evaluators, the plugin manifests, and the
+quality-aware router's weight knobs. This page is the **UI
+walkthrough** a signed-in admin needs to drive the page.
 
 > The Eval tab is admin-only. A non-admin signed in to the console
 > sees a `Forbidden` placeholder instead. That's the RBAC gate, not a
@@ -210,8 +206,6 @@ Three signals to look at when the page itself is suspicious:
 
 ## See also
 
-- [`docs/eval-plugins.md`](../docs/eval-plugins.md) — full YAML
-  `v1alpha1` schema, vendor adapter quirks, Helm rendering.
 - [`docs/onboarding.md`](../docs/onboarding.md) — the RBAC gate and
   how to grant the Eval tab to a role.
 - [`web/src/pages/Eval.tsx`](../web/src/pages/Eval.tsx) — every
