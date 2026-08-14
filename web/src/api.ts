@@ -1857,10 +1857,31 @@ export interface DocPage {
   body: string;
 }
 
+class DocsApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "DocsApiError";
+  }
+}
+
 export async function fetchDocsIndex(): Promise<DocsIndex> {
+  // Failures here used to silently return an empty index, which rendered
+  // an empty hero that looked identical to a healthy "no docs" cluster.
+  // Throwing on 401/403 lets the page render a sign-in gate; throwing on
+  // 5xx lets the page show a "temporarily unavailable" panel. 5xx is
+  // distinct from 401 because the response shape is the same shape the
+  // index expects, just empty — flatten that into an error so the
+  // operator's pod logs (rather than a blank console) are the next
+  // stop on the diagnostic path.
   const res = await fetch("/api/docs");
   if (!res.ok) {
-    return { title: "Docs", categories: [], quick_links: [] };
+    let body = "";
+    try {
+      body = await res.text();
+    } catch {
+      // best-effort; nothing to do if the body is not readable
+    }
+    throw new DocsApiError(res.status, body || res.statusText || "docs index fetch failed");
   }
   return jsonOrError<DocsIndex>(res);
 }
@@ -1873,6 +1894,19 @@ export async function fetchDocPage(slug: string): Promise<DocPage | null> {
   const safe = encodeURI(slug).replace(/^\/+/, "");
   const res = await fetch(`/api/docs/${safe}`);
   if (res.status === 404) return null;
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // 5xx and 401 are both informative failures — the page renders a
+    // sign-in gate for the latter so we mirror the index path. A
+    // successful return of `null` is reserved for genuinely missing
+    // slugs (handled via 404 above) so we never confuse "no such page"
+    // with "you are not signed in".
+    let body = "";
+    try {
+      body = await res.text();
+    } catch {
+      // best-effort
+    }
+    throw new DocsApiError(res.status, body || res.statusText || "docs page fetch failed");
+  }
   return jsonOrError<DocPage>(res);
 }

@@ -4227,6 +4227,47 @@ body.rg-resizing {
   margin: 0 0 28px;
 }
 
+// Sign-in gate rendered when /api/docs/index returned 401/403 or 5xx.
+// Reuses the .docs-hero shell so the layout reads as part of the
+// docs page rather than a generic error card, but lays out the
+// supporting copy and a single primary CTA so an unauthenticated
+// visitor has a clear next step instead of staring at a black hero.
+.docs-hero-sub {
+  color: var(--muted);
+  font-size: var(--fs-15);
+  max-width: 70ch;
+  margin: 0 0 24px;
+  line-height: 1.55;
+}
+
+.docs-hero-cta {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.docs-cta-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--accent, #4d7cff);
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-15);
+  transition: filter 120ms ease;
+}
+
+.docs-cta-primary:hover {
+  filter: brightness(1.08);
+}
+
 .docs-quicklinks {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
