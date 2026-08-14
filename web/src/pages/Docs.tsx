@@ -192,7 +192,7 @@ const ChevronIcon = isOpen ? Icon["chevron-down"] : Icon["chevron-right"];
                   <ChevronIcon size={14} />
                   <span>{cat.title}</span>
                 </button>
-                {isOpen && cat.entries.length > 0 ? (
+                {isOpen && cat.entries && cat.entries.length > 0 ? (
                   <ul className="docs-sidebar-list">
                     {cat.entries.map((e) => (
                       <li key={e.path}>
@@ -243,7 +243,7 @@ function DocsIndexPage({
         <div className="docs-hero-eyebrow">{index.title}</div>
         <h1 className="docs-hero-title">{index.tagline || index.title}</h1>
         {index.tagline ? <p className="docs-hero-tag">{index.tagline}</p> : null}
-        {index.quick_links.length > 0 ? (
+        {index.quick_links && index.quick_links.length > 0 ? (
           <div className="docs-quicklinks">
             {index.quick_links.map((e) => (
               <Link className="docs-quicklink" to={`/docs/${e.path}`} key={e.path}>
@@ -259,7 +259,7 @@ function DocsIndexPage({
       </section>
 
       {index.categories.map((c) =>
-        c.entries.length === 0 ? null : (
+        c.entries && c.entries.length === 0 ? null : (
           <section className="docs-section" key={c.slug}>
             <h2 className="docs-section-title">{c.title}</h2>
             <div className="docs-grid">

@@ -264,3 +264,30 @@ func TestBootReportsSuccess(t *testing.T) {
 		t.Fatalf("Err() should be nil when walk succeeded, got %v", Err())
 	}
 }
+
+// TestEntriesAlwaysJSONArray locks the wire contract: a Category whose
+// directory contributed zero files must still serialize with an empty
+// `entries` array rather than JSON `null`. A nil Go slice marshals to
+// null, and the React docs page crashes on `.map((e) => …)` against a
+// null entries value with `Cannot read properties of null (reading
+// 'length')` — which presented as a black screen on the live cluster
+// the first time a freshly indexed page was opened. Initialising with
+// `[]Entry{}` in walk() pins the shape so a downstream type-narrowing
+// the absence of files is enough; the consumer never has to special-case
+// null again.
+func TestEntriesAlwaysJSONArray(t *testing.T) {
+	withTempDocs(t, map[string]string{
+		"only-in-concepts.md": "# Concepts only\n",
+	})
+
+	idx, err := walk(rootDir)
+	if err != nil {
+		t.Fatalf("walk() failed: %v", err)
+	}
+
+	for _, c := range idx.Categories {
+		if c.Entries == nil {
+			t.Errorf("category %q has nil Entries — should be an empty slice", c.Slug)
+		}
+	}
+}
