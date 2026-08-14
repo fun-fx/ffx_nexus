@@ -214,6 +214,8 @@ func walk(root string) (Index, error) {
 		"Enterprise model",
 		"Model benchmarks",
 		"Eval plugins",
+		"Eval tab in the console",
+		"Benchmark tab in the console",
 		"Packaging",
 	}
 	// Quick-want loop walks each desired title in the order the
