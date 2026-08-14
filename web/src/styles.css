@@ -3143,6 +3143,34 @@ a:hover {
   max-width: 420px;
 }
 
+/* Compact summary line shown when the credential panel is
+ * collapsed. Mirrors the summary-on-top pattern Slack / Datadog
+ * use for stored credentials: a plain-text status sentence +
+ * two ghost buttons on the right, no input rows underneath. */
+.bench-credential-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 14px;
+}
+
+.bench-credential-collapsed-summary {
+  font-size: 13px;
+  color: var(--muted);
+  /* Long summaries wrap on narrow viewports — the summary line is
+   * the only signal of what is stored, so it must remain visible
+   * no matter the column width. */
+  word-break: break-word;
+}
+
+.bench-credential-collapsed-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .bench-form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -3189,6 +3217,33 @@ a:hover {
 
 .bench-env-help code {
   font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+
+/* "Need a custom dataset?" callout — sits above the help line so
+ * the operator scanning the form sees the custom path is real before
+ * they read the fine-print. The border uses the same neon-teal accent
+ * as the Launch button so the eye lands on the callout first. */
+.bench-env-custom-callout {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: linear-gradient(90deg, rgba(99, 224, 199, 0.06), transparent);
+}
+
+.bench-env-custom-callout strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.bench-env-custom-callout code {
+  font-size: 11.5px;
   padding: 1px 6px;
   border-radius: 4px;
   background: var(--panel-2);

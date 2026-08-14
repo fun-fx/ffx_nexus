@@ -47,6 +47,14 @@ interface StubOptions {
   runs?: BenchmarkRun[];
   configured?: boolean;
   gatewayAvailable?: boolean;
+  /**
+   * Empty both halves of the model catalog. Lets tests assert the
+   * free-text input fallback in the picker. The default leaves both
+   * halves populated with a single Prime entry and two router
+   * aliases, which is enough for the picker-grouping tests to grow
+   * against without each test remocking.
+   */
+  emptyModelCatalog?: boolean;
   /** Force the launch POST to fail with this message. */
   launchError?: string;
   /** Force the validate POST to fail with this message. */
@@ -77,6 +85,7 @@ function setup(opts: StubOptions = {}) {
     runs = [completedRun, runningRun],
     configured = true,
     gatewayAvailable = true,
+    emptyModelCatalog = false,
   } = opts;
   const calls: Calls = {
     launch: [],
@@ -88,6 +97,15 @@ function setup(opts: StubOptions = {}) {
     schedulesPaused: [],
     schedulesResumed: [],
     schedulesDeleted: [],
+  };
+  // Sticky mirror of the server's credential state so PUT/GET
+  // interactions within the same test agree on what is "stored".
+  // Without this, PUT would report configured=true while the
+  // re-issued GET kept reporting configured=false, and the panel's
+  // collapse logic would never settle.
+  const runtime = {
+    configured,
+    teamId: configured ? "team_stored" : "",
   };
 
   vi.stubGlobal(
@@ -123,11 +141,31 @@ function setup(opts: StubOptions = {}) {
       if (url === "/api/eval/benchmarks/credential") {
         if (method === "PUT") {
           calls.credential.push(JSON.parse(String(init?.body ?? "{}")));
-          return jsonRes({ ok: true, configured: true });
+          // Mirror the server's PUT response shape so the panel's
+          // collapse logic sees a fresh `configured` flag. Once the
+          // PUT has succeeded, flip the in-stub state so the next
+          // GET reflects the now-configured cluster — otherwise the
+          // credentials query would keep reporting configured=false
+          // and the panel never collapses to a saved summary.
+          runtime.configured = true;
+          const savedTeam = (JSON.parse(String(init?.body ?? "{}"))).team_id ?? "";
+          if (savedTeam) runtime.teamId = savedTeam;
+          return jsonRes({ ok: true, configured: true, team_id: runtime.teamId });
         }
-        return jsonRes({ provider: "primeintellect", configured, team_id: "team_stored" });
+        return jsonRes({
+          provider: "primeintellect",
+          configured: runtime.configured,
+          // The server only returns a team_id when one is stored. The
+          // test mirror keeps that contract; without it the "collapse
+          // after save" path would still see team_stored even when
+          // the panel was supposed to start unconfigured.
+          team_id: runtime.teamId,
+        });
       }
       if (url === "/api/eval/benchmarks/models") {
+        if (emptyModelCatalog) {
+          return jsonRes({ models: [] });
+        }
         return jsonRes({
           models: [
             {
@@ -135,6 +173,27 @@ function setup(opts: StubOptions = {}) {
               name: "GPT-4.1 mini",
               provider: "openai",
               pricing: { prompt: 0.4, completion: 1.6 },
+            },
+          ],
+        });
+      }
+      if (url === "/api/me/playground/catalog") {
+        if (emptyModelCatalog) {
+          return jsonRes({ chat: [], embed: [], user: [] });
+        }
+        // Default router catalog: a single alias (`code-prime`)
+        // sitting under a synthetic user-provider. The console's
+        // catalog consumer recognises "user/<provider>/<model>" ids
+        // and exposes them grouped separately from Prime base models.
+        return jsonRes({
+          chat: ["openai/gpt-4.1-mini"],
+          embed: [],
+          user: [
+            {
+              provider: "thegrid",
+              models: ["text-prime", "code-prime"],
+              scope: "org",
+              owner_id: "org-fixture",
             },
           ],
         });
@@ -301,6 +360,18 @@ function addCustomSlug(value: string) {
 it("posts the form, combining preset choices with a custom slug", async () => {
     const { calls } = setup({ runs: [] });
     await screen.findByRole("button", { name: "Launch run" });
+
+    // "Need a custom dataset?" callout should be visible the moment
+    // the New run panel mounts — so operators using their own
+    // organisation's templates notice the custom path before they
+    // hunt for it. The callout's key tokens (`prime env push`,
+    // `your-org/<dataset-slug>`, `Add`) map 1:1 to the UI so a
+    // future rewording intentionally breaks the test and forces a
+    // code-review comment.
+    const callout = screen.getByText(/Need a custom dataset\?/);
+    expect(callout).toBeVisible();
+    expect(callout.parentElement).toHaveTextContent("prime env push your-org/");
+    expect(callout.parentElement).toHaveTextContent("your-org/<slug>");
 
     // The default preset chip should already be in the list and ready
     // to launch against, removing the need to type a slug for the
@@ -498,11 +569,85 @@ it("posts the form, combining preset choices with a custom slug", async () => {
   });
 });
 
+describe("<Benchmarks /> model picker", () => {
+  it("groups Prime base models and router aliases under separate optgroups", async () => {
+    // The launcher pulls two catalogs and merges them client-side:
+    //   - /api/eval/benchmarks/models  (Prime's hosted-evaluations
+    //     catalogue — priced entries the verifier can call directly)
+    //   - /api/me/playground/catalog   (Nexus's gateway router —
+    //     user-prefixed aliases like `code-prime` that round-trip
+    //     through the gateway's routing layer).
+    //
+    // Both halves must appear in the picker, and the picker must
+    // group them so an operator scanning the dropdown can tell at a
+    // glance which is the underlying provider model and which is a
+    // local alias.
+    setup({ runs: [] });
+    // Wait for both groups to mount — the Prime group has the
+    // base-model pricing, the router group has the user-prefixed ids.
+    await screen.findByRole("option", { name: /openai\/gpt-4\.1-mini/ });
+    await screen.findByRole("option", { name: /code-prime/ });
+
+    const primeGroup = screen.getByRole("group", { name: /Prime base models/ });
+    expect(primeGroup).toBeInTheDocument();
+    expect(primeGroup).toHaveTextContent("openai/gpt-4.1-mini");
+
+    const routerGroup = screen.getByRole("group", {
+      name: /Router aliases/,
+    });
+    expect(routerGroup).toBeInTheDocument();
+    // Aliases are exposed with their `user/<provider>/<model>` schema
+    // so an operator can paste them straight into other launch flows.
+    expect(routerGroup).toHaveTextContent("user/thegrid/code-prime");
+    expect(routerGroup).toHaveTextContent("user/thegrid/text-prime");
+  });
+
+  it("falls back to a free-text model input when both catalogs are empty", async () => {
+    // A misconfigured cluster may have neither catalog available —
+    // the picker should not leave the operator staring at a disabled
+    // select. The free-text fallback preserves the smoke-test path
+    // because the operator can still paste a Prime model id (or a
+    // router alias id) by hand and the same launch wire shape
+    // accepts both.
+    setup({ runs: [], emptyModelCatalog: true });
+    await screen.findByRole("button", { name: "Launch run" });
+    const modelInput = screen.getByPlaceholderText("openai/gpt-4.1-mini");
+    expect(modelInput).toBeInTheDocument();
+    // The placeholder is the only guidance the free-text input has,
+    // so this test pins it: a future rewrite that drops the hint
+    // would silently degrade the smoke-testability of an unconfigured
+    // cluster.
+    expect(modelInput.tagName).toBe("INPUT");
+    // The model dropdown must NOT exist in this branch — it would
+    // be a UI inconsistency to ship both a select and a free-text
+    // input for the same field.
+    expect(screen.queryByRole("combobox", { name: "" })).toBeNull();
+  });
+});
+
 describe("<Benchmarks /> credential", () => {
-  it("reports a stored key without revealing it and can replace it", async () => {
+  it("collapses the panel once a key is stored and exposes Change/Remove in place of the form", async () => {
+    // Once the API key + team id have been saved, the form should
+    // collapse to a one-line summary — never showing the password
+    // input or the saved team id in a plain input box. Change/Remove
+    // are the only valid follow-up actions from the collapsed view;
+    // opening the form again is the explicit way to rotate.
     const { calls } = setup();
-    expect(await screen.findByText("configured")).toBeInTheDocument();
-    const field = screen.getByPlaceholderText("Replace API key (optional)");
+    const collapsed = await screen.findByTestId("bench-credential-collapsed");
+    expect(collapsed).toHaveTextContent("API key stored");
+    expect(collapsed).toHaveTextContent("billing team team_stored");
+    // The password input and the saved team input must NOT be in
+    // the DOM while collapsed — a spectator who glances at the
+    // screen should never see the stored values again.
+    expect(screen.queryByPlaceholderText("Replace API key (optional)")).toBeNull();
+    expect(screen.queryByDisplayValue("team_stored")).toBeNull();
+    expect(screen.getByRole("button", { name: "Change" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeInTheDocument();
+
+    // Clicking Change re-opens the form and surfaces the saved team
+    // id so the operator can tweak it without re-typing from memory.
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    const field = await screen.findByPlaceholderText("Replace API key (optional)");
     expect(field).toHaveAttribute("type", "password");
     expect(screen.getByDisplayValue("team_stored")).toBeInTheDocument();
 
@@ -513,10 +658,64 @@ describe("<Benchmarks /> credential", () => {
     );
   });
 
-  it("prompts to add a key when none is stored", async () => {
+  it("keeps the form expanded when no credential is stored yet", async () => {
+    // The opposite of the collapse test: an unconfigured cluster
+    // never gets a "Change" button (there is nothing to change) and
+    // instead shows the empty-state form so the operator can paste
+    // a key without an extra click.
     setup({ configured: false });
     expect(await screen.findByText("not set")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("pit_…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+  });
+
+  it("collapses the panel automatically after a successful save", async () => {
+    // Even from the unconfigured state, saving a key should drive
+    // the panel back to the compact summary without requiring a
+    // reload — the in-flight cache invalidation in the parent feeds
+    // a fresh storedTeamId that the panel reacts to.
+    const { calls } = setup({ configured: false });
+    await screen.findByText("not set");
+    const field = screen.getByPlaceholderText("pit_…");
+    fireEvent.change(field, { target: { value: "pit_new" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(calls.credential).toEqual([{ api_key: "pit_new", team_id: "" }]),
+    );
+    const collapsed = await screen.findByTestId("bench-credential-collapsed");
+    // The summary calls out where the API key lives and whether a
+    // billing team is attached. After the first save without a team
+    // id, "personal wallet" must appear so the operator can see at
+    // a glance whether hosted runs will bill their team or their
+    // personal Prime account — both are valid, but they are not
+    // identical.
+    expect(collapsed).toHaveTextContent("API key stored");
+    expect(collapsed).toHaveTextContent("personal wallet");
+  });
+
+  it("lets the operator discard a half-typed rotation via Cancel", async () => {
+    // A rotation flow: open with Change, type a new key, decide not
+    // to commit, hit Cancel. The panel must collapse back without
+    // sending the partial value to the server. This guards against
+    // a regression where Cancel would still POST.
+    setup();
+    fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+    fireEvent.change(await screen.findByPlaceholderText("Replace API key (optional)"), {
+      target: { value: "pit_partial" },
+    });
+    // Scope to the credential row's Cancel button via a testid —
+    // there are other "Cancel" surfaces around the page (drawer
+    // footers, role navigation, etc.) and we want to assert this
+    // exact button collapses the panel without sending.
+    fireEvent.click(screen.getByTestId("bench-credential-cancel"));
+    const collapsed = await screen.findByTestId("bench-credential-collapsed");
+    expect(collapsed).toHaveTextContent("billing team team_stored");
+    // The password input and the saved team input must disappear —
+    // otherwise a half-typed rotation would still be visible to the
+    // next person who glances at the screen, defeating the point
+    // of pressing Cancel.
+    expect(screen.queryByPlaceholderText("Replace API key (optional)")).toBeNull();
   });
 });
 
