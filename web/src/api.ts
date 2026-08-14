@@ -1550,6 +1550,62 @@ export async function fetchBenchmarkModels(): Promise<BenchmarkModel[]> {
   return Array.isArray(data.models) ? data.models : [];
 }
 
+// One merged dropdown entry on the New run panel. The grouping
+// distinguishes "Prime base model" (runs directly via the hosted-
+// evaluations provider) from "Router alias" (resolved by the Nexus
+// gateway to a base model before being scored). Both are launchable
+// today; the alias exists so an operator can benchmark the same
+// model as Nexus serves it under `code-prime` or `thegrid/...`,
+// not the underlying OpenAI/Anthropic id.
+export interface BenchmarkModelOption {
+  id: string;
+  group: "prime" | "router";
+  scope?: string;
+  // Pricing is only known for Prime entries; router aliases inherit
+  // pricing from the underlying base model at launch time.
+  pricing?: BenchmarkModel["pricing"];
+}
+
+export interface BenchmarkModelCatalog {
+  prime: BenchmarkModel[];
+  router: { id: string; scope?: string; provider?: string }[];
+}
+
+// fetchBenchmarkModelCatalog pulls both halves of the catalog so the
+// launch form's picker can group entries. Each side is fetched
+// independently and a partial failure on one half does not poison
+// the other — an unconfigured cluster (no gateway) is still useful
+// because Prime entries can be benchmarked directly. The function
+// returns an empty (but well-formed) catalog on total failure so
+// the UI renders the free-text fallback model input, not a
+// half-populated dropdown that hides options the operator expects
+// to see.
+export async function fetchBenchmarkModelCatalog(): Promise<BenchmarkModelCatalog> {
+  const out: BenchmarkModelCatalog = { prime: [], router: [] };
+  try {
+    out.prime = await fetchBenchmarkModels();
+  } catch {
+    out.prime = [];
+  }
+  try {
+    const gw = await fetchGatewayModels();
+    for (const u of gw.user) {
+      for (const m of u.models) {
+        // /api/me/playground/catalog ships router entries as
+        // "user/<provider>/<id>"; we restore the schema so the
+        // launch payload matches what the existing `via gateway`
+        // flow already sends (operators copy-paste these ids into
+        // other tools).
+        const id = u.provider ? `user/${u.provider}/${m}` : m;
+        out.router.push({ id, scope: u.scope, provider: u.provider });
+      }
+    }
+  } catch {
+    out.router = [];
+  }
+  return out;
+}
+
 /** One operator-reported `prime env push` outcome.
  *
  *  Reported, not verified: the operator's CLI tells us it ran, and we

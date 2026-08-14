@@ -9,7 +9,7 @@ import {
   dryRunBenchmark,
   fetchBenchmarkCredential,
   fetchBenchmarkLogs,
-  fetchBenchmarkModels,
+  fetchBenchmarkModelCatalog,
   fetchBenchmarkSchedules,
   fetchEnvPushReports,
   fetchBenchmarks,
@@ -430,15 +430,27 @@ function CredentialPanel({
 }) {
   const [value, setValue] = useState("");
   const [teamId, setTeamId] = useState(storedTeamId);
+  // The form collapses the moment a credential exists — the only
+  // reason an operator reopens it is to rotate the key or change the
+  // team. Collapsing-by-default mirrors Slack/Grafana credential
+  // panels and keeps the New-run form from feeling like a setup
+  // wizard on every visit. `editing` is local UI state; `storedTeamId`
+  // is the source of truth from the server.
+  const [editing, setEditing] = useState(!configured);
   useEffect(() => {
     setTeamId(storedTeamId);
-  }, [storedTeamId]);
+    // A fresh credential from the server (initial load, or after a
+    // successful save/clear) collapses the form. The operator clicks
+    // [change] to flip it back open.
+    if (configured) setEditing(false);
+  }, [configured, storedTeamId]);
   const teamChanged = teamId.trim() !== storedTeamId.trim();
   const canSave = configured ? value.trim() !== "" || teamChanged : value.trim() !== "";
   const saveM = useMutation({
     mutationFn: saveBenchmarkCredential,
     onSuccess: () => {
       setValue("");
+      setEditing(false);
       onSaved();
     },
     onError,
@@ -449,75 +461,122 @@ function CredentialPanel({
     onError,
   });
 
+  // Compact summary line shown when the form is collapsed. Keeping
+  // `Billing team: …` as plain text plus the controls next to it
+  // means an operator can read the stored team id and rotate the key
+  // without unfolding the form first.
+  const collapsedSummary = configured
+    ? storedTeamId
+      ? `API key stored · billing team ${storedTeamId}`
+      : "API key stored · personal wallet (no team set)"
+    : "Not configured — paste an API key below";
+
   return (
     <section className="panel">
       <div className="panel-head">
         <h2>PrimeIntellect credentials</h2>
         <Chip tone={configured ? "ok" : "warn"}>{configured ? "configured" : "not set"}</Chip>
       </div>
-      <p className="hint">
-        Encrypted with the Nexus master key and stored in the control-plane database, so they survive
-        a deploy. The API key is never returned or shown here again. Create one under{" "}
-        <a href="https://app.primeintellect.ai" target="_blank" rel="noreferrer">
-          your Prime account
-        </a>
-        . Hosted runs bill the <strong>team wallet</strong> when a team ID is set; otherwise Prime
-        charges your personal wallet.
-      </p>
-      <div className="bench-credential-row">
-        <input
-          type="password"
-          className="bench-input"
-          placeholder={configured ? "Replace API key (optional)" : "pit_…"}
-          autoComplete="off"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
-      </div>
-      <div className="bench-credential-row">
-        <input
-          type="text"
-          className="bench-input"
-          placeholder="Team ID (optional) — prime teams list"
-          autoComplete="off"
-          value={teamId}
-          onChange={(e) => setTeamId(e.target.value)}
-        />
-        <button
-          type="button"
-          className="btn-neon btn-small"
-          disabled={!canSave || saveM.isPending}
-          onClick={() => {
-            const body: { api_key?: string; team_id?: string } = {
-              team_id: teamId.trim(),
-            };
-            if (value.trim()) {
-              body.api_key = value.trim();
-            }
-            saveM.mutate(body);
-          }}
-        >
-          {saveM.isPending ? "Saving…" : configured ? "Save" : "Save"}
-        </button>
-        {configured && (
-          <button
-            type="button"
-            className="btn-ghost btn-small"
-            disabled={clearM.isPending}
-            onClick={() => {
-              if (window.confirm("Remove the stored PrimeIntellect key and team ID?")) clearM.mutate();
-            }}
-          >
-            Remove
-          </button>
-        )}
-      </div>
-      {storedTeamId && (
-        <p className="hint">
-          Billing team: <code>{storedTeamId}</code> — find IDs with{" "}
-          <code>prime teams list</code> or <code>prime whoami</code> after{" "}
-          <code>prime switch YOUR-TEAM</code>.
-        </p>
+      {!editing && (
+        <div className="bench-credential-collapsed" data-testid="bench-credential-collapsed">
+          <span className="bench-credential-collapsed-summary">{collapsedSummary}</span>
+          <div className="bench-credential-collapsed-actions">
+            {configured && (
+              <button
+                type="button"
+                className="btn-ghost btn-small"
+                onClick={() => setEditing(true)}
+              >
+                Change
+              </button>
+            )}
+            {!configured && (
+              <button
+                type="button"
+                className="btn-neon btn-small"
+                onClick={() => setEditing(true)}
+              >
+                Set up
+              </button>
+            )}
+            {configured && (
+              <button
+                type="button"
+                className="btn-ghost btn-small"
+                disabled={clearM.isPending}
+                onClick={() => {
+                  if (window.confirm("Remove the stored PrimeIntellect key and team ID?"))
+                    clearM.mutate();
+                }}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {editing && (
+        <>
+          <p className="hint">
+            Encrypted with the Nexus master key and stored in the
+            control-plane database, so they survive a deploy. The API
+            key is never returned or shown here again. Create one
+            under{" "}
+            <a href="https://app.primeintellect.ai" target="_blank" rel="noreferrer">
+              your Prime account
+            </a>
+            . Hosted runs bill the <strong>team wallet</strong> when a
+            team ID is set; otherwise Prime charges your personal
+            wallet.
+          </p>
+          <div className="bench-credential-row">
+            <input
+              type="password"
+              className="bench-input"
+              placeholder={configured ? "Replace API key (optional)" : "pit_…"}
+              autoComplete="off"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          </div>
+          <div className="bench-credential-row">
+            <input
+              type="text"
+              className="bench-input"
+              placeholder="Team ID (optional) — prime teams list"
+              autoComplete="off"
+              value={teamId}
+              onChange={(e) => setTeamId(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn-neon btn-small"
+              disabled={!canSave || saveM.isPending}
+              onClick={() => {
+                const body: { api_key?: string; team_id?: string } = {
+                  team_id: teamId.trim(),
+                };
+                if (value.trim()) {
+                  body.api_key = value.trim();
+                }
+                saveM.mutate(body);
+              }}
+            >
+              {saveM.isPending ? "Saving…" : "Save"}
+            </button>
+            {configured && (
+              <button
+                type="button"
+                className="btn-ghost btn-small"
+                disabled={clearM.isPending || saveM.isPending}
+                onClick={() => setEditing(false)}
+                data-testid="bench-credential-cancel"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </>
       )}
     </section>
   );
@@ -552,11 +611,20 @@ function LaunchPanel({
   const [rollouts, setRollouts] = useState(1);
   const [viaGateway, setViaGateway] = useState(false);
 
-  // The catalogue needs the provider key, so only ask for it once one is
-  // stored; otherwise the field stays free text.
-  const models = useQuery({
-    queryKey: ["benchmark-models"],
-    queryFn: fetchBenchmarkModels,
+  // The catalogue is the merge of two sources: Prime's hosted-
+  // evaluations provider (the base model catalogue the verifier
+  // can call directly) and Nexus's gateway router-models (so the
+  // operator can benchmark the same model as Nexus serves it,
+  // including `code-prime`/`thegrid/...` aliases). The merge is
+  // done on the client because the gateway catalog is session-
+  // scoped and Prime's catalog is provider-scoped — combining them
+  // server-side would require a new endpoint with cross-source
+  // permissions we don't want to add yet.
+  const catalog = useQuery({
+    queryKey: ["benchmark-model-catalog"],
+    queryFn: fetchBenchmarkModelCatalog,
+    // Both halves require the credential / session; asking only when
+    // configured means we never GET a 401 with the operator watching.
     enabled: credentialConfigured,
     staleTime: 5 * 60_000,
     retry: false,
@@ -685,6 +753,13 @@ function LaunchPanel({
                 </button>
               </form>
             </div>
+            <p className="bench-env-custom-callout">
+              <strong>Need a custom dataset?</strong>{" "}
+              <code>prime env push your-org/&lt;slug&gt;</code> in your terminal to
+              publish it to your Prime namespace, then paste the slug into the
+              field above and hit <em>Add</em>. Nexus forwards the slug
+              verbatim — it does not need to know the template.
+            </p>
             <p className="bench-env-help">
               Pick a built-in dataset or paste a slug you published to
               your Prime namespace with <code>prime env push</code>.
@@ -732,18 +807,33 @@ function LaunchPanel({
               model off-gateway.
             </span>
           )}
-          {models.data && models.data.length > 0 ? (
+          {catalog.data &&
+          (catalog.data.prime.length > 0 || catalog.data.router.length > 0) ? (
             <select
               className="bench-input"
               value={model}
               onChange={(e) => setModel(e.target.value)}
             >
               <option value="">Select a model…</option>
-              {models.data.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.id} — ${m.pricing.prompt}/${m.pricing.completion} per Mtok
-                </option>
-              ))}
+              {catalog.data.prime.length > 0 && (
+                <optgroup label="Prime base models (provider-direct)">
+                  {catalog.data.prime.map((m) => (
+                    <option key={`prime-${m.id}`} value={m.id}>
+                      {m.id} — ${m.pricing.prompt}/${m.pricing.completion} per Mtok
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {catalog.data.router.length > 0 && (
+                <optgroup label="Router aliases (benchmarked via the gateway)">
+                  {catalog.data.router.map((r) => (
+                    <option key={`router-${r.id}`} value={r.id}>
+                      {r.id}
+                      {r.scope && r.scope !== "" ? ` · ${r.scope}` : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           ) : (
             <input
