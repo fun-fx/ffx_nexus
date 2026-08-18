@@ -213,7 +213,7 @@ describe("Credentials drawer pre-flight", () => {
   });
 
   it("auto-fills the canonical Grid base URL when the operator picks thegrid", async () => {
-    const calls = await setup();
+    await setup();
     const select = screen.getByRole("combobox") as HTMLSelectElement;
     await act(async () => {
       fireEvent.change(select, { target: { value: "grid" } });
