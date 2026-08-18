@@ -1047,6 +1047,74 @@ export async function deleteUser(id: string): Promise<void> {
   await jsonOrThrow(await fetch(`/api/users/${id}`, { method: "DELETE" }));
 }
 
+// --- Admin: invite flow ---
+//
+// Admin issues an invite; the server returns the raw token + a
+// fully-formed URL that the admin hands off to the invitee out of
+// band. The URL root comes from `NEXUS_PUBLIC_BASE_URL`; if that is
+// not set we fall back to `window.location.origin` so the admin gets
+// a usable link even on bare local dev clusters.
+export interface InviteIssued {
+  id: string;
+  org_id: string;
+  email: string;
+  role: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  accepted_at?: string | null;
+  revoked_at?: string | null;
+  url?: string;
+  token: string;
+}
+
+export interface InviteRow {
+  id: string;
+  org_id: string;
+  email: string;
+  role: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  accepted_at?: string | null;
+  revoked_at?: string | null;
+  accepted_by?: string | null;
+}
+
+export async function createInvite(input: {
+  email: string;
+  role: string;
+}): Promise<InviteIssued> {
+  const res = await fetch(`/api/invites`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const base = jsonOrThrow(res) as Promise<InviteIssued>;
+  // Fallback compose: if the server left URL empty (PublicBaseURL
+  // not set on the cluster), plug in this page's origin so the
+  // admin still has a usable shareable link.
+  return base.then((inv) => {
+    if (!inv.url || !inv.url.startsWith("http")) {
+      const origin =
+        typeof window !== "undefined" ? window.location.origin : "";
+      inv.url = origin ? `${origin}/invite/${inv.token}` : `/invite/${inv.token}`;
+    }
+    return inv;
+  });
+}
+
+export async function listInvites(): Promise<InviteRow[]> {
+  const res = await fetch(`/api/invites`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data) ? (data as InviteRow[]) : [];
+}
+
+export async function revokeInvite(id: string): Promise<void> {
+  await jsonOrThrow(await fetch(`/api/invites/${id}`, { method: "DELETE" }));
+}
+
 // --- Spend (per-day LLM cost) -----------------------------------------
 //
 // /api/me/spend/daily and /api/me/spend/daily/{day}/breakdown are

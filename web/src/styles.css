@@ -4647,3 +4647,45 @@ body.rg-resizing {
   border-color: color-mix(in oklab, var(--err) 35%, transparent);
 }
 
+.invite-result {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.invite-result-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.invite-result-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.invite-result-url {
+  display: block;
+  font-size: 12px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  word-break: break-all;
+  user-select: all;
+}
+
+.panel-subtitle {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+

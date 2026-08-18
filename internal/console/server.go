@@ -95,6 +95,7 @@ type Server struct {
 	ssoLim               *limiter.IPLimiter                                // per-IP rate limit for /api/auth/sso/*
 	gatewayProxy         *httputil.ReverseProxy                            // optional /v1/* → co-located gateway
 	publicGatewayURL     string                                            // optional public gateway base for UI copy
+	publicBaseURL        string                                            // optional public console base; used to compose invite URLs
 	log                  *slog.Logger
 	up                   websocket.Upgrader
 }
@@ -106,6 +107,14 @@ type Server struct {
 func (s *Server) SetBuildTag(tag string) { SetBuildTag(tag) }
 
 func (s *Server) SetAllowSignup(allow bool) { s.allowSignup = allow }
+
+// SetPublicBaseURL records the operator-facing console base URL. It is
+// used to compose the shareable invite URL returned by POST /api/invites:
+// the invitee clicks a link rooted at this host, so it must match the
+// URL the operator pasted into their browser to reach the console.
+func (s *Server) SetPublicBaseURL(raw string) {
+	s.publicBaseURL = strings.TrimRight(strings.TrimSpace(raw), "/")
+}
 
 // SetSSO configures the OIDC client used by /api/auth/sso/*. A nil or
 // disabled config is a no-op; the field stays nil and the SSO routes
@@ -436,6 +445,17 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/users/{id}/spend/daily", s.requireAdmin(s.userSpendDaily))
 		r.Get("/users/{id}/spend/daily/{day}/breakdown", s.requireAdmin(s.userSpendBreakdown))
 		r.Get("/audit", s.requireAdmin(s.listAudit))
+
+		// Invite flow: admins issue / list / revoke shared,
+		// time-bound invite artefacts. The public accept endpoints
+		// (lookup + accept) sit outside this admin block — the
+		// invitee has no session yet, so they cannot run through
+		// requireAdmin. Their sha256 token IS the authorisation.
+		r.Get("/invites", s.requireAdmin(s.listInvites))
+		r.Post("/invites", s.requireAdmin(s.createInvite))
+		r.Delete("/invites/{id}", s.requireAdmin(s.revokeInvite))
+		r.Get("/invite/{token}", s.lookupInvite)
+		r.Post("/invite/{token}/accept", s.acceptInvite)
 
 		// Operator-facing quality snapshot: model lineup + freshness.
 		// Returns the most recent settled benchmark score per model
