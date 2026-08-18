@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="geometricPrecision">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9b6bff"/>
+      <stop offset="0.55" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect x="2" y="2" width="28" height="28" rx="7" fill="url(#g)"/>
+  <!-- Two-node "switch" motif: a small left dot, a small right dot, and a slim line between them.
+       Sized to read clearly at favicon scale (16x16, 32x32). -->
+  <circle cx="11" cy="16" r="3.4" fill="#0b0d18"/>
+  <circle cx="21" cy="16" r="3.4" fill="#0b0d18"/>
+  <rect x="13.4" y="14.7" width="5.2" height="2.6" rx="1.3" fill="#0b0d18"/>
+</svg>
