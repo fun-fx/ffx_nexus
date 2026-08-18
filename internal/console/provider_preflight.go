@@ -50,6 +50,7 @@ var providerLabels = map[string]string{
 	"gemini":    "Google Gemini",
 	"mistral":   "Mistral",
 	"ollama":    "Ollama",
+	"grid":      "The Grid",
 }
 
 // detectProviderFromSecret classifies a pasted secret string into a
@@ -85,16 +86,19 @@ type probeProvider func(ctx context.Context, secret, baseURL string) (status int
 // providerProbes is the closed dispatch table. Anything not in this
 // map falls through to a 400 "unsupported provider".
 //
-// Important: the targets below are read-only auth endpoints that do
-// not bill tokens. The Grid is intentionally absent because its
-// auth handshake consumes a chat-completion round-trip — a real
-// per-token cost that would defeat the purpose of a free probe.
+// Important: each entry below is a free, read-only auth round-trip —
+// no tokens are billed. The Grid is wired here for the same reason
+// (its OpenAI-compatible /v1/models endpoint returns a bearer-key
+// check without counting toward spend), not via a chat-completion
+// probe. If you ever decide to swap that endpoint for a chat-completion
+// probe you must move The Grid back out of this map.
 var providerProbes = map[string]probeProvider{
 	"openai":    probeOpenAI,
 	"anthropic": probeAnthropic,
 	"gemini":    probeGemini,
 	"mistral":   probeMistral,
 	"ollama":    probeOllama,
+	"grid":      probeGrid,
 }
 
 // preflightCredential validates a pasted provider secret without
@@ -135,6 +139,20 @@ func (s *Server) preflightCredential(w http.ResponseWriter, r *http.Request, u c
 		if strings.TrimSpace(req.BaseURL) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": "base_url is required when provider=ollama",
+			})
+			return
+		}
+	}
+	if provider == "grid" {
+		// The Grid ships its own OpenAI-compatible endpoint and we
+		// cannot issue a meaningful free auth round-trip against a
+		// domain we don't recognise. The drawer auto-fills the
+		// canonical URL on the way in, so a missing base URL here
+		// almost always means the operator manually cleared it —
+		// refuse rather than probe a malformed URL.
+		if strings.TrimSpace(req.BaseURL) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "base_url is required when provider=grid",
 			})
 			return
 		}
@@ -268,5 +286,26 @@ func probeOllama(ctx context.Context, _, baseURL string) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
+	return runProbe(ctx, req)
+}
+
+// probeGrid authenticates against The Grid's OpenAI-compatible
+// /v1/models endpoint. The grid bills no tokens for that call —
+// its model-list endpoint is a free read-only check, identical in
+// shape to OpenAI's, which is why this entry is allowed inside the
+// providerProbes map. The drawer auto-fills baseURL with the canonical
+// Grid consumption URL (always /v1-suffixed) so trimming the trailing
+// slash and appending /models yields the correct path whether the
+// operator supplied the API root with or without a trailing slash.
+func probeGrid(ctx context.Context, secret, baseURL string) (int, string, error) {
+	cleaned := strings.TrimSpace(secret)
+	cleaned = strings.TrimPrefix(cleaned, "Bearer ")
+	cleaned = strings.TrimSpace(cleaned)
+	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/models"
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+cleaned)
 	return runProbe(ctx, req)
 }
