@@ -42,17 +42,17 @@ func buildInviteURL(publicBaseURL, raw string) string {
 // raw token is returned exactly once, at create time, so the admin can hand
 // it off to the invitee out of band.
 type Invite struct {
-	ID          string     `json:"id"`
-	OrgID       string     `json:"org_id"`
-	Email       string     `json:"email"`
-	Role        string     `json:"role"` // "admin" | "member"
-	CreatedBy   string     `json:"created_by"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	AcceptedAt  *time.Time `json:"accepted_at,omitempty"`
-	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
-	AcceptedBy  *string    `json:"accepted_by,omitempty"`
-	URL         string     `json:"url,omitempty"` // only populated on create response
+	ID         string     `json:"id"`
+	OrgID      string     `json:"org_id"`
+	Email      string     `json:"email"`
+	Role       string     `json:"role"` // "admin" | "member"
+	CreatedBy  string     `json:"created_by"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	AcceptedBy *string    `json:"accepted_by,omitempty"`
+	URL        string     `json:"url,omitempty"` // only populated on create response
 }
 
 // InviteIssued is the shape returned when an admin issues one — it carries

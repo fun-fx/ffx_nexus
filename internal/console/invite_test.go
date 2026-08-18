@@ -19,10 +19,10 @@ import (
 // forward tripwire if the routes are ever dropped again.
 func TestInviteRouteRegistered(t *testing.T) {
 	cases := []struct {
-		name string
+		name   string
 		method string
-		path string
-		body string
+		path   string
+		body   string
 	}{
 		{"list", http.MethodGet, "/api/invites", ""},
 		{"create", http.MethodPost, "/api/invites", `{"email":"someone@example.com","role":"member"}`},
