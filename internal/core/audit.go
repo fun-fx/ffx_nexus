@@ -17,6 +17,13 @@ const (
 	// Subject: user account lifecycle (admin-scoped or member-self).
 	AuditUserCreate = "user.create"
 	AuditUserDelete = "user.delete"
+	AuditUserUpdate = "user.update"
+	// Subject: invite flow. Issued and revoked cover the admin half;
+	// accepted lives on the invitee side and the user.create row is
+	// emitted alongside it in the same transaction.
+	AuditInviteIssue  = "invite.issued"
+	AuditInviteRevoke = "invite.revoked"
+	AuditInviteAccept = "invite.accepted"
 	// Subject: password / OIDC login. Email/password login is the same data
 	// line as SSO but kept distinct for filterability.
 	AuditUserLogin = "user.login"  // password/email login, was "auth.login"
@@ -42,6 +49,10 @@ const (
 var AllAuditActions = []string{
 	AuditUserCreate,
 	AuditUserDelete,
+	AuditUserUpdate,
+	AuditInviteIssue,
+	AuditInviteRevoke,
+	AuditInviteAccept,
 	AuditUserLogin,
 	AuditSSOLogin,
 	AuditLogout,

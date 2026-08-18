@@ -342,6 +342,7 @@ func main() {
 	consoleSrvHandler.SetAllowSignup(cfg.AllowSignup)
 	consoleSrvHandler.SetGatewayProxy(cfg.GatewayAddr)
 	consoleSrvHandler.SetPublicGatewayURL(cfg.PublicGatewayURL)
+	consoleSrvHandler.SetPublicBaseURL(cfg.PublicBaseURL)
 	// OIDC SSO: discovery runs against cfg.SSO.Issuer at boot. Failures
 	// here only log a warning; the console still serves password login
 	// and the SSO routes simply return 404.

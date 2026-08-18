@@ -1,6 +1,15 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { createUser, deleteUser, fetchMe, fetchUsers, type User } from "../api";
+import {
+  createInvite,
+  deleteUser,
+  fetchMe,
+  fetchUsers,
+  listInvites,
+  revokeInvite,
+  type InviteIssued,
+  type User,
+} from "../api";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
 import { StatusPill } from "../components/StatusPill";
@@ -9,26 +18,40 @@ import { GradientText } from "../components/GradientText";
 import { Icon } from "../components/icons";
 
 async function fetchBundle() {
-  const [me, users] = await Promise.all([fetchMe(), fetchUsers().catch(() => [])]);
-  return { me, users };
+  const [me, users, invites] = await Promise.all([
+    fetchMe(),
+    fetchUsers().catch(() => []),
+    listInvites().catch(() => []),
+  ]);
+  return { me, users, invites };
 }
 
 export function Users() {
   const qc = useQuery({ queryKey: ["users"], queryFn: fetchBundle });
-  const [createOpen, setCreateOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [lastInvite, setLastInvite] = useState<InviteIssued | null>(null);
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
 
   const me = qc.data?.me ?? null;
   const users = qc.data?.users ?? [];
+  const invites = qc.data?.invites ?? [];
 
   const isAdmin = me?.role === "admin";
 
-  const createMut = useMutation({
-    mutationFn: createUser,
-    onSuccess: () => {
-      setCreateOpen(false);
+  const inviteMut = useMutation({
+    mutationFn: createInvite,
+    onSuccess: (inv) => {
+      setLastInvite(inv);
+      setCopied(false);
       qc.refetch();
     },
+    onError: (e) => setError(String((e as Error).message)),
+  });
+
+  const revokeMut = useMutation({
+    mutationFn: revokeInvite,
+    onSuccess: () => qc.refetch(),
     onError: (e) => setError(String((e as Error).message)),
   });
 
@@ -41,6 +64,71 @@ export function Users() {
   if (!isAdmin) {
     return <Forbidden />;
   }
+
+  const inviteColumns: Column<InviteRowForTable>[] = [
+    {
+      id: "email",
+      header: "Email",
+      cell: (inv) => <strong>{inv.email}</strong>,
+      sortValue: (inv) => inv.email,
+    },
+    {
+      id: "role",
+      header: "Role",
+      width: "110px",
+      cell: (inv) =>
+        inv.role === "admin" ? (
+          <Chip tone="accent">admin</Chip>
+        ) : (
+          <Chip tone="neutral">member</Chip>
+        ),
+      sortValue: (inv) => inv.role,
+    },
+    {
+      id: "status",
+      header: "Status",
+      width: "140px",
+      cell: (inv) => {
+        if (inv.revoked_at) return <StatusPill label="revoked" tone="err" />;
+        if (inv.accepted_at) return <StatusPill label="accepted" tone="ok" />;
+        const exp = Date.parse(inv.expires_at);
+        if (!Number.isNaN(exp) && exp < Date.now()) {
+          return <StatusPill label="expired" tone="err" />;
+        }
+        return <StatusPill label="pending" tone="warn" />;
+      },
+      sortValue: (inv) =>
+        inv.revoked_at ?? inv.accepted_at ?? inv.expires_at ?? "",
+    },
+    {
+      id: "expires",
+      header: "Expires",
+      width: "170px",
+      cell: (inv) => (
+        <span className="mono">{new Date(inv.expires_at).toLocaleString()}</span>
+      ),
+      sortValue: (inv) => inv.expires_at,
+    },
+    {
+      id: "actions",
+      header: "",
+      width: "110px",
+      align: "right",
+      cell: (inv) =>
+        inv.accepted_at || inv.revoked_at ? (
+          <span className="muted">closed</span>
+        ) : (
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={revokeMut.isPending}
+            onClick={() => revokeMut.mutate(inv.id)}
+          >
+            Revoke
+          </button>
+        ),
+    },
+  ];
 
   const columns: Column<User>[] = [
     {
@@ -141,7 +229,11 @@ export function Users() {
           <button
             type="button"
             className="btn-neon"
-            onClick={() => setCreateOpen(true)}
+            onClick={() => {
+              setLastInvite(null);
+              setCopied(false);
+              setInviteOpen(true);
+            }}
           >
             <Icon.users size={14} /> Invite user
           </button>
@@ -162,7 +254,40 @@ export function Users() {
         </div>
       )}
 
+      {lastInvite && (
+        <div className="invite-result" data-testid="invite-result">
+          <div className="invite-result-row">
+            <span className="invite-result-label">Invite URL for {lastInvite.email}</span>
+            <button
+              type="button"
+              className="btn-ghost"
+              data-testid="invite-copy"
+              onClick={async () => {
+                if (!lastInvite.url) return;
+                try {
+                  await navigator.clipboard.writeText(lastInvite.url);
+                  setCopied(true);
+                } catch {
+                  setCopied(false);
+                }
+              }}
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <code className="invite-result-url mono" data-testid="invite-url">
+            {lastInvite.url}
+          </code>
+          <p className="muted small">
+            Send this link to the invitee. It expires{" "}
+            {new Date(lastInvite.expires_at).toLocaleString()} and can be
+            revoked from the table below.
+          </p>
+        </div>
+      )}
+
       <div className="panel">
+        <h2 className="panel-subtitle">Members</h2>
         <DataTable
           rows={users}
           columns={columns}
@@ -172,16 +297,27 @@ export function Users() {
         />
       </div>
 
+      <div className="panel">
+        <h2 className="panel-subtitle">Invites</h2>
+        <DataTable
+          rows={invites as InviteRowForTable[]}
+          columns={inviteColumns}
+          rowKey={(inv) => inv.id}
+          emptyMessage="No invites yet."
+          initialSort={{ id: "expires", dir: "asc" }}
+        />
+      </div>
+
       <Drawer
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        open={inviteOpen}
+        onClose={() => setInviteOpen(false)}
         title="Invite user"
         footer={
           <>
             <button
               type="button"
               className="btn-ghost"
-              onClick={() => setCreateOpen(false)}
+              onClick={() => setInviteOpen(false)}
             >
               Cancel
             </button>
@@ -189,22 +325,33 @@ export function Users() {
               type="button"
               className="btn-neon"
               form="invite-user-form"
-              disabled={createMut.isPending}
+              disabled={inviteMut.isPending}
             >
-              {createMut.isPending ? "Inviting…" : "Invite"}
+              {inviteMut.isPending ? "Issuing…" : "Issue invite"}
             </button>
           </>
         }
       >
-        <InviteForm onSubmit={(input) => createMut.mutate(input)} />
+        <InviteForm onSubmit={(input) => inviteMut.mutate(input)} />
       </Drawer>
     </div>
   );
 }
 
-function InviteForm({ onSubmit }: { onSubmit: (i: { email: string; password: string; role: string }) => void }) {
+type InviteRowForTable = {
+  id: string;
+  email: string;
+  role: string;
+  created_by?: string;
+  created_at?: string;
+  expires_at: string;
+  accepted_at?: string | null;
+  revoked_at?: string | null;
+  accepted_by?: string | null;
+};
+
+function InviteForm({ onSubmit }: { onSubmit: (i: { email: string; role: string }) => void }) {
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [role, setRole] = useState("member");
   return (
     <form
@@ -212,22 +359,13 @@ function InviteForm({ onSubmit }: { onSubmit: (i: { email: string; password: str
       className="form-stack"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!email.trim() || !password.trim()) return;
-        onSubmit({ email: email.trim(), password, role });
+        if (!email.trim()) return;
+        onSubmit({ email: email.trim(), role });
       }}
     >
       <label className="field-row">
         <span className="field-label">Email</span>
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
-      </label>
-      <label className="field-row">
-        <span className="field-label">Initial password</span>
-        <input
-          type="text"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
       </label>
       <label className="field-row">
         <span className="field-label">Role</span>
@@ -237,7 +375,9 @@ function InviteForm({ onSubmit }: { onSubmit: (i: { email: string; password: str
         </select>
       </label>
       <p className="muted small">
-        The user can change their password after first login. Prefer SSO when available.
+        Creates a one-time invite link the invitee accepts in their
+        browser. The invite expires in seven days and can be revoked
+        from the table below.
       </p>
     </form>
   );
