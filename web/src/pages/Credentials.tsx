@@ -295,7 +295,7 @@ function AddCredentialForm({
             <option value="anthropic">anthropic</option>
             <option value="gemini">gemini</option>
             <option value="mistral">mistral</option>
-            <option value="grid">thegrid (OpenAI-compatible)</option>
+            <option value="grid">the grid</option>
             <option value="ollama">ollama (custom base URL)</option>
           </select>
         </label>

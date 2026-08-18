@@ -205,10 +205,11 @@ describe("Credentials drawer pre-flight", () => {
   it("exposes 'thegrid' in the provider dropdown as the grid option", async () => {
     await setup();
     const select = screen.getByRole("combobox") as HTMLSelectElement;
-    const option = within(select).getByRole("option", { name: /thegrid/i });
+    // The label is the marketing-friendly "the grid"; the wire ID is
+    // the canonical "grid" so the gateway registry can route to
+    // providers.NewGrid.
+    const option = within(select).getByRole("option", { name: /the grid/i });
     expect(option).toBeTruthy();
-    // The wire ID is `grid` so the Gateway can match the registered
-    // provider; the friendly label is what the operator sees.
     expect(option.getAttribute("value")).toBe("grid");
   });
 
