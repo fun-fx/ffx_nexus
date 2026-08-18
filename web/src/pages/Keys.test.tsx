@@ -40,7 +40,7 @@ beforeEach(() => {
           {
             id: "k1",
             name: "cb-playground",
-            key_prefix: "nxs_live_a1b2",
+            key_prefix: "nxs_live_a1b2", // gitleaks:allow a key PREFIX as returned by the API; the secret never reaches the browser
             key_last4: "a1b2",
             allowed_models: [],
             rpm_limit: 0,

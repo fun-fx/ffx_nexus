@@ -26,7 +26,7 @@ type Store interface {
 	ListUnsettledBenchmarkRuns(ctx context.Context, limit int) ([]core.BenchmarkRun, error)
 	DeleteBenchmarkRun(ctx context.Context, id string) error
 	ClearBenchmarkRunVKey(ctx context.Context, id string) error
-	ListRecentSettledByModel(ctx context.Context, model string, limit int) ([]core.RecentBenchmarkRun, error)
+	ListRecentSettledByModel(ctx context.Context, orgID, model string, limit int) ([]core.RecentBenchmarkRun, error)
 	CreateBenchmarkSchedule(ctx context.Context, r core.BenchmarkSchedule) error
 	GetBenchmarkSchedule(ctx context.Context, id string) (core.BenchmarkSchedule, error)
 	ListBenchmarkSchedules(ctx context.Context, orgID string, limit int) ([]core.BenchmarkSchedule, error)
@@ -643,14 +643,17 @@ func (r *Runner) SetScheduleEnabled(
 // GetLatestSettledByModel is the leaderboard's primary input.
 // Returns ErrNotFound when the model has never settled a row, just
 // like the underlying store.
-func (r *Runner) GetLatestSettledByModel(ctx context.Context, model string) (core.BenchmarkRun, error) {
+//
+// orgID scopes the lookup to one tenant; see Store.ListRecentSettledByModel for
+// why a benchmark score is tenant data and not shared operational health.
+func (r *Runner) GetLatestSettledByModel(ctx context.Context, orgID, model string) (core.BenchmarkRun, error) {
 	if r == nil || r.store == nil {
 		return core.BenchmarkRun{}, errors.New("benchmark: runner not configured")
 	}
 	if model == "" {
 		return core.BenchmarkRun{}, fmt.Errorf("%w: model is required", ErrInvalidRequest)
 	}
-	rows, err := r.store.ListRecentSettledByModel(ctx, model, 1)
+	rows, err := r.store.ListRecentSettledByModel(ctx, orgID, model, 1)
 	if err != nil {
 		return core.BenchmarkRun{}, err
 	}
@@ -667,11 +670,11 @@ func (r *Runner) GetLatestSettledByModel(ctx context.Context, model string) (cor
 // ListRecentSettledByModel serves the history endpoint. The runner
 // pass-through is wrapped with the same nil-guard the rest of the
 // BenchmarkRunner interface uses.
-func (r *Runner) ListRecentSettledByModel(ctx context.Context, model string, limit int) ([]core.RecentBenchmarkRun, error) {
+func (r *Runner) ListRecentSettledByModel(ctx context.Context, orgID, model string, limit int) ([]core.RecentBenchmarkRun, error) {
 	if r == nil || r.store == nil {
 		return nil, errors.New("benchmark: runner not configured")
 	}
-	return r.store.ListRecentSettledByModel(ctx, model, limit)
+	return r.store.ListRecentSettledByModel(ctx, orgID, model, limit)
 }
 
 // timeNow is extracted so the tests can swap a deterministic clock in

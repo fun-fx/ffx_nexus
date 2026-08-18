@@ -19,6 +19,10 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 	now := time.Date(2026, 7, 27, 9, 30, 0, 0, time.UTC)
 	earlier := now.Add(-2 * time.Hour)
 	earliest := now.Add(-24 * time.Hour)
+	// Every case is scoped to a non-default org so the org predicate contributes
+	// exactly one bind; the default org widens to two (see orgScopeClause) and
+	// is pinned separately in TestOrgScopeClause_*.
+	const org = "acme"
 	cases := []struct {
 		name        string
 		userID      string
@@ -32,44 +36,44 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 		{
 			name:        "no filters, no window",
 			wantLimit:   true,
-			wantArgsLen: 1,
+			wantArgsLen: 2, // org + limit
 		},
 		{
 			name:        "user-only",
 			userID:      "u-1",
 			wantWhere:   []string{"user_id = ?"},
-			wantArgsLen: 2, // user_id + limit
+			wantArgsLen: 3, // org + user_id + limit
 		},
 		{
 			name:        "window-only",
 			before:      now,
 			since:       earliest,
 			wantWhere:   []string{"timestamp < ?", "timestamp >= ?"},
-			wantArgsLen: 3,
+			wantArgsLen: 4,
 		},
 		{
 			name:        "status err",
 			filter:      TraceFilter{Status: "err"},
 			wantWhere:   []string{"status_code >= 400"},
-			wantArgsLen: 1,
+			wantArgsLen: 2,
 		},
 		{
 			name:        "status ok",
 			filter:      TraceFilter{Status: "ok"},
 			wantWhere:   []string{"status_code < 400"},
-			wantArgsLen: 1,
+			wantArgsLen: 2,
 		},
 		{
 			name:        "provider exact",
 			filter:      TraceFilter{Provider: "openai"},
 			wantWhere:   []string{"provider_name = ?"},
-			wantArgsLen: 2,
+			wantArgsLen: 3,
 		},
 		{
 			name:   "fuzzy q on four columns",
 			filter: TraceFilter{Q: "gpt-4o"},
 			// No WHERE string changes (only args differ). Just confirm args length is +4.
-			wantArgsLen: 5, // %gpt-4o% × 4 columns + limit
+			wantArgsLen: 6, // org + %gpt-4o% × 4 columns + limit
 		},
 		{
 			name:   "full house: user + window + status + provider + q",
@@ -87,13 +91,13 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 				"user_email LIKE ?",
 				"guardrail_action LIKE ?",
 			},
-			wantArgsLen: 9, // user + before + since + provider + 4×q + limit
+			wantArgsLen: 10, // org + user + before + since + provider + 4×q + limit
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			q := buildTracePageQuery(tc.userID, tc.before, tc.since, 100, tc.filter)
+			q := buildTracePageQuery(org, tc.userID, tc.before, tc.since, 100, tc.filter)
 			if tc.wantLimit && !strings.Contains(q, "ORDER BY timestamp DESC, trace_id DESC LIMIT ?") {
 				t.Errorf("query missing ORDER BY ... LIMIT ?: %s", q)
 			}
@@ -101,7 +105,7 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 			if strings.Contains(q, ";") || strings.Contains(q, ",user_id") || strings.Contains(q, ",timestamp") || strings.Contains(q, ",status") {
 				t.Errorf("conds appear concatenated incorrectly: %s", q)
 			}
-			args := buildTracePageArgs(tc.userID, tc.before, tc.since, 100, tc.filter)
+			args := buildTracePageArgs(org, tc.userID, tc.before, tc.since, 100, tc.filter)
 			if len(args) != tc.wantArgsLen {
 				t.Errorf("arg count want=%d got=%d (args=%v) for sql=%s", tc.wantArgsLen, len(args), args, q)
 			}
@@ -110,7 +114,62 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 					t.Errorf("query missing WHERE fragment %q: %s", want, q)
 				}
 			}
+			// The tenant predicate is not optional in any combination, and the
+			// org must be the first bind so a new filter cannot shift it.
+			if !strings.Contains(q, "org_id = ?") {
+				t.Errorf("query is missing the tenant predicate entirely: %s", q)
+			}
+			if args[0] != org {
+				t.Errorf("org must be the first bind, got %v", args[0])
+			}
 		})
+	}
+}
+
+// TestBuildTracePageQuery_AlwaysScopedEvenWithNoOtherFilters is the negative
+// case that matters: the pre-fix builder emitted no WHERE clause at all when
+// the caller passed no user and no window, which is exactly how the admin
+// console calls it. That query returned every trace in the installation.
+func TestBuildTracePageQuery_AlwaysScopedEvenWithNoOtherFilters(t *testing.T) {
+	q := buildTracePageQuery("acme", "", time.Time{}, time.Time{}, 100, TraceFilter{})
+	if !strings.Contains(q, "WHERE org_id = ?") {
+		t.Fatalf("an unfiltered admin page must still be tenant-scoped: %s", q)
+	}
+}
+
+// TestOrgScopeClause_DefaultOrgAdoptsPreAttributionRows pins the one place the
+// predicate widens, and pins that it widens for the default org only. Rows
+// recorded before org_id was populated hold the empty string; a customer's
+// single-org install must still see its own history, but in a multi-org
+// install those rows must not surface to a department that did not exist yet.
+func TestOrgScopeClause_DefaultOrgAdoptsPreAttributionRows(t *testing.T) {
+	cond, args := orgScopeClause("default")
+	if !strings.Contains(cond, "org_id = ''") {
+		t.Errorf("default org must adopt pre-attribution rows: %s", cond)
+	}
+	if len(args) != 1 || args[0] != "default" {
+		t.Errorf("widening must not add a bind: %v", args)
+	}
+
+	cond, args = orgScopeClause("acme")
+	if strings.Contains(cond, "org_id = ''") {
+		t.Errorf("a non-default org must not adopt unattributed rows: %s", cond)
+	}
+	if len(args) != 1 || args[0] != "acme" {
+		t.Errorf("want a single org bind, got %v", args)
+	}
+}
+
+// TestOrgScopeClause_EmptyOrgMatchesNothing pins the fail-closed direction. A
+// caller that forgets to thread the tenant through gets an empty panel, not
+// the whole installation.
+func TestOrgScopeClause_EmptyOrgMatchesNothing(t *testing.T) {
+	cond, args := orgScopeClause("")
+	if cond != "org_id = ?" {
+		t.Errorf("empty org must stay an equality predicate, got %s", cond)
+	}
+	if len(args) != 1 || args[0] != "" {
+		t.Errorf("empty org must bind the empty string (matching no attributed row), got %v", args)
 	}
 } // TestBuildTracePageQuery_SelectsTotalAndResponseAndSessionFields is
 // the structural test that pins the SELECT list so a future refactor
@@ -121,7 +180,7 @@ func TestBuildTracePageQuery_FilterCombinations(t *testing.T) {
 // problem rather than a UI bug — but if the helper stops asking for
 // them the read path never gets the chance to complain.
 func TestBuildTracePageQuery_SelectsTotalAndResponseAndSessionFields(t *testing.T) {
-	q := buildTracePageQuery("", time.Time{}, time.Time{}, 25, TraceFilter{})
+	q := buildTracePageQuery("acme", "", time.Time{}, time.Time{}, 25, TraceFilter{})
 	for _, col := range []string{"response_model", "total_tokens", "session_id", "turn_id"} {
 		if !strings.Contains(q, col) {
 			t.Errorf("query missing required column %q: %s", col, q)
@@ -134,16 +193,27 @@ func TestBuildTracePageQuery_SelectsTotalAndResponseAndSessionFields(t *testing.
 // 008_turn_id.sql added for exactly this lookup.
 func TestBuildTracePageQuery_TurnFilterIsExactMatch(t *testing.T) {
 	f := TraceFilter{Turn: "a1b2c3d4e5f60718"}
-	q := buildTracePageQuery("", time.Time{}, time.Time{}, 50, f)
+	q := buildTracePageQuery("acme", "", time.Time{}, time.Time{}, 50, f)
 	if !strings.Contains(q, "turn_id = ?") {
 		t.Errorf("turn filter must be an equality predicate: %s", q)
 	}
 	if strings.Contains(q, "turn_id LIKE") {
 		t.Errorf("turn filter must not be fuzzy: %s", q)
 	}
-	args := buildTracePageArgs("", time.Time{}, time.Time{}, 50, f)
-	if len(args) != 2 || args[0] != f.Turn {
-		t.Fatalf("want [turn, limit], got %v", args)
+	args := buildTracePageArgs("acme", "", time.Time{}, time.Time{}, 50, f)
+	if len(args) != 3 || args[0] != "acme" || args[1] != f.Turn {
+		t.Fatalf("want [org, turn, limit], got %v", args)
+	}
+}
+
+// A turn id handed straight to /api/traces?turn=<id> is an object reference
+// with no ownership check of its own, so the tenant predicate is the only thing
+// standing between a guessed hash and another department's calls.
+func TestBuildTracePageQuery_TurnLookupStaysTenantScoped(t *testing.T) {
+	q := buildTracePageQuery("acme", "", time.Time{}, time.Time{}, 50,
+		TraceFilter{Turn: "a1b2c3d4e5f60718"})
+	if !strings.Contains(q, "org_id = ?") {
+		t.Fatalf("turn drill-down must carry the tenant predicate: %s", q)
 	}
 }
 
@@ -152,7 +222,7 @@ func TestBuildTracePageQuery_TurnFilterIsExactMatch(t *testing.T) {
 // column existed render one-per-row instead of collapsing into a single
 // bogus group), and the aggregate list the console reads.
 func TestBuildTurnPageQuery_Shape(t *testing.T) {
-	q := buildTurnPageQuery("", time.Time{}, time.Time{})
+	q := buildTurnPageQuery("acme", "", time.Time{}, time.Time{})
 	if !strings.Contains(q, "if(turn_id = '', trace_id, turn_id) AS turn_group_key") {
 		t.Errorf("missing empty-turn_id fallback to trace_id: %s", q)
 	}
@@ -200,7 +270,7 @@ func TestBuildTurnPageQuery_NoAliasShadowsAColumn(t *testing.T) {
 		"user_id": true, "session_id": true, "org_id": true,
 	}
 
-	q := buildTurnPageQuery("u-1", time.Now(), time.Now().Add(-time.Hour))
+	q := buildTurnPageQuery("acme", "u-1", time.Now(), time.Now().Add(-time.Hour))
 	aliasRe := regexp.MustCompile(`(?i)\sAS\s+([a-z_][a-z0-9_]*)`)
 	found := aliasRe.FindAllStringSubmatch(q, -1)
 	if len(found) == 0 {
@@ -220,7 +290,7 @@ func TestBuildTurnPageQuery_NoAliasShadowsAColumn(t *testing.T) {
 // agent loop has to surface on the collapsed row, or the operator has to
 // expand every turn to find the failure.
 func TestBuildTurnPageQuery_StatusIsWorstNotFirst(t *testing.T) {
-	q := buildTurnPageQuery("", time.Time{}, time.Time{})
+	q := buildTurnPageQuery("acme", "", time.Time{}, time.Time{})
 	if strings.Contains(q, "any(status_code)") || strings.Contains(q, "argMax(status_code") {
 		t.Errorf("status must be the worst in the turn, not a representative one: %s", q)
 	}
@@ -230,23 +300,24 @@ func TestBuildTurnPageArgs_PlaceholderOrder(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	since := now.Add(-time.Hour)
 
-	q := buildTurnPageQuery("u-9", now, since)
-	for _, want := range []string{"user_id = ?", "timestamp < ?", "timestamp >= ?"} {
+	q := buildTurnPageQuery("acme", "u-9", now, since)
+	for _, want := range []string{"org_id = ?", "user_id = ?", "timestamp < ?", "timestamp >= ?"} {
 		if !strings.Contains(q, want) {
 			t.Errorf("query missing %q: %s", want, q)
 		}
 	}
-	args := buildTurnPageArgs("u-9", now, since, 20)
-	if len(args) != 4 {
-		t.Fatalf("want [user, before, since, limit], got %v", args)
+	args := buildTurnPageArgs("acme", "u-9", now, since, 20)
+	if len(args) != 5 {
+		t.Fatalf("want [org, user, before, since, limit], got %v", args)
 	}
-	if args[0] != "u-9" || args[1] != now || args[2] != since || args[3] != 20 {
+	if args[0] != "acme" || args[1] != "u-9" || args[2] != now || args[3] != since || args[4] != 20 {
 		t.Errorf("placeholder order does not mirror the query: %v", args)
 	}
 
-	// Unbounded on both sides collapses to just the limit.
-	if got := buildTurnPageArgs("", time.Time{}, time.Time{}, 5); len(got) != 1 || got[0] != 5 {
-		t.Errorf("want [limit] only, got %v", got)
+	// Unbounded on both sides still keeps the tenant bind.
+	if got := buildTurnPageArgs("acme", "", time.Time{}, time.Time{}, 5); len(got) != 2 ||
+		got[0] != "acme" || got[1] != 5 {
+		t.Errorf("want [org, limit], got %v", got)
 	}
 }
 
@@ -269,24 +340,25 @@ func TestBuildTracePageArgs_FuzzyLikeEscaping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.q, func(t *testing.T) {
 			f := TraceFilter{Q: tc.q}
-			args := buildTracePageArgs("", time.Time{}, time.Time{}, 100, f)
+			// Slot 0 is always the tenant bind, so the like patterns start at 1.
+			args := buildTracePageArgs("acme", "", time.Time{}, time.Time{}, 100, f)
 			if tc.q == "" {
-				if len(args) != 1 {
-					t.Fatalf("empty q must produce args=[limit] only, got %v", args)
+				if len(args) != 2 {
+					t.Fatalf("empty q must produce args=[org, limit] only, got %v", args)
 				}
 				return
 			}
-			if len(args) != 5 {
-				t.Fatalf("q=%q: want 5 args (4 like patterns + limit), got %d: %v", tc.q, len(args), args)
+			if len(args) != 6 {
+				t.Fatalf("q=%q: want 6 args (org + 4 like patterns + limit), got %d: %v", tc.q, len(args), args)
 			}
 			for i := 0; i < 4; i++ {
-				if got, want := args[i], tc.wantArgs[i]; got != want {
-					t.Errorf("q=%q slot %d: want %q, got %q", tc.q, i, want, got)
+				if got, want := args[i+1], tc.wantArgs[i]; got != want {
+					t.Errorf("q=%q slot %d: want %q, got %q", tc.q, i+1, want, got)
 				}
 			}
 			// Last arg must be the limit regardless of q content.
-			if args[4] != 100 {
-				t.Errorf("q=%q: limit slot want=100, got=%v", tc.q, args[4])
+			if args[5] != 100 {
+				t.Errorf("q=%q: limit slot want=100, got=%v", tc.q, args[5])
 			}
 		})
 	}
@@ -297,7 +369,7 @@ func TestBuildTracePageArgs_FuzzyLikeEscaping(t *testing.T) {
 // this test guards the LITERAL characters emitted — not just substring
 // containment.
 func TestBuildTracePageArgs_PercentEscapeRoundTrip(t *testing.T) {
-	arg := buildTracePageArgs("", time.Time{}, time.Time{}, 25, TraceFilter{Q: "100%"})[0]
+	arg := buildTracePageArgs("acme", "", time.Time{}, time.Time{}, 25, TraceFilter{Q: "100%"})[1]
 	want := `%100\%%`
 	if arg != want {
 		t.Fatalf("user input %q must escape literal %% as \\%% (result: %q, want: %q)", "100%", arg, want)

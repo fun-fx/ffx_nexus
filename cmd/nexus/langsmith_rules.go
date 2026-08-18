@@ -125,7 +125,12 @@ func (k keyVaultSecretsResolver) ResolveSecret(plugin, keyRef string) (string, e
 // the request body because the operator's LangSmith tenant
 // identifies projects with opaque UUIDs that Nexus has no way
 // to enumerate without its own API token.
-func (a *langsmithRuleAutomator) CreateAutomationRule(ctx context.Context, pluginName, sessionID string) (console.AutomationRuleResult, error) {
+//
+// orgID confines the plugin resolution to the caller's tenant. The manifest
+// this resolves supplies the vendor endpoint and the vault key used to
+// authenticate, so an org-blind lookup created rules inside another tenant's
+// LangSmith workspace under that tenant's API key.
+func (a *langsmithRuleAutomator) CreateAutomationRule(ctx context.Context, orgID, pluginName, sessionID string) (console.AutomationRuleResult, error) {
 	if strings.TrimSpace(a.cfg.BaseURL) == "" {
 		return console.AutomationRuleResult{}, errors.New("NEXUS_PUBLIC_BASE_URL is not set; Nexus cannot derive the webhook callback URL")
 	}
@@ -137,6 +142,15 @@ func (a *langsmithRuleAutomator) CreateAutomationRule(ctx context.Context, plugi
 		// ErrPluginNotFound is mapped to a typed message upstream;
 		// pass through.
 		return console.AutomationRuleResult{}, fmt.Errorf("plugin %q not found: %w", pluginName, err)
+	}
+	// A row owned by another org is reported as absent, matching
+	// console.lookupPluginForOrg: the caller trusted this name to reach their
+	// own plugin, and confirming someone else's would leak its existence.
+	if pluginRec != nil {
+		owner := evalplugin.NormalizeOrgID(pluginRec.OrgID)
+		if owner != "" && owner != evalplugin.NormalizeOrgID(orgID) {
+			return console.AutomationRuleResult{}, fmt.Errorf("plugin %q not found: %w", pluginName, evalplugin.ErrPluginNotFound)
+		}
 	}
 	pluginSpec, err := evalplugin.Decode([]byte(pluginRec.SpecYAML))
 	if err != nil {

@@ -42,7 +42,10 @@ func (d driftStore) ListRecentSettledRuns(ctx context.Context, model string, lim
 	if d.store == nil {
 		return nil, errors.New("drift: store not configured")
 	}
-	rows, err := d.store.ListRecentSettledByModel(ctx, model, limit)
+	// Installation-wide on purpose: the drift watcher asks "has this model's
+	// quality moved", which is a question about a shared upstream, and it emits
+	// an operator alert rather than a per-tenant API response.
+	rows, err := d.store.ListRecentSettledByModel(ctx, "", model, limit)
 	if err != nil {
 		return nil, err
 	}

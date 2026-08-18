@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ffxnexus/nexus/internal/resp"
 )
 
 type ctxKey string
@@ -60,6 +61,11 @@ type Limiter interface {
 }
 
 // RequestID assigns a unique id to each request for tracing/correlation.
+//
+// The id lands on the context under resp.RequestIDKey so the response and log
+// helpers can read it without depending on gateway's unexported ctxKey type.
+// The X-Request-Id response header is set so the upstream caller (load
+// balancer, customer integration) can echo it for cross-system correlation.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
@@ -67,7 +73,7 @@ func RequestID(next http.Handler) http.Handler {
 			id = uuid.NewString()
 		}
 		w.Header().Set("X-Request-Id", id)
-		ctx := context.WithValue(r.Context(), ctxKeyRequestID, id)
+		ctx := context.WithValue(r.Context(), resp.RequestIDKey(), id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

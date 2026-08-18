@@ -3,10 +3,91 @@ package console
 import (
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/ffxnexus/nexus/internal/limiter"
 )
+
+// recoverPanics turns a panic in any console handler into a 500 with a request
+// id, instead of a closed connection with no response at all.
+//
+// Two reasons this is a security control and not just tidiness. A dropped
+// connection is indistinguishable from an infrastructure fault, so a
+// reachable-by-anyone crash in an unauthenticated handler can be mistaken for
+// flaky networking and go unfixed. And a panicking handler has abandoned its
+// work midway: without a definite status code, a caller cannot tell a refusal
+// from a partial success.
+//
+// The response body deliberately carries no panic value or stack — those go to
+// the operator's log, keyed by the same request id the caller is shown, so an
+// admin can correlate a user report to a stack trace without the crash detail
+// being echoed to whoever triggered it.
+func (s *Server) recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			// A client that hangs up mid-request makes net/http panic with
+			// ErrAbortHandler by design; it is not a defect and the connection
+			// is already gone, so re-panic and let net/http handle it quietly.
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			id := requestIDFrom(r)
+			if s.log != nil {
+				s.log.Error("console handler panic",
+					"err", rec,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"request_id", id,
+					"stack", string(debug.Stack()),
+				)
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error":      "internal server error",
+				"request_id": id,
+			})
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requestIDFrom prefers an id the caller's proxy already assigned, so a console
+// 500 can be traced through the same identifier that appears in the customer's
+// ingress logs. Falls back to a fresh one when nothing upstream set it.
+func requestIDFrom(r *http.Request) string {
+	for _, h := range []string{"X-Request-Id", "X-Request-ID", "X-Correlation-Id"} {
+		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
+			// Bounded and sanitised: this value is echoed in a JSON body and
+			// written to logs, so an attacker-supplied header must not be able
+			// to inject newlines or grow a log line without limit.
+			return sanitizeRequestID(v)
+		}
+	}
+	return uuid.NewString()
+}
+
+func sanitizeRequestID(v string) string {
+	const max = 64
+	if len(v) > max {
+		v = v[:max]
+	}
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '_', r == '.':
+			return r
+		default:
+			return -1
+		}
+	}, v)
+}
 
 // securityHeaders is a middleware that adds the recommended browser security
 // headers to every response from the console. The headers mirror §4.2 of

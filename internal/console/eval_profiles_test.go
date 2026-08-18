@@ -28,9 +28,12 @@ func newStubProfileStore(initial ...*evals.EvalProfile) *stubProfileStore {
 	return s
 }
 
-func (s *stubProfileStore) ListEvalProfiles(_ context.Context, ownerUserID string) ([]evals.EvalProfile, error) {
+func (s *stubProfileStore) ListEvalProfiles(_ context.Context, orgID, ownerUserID string) ([]evals.EvalProfile, error) {
 	out := make([]evals.EvalProfile, 0, len(s.profiles))
 	for _, p := range s.profiles {
+		if orgID != "" && !p.VisibleToOrg(orgID) {
+			continue
+		}
 		if p.Scope == evals.ScopeUser && p.OwnerUserID != ownerUserID {
 			continue
 		}
@@ -78,13 +81,16 @@ func (s *Server) handleProfileListForTest(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "eval profiles disabled"})
 		return
 	}
-	all, err := s.evalProfiles.ListEvalProfiles(r.Context(), u.ID)
+	all, err := s.evalProfiles.ListEvalProfiles(r.Context(), orgID(r), u.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	out := make([]evals.EvalProfile, 0, len(all))
 	for _, p := range all {
+		if !p.VisibleToOrg(orgID(r)) {
+			continue
+		}
 		if profileCallerCanSee(p, u) {
 			out = append(out, p)
 		}

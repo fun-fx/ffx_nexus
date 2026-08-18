@@ -9,7 +9,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/core"
+	"github.com/ffxnexus/nexus/internal/resp"
 )
 
 // --- Invite flow ----------------------------------------------------
@@ -83,6 +85,27 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request, caller cor
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create failed"})
 		return
 	}
+	// Outgoing email transport: best-effort, never blocks the
+	// response. A successfully issued invite row is the contract
+	// the admin sees immediately; the envelope is a courtesy on
+	// top. We tag the message id onto an audit row so an
+	// operator can correlate "we sent invite X" → Resend
+	// dashboard / send API logs.
+	if s.resend != nil && inv.URL != "" {
+		html := renderInviteHTML(inv.URL, caller.Email, role)
+		idem := "nexus-invite-" + inv.ID
+		msgID, sendErr := s.resend.Send(r.Context(), email, "You're invited to Nexus", html, idem)
+		if sendErr != nil {
+			s.log.Warn("invite email send failed",
+				"err", sendErr,
+				"invite", inv.ID,
+				"email", email,
+				"actor", caller.ID)
+			s.store.Audit(r.Context(), caller.ID, orgID(r), core.AuditInviteEmailFail, inv.ID, sendErr.Error())
+		} else {
+			s.store.Audit(r.Context(), caller.ID, orgID(r), core.AuditInviteEmailSent, inv.ID, msgID)
+		}
+	}
 	writeJSON(w, http.StatusCreated, inv)
 }
 
@@ -119,11 +142,10 @@ func (s *Server) revokeInvite(w http.ResponseWriter, r *http.Request, caller cor
 	}
 	if err := s.store.RevokeInvite(r.Context(), orgID(r), caller.ID, id); err != nil {
 		if errors.Is(err, core.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "invite not found"})
+			resp.HTTP(w, r, http.StatusNotFound, apierr.CodeNotFound, "", core.ErrNotFound, s.log)
 			return
 		}
-		s.log.Error("revoke invite failed", "err", err, "invite", id)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
@@ -214,7 +236,26 @@ func (s *Server) acceptInvite(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, core.ErrInviteNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{
 				"error":  "invite not found",
-				"reason": "revoked, expired, or never issued",
+				"reason": "revoked or never issued",
+			})
+			return
+		}
+		// An accepted invite is spent. 410 Gone rather than 404 because the
+		// token was real, and the visitor's next step is to sign in rather than
+		// to chase an admin for a replacement link. No account data is echoed
+		// back: the caller here is unauthenticated, and a used invite link
+		// outlives onboarding in forwarded mail and browser history.
+		if errors.Is(err, core.ErrInviteConsumed) {
+			writeJSON(w, http.StatusGone, map[string]string{
+				"error":  "invite already used",
+				"reason": "this invite has been accepted; sign in with your account instead",
+			})
+			return
+		}
+		if errors.Is(err, core.ErrInviteExpired) {
+			writeJSON(w, http.StatusGone, map[string]string{
+				"error":  "invite expired",
+				"reason": "ask an administrator for a new invite",
 			})
 			return
 		}

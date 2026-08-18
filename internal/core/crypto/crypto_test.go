@@ -34,7 +34,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 }
 
 func TestNewCipherHexKey(t *testing.T) {
-	hexKey := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	hexKey := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" // gitleaks:allow sequential-digit hex; a key-length shape test, not a key
 	c, err := crypto.NewCipher(hexKey)
 	if err != nil {
 		t.Fatal(err)

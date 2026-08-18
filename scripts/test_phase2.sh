@@ -104,7 +104,7 @@ if [[ "$code" == "200" ]]; then pass "valid virtual key -> 200"; else fail "vali
 code=$(http_code "$GW_URL/v1/models")
 if [[ "$code" == "401" ]]; then pass "no auth -> 401"; else fail "no auth -> expected 401, got $code"; fi
 
-code=$(http_code -H "Authorization: Bearer nxs_live_invalid000000000000000000000000" "$GW_URL/v1/models")
+code=$(http_code -H "Authorization: Bearer nxs_live_invalid000000000000000000000000" "$GW_URL/v1/models") # gitleaks:allow deliberately INVALID key; the assertion is that it gets 401
 if [[ "$code" == "401" ]]; then pass "bad virtual key -> 401"; else fail "bad key -> expected 401, got $code"; fi
 
 # --- allowed_models enforcement ---

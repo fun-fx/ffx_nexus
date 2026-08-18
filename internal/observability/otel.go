@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/ffxnexus/nexus/internal/egress"
 )
 
 // OTLPRecorder fans a Trace out as a JSON POST to an OTLP/HTTP endpoint
@@ -87,9 +89,9 @@ func NewOTLPRecorder(opts OTLPOptions, log *slog.Logger) *OTLPRecorder {
 		endpoint:    opts.Endpoint,
 		failureHook: opts.FailureHook,
 		successHook: opts.SuccessHook,
-		client: &http.Client{
-			Timeout: opts.Timeout,
-		},
+		// Operator class: NEXUS_OTLP_ENDPOINT is typically a collector sidecar on
+		// loopback or an in-cluster ClusterIP.
+		client: egress.Client(egress.Operator, opts.Timeout),
 		ch:     make(chan Trace, opts.BufferSize),
 		done:   make(chan struct{}),
 		closed: make(chan struct{}),

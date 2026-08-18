@@ -18,11 +18,19 @@ import (
 // with the score history tables). There is also the ephemeral
 // MemoryStore below used in tests.
 type ProfileStore interface {
-	// List returns profiles visible to `scope`. When `ownerUserID` is
-	// empty, org-scoped profiles are returned; otherwise the caller
-	// gets their own user-scoped rows too. Admins are filtered in at
-	// the callerCanSee layer (PR #136).
-	List(ctx context.Context, ownerUserID string) ([]EvalProfile, error)
+	// List returns profiles visible to one tenant.
+	//
+	// orgID selects the tenant: rows belonging to that org plus cluster-wide
+	// rows (OrgID == "", installed by the operator through env/Helm seeding).
+	// Passing "" means "every row, no tenant filter" and is reserved for the
+	// worker's dispatch snapshot and for boot-time seeding, both of which
+	// filter per trace afterwards. A request-serving caller must always pass
+	// a concrete org, or it hands one tenant another tenant's configuration.
+	//
+	// When ownerUserID is empty, org-scoped profiles are returned; otherwise
+	// the caller also gets their own user-scoped rows. Admin widening happens
+	// at the profileCallerCanSee layer (PR #136).
+	List(ctx context.Context, orgID, ownerUserID string) ([]EvalProfile, error)
 	// Get returns a single profile by id (admin / owner only; caller
 	// enforces this).
 	Get(ctx context.Context, id string) (*EvalProfile, error)
@@ -38,6 +46,40 @@ type ProfileStore interface {
 // absent. Call sites should distinguish "not yours to see" from "really
 // missing" via permission checks upstream.
 var ErrProfileNotFound = errors.New("eval profile not found")
+
+// LegacyDefaultOrgID mirrors evalplugin.LegacyDefaultOrgID: the placeholder the
+// console stamps when a request carries no org. Defined here rather than
+// imported to keep evals free of a dependency on evalplugin.
+const LegacyDefaultOrgID = "default"
+
+// NormalizeProfileOrgID folds the legacy "default" placeholder onto the
+// cluster-wide empty string.
+//
+// Both spellings existed in the wild before profiles carried an org at all, and
+// a comparison that treated them as different orgs would silently stop applying
+// an operator's profiles to their own traffic — the same bug evalplugin already
+// fixed for plugin dispatch.
+func NormalizeProfileOrgID(orgID string) string {
+	if orgID == LegacyDefaultOrgID {
+		return ""
+	}
+	return orgID
+}
+
+// VisibleToOrg reports whether a profile belongs to orgID or is cluster-wide.
+//
+// This is the single definition of the tenant boundary for profiles, used by
+// both the store's list filter and the worker's dispatch filter so the two
+// cannot drift into disagreeing about who owns a row.
+func (p EvalProfile) VisibleToOrg(orgID string) bool {
+	own := NormalizeProfileOrgID(p.OrgID)
+	if own == "" {
+		// Cluster-wide: the operator's own seeded configuration, deliberately
+		// applied to every tenant in the installation.
+		return true
+	}
+	return own == NormalizeProfileOrgID(orgID)
+}
 
 // MemoryStore holds profiles in-process and is intended for unit tests
 // where spinning up Postgres/ClickHouse is overkill. Mirrors the
@@ -67,11 +109,14 @@ func (m *MemoryStore) nextID() string {
 	return fmt.Sprintf("ep_%d_%d", m.clock().UnixNano(), atomic.AddUint64(&m.counter, 1))
 }
 
-func (m *MemoryStore) List(_ context.Context, ownerUserID string) ([]EvalProfile, error) {
+func (m *MemoryStore) List(_ context.Context, orgID, ownerUserID string) ([]EvalProfile, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]EvalProfile, 0, len(m.profiles))
 	for _, p := range m.profiles {
+		if orgID != "" && !p.VisibleToOrg(orgID) {
+			continue
+		}
 		if p.Scope == ScopeUser && ownerUserID != "" && p.OwnerUserID != ownerUserID {
 			continue
 		}

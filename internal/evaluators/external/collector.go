@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/egress"
 	"github.com/ffxnexus/nexus/internal/evalplugin"
 	"github.com/ffxnexus/nexus/internal/evals"
 )
@@ -43,10 +44,30 @@ type Collector struct {
 	secrets  SecretResolver
 	log      *slog.Logger
 	evSink   evals.OTLPEvaluationLogSink
+	// orgs resolves a vendor-supplied trace_id to the organisation that
+	// owns the trace. Nil is tolerated (see attributeOrg) but leaves
+	// cluster-wide plugins unable to attribute their scores.
+	orgs TraceOrgResolver
 	// running tracks the poll goroutine per plugin name so the
 	// supervisor can start pollers for plugins created after boot and
 	// stop them once the plugin is deleted or disabled.
 	running map[string]context.CancelFunc
+}
+
+// TraceOrgResolver answers "which organisation owns this trace".
+//
+// The collect side of a plugin has no request context to inherit a tenant
+// from: a webhook is an unauthenticated inbound POST from LangSmith or
+// Langfuse, and a poll is a background tick. The only tenant signal in the
+// payload is the trace_id the vendor echoes back, so resolving it against the
+// trace store is what keeps a vendor's scores inside the tenant whose traffic
+// produced them.
+type TraceOrgResolver interface {
+	// OrgForTrace returns the owning org and true, or false when the trace
+	// is unknown. An error is reported as (—, false) by implementations;
+	// the collector treats "unknown" and "lookup failed" identically
+	// because both mean the same thing here: do not guess.
+	OrgForTrace(ctx context.Context, traceID string) (string, bool)
 }
 
 // NewCollector builds a Collector. The sink is the same instance
@@ -54,7 +75,9 @@ type Collector struct {
 // scores share storage with heuristic- and judge-generated scores.
 func NewCollector(reg *evalplugin.Registry, sink evals.Sink, httpClient *http.Client) *Collector {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		// Tenant class: the poll destination is the plugin's endpoint, and the
+		// response is written into eval_scores.
+		httpClient = egress.Client(egress.Tenant, 30*time.Second)
 	}
 	return &Collector{
 		reg:      reg,
@@ -78,6 +101,16 @@ func (c *Collector) SetLogger(l *slog.Logger) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.log = l
+}
+
+// SetTraceOrgResolver wires trace→org resolution for inbound vendor scores.
+// Leave unset only in deployments with no trace store, where there are no
+// traces to attribute against; cluster-wide plugins then write their scores as
+// evals.UnattributedOrgID.
+func (c *Collector) SetTraceOrgResolver(r TraceOrgResolver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.orgs = r
 }
 
 // SetEvaluationLogSink installs the OTLP sink that every score
@@ -132,38 +165,50 @@ const pollSupervisorInterval = 30 * time.Second
 
 // syncPollers starts a poll goroutine for every enabled poll-mode
 // plugin that lacks one, and cancels goroutines whose plugin is gone.
+//
+// The running set is keyed by (org, name), not name alone. Two organisations
+// may install a poll-mode plugin under the same name — the store's uniqueness
+// constraint is on the (org_id, name) pair — and a name-only key gave the
+// second one no poller at all, so that tenant's vendor was never read back.
 func (c *Collector) syncPollers(ctx context.Context) {
-	wanted := make(map[string]*evalplugin.Plugin)
+	wanted := make(map[string]evalplugin.Record)
 	for _, rec := range c.reg.Enabled() {
 		if rec.Plugin == nil || rec.Plugin.Spec.Collect.Mode != "poll" {
 			continue
 		}
-		wanted[rec.Plugin.Metadata.Name] = rec.Plugin
+		wanted[pollerKey(rec.OrgID, rec.Plugin.Metadata.Name)] = rec
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for name, cancel := range c.running {
-		if _, keep := wanted[name]; !keep {
+	for key, cancel := range c.running {
+		if _, keep := wanted[key]; !keep {
 			cancel()
-			delete(c.running, name)
+			delete(c.running, key)
 		}
 	}
-	for name, p := range wanted {
-		if _, active := c.running[name]; active {
+	for key, rec := range wanted {
+		if _, active := c.running[key]; active {
 			continue
 		}
-		interval := p.Spec.Collect.Interval.Std()
+		interval := rec.Plugin.Spec.Collect.Interval.Std()
 		if interval <= 0 {
 			interval = 60 * time.Second
 		}
 		pollCtx, cancel := context.WithCancel(ctx)
-		c.running[name] = cancel
-		go c.runPoll(pollCtx, p, interval)
+		c.running[key] = cancel
+		go c.runPoll(pollCtx, rec.Plugin, rec.OrgID, interval)
 	}
 }
 
-func (c *Collector) runPoll(ctx context.Context, p *evalplugin.Plugin, interval time.Duration) {
+// pollerKey namespaces a running poller by tenant. The separator cannot appear
+// in an org id or a plugin metadata.name (both are validated identifiers), so
+// the composite is unambiguous.
+func pollerKey(orgID, name string) string {
+	return evalplugin.NormalizeOrgID(orgID) + "\x00" + name
+}
+
+func (c *Collector) runPoll(ctx context.Context, p *evalplugin.Plugin, pluginOrg string, interval time.Duration) {
 	c.mu.Lock()
 	fn := c.collects[p.Spec.Service.Type]
 	resolver := c.secrets
@@ -196,7 +241,7 @@ func (c *Collector) runPoll(ctx context.Context, p *evalplugin.Plugin, interval 
 				c.logf("plugin poll failed", "plugin", p.Metadata.Name, "err", err)
 				continue
 			}
-			c.applyAll(ctx, p, payloads)
+			c.applyAllForOrg(ctx, p, pluginOrg, payloads)
 		}
 	}
 }
@@ -215,6 +260,15 @@ func (c *Collector) logf(msg string, args ...any) {
 // should keep payloads small; we cap at 1000 per tick as a
 // safety net against pathological backfills.
 func (c *Collector) applyAll(ctx context.Context, p *evalplugin.Plugin, payloads []json.RawMessage) {
+	c.applyAllForOrg(ctx, p, "", payloads)
+}
+
+// applyAllForOrg is applyAll with the plugin's own tenant in hand.
+//
+// pluginOrg is the org the plugin record is installed under; the empty string
+// means cluster-wide. It is passed in rather than read off the Plugin because
+// tenancy lives on the registry Record, not on the decoded manifest.
+func (c *Collector) applyAllForOrg(ctx context.Context, p *evalplugin.Plugin, pluginOrg string, payloads []json.RawMessage) {
 	if c.sink == nil || len(payloads) == 0 {
 		return
 	}
@@ -227,6 +281,7 @@ func (c *Collector) applyAll(ctx context.Context, p *evalplugin.Plugin, payloads
 		if err != nil {
 			continue
 		}
+		sc.OrgID = c.attributeOrg(ctx, p.Metadata.Name, pluginOrg, sc.TraceID)
 		scores = append(scores, sc)
 	}
 	if len(scores) == 0 {
@@ -238,6 +293,51 @@ func (c *Collector) applyAll(ctx context.Context, p *evalplugin.Plugin, payloads
 		return
 	}
 	c.fanOutEvalEvents(ctx, scores)
+}
+
+// attributeOrg decides which organisation an inbound vendor score belongs to.
+//
+// The trace is the authority: a score describes one call, and that call's org
+// was fixed when the gateway served it. The plugin's own org is the fallback,
+// valid because dispatch is org-filtered (Registry.EnabledForOrg) so a per-org
+// plugin only ever receives that org's traces and can only be reporting on
+// them.
+//
+// When the two disagree the score is refused rather than assigned to either.
+// That combination means a vendor sent a result for a trace outside the tenant
+// whose plugin and credentials produced it — either a misconfigured shared
+// vendor project or a forged trace_id — and picking a side would either hide
+// the anomaly or write one tenant's score into another's ledger.
+func (c *Collector) attributeOrg(ctx context.Context, pluginName, pluginOrg, traceID string) string {
+	pluginOrg = evalplugin.NormalizeOrgID(pluginOrg)
+
+	traceOrg := ""
+	c.mu.Lock()
+	resolver := c.orgs
+	c.mu.Unlock()
+	if resolver != nil && strings.TrimSpace(traceID) != "" {
+		if org, ok := resolver.OrgForTrace(ctx, traceID); ok {
+			traceOrg = evalplugin.NormalizeOrgID(org)
+		}
+	}
+
+	switch {
+	case traceOrg != "" && pluginOrg != "" && traceOrg != pluginOrg:
+		c.logf("plugin score crosses a tenant boundary; refusing attribution",
+			"plugin", pluginName, "plugin_org", pluginOrg, "trace_org", traceOrg,
+			"org_written", evals.UnattributedOrgID)
+		return evals.UnattributedOrgID
+	case traceOrg != "":
+		return traceOrg
+	case pluginOrg != "":
+		return pluginOrg
+	default:
+		// Cluster-wide plugin, trace not resolvable. Do not guess.
+		c.logf("plugin score could not be attributed to an organisation",
+			"plugin", pluginName, "trace_id_present", strings.TrimSpace(traceID) != "",
+			"resolver_wired", resolver != nil, "org_written", evals.UnattributedOrgID)
+		return evals.UnattributedOrgID
+	}
 }
 
 // fanOutEvalEvents sends each successfully-persisted score into
@@ -291,7 +391,10 @@ func (c *Collector) Webhook(pluginName string, body io.Reader) error {
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		arr = []json.RawMessage{raw}
 	}
-	c.applyAll(context.Background(), rec.Plugin, arr)
+	// rec.OrgID is the tenant that installed this plugin, or "" when it came
+	// from Helm and is shared. Threading it through is what lets a per-org
+	// plugin attribute its scores without a trace lookup.
+	c.applyAllForOrg(context.Background(), rec.Plugin, rec.OrgID, arr)
 	return nil
 }
 

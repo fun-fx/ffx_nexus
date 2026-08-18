@@ -1,0 +1,45 @@
+-- 010: attribute eval scores to an organization (ClickHouse side).
+--
+-- Mirrors migrations/postgres/015_eval_scores_org.sql. See that file for why the
+-- column is needed; the reasoning is identical and the read paths are the same
+-- queries against a different store.
+--
+-- ClickHouse specifics:
+--
+--   * ADD COLUMN IF NOT EXISTS is idempotent, which is what makes this safe to
+--     replay. ClickHouse has no transactions and no advisory lock, so
+--     replay-safety is the only thing making a concurrent or retried migration
+--     correct (migrations/README.md).
+--   * DEFAULT rather than a backfill UPDATE. ClickHouse mutations
+--     (ALTER TABLE ... UPDATE) are asynchronous and rewrite parts in the
+--     background, so a migration cannot wait for one and cannot report whether
+--     it succeeded. Historical rows therefore read as the default org.
+--   * The column is added at the end and is not part of the sorting key.
+--     Changing ORDER BY would require rebuilding the table, which for a
+--     customer's accumulated trace history is an outage, not a migration.
+--
+-- WHERE THIS DIFFERS FROM POSTGRES, AND WHY. The Postgres migration varies its
+-- backfill by org count: a multi-org installation's unattributable rows are
+-- parked in 'unattributed' instead of being guessed into the default org. This
+-- migration cannot do the same. Org membership lives in Postgres (there is no
+-- `organizations` table here), so ClickHouse has no way to know whether this
+-- installation has one org or twenty, and a column DEFAULT cannot be
+-- conditional. Historical rows therefore read as the default org.
+--
+-- This is not an inconsistency an operator can observe in one deployment:
+-- exactly one score store is live at a time (cmd/nexus/compose.go prefers
+-- ClickHouse and falls back to Postgres), so a given installation gets one rule
+-- or the other, never both.
+--
+-- A multi-org installation upgrading with ClickHouse as its score store should
+-- decide what to do with pre-migration history before granting console access to
+-- a second org. To hide it from everyone:
+--
+--   ALTER TABLE eval_scores UPDATE org_id = 'unattributed'
+--     WHERE org_id = 'default' AND timestamp < '<upgrade timestamp>';
+--
+-- Run out of band and watch system.mutations for progress; the cost is a rewrite
+-- of every affected part. See docs/customer-self-hosted-upgrade-rollback.md.
+
+ALTER TABLE eval_scores
+    ADD COLUMN IF NOT EXISTS org_id String DEFAULT 'default';

@@ -233,9 +233,19 @@ func (w *Worker) evaluate(t observability.Trace) {
 	// Stamp caller info on every score so per-user aggregates remain
 	// intact. Evaluators don't know about tenancy today; centralising
 	// the stamping ensures we don't drown the schema later.
+	//
+	// OrgID is stamped from the trace for the same reason, and it is the only
+	// place it can correctly be done. The org that matters is the one the
+	// traffic belonged to when it was served, not the org the user sits in when
+	// the batch is finally flushed — a user who moves teams must not retro-move
+	// their history with them. Reads filter on org_id, so a score that misses
+	// this stamp is visible only to the default org.
 	for i := range scs {
 		if scs[i].UserID == "" {
 			scs[i].UserID = t.UserID
+		}
+		if scs[i].OrgID == "" {
+			scs[i].OrgID = t.OrgID
 		}
 		if scs[i].RequestModel == "" {
 			scs[i].RequestModel = traceModel(t)
@@ -284,6 +294,28 @@ func (w *Worker) collectEvaluators(
 	// delegating to a different model, not replacing — that's a
 	// documented operator decision). Owner identity comes from
 	// Trace.UserID set by the gateway recorder fan-out.
+	// Tenant filter first, before any other rule looks at the snapshot.
+	//
+	// ReplaceProfiles hands the worker every profile in the installation, so
+	// each trace must select the ones that belong to its own org (plus the
+	// operator's cluster-wide rows). Skipping this does not merely show a
+	// tenant the wrong config: an slm_judge or remote_eval profile carries an
+	// endpoint and a resolved API key, so an unfiltered snapshot POSTs one
+	// org's prompts and completions to another org's judge service, billed to
+	// that org's key. Scope/OwnerUserID cannot catch it — they separate users
+	// within an org and say nothing about which org a row belongs to.
+	//
+	// The owner-override map below is built from the filtered set too, so a
+	// user-scope profile in org A cannot suppress org B's heuristics for a
+	// user id that happens to collide across tenants.
+	mine := make([]EvalProfile, 0, len(profiles))
+	for _, ep := range profiles {
+		if ep.VisibleToOrg(t.OrgID) {
+			mine = append(mine, ep)
+		}
+	}
+	profiles = mine
+
 	disabledKindsByOwner := map[ProfileKind]bool{}
 	owner := t.UserID
 	if owner != "" {

@@ -133,7 +133,7 @@ func (c *evalRuntimeController) SeedProfilesFromConfig(ctx context.Context) ([]e
 			return nil, err
 		}
 	}
-	existing, err := c.profileStore.List(ctx, "")
+	existing, err := c.profileStore.List(ctx, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -321,11 +321,11 @@ func (c *evalRuntimeController) RevokeInlineSecret(keyRef string) {
 // ListEvalProfiles implements console.EvalProfileSource. The console
 // never sees the secretResolver's plaintext — it returns profile
 // metadata only.
-func (c *evalRuntimeController) ListEvalProfiles(ctx context.Context, ownerUserID string) ([]evals.EvalProfile, error) {
+func (c *evalRuntimeController) ListEvalProfiles(ctx context.Context, orgID, ownerUserID string) ([]evals.EvalProfile, error) {
 	if c.profileStore == nil {
 		return nil, nil
 	}
-	return c.profileStore.List(ctx, ownerUserID)
+	return c.profileStore.List(ctx, orgID, ownerUserID)
 }
 
 // GetEvalProfile implements console.EvalProfileSource.
@@ -360,7 +360,7 @@ func (c *evalRuntimeController) SaveEvalProfile(ctx context.Context, p *evals.Ev
 		return err
 	}
 	if c.worker != nil {
-		all, err := c.profileStore.List(ctx, "")
+		all, err := c.profileStore.List(ctx, "", "")
 		if err == nil {
 			c.worker.ReplaceProfiles(all)
 		}
@@ -377,7 +377,7 @@ func (c *evalRuntimeController) DeleteEvalProfile(ctx context.Context, id string
 		return err
 	}
 	if c.worker != nil {
-		all, err := c.profileStore.List(ctx, "")
+		all, err := c.profileStore.List(ctx, "", "")
 		if err == nil {
 			c.worker.ReplaceProfiles(all)
 		}

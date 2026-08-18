@@ -26,7 +26,7 @@ func newFakeProfileStore(initial ...*evals.EvalProfile) *fakeProfileStore {
 	return f
 }
 
-func (f *fakeProfileStore) List(_ context.Context, _ string) ([]evals.EvalProfile, error) {
+func (f *fakeProfileStore) List(_ context.Context, _, _ string) ([]evals.EvalProfile, error) {
 	out := make([]evals.EvalProfile, 0, len(f.rows))
 	for _, p := range f.rows {
 		out = append(out, *p)

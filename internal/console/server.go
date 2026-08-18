@@ -18,12 +18,15 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/gorilla/websocket"
 
+	"errors"
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/core"
 	docsserver "github.com/ffxnexus/nexus/internal/docs"
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
+	"github.com/ffxnexus/nexus/internal/resp"
 	"github.com/ffxnexus/nexus/internal/router"
 	nexusweb "github.com/ffxnexus/nexus/web"
 )
@@ -56,6 +59,10 @@ type Server struct {
 	catalog           CatalogSource         // may be nil when the gateway is not co-located
 	reload            func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup       bool                  // public POST /api/auth/register
+	publicDocs        bool                  // serve /api/docs without a session (opt-in)
+	devMode           bool                  // accept loopback HTTP origins; non-Secure cookies
+	secureCookies     bool                  // Secure attribute on session/state cookies
+	origins           *originPolicy         // credentialed-origin allowlist (CORS + CSRF + WS)
 	sso               *ssoClient            // OIDC client; nil when SSO is not configured
 	evalConfigSrc     EvalConfigSource      // nil when eval worker is disabled
 	evalConfigApply   EvalConfigApplier     // nil when eval worker is disabled
@@ -96,6 +103,9 @@ type Server struct {
 	gatewayProxy         *httputil.ReverseProxy                            // optional /v1/* → co-located gateway
 	publicGatewayURL     string                                            // optional public gateway base for UI copy
 	publicBaseURL        string                                            // optional public console base; used to compose invite URLs
+	publicGrafanaURL     string                                            // optional operator Grafana base; link-only, see observability_ui.go
+	ready                ReadinessReporter                                 // optional /readyz source; nil degrades to a plain "ok"
+	resend               *ResendClient                                     // optional outgoing email transport for invites
 	log                  *slog.Logger
 	up                   websocket.Upgrader
 }
@@ -108,13 +118,45 @@ func (s *Server) SetBuildTag(tag string) { SetBuildTag(tag) }
 
 func (s *Server) SetAllowSignup(allow bool) { s.allowSignup = allow }
 
+// SetPublicDocs opens /api/docs to unauthenticated callers.
+//
+// Off by default. The docs bundle describes this installation's endpoints,
+// configuration flags and operational procedures, which in a single-customer
+// deployment is internal documentation even though none of it is a secret.
+// Operators running a genuinely public docs site opt in explicitly; main.go logs
+// the decision at boot so the exposure is recorded rather than inferred.
+func (s *Server) SetPublicDocs(public bool) { s.publicDocs = public }
+
+// ReadinessReporter supplies the /readyz handler. An interface rather than a
+// concrete import of internal/health so this package stays independent of the
+// readiness implementation and tests can leave it nil.
+type ReadinessReporter interface {
+	Handler() http.HandlerFunc
+}
+
+// SetReadiness wires the process readiness gate onto /readyz. Optional: with
+// nil, /readyz answers a plain 200 exactly as /healthz does.
+func (s *Server) SetReadiness(r ReadinessReporter) { s.ready = r }
+
 // SetPublicBaseURL records the operator-facing console base URL. It is
 // used to compose the shareable invite URL returned by POST /api/invites:
 // the invitee clicks a link rooted at this host, so it must match the
 // URL the operator pasted into their browser to reach the console.
+//
+// When the operator sets EmailPublicBaseURL, that value takes
+// priority inside the inviting email body — useful when the
+// envelope host (e.g. nexus.ffx.ai) differs from the host the
+// invitee's browser session will land on after accept.
 func (s *Server) SetPublicBaseURL(raw string) {
 	s.publicBaseURL = strings.TrimRight(strings.TrimSpace(raw), "/")
 }
+
+// SetResendClient wires the Resend email transport used by the
+// invite flow. A nil client disables outbound envelopes: every
+// issued invite still gets a copyable URL in the admin console,
+// but no email is sent. POST /api/invites still returns the
+// success shape, so the front-end has one happy-path.
+func (s *Server) SetResendClient(c *ResendClient) { s.resend = c }
 
 // SetSSO configures the OIDC client used by /api/auth/sso/*. A nil or
 // disabled config is a no-op; the field stays nil and the SSO routes
@@ -183,7 +225,28 @@ func (s *Server) SetCSPOrigins(origins []string) {
 		}
 	}
 	s.cspOrigins = out
+
+	// The same operator-supplied list drives the CORS allowlist, the
+	// state-changing Origin check and the WebSocket upgrade check. One list, so
+	// an operator cannot get their console working for reads while silently
+	// leaving writes or the live trace stream open to any origin.
+	s.origins = newOriginPolicy(out, s.devMode)
 }
+
+// SetDevMode relaxes browser-security defaults for local development: loopback
+// HTTP origins are accepted and cookies are not marked Secure.
+//
+// Must not be set in a customer deployment. It only removes protections, so it
+// is one obvious switch rather than several individual overrides, and main.go
+// warns at boot when it is on.
+func (s *Server) SetDevMode(dev bool) {
+	s.devMode = dev
+	s.origins = newOriginPolicy(s.cspOrigins, dev)
+}
+
+// SetSecureCookies controls the Secure attribute on the session and OIDC state
+// cookies. On by default; see config.SecureCookies.
+func (s *Server) SetSecureCookies(secure bool) { s.secureCookies = secure }
 
 // SetEvalProfiles attaches the profile store used by PR #135 per-eval
 // endpoints. The console reads/writes through this dependency; the
@@ -233,7 +296,7 @@ func (s *Server) SetPluginKeys(k EvalPluginKeys) {
 
 // NewServer builds the console server. reader and store may be nil.
 func NewServer(hub *Hub, reader *observability.Reader, store *core.Store, log *slog.Logger) *Server {
-	return &Server{
+	s := &Server{
 		hub:    hub,
 		reader: reader,
 		store:  store,
@@ -242,28 +305,87 @@ func NewServer(hub *Hub, reader *observability.Reader, store *core.Store, log *s
 		loginLim:    limiter.NewIPLimiter(30, time.Minute),
 		registerLim: limiter.NewIPLimiter(30, time.Minute),
 		ssoLim:      limiter.NewIPLimiter(30, time.Minute),
-		up: websocket.Upgrader{
-			CheckOrigin: func(*http.Request) bool { return true },
+		// Secure by default. A caller that forgets SetSecureCookies gets the
+		// protective setting, not the permissive one; local HTTP development
+		// opts out explicitly.
+		secureCookies: true,
+	}
+	// Same-origin only until an operator supplies an allowlist. A zero-value
+	// Server must not be a permissive one — an origins policy left nil would
+	// panic in the middleware, and a policy defaulting to "allow all" would
+	// reproduce the wildcard-CORS hole for anyone who constructs a Server
+	// without calling SetCSPOrigins.
+	s.origins = newOriginPolicy(nil, false)
+	s.up = websocket.Upgrader{
+		// The live trace stream previously accepted any origin. WebSocket
+		// upgrades are exempt from CORS by design — the browser sends the
+		// handshake with cookies attached and no preflight — so CheckOrigin is
+		// the ONLY thing standing between a logged-in admin visiting a hostile
+		// page and that page streaming their org's traces, including prompts and
+		// responses, in real time.
+		CheckOrigin: func(r *http.Request) bool {
+			if r.Header.Get("Origin") == "" {
+				// Non-browser WebSocket clients omit Origin; they cannot be
+				// driven by a hostile page, and they authenticate with a session
+				// token like any other API client.
+				return true
+			}
+			return s.origins.permitted(r)
 		},
 	}
+	return s
 }
 
 // Mux returns the console HTTP handler.
 func (s *Server) Mux() http.Handler {
 	r := chi.NewRouter()
+	// Outermost, so it also covers panics raised inside the middleware below.
+	// The gateway has had this since day one (gateway.Recover); the console did
+	// not, so a nil dereference in any console handler closed the connection
+	// with no status line at all. A browser reports that as a network error and
+	// a load balancer as a backend failure, which sends operators looking at
+	// the network instead of at the stack trace. A replayed invite token was
+	// exactly this: an empty reply, and the cause only visible in pod logs.
+	r.Use(s.recoverPanics)
 	r.Use(s.securityHeaders)
+	// AllowOriginFunc instead of AllowedOrigins, because chi/cors resolves a
+	// literal "*" by echoing the request's own Origin back with
+	// Access-Control-Allow-Credentials: true — which turns "allow everyone" from
+	// a browser-rejected misconfiguration into a working grant for every site on
+	// the internet.
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"*"},
+		AllowOriginFunc: func(_ *http.Request, origin string) bool {
+			return s.origins.allows(origin)
+		},
+		AllowedMethods: []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{
+			"Accept", "Authorization", "Content-Type", "X-Requested-With", "X-Request-Id",
+		},
 		AllowCredentials: true,
+		MaxAge:           300,
 	}))
+	// CORS governs what a browser will let a script READ. It does not stop a
+	// cross-site form or image from ISSUING a credentialed POST, so state-changing
+	// requests get their Origin checked server-side as well.
+	r.Use(s.enforceOrigin)
 	r.Use(s.withUser)
 
+	// Liveness: intentionally dependency-free (see gateway.NewMux).
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// Readiness: reports schema and required-dependency state so a pod with a
+	// schema behind the binary is kept out of the Service.
+	if s.ready != nil {
+		r.Get("/readyz", s.ready.Handler())
+	} else {
+		r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		})
+	}
 
 	// Anonymous auth routes get per-IP rate limiting (design doc §4.2.5).
 	// Limiters are per-route so an attacker cannot drain login by hammering
@@ -277,8 +399,12 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/turns", s.requireUser(s.recentTurns))
 		r.Get("/stats", s.requireUser(s.stats))
 		r.Get("/stats/providers", s.requireUser(s.providerStats))
-		r.Get("/routing", s.routing)
-		r.Get("/evals", s.evals)
+		// Both describe how this installation is configured: which providers and
+		// models the router will reach for, and which evaluators score traffic.
+		// That is internal topology, so it needs a session. Neither is
+		// per-user, so member is the right level.
+		r.Get("/routing", s.requireUser(s.routingForUser))
+		r.Get("/evals", s.requireUser(s.evalsForUser))
 		r.Get("/eval/config", s.requireAdmin(s.getEvalConfig))
 		r.Patch("/eval/config", s.requireAdmin(s.patchEvalConfig))
 		r.Get("/live", s.requireUser(s.live))
@@ -290,6 +416,9 @@ func (s *Server) Mux() http.Handler {
 		r.Post("/auth/logout", s.logout)
 		r.With(authRL("sso-login", s.ssoLim)).Get("/auth/sso/login", s.ssoLogin)
 		r.With(authRL("sso-callback", s.ssoLim)).Get("/auth/sso/callback", s.ssoCallback)
+		// Operator-configured Grafana deep links for the console UI. Pure
+		// function of NEXUS_PUBLIC_GRAFANA_URL; no server-side Grafana call.
+		r.Get("/ui/observability", s.requireUser(s.observabilityUI))
 		r.Get("/me", s.requireUser(s.me))
 		r.Patch("/me", s.requireUser(s.updateMe))
 		r.Get("/me/stats", s.requireUser(s.myStats))
@@ -472,22 +601,44 @@ func (s *Server) Mux() http.Handler {
 		// the original name. No admin-only path here; me/quality is per-user.
 
 		// Org-level key/credential management (requires Postgres).
-		r.Get("/keys", s.listKeys)
+		//
+		// All seven are admin-only. The two reads were previously registered
+		// with no guard at all, one line above their admin-only POST and DELETE
+		// siblings, so anyone who could reach the console could enumerate an
+		// org's virtual keys and provider credentials without logging in. The
+		// listings carry key names, budgets, model allowlists, provider names
+		// and secret last-4s — an inventory of what to attack next, and enough
+		// on its own to be a reportable disclosure. Per-user self-service lives
+		// on /api/me/keys and /api/me/credentials, which is what a member is
+		// supposed to use.
+		r.Get("/keys", s.requireAdmin(s.listKeys))
 		r.Post("/keys", s.requireAdmin(s.createKey))
 		r.Delete("/keys/{id}", s.requireAdmin(s.revokeKey))
-		r.Get("/credentials", s.listCredentials)
+		r.Get("/credentials", s.requireAdmin(s.listCredentials))
 		r.Post("/credentials", s.requireAdmin(s.createCredential))
 		r.Post("/credentials/{id}/rotate", s.requireAdmin(s.rotateCredential))
 		r.Delete("/credentials/{id}", s.requireAdmin(s.deleteCredential))
 
-		// Documentation: in-binary markdown tree, served verbatim so
-		// the console's Docs page can render it with the thegrid.ai
-		// look. Mounted under /api so the existing auth middleware
-		// (requireUser on every authenticated route) protects it
-		// without an explicit gate; the bundle itself is not a
-		// secret, but routing through the same handler avoids a
-		// separate path that other middleware might miss.
-		r.Mount("/docs", docsserver.Routes())
+		// Documentation: the in-binary markdown tree the console's Docs page
+		// renders.
+		//
+		// A comment here used to claim these were protected by "requireUser on
+		// every authenticated route". No such blanket middleware exists —
+		// withUser attaches a session when one is present and never rejects —
+		// so the docs tree was served to anyone who could reach the port, and
+		// the comment is why nobody looked again.
+		//
+		// These docs describe this installation, not a public product: they name
+		// endpoints, configuration flags and operational procedures. In a
+		// single-customer deployment that is internal documentation, so the
+		// default is authenticated. An operator who genuinely wants a public
+		// docs site opts in with config.publicDocs (NEXUS_PUBLIC_DOCS), which is
+		// logged at boot so the exposure is a recorded decision.
+		if s.publicDocs {
+			r.Mount("/docs", docsserver.Routes())
+		} else {
+			r.Mount("/docs", s.requireUserHandler(docsserver.Routes()))
+		}
 	})
 
 	// Same-origin /v1 for Playground + model discovery when the console is on
@@ -545,7 +696,9 @@ func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request, u core.Use
 	if u.Role != core.RoleAdmin {
 		uid = u.ID
 	}
-	page, err := s.reader.TracePage(r.Context(), before, since, limit, uid, filter)
+	// An admin's empty uid means "everyone in my org", never "everyone in the
+	// installation": the org bind is applied regardless of role.
+	page, err := s.reader.TracePage(r.Context(), before, since, limit, orgID(r), uid, filter)
 	if err != nil {
 		s.log.Error("recent traces query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -571,7 +724,7 @@ func (s *Server) recentTurns(w http.ResponseWriter, r *http.Request, u core.User
 	if u.Role != core.RoleAdmin {
 		uid = u.ID
 	}
-	turns, err := s.reader.TurnPage(r.Context(), time.Time{}, turnWindowStart(r), limit, uid)
+	turns, err := s.reader.TurnPage(r.Context(), time.Time{}, turnWindowStart(r), limit, orgID(r), uid)
 	if err != nil {
 		s.log.Error("recent turns query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -752,11 +905,16 @@ func (s *Server) providerStats(w http.ResponseWriter, r *http.Request, u core.Us
 			window = d
 		}
 	}
+	org := orgID(r)
 	scope := "admin"
 	if u.Role != core.RoleAdmin {
 		scope = "user:" + u.ID
 	}
-	cacheKey := scope + "|" + window.String()
+	// The org belongs in the cache key, not just the query. Two orgs' admins
+	// produce the same `admin|1h0m0s` scope string, so a key without the tenant
+	// serves whichever org warmed the entry first to both of them — a leak that
+	// survives for the whole TTL and reproduces only under concurrent use.
+	cacheKey := org + "|" + scope + "|" + window.String()
 
 	if cached, ok := providerStatsCacheGet(cacheKey); ok {
 		writeJSON(w, http.StatusOK, cached)
@@ -767,7 +925,7 @@ func (s *Server) providerStats(w http.ResponseWriter, r *http.Request, u core.Us
 	if u.Role != core.RoleAdmin {
 		uid = u.ID
 	}
-	out, err := s.reader.ProviderStats(r.Context(), window, uid, 20)
+	out, err := s.reader.ProviderStats(r.Context(), window, org, uid, 20)
 	if err != nil {
 		s.log.Error("provider stats query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -795,13 +953,25 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request, u core.User) {
 	if u.Role != core.RoleAdmin {
 		uid = u.ID
 	}
-	st, err := s.reader.WindowStats(r.Context(), window, uid)
+	st, err := s.reader.WindowStats(r.Context(), window, orgID(r), uid)
 	if err != nil {
 		s.log.Error("stats query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// routingForUser adapts routing to the requireUser signature. The stats are
+// installation-wide rather than per-user, so the identity is only used to prove
+// a session exists.
+func (s *Server) routingForUser(w http.ResponseWriter, r *http.Request, _ core.User) {
+	s.routing(w, r)
+}
+
+// evalsForUser adapts evals to the requireUser signature; see routingForUser.
+func (s *Server) evalsForUser(w http.ResponseWriter, r *http.Request, _ core.User) {
+	s.evals(w, r)
 }
 
 // routing returns the router's current per-model quality/cost/latency stats,
@@ -833,7 +1003,7 @@ func (s *Server) evals(w http.ResponseWriter, r *http.Request) {
 			window = d
 		}
 	}
-	out, err := s.reader.EvalSummary(r.Context(), window)
+	out, err := s.reader.EvalSummary(r.Context(), window, orgID(r))
 	if err != nil {
 		s.log.Error("eval summary query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -986,6 +1156,68 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("X-Nexus-Build", responseBuildTag)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// fail writes a public error response and logs the cause with the request id
+// from the same context. The body never includes the cause; the cause is
+// preserved in the operator log so support can join a customer report to the
+// line that explains it.
+//
+// fail is the only approved path for handlers that previously did
+//
+//	writeJSON(w, http.StatusXXX, map[string]string{"error": err.Error()})
+//
+// because that pattern was how the SQLSTATE and table/column reached the
+// client. New handlers MUST use fail; tests in internal/apierr/leak_test.go
+// pin the body shape and the scrubbed log shape so a regression fails the
+// build.
+func (s *Server) fail(w http.ResponseWriter, r *http.Request, status int, code apierr.Code, cause error) {
+	if s.log == nil {
+		resp.HTTP(w, r, status, code, "", cause, slog.Default())
+		return
+	}
+	resp.HTTP(w, r, status, code, "", cause, s.log)
+}
+
+// failWithMessage is fail plus a caller-supplied safe message. The caller
+// assertion is that the message carries no protected substring — the caller
+// passes either a fixed string from the codebase (e.g. an error key) or the
+// formatted output from postgreserr.Message, not the unwrap chain. The
+// dev-only "endpoint.base_url is not an allowed destination" case is the
+// canonical use: it names the offending field in the body for the operator's
+// UX while the deep cause (egress link-local, metadata address) is logged
+// alongside for support.
+//
+// msg MUST be a string the caller has written; if the caller wants to surface
+// err.Error() they are forgetting the threat model.
+func (s *Server) failWithMessage(w http.ResponseWriter, r *http.Request, status int, code apierr.Code, msg string, cause error) {
+	requestID := resp.RequestIDFromContext(r.Context())
+	if s.log == nil {
+		s.log = slog.Default()
+	}
+	s.log.LogAttrs(r.Context(), slog.LevelError, "http_error",
+		slog.String("event", "http_error"),
+		slog.String("code", string(code)),
+		slog.Int("status", status),
+		slog.String("request_id", requestID),
+		slog.String("message", msg),
+		slog.String("cause", apierr.Scrub(formatErrChain(cause))),
+	)
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	apierr.Render(w, status, code, requestID, msg)
+}
+
+func formatErrChain(err error) string {
+	if err == nil {
+		return ""
+	}
+	var parts []string
+	for cur := err; cur != nil; cur = errors.Unwrap(cur) {
+		parts = append(parts, cur.Error())
+	}
+	return strings.Join(parts, " | ")
 }
 
 // SetBuildTag overrides the package-level responseBuildTag with

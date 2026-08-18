@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/ffxnexus/nexus/internal/egress"
 )
 
 // OTLPEvaluationLogSink is the seam the Collector uses to fan
@@ -57,7 +59,9 @@ type HTTPLogSink struct {
 // discard-mode: each emit returns nil without doing any work.
 func NewHTTPLogSink(endpoint string, client *http.Client, lg *slog.Logger) *HTTPLogSink {
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		// Operator class: NEXUS_OTLP_LOGS_ENDPOINT, commonly a collector sidecar
+		// on loopback or a ClusterIP, both of which Tenant class would refuse.
+		client = egress.Client(egress.Operator, 10*time.Second)
 	}
 	if lg == nil {
 		lg = slog.Default()

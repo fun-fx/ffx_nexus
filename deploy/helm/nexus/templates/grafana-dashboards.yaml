@@ -20,13 +20,14 @@
 
   Console link path:
   --------------------------------------------------------------------------
-  The console's `/api/ui/observability` endpoint (PR #241) hardcodes the
-  bare-name path `/d/nexus-01-overview/nexus-01-overview`. That path matches
-  the legacy operator-installed dashboards. This chart emits prefixed CRs,
-  so the console's link is correct against the legacy dashboards — and the
-  chart-managed dashboards render at `/d/<fullName>-01-overview/fullName-01-overview`
-  for anyone who explicitly wants the chart-managed copy (browse the folder
-  in Grafana's sidebar to find it).
+  The console's `/api/ui/observability` endpoint composes deep links of the
+  form `/d/<uid>/<uid>` from `config.publicGrafanaUrl`, using the dashboard
+  UIDs declared in files/grafana-dashboards/*.json (nexus-01-overview,
+  nexus-02-llm-spend, nexus-03-eval-quality). Grafana resolves /d/ by UID and
+  treats the trailing slug as cosmetic.
+
+  `namePrefix` below prefixes the Kubernetes OBJECT names only, never the
+  dashboard UIDs, so the console's links stay correct regardless of prefix.
 */}}
 
 {{- if and .Values.config.grafana .Values.config.grafana.enabled .Values.config.grafana.dashboardsEnabled }}
@@ -34,6 +35,14 @@
 {{- $folder := .Values.config.grafana.folder | default "Nexus" }}
 {{- $selector := .Values.config.grafana.instanceSelector.matchLabels }}
 {{- $prefix := .Values.config.grafana.namePrefix | default "chart-" }}
+
+{{- /* grafana-operator only reconciles a dashboard into an instance it can
+     select. With an empty selector every instance in scope matches, which on a
+     shared cluster means pushing Nexus dashboards into someone else's Grafana.
+     Fail loudly instead. */}}
+{{- if not $selector }}
+{{- fail "config.grafana.enabled requires config.grafana.instanceSelector.matchLabels — an empty selector would match every Grafana instance the operator can see. Set it to the labels of your Grafana CR, e.g. { dashboards: \"grafana\" }." }}
+{{- end }}
 
 {{/* ---------- ConfigMap holding each dashboard JSON ---------- */}}
 {{- range $name, $path := dict "01-nexus-overview.json" "files/grafana-dashboards/01-nexus-overview.json" "02-llm-spend.json" "files/grafana-dashboards/02-llm-spend.json" "03-eval-quality.json" "files/grafana-dashboards/03-eval-quality.json" }}
@@ -74,6 +83,9 @@ spec:
 
 {{/* ---------- Optional: alert contact point + OTLP rule group ---------- */}}
 {{- if and .Values.config.grafana.alertsEnabled .Values.config.grafana.folderUID }}
+{{- if not .Values.config.grafana.alertsWebhook }}
+{{- fail "config.grafana.alertsEnabled requires config.grafana.alertsWebhook — without it the contact point would silently point at a URL that does not exist in your cluster and alerts would be discarded." }}
+{{- end }}
 apiVersion: grafana.integreatly.org/v1beta1
 kind: GrafanaContactPoint
 metadata:
@@ -91,11 +103,12 @@ spec:
       {{- end }}
   settings:
     # The contact-point's settings are a free-form object matching the contact
-    # type. The webhook receiver URL is intentionally left blank by default;
-    # operators must override `.Values.config.grafana.alertsWebhook` before
-    # applying with alertsEnabled: true — the chart emits a validation error
-    # in NOTES.txt when this is unset.
-    url: {{ .Values.config.grafana.alertsWebhook | default "http://failover-echo.tenant-nexus.svc:8080/alert" }}
+    # type. There is no default receiver URL: the previous fallback pointed at
+    # a service in the vendor's own namespace, so a customer enabling alerts
+    # without setting alertsWebhook got a contact point that resolved to
+    # nothing and silently swallowed every alert. The guard above fails the
+    # render instead.
+    url: {{ .Values.config.grafana.alertsWebhook | quote }}
     httpMethod: POST
 ---
 apiVersion: grafana.integreatly.org/v1beta1

@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ffxnexus/nexus/internal/egress"
 )
 
 // Endpoints live under the LangSmith base host. cloudLangHost is
@@ -98,9 +100,11 @@ func New(endpoint, apiKey string) *Client {
 	}
 	endpoint = strings.TrimRight(endpoint, "/")
 	return &Client{
-		Endpoint:   endpoint,
-		APIKey:     strings.TrimSpace(apiKey),
-		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		Endpoint: endpoint,
+		APIKey:   strings.TrimSpace(apiKey),
+		// Tenant class: endpoint comes from the plugin manifest an org admin
+		// installed, so it is a destination the caller chose.
+		HTTPClient: egress.Client(egress.Tenant, 15*time.Second),
 	}
 }
 
@@ -255,7 +259,9 @@ func (c *Client) client() *http.Client {
 	if c.HTTPClient != nil {
 		return c.HTTPClient
 	}
-	return http.DefaultClient
+	// Never http.DefaultClient: it has no timeout and no destination policy, so
+	// a zero-valued Client would silently opt out of both.
+	return egress.Client(egress.Tenant, 15*time.Second)
 }
 
 // validationError is an internal marker so admin REST handlers

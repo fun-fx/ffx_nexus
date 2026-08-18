@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/egress"
 	"github.com/ffxnexus/nexus/internal/observability"
 )
 
@@ -54,18 +55,17 @@ func NewRemoteEvaluator(cfg RemoteConfig) *RemoteEvaluator {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 30 * time.Second
 	}
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		MaxIdleConns:          32,
-		MaxIdleConnsPerHost:   8,
-		IdleConnTimeout:       30 * time.Second,
-		ExpectContinueTimeout: 500 * time.Millisecond,
-	}
+	// Tenant class: BaseURL comes from an eval profile, and the payload carries
+	// prompt and completion text plus a judge_url the sidecar will itself call.
+	// The guard supplies the connection pooling this constructor used to
+	// configure by hand, and drops the proxy-from-environment that was here —
+	// a proxy would make the socket connect to the proxy's address, leaving the
+	// real destination in the request line where the address check never sees it.
 	return &RemoteEvaluator{
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		metrics: cfg.Metrics,
 		apiKey:  cfg.APIKey,
-		hc:      &http.Client{Timeout: cfg.Timeout, Transport: transport},
+		hc:      egress.Client(egress.Tenant, cfg.Timeout),
 	}
 }
 

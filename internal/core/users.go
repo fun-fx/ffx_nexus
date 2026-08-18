@@ -71,6 +71,26 @@ func (s *Store) GetUser(ctx context.Context, id string) (User, error) {
 	return u, err
 }
 
+// UserInOrg reports whether a user id exists inside the given org.
+//
+// Used by handlers that take a user id from the URL — the admin spend views —
+// so a request naming a user from another team is answered with a 404 rather
+// than with an empty result set. The empty set would already be safe, because
+// the analytics queries filter on org too, but it is indistinguishable from
+// "this colleague spent nothing this month", and an admin acting on that
+// reading draws the wrong conclusion. Answering "no such user, to you" makes
+// the boundary legible instead of merely enforced.
+func (s *Store) UserInOrg(ctx context.Context, orgID, userID string) (bool, error) {
+	if orgID == "" {
+		orgID = DefaultOrgID
+	}
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND org_id = $2)`,
+		userID, orgID).Scan(&exists)
+	return exists, err
+}
+
 // ListUsers returns all users in an org (no password hashes).
 func (s *Store) ListUsers(ctx context.Context, orgID string) ([]User, error) {
 	if orgID == "" {

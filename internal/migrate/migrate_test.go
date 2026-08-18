@@ -1,0 +1,469 @@
+package migrate_test
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"regexp"
+	"strings"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	nexus "github.com/ffxnexus/nexus"
+	"github.com/ffxnexus/nexus/internal/migrate"
+)
+
+// ---------------------------------------------------------------------------
+// Discovery: the class of bug that shipped three times
+// ---------------------------------------------------------------------------
+
+// Every .sql file in the repository must be discovered. This is the test that
+// would have caught 009-011, 014_invite_tokens.sql and the ClickHouse
+// benchmark_runs migration all being absent from the hardcoded boot list.
+func TestLoadDiscoversEveryCommittedMigration(t *testing.T) {
+	for _, tc := range []struct {
+		engine   migrate.Engine
+		mustHave []string
+	}{
+		{migrate.EnginePostgres, []string{
+			"postgres/001_init.sql",
+			"postgres/009_eval_plugins.sql",
+			"postgres/012_benchmark_runs.sql",
+			"postgres/013_scheduled_benchmarks.sql",
+			// Previously missing entirely: invites 500'd on every fresh install.
+			"postgres/014_invite_tokens.sql",
+		}},
+		{migrate.EngineClickHouse, []string{
+			"clickhouse/001_init.sql",
+			"clickhouse/008_turn_id.sql",
+			// Previously unreachable behind a duplicate 007 ordinal.
+			"clickhouse/009_benchmark_runs.sql",
+		}},
+	} {
+		migs, err := migrate.Load(nexus.Migrations, tc.engine)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", tc.engine, err)
+		}
+		got := map[string]bool{}
+		for _, m := range migs {
+			got[m.ID] = true
+		}
+		for _, want := range tc.mustHave {
+			if !got[want] {
+				t.Errorf("Load(%s) did not discover %s", tc.engine, want)
+			}
+		}
+	}
+}
+
+// Ordering must be numeric, and in particular 012 must precede 013: the old
+// list had them reversed, so 013's ALTER TABLE ran before 012 created the
+// table, and benchmark_runs.schedule_id was never created anywhere.
+func TestLoadOrdersByOrdinal(t *testing.T) {
+	for _, engine := range []migrate.Engine{migrate.EnginePostgres, migrate.EngineClickHouse} {
+		migs, err := migrate.Load(nexus.Migrations, engine)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", engine, err)
+		}
+		for i := 1; i < len(migs); i++ {
+			if migs[i-1].Ordinal >= migs[i].Ordinal {
+				t.Errorf("%s: %s (ord %d) is not before %s (ord %d)",
+					engine, migs[i-1].Name, migs[i-1].Ordinal, migs[i].Name, migs[i].Ordinal)
+			}
+		}
+	}
+
+	migs, err := migrate.Load(nexus.Migrations, migrate.EnginePostgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := func(name string) int {
+		for i, m := range migs {
+			if m.Name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	create, alter := idx("012_benchmark_runs.sql"), idx("013_scheduled_benchmarks.sql")
+	if create < 0 || alter < 0 {
+		t.Fatalf("expected both 012 and 013 present, got %d and %d", create, alter)
+	}
+	if create > alter {
+		t.Errorf("012_benchmark_runs.sql (CREATE) must run before 013_scheduled_benchmarks.sql (ALTER)")
+	}
+}
+
+// A duplicate ordinal has no defined order, which is how the ClickHouse 007
+// collision silently hid a migration. Load must refuse rather than guess.
+func TestLoadRejectsDuplicateOrdinals(t *testing.T) {
+	fsys := fstest.MapFS{
+		"migrations/postgres/001_init.sql":  {Data: []byte("SELECT 1;")},
+		"migrations/postgres/007_alpha.sql": {Data: []byte("SELECT 1;")},
+		"migrations/postgres/007_beta.sql":  {Data: []byte("SELECT 1;")},
+	}
+	_, err := migrate.Load(fsys, migrate.EnginePostgres)
+	if err == nil {
+		t.Fatal("Load accepted a duplicate ordinal, want error")
+	}
+	if !strings.Contains(err.Error(), "duplicate ordinal") {
+		t.Errorf("error should name the problem, got: %v", err)
+	}
+}
+
+func TestLoadRejectsUnnumberedFile(t *testing.T) {
+	fsys := fstest.MapFS{
+		"migrations/postgres/001_init.sql":  {Data: []byte("SELECT 1;")},
+		"migrations/postgres/add_thing.sql": {Data: []byte("SELECT 1;")},
+	}
+	if _, err := migrate.Load(fsys, migrate.EnginePostgres); err == nil {
+		t.Fatal("Load accepted a file without a numeric ordinal, want error")
+	}
+}
+
+func TestChecksumIsStableAndContentSensitive(t *testing.T) {
+	base := fstest.MapFS{"migrations/postgres/001_init.sql": {Data: []byte("SELECT 1;")}}
+	a, err := migrate.Load(base, migrate.EnginePostgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := migrate.Load(base, migrate.EnginePostgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a[0].Checksum != again[0].Checksum {
+		t.Error("checksum is not stable across loads")
+	}
+
+	edited := fstest.MapFS{"migrations/postgres/001_init.sql": {Data: []byte("SELECT 2;")}}
+	b, err := migrate.Load(edited, migrate.EnginePostgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a[0].Checksum == b[0].Checksum {
+		t.Error("checksum did not change when file content changed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Invariants the engine design depends on
+// ---------------------------------------------------------------------------
+
+// The ClickHouse path has no transactions and no lock; the Postgres path can
+// crash between DDL and ledger insert on an unclean shutdown. Both rely on
+// every statement being replay-safe. If someone adds unguarded DDL, that
+// assumption breaks silently - so assert it.
+func TestMigrationsAreIdempotent(t *testing.T) {
+	// Matches CREATE/ALTER/DROP of a schema object, capturing the guard if any.
+	unguarded := regexp.MustCompile(`(?im)^\s*(CREATE|DROP)\s+(OR\s+REPLACE\s+)?(TABLE|INDEX|VIEW|MATERIALIZED\s+VIEW|DICTIONARY|DATABASE|TYPE)\s+(?:IF\s+NOT\s+EXISTS\s+|IF\s+EXISTS\s+)?`)
+	guard := regexp.MustCompile(`(?i)IF\s+(NOT\s+)?EXISTS`)
+
+	for _, engine := range []migrate.Engine{migrate.EnginePostgres, migrate.EngineClickHouse} {
+		migs, err := migrate.Load(nexus.Migrations, engine)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", engine, err)
+		}
+		for _, m := range migs {
+			for i, line := range strings.Split(m.SQL, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "--") {
+					continue
+				}
+				if unguarded.MatchString(line) && !guard.MatchString(line) {
+					t.Errorf("%s:%d is not replay-safe (needs IF NOT EXISTS / IF EXISTS): %s",
+						m.ID, i+1, trimmed)
+				}
+				// ADD COLUMN / ADD INDEX must be guarded too.
+				if regexp.MustCompile(`(?i)^\s*ADD\s+(COLUMN|INDEX)\b`).MatchString(line) &&
+					!guard.MatchString(line) {
+					t.Errorf("%s:%d ADD without IF NOT EXISTS is not replay-safe: %s",
+						m.ID, i+1, trimmed)
+				}
+			}
+		}
+	}
+}
+
+// pgExecutor.Apply wraps each migration in a transaction together with its
+// ledger row. Postgres forbids a handful of statements inside a transaction; if
+// one is ever added, the migration would fail at runtime against a real
+// database rather than here.
+func TestPostgresMigrationsAreTransactionSafe(t *testing.T) {
+	forbidden := []string{
+		"CREATE INDEX CONCURRENTLY",
+		"DROP INDEX CONCURRENTLY",
+		"REINDEX CONCURRENTLY",
+		"VACUUM",
+		"CREATE DATABASE",
+		"DROP DATABASE",
+		"ALTER SYSTEM",
+		"CREATE TABLESPACE",
+	}
+	migs, err := migrate.Load(nexus.Migrations, migrate.EnginePostgres)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migs {
+		upper := strings.ToUpper(m.SQL)
+		for _, f := range forbidden {
+			if strings.Contains(upper, f) {
+				t.Errorf("%s contains %q, which cannot run inside a transaction; "+
+					"pgExecutor.Apply would fail. Either avoid it or give the migration "+
+					"engine an explicit non-transactional escape hatch.", m.ID, f)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Run(): ledger semantics, exercised against a fake Executor
+// ---------------------------------------------------------------------------
+
+type fakeExec struct {
+	engine   migrate.Engine
+	ledger   map[string]migrate.LedgerEntry
+	applyLog []string
+	failOn   string
+	locks    int
+	unlocks  int
+	existing bool
+}
+
+func newFake(engine migrate.Engine) *fakeExec {
+	return &fakeExec{engine: engine, ledger: map[string]migrate.LedgerEntry{}}
+}
+
+func (f *fakeExec) Engine() migrate.Engine                     { return f.engine }
+func (f *fakeExec) EnsureLedger(context.Context) error         { return nil }
+func (f *fakeExec) SchemaExists(context.Context) (bool, error) { return f.existing, nil }
+
+func (f *fakeExec) Applied(context.Context) (map[string]migrate.LedgerEntry, error) {
+	out := map[string]migrate.LedgerEntry{}
+	for k, v := range f.ledger {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (f *fakeExec) Apply(_ context.Context, m migrate.Migration) error {
+	if f.failOn == m.ID {
+		return errors.New("boom")
+	}
+	f.applyLog = append(f.applyLog, m.ID)
+	f.ledger[m.ID] = migrate.LedgerEntry{
+		ID: m.ID, Checksum: m.Checksum, AppliedAt: time.Now(), Success: true,
+	}
+	return nil
+}
+
+func (f *fakeExec) Lock(context.Context) (func(), error) {
+	f.locks++
+	return func() { f.unlocks++ }, nil
+}
+
+func fixtures() []migrate.Migration {
+	fsys := fstest.MapFS{
+		"migrations/postgres/001_a.sql": {Data: []byte("CREATE TABLE IF NOT EXISTS a();")},
+		"migrations/postgres/002_b.sql": {Data: []byte("CREATE TABLE IF NOT EXISTS b();")},
+		"migrations/postgres/003_c.sql": {Data: []byte("CREATE TABLE IF NOT EXISTS c();")},
+	}
+	migs, err := migrate.Load(fsys, migrate.EnginePostgres)
+	if err != nil {
+		panic(err)
+	}
+	return migs
+}
+
+func opts() migrate.Options {
+	return migrate.Options{Logger: slog.New(slog.DiscardHandler)}
+}
+
+func TestRunAppliesAllThenSkipsOnSecondRun(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+
+	first, err := migrate.Run(context.Background(), ex, migs, opts())
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if len(first.Applied) != 3 {
+		t.Fatalf("first run applied %v, want all 3", first.Applied)
+	}
+
+	// Re-running is the common case: every pod restart, every replica.
+	second, err := migrate.Run(context.Background(), ex, migs, opts())
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(second.Applied) != 0 {
+		t.Errorf("second run re-applied %v, want none", second.Applied)
+	}
+	if len(second.Skipped) != 3 {
+		t.Errorf("second run skipped %v, want all 3", second.Skipped)
+	}
+	if len(ex.applyLog) != 3 {
+		t.Errorf("Apply called %d times total, want exactly 3", len(ex.applyLog))
+	}
+}
+
+func TestRunAppliesOnlyTheNewMigration(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+	if _, err := migrate.Run(context.Background(), ex, migs[:2], opts()); err != nil {
+		t.Fatal(err)
+	}
+	ex.applyLog = nil
+
+	res, err := migrate.Run(context.Background(), ex, migs, opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Applied) != 1 || res.Applied[0] != "postgres/003_c.sql" {
+		t.Fatalf("applied %v, want only postgres/003_c.sql", res.Applied)
+	}
+}
+
+// A failure must abort rather than continue to later migrations, and must not
+// be reported as success. The old code logged and carried on, leaving the
+// binary serving traffic against a schema it did not match.
+func TestRunStopsAtFirstFailure(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+	ex.failOn = "postgres/002_b.sql"
+
+	_, err := migrate.Run(context.Background(), ex, migs, opts())
+	if err == nil {
+		t.Fatal("Run returned nil error on a failing migration")
+	}
+	if !strings.Contains(err.Error(), "002_b.sql") {
+		t.Errorf("error should name the failing migration, got: %v", err)
+	}
+	for _, applied := range ex.applyLog {
+		if applied == "postgres/003_c.sql" {
+			t.Error("Run continued past the failure to 003_c.sql")
+		}
+	}
+}
+
+// Editing an already-applied migration means the recorded schema and the file
+// no longer agree. Skipping it hides the divergence; re-running it may not even
+// be valid. Stop and say so.
+func TestRunRejectsChecksumDrift(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+	if _, err := migrate.Run(context.Background(), ex, migs, opts()); err != nil {
+		t.Fatal(err)
+	}
+
+	edited := append([]migrate.Migration(nil), migs...)
+	edited[1].Checksum = "deadbeefdeadbeefdeadbeef"
+
+	_, err := migrate.Run(context.Background(), ex, edited, opts())
+	if !errors.Is(err, migrate.ErrChecksumMismatch) {
+		t.Fatalf("err = %v, want ErrChecksumMismatch", err)
+	}
+
+	// ...unless the operator explicitly accepts it.
+	o := opts()
+	o.AllowChecksumDrift = true
+	if _, err := migrate.Run(context.Background(), ex, edited, o); err != nil {
+		t.Fatalf("AllowChecksumDrift should permit the run, got %v", err)
+	}
+}
+
+func TestRunTakesAndReleasesTheLock(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+	if _, err := migrate.Run(context.Background(), ex, migs, opts()); err != nil {
+		t.Fatal(err)
+	}
+	if ex.locks != 1 || ex.unlocks != 1 {
+		t.Errorf("locks=%d unlocks=%d, want 1 and 1", ex.locks, ex.unlocks)
+	}
+}
+
+// The lock must be released even when a migration fails, or the next attempt
+// deadlocks behind a lock nobody holds any more.
+func TestRunReleasesLockOnFailure(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+	ex.failOn = "postgres/001_a.sql"
+	if _, err := migrate.Run(context.Background(), ex, migs, opts()); err == nil {
+		t.Fatal("expected failure")
+	}
+	if ex.unlocks != 1 {
+		t.Errorf("unlocks=%d, want 1 - the lock leaked on the failure path", ex.unlocks)
+	}
+}
+
+func TestDryRunChangesNothing(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+	o := opts()
+	o.DryRun = true
+
+	res, err := migrate.Run(context.Background(), ex, migs, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Pending) != 3 {
+		t.Errorf("Pending = %v, want all 3", res.Pending)
+	}
+	if len(ex.applyLog) != 0 {
+		t.Errorf("dry run applied %v, want nothing", ex.applyLog)
+	}
+	if ex.locks != 0 {
+		t.Errorf("dry run took the migration lock %d times, want 0", ex.locks)
+	}
+}
+
+// A pre-ledger database is adopted, not reinitialised, and the operator is told.
+func TestRunAdoptsExistingDatabase(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+	ex.existing = true
+
+	res, err := migrate.Run(context.Background(), ex, migs, opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Adopted {
+		t.Error("Adopted = false, want true for a database with objects but no ledger")
+	}
+	// Adoption replays everything; idempotent DDL makes that a no-op for what
+	// exists and repairs what earlier defects skipped.
+	if len(res.Applied) != 3 {
+		t.Errorf("Applied = %v, want all 3 replayed during adoption", res.Applied)
+	}
+}
+
+func TestRunOnFreshDatabaseIsNotFlaggedAsAdoption(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+	ex.existing = false
+	res, err := migrate.Run(context.Background(), ex, migs, opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Adopted {
+		t.Error("Adopted = true on an empty database, want false")
+	}
+}
+
+func TestPendingReportsOutstandingWithoutLocking(t *testing.T) {
+	ex, migs := newFake(migrate.EnginePostgres), fixtures()
+
+	pending, err := migrate.Pending(context.Background(), ex, migs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 3 {
+		t.Fatalf("Pending = %v, want 3", pending)
+	}
+	if ex.locks != 0 {
+		t.Error("Pending took the migration lock; the readiness probe must not contend for it")
+	}
+
+	if _, err := migrate.Run(context.Background(), ex, migs, opts()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = migrate.Pending(context.Background(), ex, migs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("Pending = %v after a full run, want empty", pending)
+	}
+}

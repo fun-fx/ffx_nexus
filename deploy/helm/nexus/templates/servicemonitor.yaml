@@ -1,4 +1,11 @@
-{{- if .Values.metrics.enabled -}}
+{{- /* A ServiceMonitor needs BOTH a metrics port to scrape (metrics.enabled,
+     which declares the container + Service port) and an operator to consume
+     the CR (metrics.serviceMonitor.enabled). Previously only the first was
+     checked, so every cluster with metrics on got a ServiceMonitor whether or
+     not it ran the Prometheus Operator - on a cluster without the CRD that
+     fails the whole release with "no matches for kind ServiceMonitor", and
+     the documented serviceMonitor.enabled flag did nothing. */}}
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled -}}
 {{- $fullName := include "nexus.fullname" . -}}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor

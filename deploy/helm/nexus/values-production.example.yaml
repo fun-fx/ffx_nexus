@@ -1,0 +1,176 @@
+# =============================================================================
+# Nexus - customer PRODUCTION example values
+# =============================================================================
+# Copy this file, replace every <PLACEHOLDER>, and install with:
+#
+#   helm install nexus oci://ghcr.io/fun-fx/charts/nexus \
+#     --version <CHART_VERSION> \
+#     --namespace nexus --create-namespace \
+#     -f values-production.yaml
+#
+# This file contains NO credentials. Every secret arrives through the Secret
+# named in `existingSecret`. See:
+#   docs/customer-self-hosted-install.md          - prerequisites, first login
+#   docs/customer-self-hosted-security.md         - threat model, key rotation
+#   docs/customer-self-hosted-upgrade-rollback.md - version pinning, rollback
+#   docs/customer-self-hosted-backup-recovery.md  - master key + DB backups
+#
+# Differences from the staging example are called out with [PROD] below.
+# =============================================================================
+
+# --- Image -------------------------------------------------------------------
+# [PROD] Pin by DIGEST, not tag. A digest is immutable, so "which build is
+# running" and "roll back to the previous build" both have exact answers even
+# if a tag is later moved or deleted.
+image:
+  repository: ghcr.io/fun-fx/ffx_nexus
+  tag: "<NEXUS_VERSION>"          # e.g. "0.6.12" - or use a digest:
+  # tag: "sha256:<DIGEST>"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+# - name: nexus-registry
+
+# [PROD] At least 3 so a single node drain never drops capacity below 2.
+replicaCount: 3
+
+# --- Application configuration (non-secret) ----------------------------------
+config:
+  publicBaseUrl: "https://nexus.<CUSTOMER_DOMAIN>"
+  publicGatewayUrl: "https://nexus-api.<CUSTOMER_DOMAIN>"
+  # [PROD] Exact origins only. Never a wildcard: the console authenticates
+  # with a cookie, so a permissive origin list is a cross-site request risk.
+  publicWebOrigins:
+    - "https://nexus.<CUSTOMER_DOMAIN>"
+
+  # [PROD] strict_byok is the most conservative: each caller must register
+  # their own provider key, so one leaked virtual key cannot spend on a
+  # shared org credential. Switch to "shared" only with a deliberate reason.
+  keyMode: "strict_byok"
+
+  # [PROD] Users arrive by SSO or admin invite; never open signup.
+  allowSignup: false
+
+  # --- SSO (customer IdP) ----------------------------------------------------
+  # Client secret comes from existingSecret as NEXUS_SSO_CLIENT_SECRET.
+  sso:
+    issuer: "<IDP_ISSUER_URL>"
+    clientId: "<IDP_CLIENT_ID>"
+    redirectUrl: "https://nexus.<CUSTOMER_DOMAIN>/api/auth/sso/callback"
+    label: "Sign in with <CUSTOMER_IDP_NAME>"
+
+  # --- Invite email ----------------------------------------------------------
+  # fromAddress must be a domain you control and have SPF/DKIM for, otherwise
+  # invite mail is filtered as spam. Credential comes from existingSecret.
+  email:
+    provider: "smtp"
+    fromAddress: "Nexus <no-reply@<CUSTOMER_DOMAIN>>"
+    smtp:
+      host: "<SMTP_HOST>"
+      port: 587
+      username: "<SMTP_USERNAME>"
+      encryption: "starttls"
+
+  # --- Observability ---------------------------------------------------------
+  # Link only. Grafana being down cannot affect the gateway request path.
+  publicGrafanaUrl: "https://grafana.<CUSTOMER_DOMAIN>"
+
+  otlp:
+    enabled: false
+    endpoint: ""
+
+  # [PROD] Alert sinks for upstream provider failover. Set at least one so a
+  # degraded primary provider reaches a channel a human actually reads.
+  failoverSlack: ""               # Slack-compatible incoming webhook URL
+  failoverAlertCooldown: "5m"     # coalesce repeats
+
+  # [PROD] gomemlimit ~= 85% of resources.limits.memory.
+  runtime:
+    gomemlimit: "1740MiB"
+    gogc: "100"
+
+  maxConcurrentPerKey: 32
+
+# --- Prometheus scrape surface -----------------------------------------------
+# Never exposed through Ingress; reachable only inside the cluster.
+metrics:
+  enabled: true
+  port: 9101
+  path: "/metrics"
+  serviceMonitor:
+    enabled: true                 # requires the Prometheus Operator CRDs
+    interval: 30s
+    additionalLabels: {}          # e.g. { release: kube-prometheus-stack }
+
+# --- Datastores (customer-managed) -------------------------------------------
+# Connection URLs live in existingSecret. Redis is REQUIRED here: with
+# replicaCount 3 and no Redis, rate limits and monthly budgets would be
+# enforced per-pod, i.e. 3x the intended ceiling.
+dependencies:
+  postgres:
+    enabled: true
+  clickhouse:
+    enabled: true
+  redis:
+    enabled: true
+
+# --- Secrets -----------------------------------------------------------------
+# [PROD] Manage this Secret with External Secrets Operator / Vault Agent so no
+# credential is ever written to a values file or git history. Required keys are
+# listed in docs/customer-self-hosted-install.md.
+#
+# BACK UP NEXUS_MASTER_KEY OUT OF BAND. It wraps every stored provider
+# credential; losing it means every customer-supplied provider key must be
+# re-entered by hand. Restoring a database WITHOUT the matching master key
+# yields rows that cannot be decrypted.
+existingSecret: "nexus-secrets"
+
+# --- Ingress -----------------------------------------------------------------
+# [PROD] Only the GATEWAY hostname is published here. Reach the console
+# through an internal-only ingress class, a VPN, or an IP allow-list: it is
+# the admin surface for keys, credentials and audit.
+ingress:
+  enabled: true
+  className: "<INGRESS_CLASS>"
+  annotations:
+    cert-manager.io/cluster-issuer: "<CLUSTER_ISSUER>"
+    # Recommended: cap request body size and enforce HTTPS redirect.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+  hosts:
+    - host: nexus-api.<CUSTOMER_DOMAIN>
+      paths:
+        - path: /
+          pathType: Prefix
+          port: gateway
+  tls:
+    - secretName: nexus-gateway-tls
+      hosts:
+        - nexus-api.<CUSTOMER_DOMAIN>
+
+# --- Scheduling / resilience -------------------------------------------------
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# [PROD] Spread across zones so a single zone loss keeps a quorum serving.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: nexus

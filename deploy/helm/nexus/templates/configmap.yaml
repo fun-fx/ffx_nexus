@@ -14,12 +14,32 @@ data:
   {{- with .Values.config.publicGatewayUrl }}
   NEXUS_PUBLIC_GATEWAY_URL: {{ . | quote }}
   {{- end }}
+  {{- /* Public console origin. Roots the invite URLs an admin copies out
+       of the Users page and is required for LangSmith automation webhook
+       registration. Previously absent from this ConfigMap entirely, which
+       meant operators had to reach for extraEnv to set it. */}}
+  {{- with .Values.config.publicBaseUrl }}
+  NEXUS_PUBLIC_BASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- /* Browser-reachable base URL of the customer's own Grafana. Consumed
+       by GET /api/ui/observability so the console can render an "Open in
+       Grafana" link. Empty ⇒ the endpoint reports no Grafana and the
+       console omits the link. Nexus never calls Grafana server-side. */}}
+  {{- with .Values.config.publicGrafanaUrl }}
+  NEXUS_PUBLIC_GRAFANA_URL: {{ . | quote }}
+  {{- end }}
   {{- with .Values.config.publicWebOrigins }}
   # Operator-supplied web-origin allow-list for the console CSP
   # `connect-src` directive. Replaces the hardcoded *.ffx.ai list
   # previously baked into internal/console/security.go so multi-tenant
   # Helm deploys do not need a code change to admit their own origin.
   NEXUS_PUBLIC_WEB_ORIGINS: {{ join "," . | quote }}
+  {{- end }}
+  {{- with .Values.config.egressTenantAllowedCidrs }}
+  # Private ranges that destinations configured through the API may reach.
+  # Empty (the default) means public internet only for those destinations.
+  # Link-local is never reachable regardless of this value.
+  NEXUS_EGRESS_TENANT_ALLOWED_CIDRS: {{ . | quote }}
   {{- end }}
   {{- with .Values.config.upstreamTimeout }}
   NEXUS_UPSTREAM_TIMEOUT: {{ . | quote }}
@@ -137,18 +157,26 @@ data:
   {{- with .Values.config.otlp.endpoint }}
   NEXUS_OTLP_ENDPOINT: {{ . | quote }}
   {{- end }}
-  {{- with .Values.config.metricsAddr }}
-  NEXUS_METRICS_ADDR: {{ . | quote }}
-  {{- end }}
   {{- /* Service-scoped metrics surface (V3). When `metrics.enabled` is true,
        bind a Prometheus text-format export at `metrics.host:metrics.port` so
        an in-cluster scraper (Prometheus, VictoriaMetrics, vmagent) can pull
        /metrics. Independent of OTLP: setting `metrics.enabled: true` makes
-       the scrape surface available WITHOUT enabling OTLP forwarding. */}}
+       the scrape surface available WITHOUT enabling OTLP forwarding.
+
+       NEXUS_METRICS_ADDR is emitted exactly ONCE. `metrics.enabled` wins
+       because it is the only path that also declares the container port and
+       the Service port; `config.metricsAddr` is the raw escape hatch for
+       binding somewhere the Service does not publish. Emitting both (the
+       previous behaviour) produced a duplicate key in this ConfigMap's data
+       map, so which address won depended on YAML parse order. */}}
   {{- if .Values.metrics.enabled }}
   {{- $addr := "" }}
   {{- if .Values.metrics.host }}{{ $addr = printf "%s:%d" .Values.metrics.host (int .Values.metrics.port) }}{{ else }}{{ $addr = printf ":%d" (int .Values.metrics.port) }}{{ end }}
   NEXUS_METRICS_ADDR: {{ $addr | quote }}
+  {{- else }}
+  {{- with .Values.config.metricsAddr }}
+  NEXUS_METRICS_ADDR: {{ . | quote }}
+  {{- end }}
   {{- end }}
 
   {{- /* V4 failover alert sinks */}}
@@ -211,6 +239,54 @@ data:
   {{- end }}
   {{- with .requestTimeout }}
   NEXUS_METABASE_REQUEST_TIMEOUT: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+
+  {{- /* Invite email transport. Provider-neutral: `resend` (HTTP API) or
+       `smtp` (any RFC 5321 relay the customer already runs). Every field is
+       optional — wrap in `with .Values.config.email` so a nil map (partial
+       overrides via `helm install -f …`) does not blow up the template.
+
+       Deliberately NO default fromAddress. A self-hosted install must send
+       from a domain the CUSTOMER controls and has SPF/DKIM for; a vendor
+       default meant invite mail was issued from a domain the customer could
+       not authenticate, so it silently landed in spam. With the whole block
+       empty the transport is off and invites still work through the copyable
+       URL in the admin console.
+
+       Secrets (Resend API key, SMTP password) are rendered into the Secret,
+       never here. */}}
+  {{- with .Values.config.email }}
+  {{- with .provider }}
+  NEXUS_EMAIL_PROVIDER: {{ . | quote }}
+  {{- end }}
+  {{- with .fromAddress }}
+  NEXUS_EMAIL_FROM_ADDRESS: {{ . | quote }}
+  {{- end }}
+  {{- with .requestTimeout }}
+  NEXUS_EMAIL_REQUEST_TIMEOUT: {{ . | quote }}
+  {{- end }}
+  {{- with .publicBaseUrl }}
+  NEXUS_EMAIL_PUBLIC_BASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .resend }}
+  {{- with .apiBaseUrl }}
+  NEXUS_RESEND_API_BASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- with .smtp }}
+  {{- with .host }}
+  NEXUS_SMTP_HOST: {{ . | quote }}
+  {{- end }}
+  {{- with .port }}
+  NEXUS_SMTP_PORT: {{ . | quote }}
+  {{- end }}
+  {{- with .username }}
+  NEXUS_SMTP_USERNAME: {{ . | quote }}
+  {{- end }}
+  {{- with .encryption }}
+  NEXUS_SMTP_ENCRYPTION: {{ . | quote }}
+  {{- end }}
   {{- end }}
   {{- end }}
 

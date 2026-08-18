@@ -66,8 +66,23 @@ type InviteIssued struct {
 }
 
 // ErrInviteNotFound is returned when the public accept path can't locate
-// the record (revoked, expired, never issued, consumed twice).
+// the record: never issued, or revoked by an admin.
 var ErrInviteNotFound = errors.New("core: invite not found or no longer valid")
+
+// ErrInviteConsumed is returned when a token that has already been accepted is
+// replayed. It is distinct from ErrInviteNotFound so the accept page can tell
+// the visitor "this invite was already used, sign in instead" rather than
+// sending them back to an admin for a new link they do not need.
+//
+// The distinction is safe to expose. Both cases require possession of a 256-bit
+// token, so revealing which one applies tells an attacker nothing they could not
+// already determine, and the response carries no account data.
+var ErrInviteConsumed = errors.New("core: invite already accepted")
+
+// ErrInviteExpired is returned when the token is authentic but past its TTL.
+// Separated for the same reason: the remedy is "ask for a fresh invite", which
+// is worth saying plainly instead of hiding behind a generic not-found.
+var ErrInviteExpired = errors.New("core: invite expired")
 
 // DefaultInviteTTL is how long an issued invite stays open. Long enough to
 // survive an out-of-band handoff that takes a few business days; short
@@ -234,12 +249,26 @@ func (s *Store) LookupInvite(ctx context.Context, raw string) (Invite, error) {
 	return inv, nil
 }
 
-// AcceptInvite swaps an invite token for a real user record. It is
-// idempotent at the storage layer — re-attempting the same token returns
-// the already-created user rather than failing. Password becomes the
-// invitee's first active credential; the user.create audit row fires in
-// the same call so the existing user journey continues to see one event
-// per activated account.
+// AcceptInvite swaps an invite token for a real user record.
+//
+// Acceptance is single-use and terminal: once an invite has been accepted,
+// replaying the token yields ErrInviteConsumed forever. The row keeps its
+// accepted_at/accepted_by stamp for the audit trail, but the token stops being
+// an authority for anything.
+//
+// This deliberately replaced an "idempotent re-visit" path that looked up and
+// returned the already-created user. That behaviour was wrong twice over. It
+// dereferenced inv.AcceptedBy, which the FOR UPDATE query above never selected,
+// so a replay was a nil-pointer panic rather than a response. And had the
+// pointer been populated, an unauthenticated caller holding a used invite link
+// — one still sitting in a forwarded email, a browser history, or a proxy log
+// long after onboarding — would have received that user's id, org, email and
+// role back. An invite link is a bearer credential handed out over email; it
+// must buy exactly one thing, exactly once.
+//
+// Password becomes the invitee's first active credential; the user.create audit
+// row fires in the same transaction so the user journey still sees one event per
+// activated account.
 func (s *Store) AcceptInvite(ctx context.Context, raw, password string) (User, string, error) {
 	hash := hashInviteToken(raw)
 	tx, err := s.pool.Begin(ctx)
@@ -250,6 +279,9 @@ func (s *Store) AcceptInvite(ctx context.Context, raw, password string) (User, s
 
 	var inv Invite
 	role := ""
+	// FOR UPDATE serialises two invitees racing on the same link: the second
+	// blocks here, then observes accepted_at and is rejected below, so the
+	// token cannot mint two users.
 	err = tx.QueryRow(ctx, `
 		SELECT id, org_id, email, role, accepted_at, expires_at, revoked_at
 		FROM invite_tokens WHERE token_hash = $1 FOR UPDATE`, hash).Scan(
@@ -266,22 +298,10 @@ func (s *Store) AcceptInvite(ctx context.Context, raw, password string) (User, s
 		return User{}, "", ErrInviteNotFound
 	}
 	if inv.AcceptedAt != nil {
-		// Re-visit path: emit the original user rather than a duplicate.
-		var u User
-		if err := tx.QueryRow(ctx, `
-			SELECT id, org_id, email, role, enforce_limits, created_at, onboarded_at
-			FROM users WHERE id = $1`, *inv.AcceptedBy).Scan(
-			&u.ID, &u.OrgID, &u.Email, &u.Role, &u.EnforceLimits, &u.CreatedAt, &u.OnboardedAt,
-		); err != nil {
-			return User{}, "", err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return User{}, "", err
-		}
-		return u, inv.ID, nil
+		return User{}, "", ErrInviteConsumed
 	}
 	if time.Now().UTC().After(inv.ExpiresAt) {
-		return User{}, "", ErrInviteNotFound
+		return User{}, "", ErrInviteExpired
 	}
 
 	// Materialise user row inside the same transaction so a crash

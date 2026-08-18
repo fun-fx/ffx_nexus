@@ -103,7 +103,47 @@ func adminSpendUserID(r *http.Request, caller core.User) string {
 	return id
 }
 
+// resolveSpendTarget resolves {id} and confirms the named user is a member of
+// the caller's org, writing a 404 and returning ok=false when they are not.
+//
+// The analytics queries downstream already filter on org, so a foreign user id
+// could not leak another team's numbers. What it could do is return an empty
+// series that reads as "this person spent nothing", which is a worse failure
+// than a refusal: an admin can act on it. The lookup also means a URL naming a
+// user who simply does not exist gets the same answer as one naming a user in
+// another team, so the endpoint cannot be used to probe for valid user ids.
+//
+// When the control plane is not wired there is nothing to check against, so the
+// caller's own id is the only target that can be honoured.
+func (s *Server) resolveSpendTarget(w http.ResponseWriter, r *http.Request, caller core.User) (string, bool) {
+	target := adminSpendUserID(r, caller)
+	if target == caller.ID {
+		return target, true
+	}
+	if s.store == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "control plane disabled: cannot verify org membership for another user",
+		})
+		return "", false
+	}
+	ok, err := s.store.UserInOrg(r.Context(), orgID(r), target)
+	if err != nil {
+		s.log.Error("spend target membership check failed", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "lookup failed"})
+		return "", false
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		return "", false
+	}
+	return target, true
+}
+
 func (s *Server) userSpendDaily(w http.ResponseWriter, r *http.Request, caller core.User) {
+	target, ok := s.resolveSpendTarget(w, r, caller)
+	if !ok {
+		return
+	}
 	if s.reader == nil {
 		writeJSON(w, http.StatusOK, []observability.DailySpendRow{})
 		return
@@ -111,7 +151,7 @@ func (s *Server) userSpendDaily(w http.ResponseWriter, r *http.Request, caller c
 	days := spendDailyDays(r)
 	until := time.Now().UTC()
 	since := until.AddDate(0, 0, -days)
-	rows, err := s.reader.DailySpendByDay(r.Context(), since, until, orgID(r), adminSpendUserID(r, caller))
+	rows, err := s.reader.DailySpendByDay(r.Context(), since, until, orgID(r), target)
 	if err != nil {
 		s.log.Error("user spend daily query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -126,11 +166,15 @@ func (s *Server) userSpendBreakdown(w http.ResponseWriter, r *http.Request, call
 		http.Error(w, "day must be YYYY-MM-DD", http.StatusUnprocessableEntity)
 		return
 	}
+	target, ok := s.resolveSpendTarget(w, r, caller)
+	if !ok {
+		return
+	}
 	if s.reader == nil {
 		writeJSON(w, http.StatusOK, []observability.DailySpendBreakdownRow{})
 		return
 	}
-	rows, err := s.reader.DailySpendBreakdown(r.Context(), day, orgID(r), adminSpendUserID(r, caller))
+	rows, err := s.reader.DailySpendBreakdown(r.Context(), day, orgID(r), target)
 	if err != nil {
 		s.log.Error("user spend breakdown query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -163,12 +207,16 @@ func (s *Server) mySpendSummary(w http.ResponseWriter, r *http.Request, u core.U
 // resolved {id}'s gateway_traces, intercepted at adminSpendUserID so
 // `id=me` reads the admin's own rollup.
 func (s *Server) userSpendSummary(w http.ResponseWriter, r *http.Request, caller core.User) {
+	target, ok := s.resolveSpendTarget(w, r, caller)
+	if !ok {
+		return
+	}
 	if s.reader == nil {
 		writeJSON(w, http.StatusOK, emptySummary(spendDailyDays(r)))
 		return
 	}
 	days := spendDailyDays(r)
-	out, err := s.reader.DailySpendSummary(r.Context(), days, orgID(r), adminSpendUserID(r, caller))
+	out, err := s.reader.DailySpendSummary(r.Context(), days, orgID(r), target)
 	if err != nil {
 		s.log.Error("user spend summary query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)

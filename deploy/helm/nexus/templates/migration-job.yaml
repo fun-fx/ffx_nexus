@@ -1,0 +1,121 @@
+{{- /*
+Schema migration Job, run as a Helm pre-install / pre-upgrade hook.
+
+Why a hook Job rather than migrating at pod startup:
+
+  * A failed migration must STOP the rollout. Helm waits for this Job to reach
+    Complete and aborts the release if it fails, so a bad migration is a failed
+    `helm upgrade` with logs to read - not a fleet of pods that started, found a
+    schema they did not match, and began returning 500s to the customer's
+    applications.
+  * Migration must happen ONCE, before any new pod serves traffic. Migrating at
+    boot means every replica races (the advisory lock makes that safe, but it
+    also means DDL lands in the middle of a rolling update, while old and new
+    binaries are both live against a schema neither was tested against).
+  * The Job runs the SAME image tag and the SAME ConfigMap/Secret as the
+    Deployment, so there is no way for the migration to run a different build or
+    point at a different database than the application will.
+
+The application pods still verify: with NEXUS_AUTO_MIGRATE unset they check the
+ledger at boot and report NotReady (503 on /readyz, naming the outstanding
+migrations) rather than serving traffic against a schema that is behind. The Job
+and the readiness gate are belt and braces, not alternatives.
+
+Rollback: there are no down migrations, on purpose - see
+docs/customer-self-hosted-upgrade-rollback.md. Schema changes are additive, so
+rolling the application back is safe without touching the schema.
+*/}}
+{{- if .Values.migrations.enabled }}
+{{- if or .Values.dependencies.postgres.enabled .Values.dependencies.clickhouse.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Include the revision so each upgrade creates a distinct Job. Without it,
+  # Helm would try to patch an immutable Job spec on the second upgrade.
+  name: {{ include "nexus.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    # Negative weight: run before anything else the release creates.
+    "helm.sh/hook-weight": "-5"
+    # Deliberately NOT including hook-failed: a failed migration Job and its
+    # pod logs must survive for the operator to read. Successful ones are
+    # cleaned up so the namespace does not fill with completed Jobs.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+      {{- with .Values.migrations.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nexus.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          # Same image and tag as the Deployment: the migration set is embedded
+          # in the binary, so this guarantees the schema matches the build that
+          # is about to start.
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - migrate
+            - --engine={{ .Values.migrations.engine }}
+            - --timeout={{ .Values.migrations.timeout }}
+            {{- if .Values.migrations.allowChecksumDrift }}
+            # DANGER: accepts an edited already-applied migration. Only set this
+            # after verifying the schema by hand; see the values.yaml comment.
+            - --allow-checksum-drift
+            {{- end }}
+          envFrom:
+            # Identical config and secret sources as the Deployment, so the Job
+            # cannot possibly target a different database.
+            - configMapRef:
+                name: {{ include "nexus.fullname" . }}
+            - secretRef:
+                name: {{ include "nexus.secretName" . }}
+            {{- with .Values.envFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

@@ -180,8 +180,19 @@ func (s *Store) listVirtualKeys(ctx context.Context, orgID, userID string) ([]Vi
 
 // RevokeVirtualKey marks a key revoked. actorID is the user_id of the caller
 // (empty for system); recorded in the audit log.
+//
+// orgID is a filter, not just an audit field. It previously appeared only in the
+// audit row while the UPDATE matched on id alone, so an admin of one team could
+// revoke any key in the installation by its UUID — and the audit trail recorded
+// the revocation under the caller's org rather than the key's, so the affected
+// team could not even find it. Revoking a key takes an application offline, so
+// this is a denial-of-service reachable across a boundary the product promises.
+//
+// A key in another org now reports ErrNotFound: from the caller's side it does
+// not exist, and answering "forbidden" would confirm the UUID is real.
 func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, actorID, id string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE virtual_keys SET revoked = TRUE WHERE id = $1`, id)
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE virtual_keys SET revoked = TRUE WHERE id = $1 AND org_id = $2`, id, orgID)
 	if err != nil {
 		return err
 	}
@@ -441,8 +452,16 @@ func nullStr(s string) any {
 
 // DeleteCredential removes a credential. actorID is the user_id of the caller
 // (empty for system); recorded in the audit log.
+//
+// As with RevokeVirtualKey, orgID was audit-only while the DELETE matched on id
+// alone. Deleting another team's provider credential is unrecoverable — the
+// plaintext secret only ever existed at the provider and in the ciphertext this
+// row held — so the blast radius was worse than the key case. RotateCredential
+// on the neighbouring line already filtered by org_id, which is what makes this
+// an oversight rather than a design.
 func (s *Store) DeleteCredential(ctx context.Context, orgID, actorID, id string) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM provider_credentials WHERE id = $1`, id)
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM provider_credentials WHERE id = $1 AND org_id = $2`, id, orgID)
 	if err != nil {
 		return err
 	}

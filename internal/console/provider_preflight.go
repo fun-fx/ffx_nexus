@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ffxnexus/nexus/internal/core"
+	"github.com/ffxnexus/nexus/internal/egress"
 )
 
 // preflightCredentialsRequest is the JSON shape the Credentials drawer
@@ -217,7 +218,12 @@ const probeBodyLimit int64 = 4096
 // io.LimitReader so a vendor returning a 4MB error page cannot slow
 // the handler down.
 func runProbe(ctx context.Context, req *http.Request) (int, string, error) {
-	client := &http.Client{Timeout: preflightTimeout}
+	// Tenant class: for the ollama and grid providers the probe target is the
+	// base_url in the request body, so any authenticated user can name it. The
+	// status code and the first probeBodyLimit bytes of the response are returned
+	// to that user, which makes this a general-purpose read of anything the pod
+	// can reach unless the destination is checked.
+	client := egress.Client(egress.Tenant, preflightTimeout)
 	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
 		return 0, "", err

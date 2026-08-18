@@ -20,10 +20,16 @@ const (
 	AuditUserUpdate = "user.update"
 	// Subject: invite flow. Issued and revoked cover the admin half;
 	// accepted lives on the invitee side and the user.create row is
-	// emitted alongside it in the same transaction.
-	AuditInviteIssue  = "invite.issued"
-	AuditInviteRevoke = "invite.revoked"
-	AuditInviteAccept = "invite.accepted"
+	// emitted alongside it in the same transaction. EmailSent /
+	// EmailFail are the email-transport halves of "issued":
+	// Resend-bound envelopes go out on a best-effort basis after
+	// the invite row is persisted, and we record the outcome so
+	// a flake in the transport does not lose information.
+	AuditInviteIssue     = "invite.issued"
+	AuditInviteRevoke    = "invite.revoked"
+	AuditInviteAccept    = "invite.accepted"
+	AuditInviteEmailSent = "invite.email.sent"
+	AuditInviteEmailFail = "invite.email.failed"
 	// Subject: password / OIDC login. Email/password login is the same data
 	// line as SSO but kept distinct for filterability.
 	AuditUserLogin = "user.login"  // password/email login, was "auth.login"
@@ -53,6 +59,8 @@ var AllAuditActions = []string{
 	AuditInviteIssue,
 	AuditInviteRevoke,
 	AuditInviteAccept,
+	AuditInviteEmailSent,
+	AuditInviteEmailFail,
 	AuditUserLogin,
 	AuditSSOLogin,
 	AuditLogout,

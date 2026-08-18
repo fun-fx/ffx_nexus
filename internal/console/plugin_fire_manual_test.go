@@ -31,7 +31,7 @@ type stubManualFirer struct {
 	calledFire string // "FireManual" or "FireScheduled" — set to the name of the invoked method
 }
 
-func (s *stubManualFirer) FireManual(_ context.Context, name, trigger string) (int, error) {
+func (s *stubManualFirer) FireManual(_ context.Context, _, name, trigger string) (int, error) {
 	s.name = name
 	s.trigger = trigger
 	s.mode = "manual"
@@ -39,7 +39,7 @@ func (s *stubManualFirer) FireManual(_ context.Context, name, trigger string) (i
 	return s.count, s.err
 }
 
-func (s *stubManualFirer) FireScheduled(_ context.Context, name, trigger string) (int, error) {
+func (s *stubManualFirer) FireScheduled(_ context.Context, _, name, trigger string) (int, error) {
 	s.name = name
 	s.trigger = trigger
 	s.mode = "scheduled"

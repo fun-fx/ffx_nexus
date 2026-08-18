@@ -67,6 +67,19 @@ func (s *Server) requireUser(fn func(http.ResponseWriter, *http.Request, core.Us
 	}
 }
 
+// requireUserHandler is requireUser for a mounted http.Handler subtree, where
+// the handlers cannot take a core.User parameter. Used for the docs tree, which
+// is a whole router rather than a single function.
+func (s *Server) requireUserHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := currentUser(r); !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login required"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // requireAdmin wraps a handler, returning 403 for non-admins.
 func (s *Server) requireAdmin(fn func(http.ResponseWriter, *http.Request, core.User)) http.HandlerFunc {
 	return s.requireUser(func(w http.ResponseWriter, r *http.Request, u core.User) {
@@ -111,12 +124,30 @@ func (s *Server) authConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func setSessionCookie(w http.ResponseWriter, token string) {
+// setSessionCookie writes the session cookie.
+//
+// Attributes and why each one is there:
+//
+//	HttpOnly           script cannot read the token, so an XSS bug in the SPA
+//	                   cannot exfiltrate a session
+//	Secure             the browser will not send it over plain HTTP. Previously
+//	                   absent, so a downgraded or stripped link leaked a live
+//	                   admin session in cleartext. Configurable only because
+//	                   local HTTP development cannot satisfy it
+//	SameSite=Lax       not sent on cross-site POSTs, which blocks the common CSRF
+//	                   shape at the browser. Lax rather than Strict so that
+//	                   following a link into the console keeps you logged in —
+//	                   Strict would break the OIDC redirect back from the IdP
+//	Path=/             the SPA and the API share the origin
+//	Expires            bounded lifetime; the server also expires the session
+//	                   record, so a stolen cookie does not outlive it
+func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   s.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(sessionTTL),
 	})
@@ -171,7 +202,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	// Store.Authenticate already records user.login in the audit log with
 	// the authenticated user as actor; nothing else to do here.
-	setSessionCookie(w, token)
+	s.setSessionCookie(w, token)
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
 }
 
@@ -255,7 +286,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
-	setSessionCookie(w, token)
+	s.setSessionCookie(w, token)
 	resp["user"] = authed
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -299,7 +330,7 @@ func (s *Server) myStats(w http.ResponseWriter, r *http.Request, u core.User) {
 			window = d
 		}
 	}
-	st, err := s.reader.WindowStats(r.Context(), window, u.ID)
+	st, err := s.reader.WindowStats(r.Context(), window, orgID(r), u.ID)
 	if err != nil {
 		s.log.Error("my stats query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -319,7 +350,7 @@ func (s *Server) myTraces(w http.ResponseWriter, r *http.Request, u core.User) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	page, err := s.reader.TracePage(r.Context(), before, since, limit, u.ID, filter)
+	page, err := s.reader.TracePage(r.Context(), before, since, limit, orgID(r), u.ID, filter)
 	if err != nil {
 		s.log.Error("my traces query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -335,7 +366,7 @@ func (s *Server) myTurns(w http.ResponseWriter, r *http.Request, u core.User) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	turns, err := s.reader.TurnPage(r.Context(), time.Time{}, turnWindowStart(r), limit, u.ID)
+	turns, err := s.reader.TurnPage(r.Context(), time.Time{}, turnWindowStart(r), limit, orgID(r), u.ID)
 	if err != nil {
 		s.log.Error("my turns query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -361,7 +392,7 @@ func (s *Server) myQuality(w http.ResponseWriter, r *http.Request, u core.User) 
 			window = d
 		}
 	}
-	rows, err := s.reader.UserQualitySummary(r.Context(), window, u.ID)
+	rows, err := s.reader.UserQualitySummary(r.Context(), window, orgID(r), u.ID)
 	if err != nil {
 		s.log.Error("my quality query failed", "err", err)
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -462,7 +493,8 @@ func (s *Server) userQuality(w http.ResponseWriter, r *http.Request, _ core.User
 			window = d
 		}
 	}
-	rows, err := s.reader.UserQualitySummary(r.Context(), window, "")
+	// Empty userID means "every user" — but only within the caller's org.
+	rows, err := s.reader.UserQualitySummary(r.Context(), window, orgID(r), "")
 	if err != nil {
 		s.log.Error("user quality query failed", "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})

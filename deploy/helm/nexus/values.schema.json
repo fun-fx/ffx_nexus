@@ -1,0 +1,882 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Nexus Helm chart values",
+  "description": "Strict schema for the Nexus chart. `additionalProperties: false` is deliberate on every object an operator is expected to edit: it turns a mis-indented or misspelled key into a `helm install`/`helm template` failure instead of a silently ignored setting. This exists because SSO, email, Metabase, failover, runtime and concurrency settings were once documented one indent level too deep (under `metrics:`) while the templates read them from `config:`; the chart rendered cleanly, `helm lint` passed, and the operator's IdP configuration was dropped on the floor with no diagnostic. Adding a new setting therefore requires adding it here too - that coupling is the point.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "image",
+    "config",
+    "metrics",
+    "secrets",
+    "dependencies",
+    "migrations"
+  ],
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "description": "Empty falls back to .Chart.AppVersion. Pin an explicit immutable tag or digest for customer installs; never rely on a floating tag."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gateway": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "console": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Non-secret configuration rendered into a ConfigMap as NEXUS_* env. Every key here MUST be read by templates/configmap.yaml (or another template); unknown keys are rejected so a typo cannot masquerade as a setting.",
+      "properties": {
+        "gatewayAddr": {
+          "type": "string"
+        },
+        "consoleAddr": {
+          "type": "string"
+        },
+        "publicGatewayUrl": {
+          "type": "string"
+        },
+        "publicBaseUrl": {
+          "type": "string"
+        },
+        "publicGrafanaUrl": {
+          "type": "string"
+        },
+        "publicWebOrigins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Exact browser origins allowed to call the console API with credentials, and the CSP connect-src allow-list. Required when the console is served over HTTPS to real users."
+        },
+        "upstreamTimeout": {
+          "type": "string"
+        },
+        "openaiBaseUrl": {
+          "type": "string"
+        },
+        "docsDir": {
+          "type": "string"
+        },
+        "keyMode": {
+          "type": "string",
+          "enum": [
+            "shared",
+            "byok",
+            "strict_byok"
+          ]
+        },
+        "allowSignup": {
+          "type": "boolean"
+        },
+        "routeGroups": {
+          "type": "string"
+        },
+        "routeWQuality": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "routeWCost": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "routeWLatency": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "routeWindow": {
+          "type": "string"
+        },
+        "routeRefresh": {
+          "type": "string"
+        },
+        "routeLoadBalance": {
+          "type": "boolean"
+        },
+        "guardrails": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "blockPiiInput": {
+              "type": "boolean"
+            },
+            "redactPiiOutput": {
+              "type": "boolean"
+            },
+            "maxInputChars": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "denyPatterns": {
+              "type": "string"
+            },
+            "validateJsonOutput": {
+              "type": "boolean"
+            }
+          }
+        },
+        "selfCorrection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "maxRetries": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "judge": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseUrl": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "sampleRate": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "workers": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            }
+          }
+        },
+        "evalService": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "metrics": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            }
+          }
+        },
+        "evalPluginOnly": {
+          "type": "boolean"
+        },
+        "purgeLegacyProfilesOnBoot": {
+          "type": "boolean"
+        },
+        "semanticCache": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "ttl": {
+              "type": "string"
+            },
+            "threshold": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "maxEntries": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "embeddings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "string"
+            }
+          }
+        },
+        "otlp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "endpoint": {
+              "type": "string"
+            }
+          }
+        },
+        "metricsAddr": {
+          "type": "string",
+          "description": "Raw listen address escape hatch. Ignored when metrics.enabled is true, which is the path that also declares the container and Service ports."
+        },
+        "failoverWebhook": {
+          "type": "string"
+        },
+        "failoverSlack": {
+          "type": "string"
+        },
+        "failoverAlertCooldown": {
+          "type": "string"
+        },
+        "sso": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "OIDC settings for the customer's own IdP. The client secret belongs in secrets.ssoClientSecret or an existingSecret, never here.",
+          "properties": {
+            "issuer": {
+              "type": "string"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "redirectUrl": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          }
+        },
+        "metabase": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "user": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            },
+            "clickhouseUrl": {
+              "type": "string"
+            },
+            "postgresUrl": {
+              "type": "string"
+            },
+            "seedDir": {
+              "type": "string"
+            },
+            "seedFromExisting": {
+              "type": "string"
+            },
+            "extraSeeds": {
+              "type": "object"
+            },
+            "healthTimeout": {
+              "type": "string"
+            },
+            "requestTimeout": {
+              "type": "string"
+            }
+          }
+        },
+        "email": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Invite email transport. There is no default fromAddress on purpose: a self-hosted install must send from a domain the customer controls and can sign with SPF/DKIM.",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "",
+                "resend",
+                "smtp",
+                "noop"
+              ],
+              "description": "Empty auto-detects from the supplied credentials. `noop` is refused at boot unless NEXUS_DEV_MODE is set, which this chart does not expose."
+            },
+            "fromAddress": {
+              "type": "string"
+            },
+            "requestTimeout": {
+              "type": "string"
+            },
+            "publicBaseUrl": {
+              "type": "string"
+            },
+            "resend": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "apiBaseUrl": {
+                  "type": "string"
+                }
+              }
+            },
+            "smtp": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "host": {
+                  "type": "string"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "username": {
+                  "type": "string"
+                },
+                "encryption": {
+                  "type": "string",
+                  "enum": [
+                    "starttls",
+                    "tls",
+                    "none"
+                  ],
+                  "description": "`none` sends credentials and invite links in cleartext and is refused unless NEXUS_DEV_MODE is set, which this chart does not expose."
+                }
+              }
+            }
+          }
+        },
+        "grafana": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Optional grafana-operator integration plus an optional Basic-auth proxy. Nexus never calls Grafana on the request path.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "dashboardsEnabled": {
+              "type": "boolean"
+            },
+            "folder": {
+              "type": "string"
+            },
+            "namePrefix": {
+              "type": "string"
+            },
+            "instanceSelector": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "matchLabels": {
+                  "type": "object"
+                }
+              }
+            },
+            "alertsEnabled": {
+              "type": "boolean"
+            },
+            "folderUID": {
+              "type": "string"
+            },
+            "alertsWebhook": {
+              "type": "string"
+            },
+            "authProxy": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "host": {
+                  "type": "string"
+                },
+                "upstreamService": {
+                  "type": "string"
+                },
+                "adminSecret": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gomemlimit": {
+              "type": "string"
+            },
+            "gogc": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            }
+          }
+        },
+        "maxConcurrentPerKey": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "egressTenantAllowedCidrs": {
+          "type": "string",
+          "description": "Comma-separated CIDRs that API-configured destinations (eval profile base_url, plugin endpoint, credential base_url) may reach inside private space. Empty means public internet only. Link-local, where cloud instance metadata lives, is never reachable regardless of this value."
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Prometheus scrape surface ONLY. Application settings belong under `config:`. This object is intentionally closed so the historical mis-indentation of config.sso / config.email / config.metabase into this block is rejected outright rather than silently ignored.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "path": {
+          "type": "string"
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string"
+            },
+            "scrapeTimeout": {
+              "type": "string"
+            },
+            "additionalLabels": {
+              "type": "object"
+            },
+            "relabelings": {
+              "type": "array"
+            },
+            "metricRelabelings": {
+              "type": "array"
+            }
+          }
+        }
+      }
+    },
+    "migrations": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Schema migration hook Job. Helm aborts the release if it fails.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "engine": {
+          "type": "string",
+          "enum": [
+            "all",
+            "postgres",
+            "clickhouse"
+          ]
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "backoffLimit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "allowChecksumDrift": {
+          "type": "boolean",
+          "description": "Accepts an edited already-applied migration. Normally a hard abort; only enable after verifying the schema by hand."
+        },
+        "podAnnotations": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "This chart does not deploy databases; it connects to customer-managed ones. URLs carry credentials, so prefer existingSecret over inlining them here.",
+      "properties": {
+        "postgres": {
+          "$ref": "#/definitions/dependency"
+        },
+        "clickhouse": {
+          "$ref": "#/definitions/dependency"
+        },
+        "redis": {
+          "$ref": "#/definitions/dependency"
+        }
+      }
+    },
+    "existingSecret": {
+      "type": "string",
+      "description": "Name of an operator-managed Secret supplying every NEXUS_* secret env. Recommended for production so no credential is ever written to a values file."
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Inline secret values, used only when existingSecret is empty. Anything set here lands in your values file and therefore your git history - prefer existingSecret.",
+      "properties": {
+        "openaiApiKey": {
+          "type": "string"
+        },
+        "anthropicApiKey": {
+          "type": "string"
+        },
+        "geminiApiKey": {
+          "type": "string"
+        },
+        "groqApiKey": {
+          "type": "string"
+        },
+        "mistralApiKey": {
+          "type": "string"
+        },
+        "gridApiKey": {
+          "type": "string"
+        },
+        "masterKey": {
+          "type": "string"
+        },
+        "judgeApiKey": {
+          "type": "string"
+        },
+        "embeddingsApiKey": {
+          "type": "string"
+        },
+        "resendApiKey": {
+          "type": "string"
+        },
+        "smtpPassword": {
+          "type": "string"
+        },
+        "adminEmail": {
+          "type": "string"
+        },
+        "adminPassword": {
+          "type": "string"
+        },
+        "ssoClientSecret": {
+          "type": "string"
+        }
+      }
+    },
+    "eval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plugins": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "configMaps": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "path",
+                        "content"
+                      ],
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "content": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "extraEnv": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "envFrom": {
+      "type": "array"
+    },
+    "resources": {
+      "type": "object"
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
+    },
+    "livenessProbe": {
+      "type": "object"
+    },
+    "readinessProbe": {
+      "type": "object"
+    },
+    "podAnnotations": {
+      "type": "object"
+    },
+    "podLabels": {
+      "type": "object"
+    },
+    "nodeSelector": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "topologySpreadConstraints": {
+      "type": "array"
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "console": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "host": {
+              "type": "string"
+            }
+          }
+        },
+        "hosts": {
+          "type": "array"
+        },
+        "tls": {
+          "type": "array"
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "targetCPUUtilizationPercentage": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "targetMemoryUtilizationPercentage": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Set exactly one of minAvailable / maxUnavailable; the PodDisruptionBudget API rejects both.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "maxUnavailable": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "definitions": {
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

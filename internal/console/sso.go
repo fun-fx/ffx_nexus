@@ -70,12 +70,23 @@ func newState() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-func setSSOStateCookie(w http.ResponseWriter, state string) {
+// setSSOStateCookie stores the CSRF state value for the OIDC round trip.
+//
+// Secure matters as much here as on the session cookie: this value is what
+// proves the authorization code arriving at /api/auth/sso/callback belongs to
+// the login this browser started. An attacker who can read it over a downgraded
+// link can complete a login flow the victim did not initiate.
+//
+// SameSite stays Lax, not Strict: the IdP redirects the browser back to Nexus
+// cross-site, and Strict would withhold the cookie on exactly that hop, failing
+// every SSO login with a state mismatch.
+func (s *Server) setSSOStateCookie(w http.ResponseWriter, state string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     ssoStateCookie,
 		Value:    state,
 		Path:     "/api/auth/sso",
 		HttpOnly: true,
+		Secure:   s.secureCookies,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(ssoStateTTL),
 	})
@@ -114,7 +125,7 @@ func (s *Server) ssoLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sso unavailable", http.StatusInternalServerError)
 		return
 	}
-	setSSOStateCookie(w, state)
+	s.setSSOStateCookie(w, state)
 	authURL := s.sso.oauth.AuthCodeURL(state, oidc.Nonce(generateNonce()))
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -226,7 +237,7 @@ func (s *Server) ssoCallback(w http.ResponseWriter, r *http.Request) {
 		s.renderSSOError(w, "Could not create session", err.Error())
 		return
 	}
-	setSessionCookie(w, token)
+	s.setSessionCookie(w, token)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 

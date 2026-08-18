@@ -1,3 +1,17 @@
+# ============================================================================
+# LOCAL DEVELOPMENT ONLY — NOT A DEPLOYMENT ARTEFACT
+# ============================================================================
+# Every credential in this file is a fixed development default, chosen so a
+# checkout runs with one command. None of it is a secret and none of it is safe:
+# Grafana runs with admin/admin and anonymous read enabled, and the datastores
+# use trivial passwords on published ports.
+#
+# Customer deployments use the Helm chart in deploy/helm/nexus, which takes every
+# credential from a Kubernetes Secret or an external secret store and ships no
+# default password at all. Do not derive a customer manifest from this file.
+# See docs/customer-self-hosted-security.md.
+# ============================================================================
+#
 # Local development stack for Nexus.
 # ClickHouse is included for self-host/dev; production uses managed ClickHouse Cloud.
 # Postgres and Redis land in Phase 2 (auth/budgets, caching). Ollama serves the
@@ -215,6 +229,12 @@ services:
       NEXUS_CLICKHOUSE_URL: "clickhouse://nexus:nexus@clickhouse:9000/nexus"
       NEXUS_REDIS_URL: "redis://redis:6379/0"
       NEXUS_MASTER_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      # Local development convenience: apply schema migrations during boot so
+      # `docker compose up` against an empty volume just works. Production
+      # deployments leave this unset and run `nexus migrate` as a separate step
+      # (the Helm chart does it in a pre-upgrade hook Job) so a failed migration
+      # aborts the rollout instead of surfacing as user-visible 500s.
+      NEXUS_AUTO_MIGRATE: "true"
       NEXUS_KEY_MODE: "byok"
       NEXUS_EVAL_ENABLED: "true"
       NEXUS_JUDGE_BASE_URL: "http://ollama:11434/v1"   # dev profile: wire eth0 of local ollama service; PR #89 propagates judge score into nexus_eval_quality_score
