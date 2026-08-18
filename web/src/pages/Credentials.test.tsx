@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { Credentials } from "./Credentials";
@@ -200,5 +200,61 @@ describe("Credentials drawer pre-flight", () => {
       expect(calls.preflight.length).toBeGreaterThanOrEqual(1);
     });
     expect(calls.preflight.some((p) => p.provider === "anthropic")).toBe(true);
+  });
+
+  it("exposes 'thegrid' in the provider dropdown as the grid option", async () => {
+    await setup();
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    const option = within(select).getByRole("option", { name: /thegrid/i });
+    expect(option).toBeTruthy();
+    // The wire ID is `grid` so the Gateway can match the registered
+    // provider; the friendly label is what the operator sees.
+    expect(option.getAttribute("value")).toBe("grid");
+  });
+
+  it("auto-fills the canonical Grid base URL when the operator picks thegrid", async () => {
+    const calls = await setup();
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    await act(async () => {
+      fireEvent.change(select, { target: { value: "grid" } });
+    });
+    // The Base URL field becomes visible and pre-populated with the
+    // canonical Grid consumption URL.
+    const baseUrl = screen.getByDisplayValue("https://api.thegrid.ai/v1") as HTMLInputElement;
+    expect(baseUrl).toBeTruthy();
+    expect(baseUrl.tagName).toBe("INPUT");
+    // The hint copy is shown so the operator understands what the
+    // default is for.
+    expect(screen.getByText(/OpenAI-compatible consumption API/i)).toBeTruthy();
+  });
+
+  it("sends provider=grid and the canonical base URL on the wire when the operator saves a thegrid credential", async () => {
+    const calls = await setup();
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    await act(async () => {
+      fireEvent.change(select, { target: { value: "grid" } });
+    });
+    const secret = screen.getByPlaceholderText(/sk-/i);
+    await act(async () => {
+      fireEvent.change(secret, { target: { value: "grid-l-very-real" } });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Test connection/i }));
+    });
+    await waitFor(() => {
+      expect(calls.preflight.length).toBe(1);
+    });
+    expect(calls.preflight[0].provider).toBe("grid");
+    expect(calls.preflight[0].base_url).toBe("https://api.thegrid.ai/v1");
+    const save = screen.getByRole("button", { name: /Save/i }) as HTMLButtonElement;
+    await waitFor(() => expect(save.disabled).toBe(false));
+    await act(async () => {
+      fireEvent.click(save);
+    });
+    await waitFor(() => {
+      expect(calls.create.length).toBe(1);
+    });
+    expect(calls.create[0].provider).toBe("grid");
+    expect(calls.create[0].base_url).toBe("https://api.thegrid.ai/v1");
   });
 });

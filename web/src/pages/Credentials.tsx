@@ -190,14 +190,28 @@ function AddCredentialForm({
   // does not invalidate an old result.
   const [probedKey, setProbedKey] = useState<string>("");
 
+  // `gridAutoFilled` tracks whether the canonical Grid base URL was
+  // stamped into the field by the provider-change effect (rather than
+  // by the operator typing it). This lets the input clear itself the
+  // moment the operator edits the value, so we never silently
+  // overwrite a custom URL the operator typed by hand.
+  const [gridAutoFilled, setGridAutoFilled] = useState(false);
+
   const detected = useMemo(
     () => (secret.trim() ? detectProviderFromSecret(secret) : ""),
     [secret],
   );
   // Hide the "switch provider" hint while the operator's chosen
   // dropdown already matches the detected shape — those are the
-  // boring case and the hint would only add noise.
-  const detectionMismatch = detected && detected !== provider;
+  // boring case and the hint would only add noise. The Grid is also
+  // a special case: its API keys look like OpenAI keys because The
+  // Grid speaks an OpenAI-compatible schema, so the
+  // OpenAI=sk-…/The Grid=sk-… distinction cannot be derived from
+  // the secret alone and the mismatch hint would only confuse.
+  const detectionMismatch =
+    !!detected &&
+    detected !== provider &&
+    provider !== "grid";
   // `canSave` is the contract the parent uses to enable Save.
   // A submit is allowed when a fresh, successful probe exists.
   const keyNow = `${provider}|${secret.trim()}|${baseURL.trim()}`;
@@ -211,6 +225,27 @@ function AddCredentialForm({
     setProbe(null);
     setProbeError(null);
   }, [provider, secret, baseURL]);
+
+  // Stamp the canonical Grid base URL into the field whenever the
+  // operator picks `grid`, and clear the field when they pick any
+  // other provider. Skipping when the operator already typed a value
+  // (or based on the auto-fill flag) keeps the interaction predictable
+  // — auto-fill is a one-time convenience, not an enforcement.
+  useEffect(() => {
+    if (provider === "grid") {
+      if (!baseURL && !gridAutoFilled) {
+        setBaseURL("https://api.thegrid.ai/v1");
+        setGridAutoFilled(true);
+      }
+    } else if (gridAutoFilled) {
+      setBaseURL("");
+      setGridAutoFilled(false);
+    }
+    // We deliberately depend only on `provider` + `gridAutoFilled`;
+    // the operator's typing of baseURL is handled by the change
+    // handler clearing the auto-fill flag below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider]);
 
   const runProbe = () => {
     if (!secret.trim()) return;
@@ -260,6 +295,7 @@ function AddCredentialForm({
             <option value="anthropic">anthropic</option>
             <option value="gemini">gemini</option>
             <option value="mistral">mistral</option>
+            <option value="grid">thegrid (OpenAI-compatible)</option>
             <option value="ollama">ollama (custom base URL)</option>
           </select>
         </label>
@@ -289,16 +325,32 @@ function AddCredentialForm({
             </span>
           </div>
         )}
-        {provider === "ollama" && (
+        {(provider === "ollama" || provider === "grid") && (
           <label className="field-row">
             <span className="field-label">Base URL</span>
             <input
               type="text"
-              placeholder="http://localhost:11434"
+              placeholder={
+                provider === "grid"
+                  ? "https://api.thegrid.ai/v1"
+                  : "http://localhost:11434"
+              }
               value={baseURL}
-              onChange={(e) => setBaseURL(e.target.value)}
+              onChange={(e) => {
+                setBaseURL(e.target.value);
+                // Operator is taking over the field, so stop treating
+                // the value as auto-fill.
+                if (gridAutoFilled) setGridAutoFilled(false);
+              }}
               autoComplete="off"
             />
+            {provider === "grid" && (
+              <span className="field-hint">
+                Nexus targets The Grid's OpenAI-compatible consumption
+                API. The default URL is correct for most operators; only
+                override it if you proxy The Grid through your own gateway.
+              </span>
+            )}
           </label>
         )}
         <label className="field-row">

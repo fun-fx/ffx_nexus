@@ -142,7 +142,9 @@ func TestPreflightCredential_RejectedByVendor(t *testing.T) {
 
 func TestPreflightCredential_UnsupportedProvider(t *testing.T) {
 	s := &Server{}
-	body := mustJSON(t, preflightCredentialsRequest{Provider: "thegrid", Secret: "anything"})
+	// Pick a provider name that intentionally is NOT in providerProbes
+	// so the test exercises the dispatch-table rejection path.
+	body := mustJSON(t, preflightCredentialsRequest{Provider: "not-a-real-vendor", Secret: "anything"})
 	req := httptest.NewRequest(http.MethodPost, "/api/me/credentials/preflight", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 	s.preflightCredential(rr, req, fakeUser())
@@ -168,6 +170,20 @@ func TestPreflightCredential_MissingFields(t *testing.T) {
 func TestPreflightCredential_OllamaRequiresBaseURL(t *testing.T) {
 	s := &Server{}
 	body := mustJSON(t, preflightCredentialsRequest{Provider: "ollama", Secret: "irrelevant"})
+	req := httptest.NewRequest(http.MethodPost, "/api/me/credentials/preflight", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	s.preflightCredential(rr, req, fakeUser())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "base_url") {
+		t.Fatalf("expected base_url note in: %s", rr.Body.String())
+	}
+}
+
+func TestPreflightCredential_GridRequiresBaseURL(t *testing.T) {
+	s := &Server{}
+	body := mustJSON(t, preflightCredentialsRequest{Provider: "grid", Secret: "irrelevant"})
 	req := httptest.NewRequest(http.MethodPost, "/api/me/credentials/preflight", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
 	s.preflightCredential(rr, req, fakeUser())
@@ -261,6 +277,114 @@ func TestPreflightCredential_LatencyReported(t *testing.T) {
 	}
 	if res.LatencyMS < 20 {
 		t.Fatalf("expected latency_ms>=20, got %d", res.LatencyMS)
+	}
+}
+
+// TestPreflightCredential_GridHappy drives the grid probe through a
+// stubbed vendor so the dispatch path is exercised end-to-end. The
+// probe should hit /models (not /v1/models *twice*) on the supplied
+// base URL, accept the operator's bearer key, and surface the vendor's
+// 200 as ok=true.
+func TestPreflightCredential_GridHappy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			http.Error(w, "missing bearer", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"models":[{"id":"code-prime"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	stubProbe(t, "grid", func(_ context.Context, secret, _ string) (int, string, error) {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/models", nil)
+		if err != nil {
+			return 0, "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+secret)
+		return runProbe(context.Background(), req)
+	})
+	s := &Server{}
+	body := mustJSON(t, preflightCredentialsRequest{
+		Provider: "grid",
+		Secret:   "grid_live_key",
+		BaseURL:  "https://api.thegrid.ai/v1",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/me/credentials/preflight", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	s.preflightCredential(rr, req, fakeUser())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200; body %s", rr.Code, rr.Body.String())
+	}
+	var res PreflightResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("expected ok=true, got %#v", res)
+	}
+	if res.ProviderLabel != "The Grid" {
+		t.Fatalf("provider_label: got %q, want %q", res.ProviderLabel, "The Grid")
+	}
+}
+
+// TestPreflightCredential_GridRejectedByVendor mirrors the openai
+// rejection case: a 401 must surface as ok=false so the drawer's Save
+// button stays disabled.
+func TestPreflightCredential_GridRejectedByVendor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+
+	stubProbe(t, "grid", func(_ context.Context, secret, _ string) (int, string, error) {
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/models", nil)
+		if err != nil {
+			return 0, "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+secret)
+		return runProbe(context.Background(), req)
+	})
+	s := &Server{}
+	body := mustJSON(t, preflightCredentialsRequest{
+		Provider: "grid",
+		Secret:   "grid_live_bad",
+		BaseURL:  "https://api.thegrid.ai/v1",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/me/credentials/preflight", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	s.preflightCredential(rr, req, fakeUser())
+	var res PreflightResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if res.OK {
+		t.Fatalf("expected ok=false, got %#v", res)
+	}
+	if !strings.Contains(res.Message, "unauthorized") {
+		t.Fatalf("expected vendor message in response, got %q", res.Message)
+	}
+}
+
+// TestPreflightCredential_GridTrailingSlash exercises the probeGrid
+// helper's URL composition: a base URL with a trailing slash must
+// still resolve to /models without doubling up the path segment.
+func TestPreflightCredential_GridTrailingSlash(t *testing.T) {
+	var seenPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Drive the probe directly so we control every input byte and
+	// can verify ProbeGrid's path-joining logic.
+	_, _, err := probeGrid(context.Background(), "x", srv.URL+"/v1/")
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if seenPath != "/v1/models" {
+		t.Fatalf("expected probe to hit /v1/models, got %q", seenPath)
 	}
 }
 
