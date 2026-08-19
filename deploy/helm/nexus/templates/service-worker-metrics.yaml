@@ -1,0 +1,25 @@
+# Phase D-1: Worker-only metrics Service. The Worker pods run
+# the cron scheduler and the cluster's Postgres lease heartbeat;
+# the only port they serve is /metrics (port name: metrics).
+# Operator scrapers (ServiceMonitor) pin to this Service so
+# Prometheus does not double-count the same /metrics endpoints
+# served on the Gateway Deployment.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nexus.fullname" . }}-worker-metrics
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nexus.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  ports:
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}

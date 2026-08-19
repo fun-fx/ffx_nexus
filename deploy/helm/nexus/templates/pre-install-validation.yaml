@@ -1,12 +1,11 @@
-# c0.x #A-3 + 1-1: pre-install validation job rejects unsafe
-# NEXUS_POSTGRES_MAX_CONNS at install time. The chart's
-# values.schema.json floors the value at minSafeMaxConns (default 8),
-# but a chart-only schema miss (e.g. a typo'd key path) could let the
-# secret pass without checks. This Job runs `nexus-install-validate`,
-# an inline shell stair-step that verifies dependency.postgres.maxConns
-# is inside [min, max] before the main Deployment ever applies. The
-# Job is hook-weight=pre-install,pre-upgrade — older Helm versions
-# will skip the hook but the schema still enforces floor=8.
+# c0.x #A-3 + 1-1 + Phase D-1: pre-install validation job
+# rejects unsafe NEXUS_POSTGRES_MAX_CONNS at install time. The
+# chart's values.schema.json floors both Gateway and Worker
+# blocks at minSafeMaxConns (default 8), but a chart-only schema
+# miss (e.g. a typo'd key path) could let the secret pass without
+# checks. This Job runs an inline shell stair-step that verifies
+# both dependency.postgres.maxConns and worker.postgres.maxConns
+# are inside [min, max] before the main Deployment ever applies.
 #
 # Failure path: exit non-zero → helm install/upgrade aborts with a
 # helpful message pointing at the offending knob. The Deployment is
@@ -59,6 +58,32 @@ spec:
               fi;
               if [ $((WANT * repCount)) -gt 200 ]; then
                 echo "WARNING: ${WANT} * ${repCount} = $((WANT * repCount)) > 200; confirm Postgres max_connections covers this." >&2;
+              fi;
+              # Phase D-1: independent verification of the Worker pool
+              # so a typo in worker.postgres.* cannot ship an unsafe
+              # configuration. The Gateway and Worker pools are sized
+              # separately because lease acquisition grabs a
+              # connection off the same pool that the cron runner
+              # uses; an under-sized Worker pool will deadlock during
+              # cron tick rather than at startup.
+              WMIN={{ int (default 8 .Values.worker.postgres.minSafeMaxConns) }};
+              WMAX={{ int (default 32 .Values.worker.postgres.maxSafeMaxConns) }};
+              WWANT={{ int (default 16 .Values.worker.postgres.maxConns) }};
+              wRepCount={{ int (default 1 .Values.worker.replicaCount) }};
+              echo "validating worker Postgres maxConns floor=${WMIN} ceiling=${WMAX} want=${WWANT} replicas=${wRepCount}";
+              if [ "${WWANT}" -lt "${WMIN}" ]; then
+                echo "ERROR: worker.postgres.maxConns=${WWANT} < minSafeMaxConns=${WMIN}." >&2;
+                echo "  Phase D-1 invariant: lease heartbeat needs a stable connection" >&2;
+                echo "  and the benchmark scheduler ticks off the same pool." >&2;
+                exit 1;
+              fi;
+              if [ "${WWANT}" -gt "${WMAX}" ]; then
+                echo "ERROR: worker.postgres.maxConns=${WWANT} > maxSafeMaxConns=${WMAX}." >&2;
+                echo "  reduce worker.replicaCount or raise worker.postgres.maxSafeMaxConns." >&2;
+                exit 1;
+              fi;
+              if [ $((WWANT * wRepCount)) -gt 100 ]; then
+                echo "WARNING: worker Postgres maxConns * worker replicaCount = $((WWANT * wRepCount)) > 100; verify max_connections." >&2;
               fi;
           resources:
             requests:

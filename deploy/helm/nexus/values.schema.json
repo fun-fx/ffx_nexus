@@ -890,6 +890,52 @@
           ]
         }
       }
+    },
+    "worker": {
+      "type": "object",
+      "description": "Phase D-1 Worker Deployment. Runs the benchmark scheduler and acquires the Postgres lease for the benchmark_scheduler role. Not in the OpenAI request path.",
+      "additionalProperties": false,
+      "properties": {
+        "replicaCount": { "type": "integer", "minimum": 1 },
+        "autoscaling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "minReplicas": { "type": "integer", "minimum": 1 },
+            "maxReplicas": { "type": "integer", "minimum": 1 },
+            "targetCPUUtilizationPercentage": { "type": ["integer", "null"] }
+          }
+        },
+        "postgres": {
+          "type": "object",
+          "description": "Per-Worker Postgres pool sizing — Phase D-1 splits the connection ceiling between Gateway and Worker pods.",
+          "additionalProperties": false,
+          "properties": {
+            "minSafeMaxConns": {
+              "type": "integer",
+              "minimum": 8,
+              "description": "Floor enforced by pre-install-validation. Values below 8 cause a known deadlock ceiling on the worker pool."
+            },
+            "maxSafeMaxConns": {
+              "type": "integer",
+              "minimum": 8,
+              "description": "Ceiling enforced by pre-install-validation. Keep replicaCount * maxConns under Postgres max_connections / 3 to leave room for migrations and console traffic."
+            },
+            "maxConns": {
+              "type": ["integer", "null"],
+              "minimum": 8,
+              "description": "Live cap on pgxpool.MaxConns for the Worker pod. Must lie within [minSafeMaxConns, maxSafeMaxConns]."
+            }
+          }
+        },
+        "livenessProbe": { "type": "object" },
+        "readinessProbe": { "type": "object" },
+        "resources": { "type": "object" },
+        "podAnnotations": { "type": "object" },
+        "podLabels": { "type": "object" },
+        "extraEnv": { "type": "array" }
+      }
     }
   },
   "definitions": {

@@ -31,6 +31,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/gateway/providers"
 	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/health"
+	"github.com/ffxnexus/nexus/internal/leaser"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
@@ -689,6 +690,18 @@ credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 
 			// partial launch failure all live in one place; the cron
 			// package only owns the "when" and the bookkeeping.
 			sched := cron.New(schedStore{store: store}, makeScheduleLander(benchRunner), log)
+			if cfg.SchedulerRoleEnabled {
+				// Wire the Phase D-1 lease gate. The leaser
+				// uses the same pgxpool as the rest of the
+				// application; per-pod owner IDs are derived
+				// from hostname + a process-local salt so a
+				// restarted pod does not pick up a stale
+				// lease by accident.
+				leaserMgr := leaser.NewManager(store.Pool(), log)
+				gate := cron.LeaderGateFromManager(leaserMgr, schedulerOwnerID(), log)
+				sched.SetLeader(gate)
+				log.Info("benchmark scheduler leader-gated via Postgres lease")
+			}
 			go sched.Run(ctx)
 			log.Info("benchmark scheduler enabled")
 		}
@@ -1105,4 +1118,17 @@ func publicBaseForInvites(cfg config.Config) string {
 		return strings.TrimRight(v, "/")
 	}
 	return strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
+}
+
+// schedulerOwnerID derives a Pod-stable identifier so a restarted
+// Nexus process does not pick up its predecessor's lease row by
+// accident. The pattern is "<hostname>-<pid>" — hostname is set by
+// Kubernetes downward API and stays stable across restarts within
+// the same Pod; pid changes per-process and forces a new lease.
+// We deliberately use just hostname + pid (no random suffix) so a
+// debugging operator can correlate "old pid 4127 stopped renewing"
+// with the corresponding log line without consulting a token store.
+func schedulerOwnerID() string {
+	host, _ := os.Hostname()
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }

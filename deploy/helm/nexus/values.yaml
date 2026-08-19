@@ -643,3 +643,62 @@ podDisruptionBudget:
 eval:
   plugins:
     configMaps: []
+
+# --- Phase D-1: Worker Deployment ---------------------------------------------
+# The benchmark scheduler and the cron.Runner live on a separate
+# Deployment. The Worker pods acquire the Postgres lease for
+# "benchmark_scheduler"; Gateway pods stay out of the leader-gate
+# entirely. Set worker.replicaCount > 1 if you want hot stand-by:
+# followers sleep on WaitForLeadership and only one pod fires each
+# tick.
+#
+# Two maxConns floors are enforced: each Deployment gets at least
+# 8 connections to avoid the pre-Phase-D-1 deadlock ceiling. The
+# Helm pre-install-validation Job checks both blocks at the same
+# time.
+#
+# Worker resources are intentionally smaller because the Worker
+# pod does not serve OpenAI traffic; the heavy movers are request
+# ingress (Gateway) and ClickHouse writes (Worker for the
+# background benchmark runs only).
+worker:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+  # Postgres pool for the Worker pod. The worker holds the cron
+  # runner's lease and acks audit rows from the in-process audit
+  # pathway; 8 is the floor set by the pre-install-validation Job
+  # (maxConns < 8 will fail the install).
+  postgres:
+    minSafeMaxConns: 8
+    maxSafeMaxConns: 32
+    maxConns: 16
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: metrics
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: metrics
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  podAnnotations: {}
+  podLabels: {}
+  extraEnv: []

@@ -86,12 +86,14 @@ func TestMigrationFilenameLiteralsAreRestrictedToTheMigratePackage(t *testing.T)
 		"internal/core/invite_integration_test.go":                true,
 		"internal/core/org_isolation_integration_test.go":         true,
 		"internal/core/schema_contract_integration_test.go":       true,
+		"internal/cron/connection_sharding_integration_test.go":     true,
 		"internal/health/gate.go":                                 true,
 		"internal/observability/reader.go":                        true,
 		"deploy/helm/nexus/values.yaml":                           true,
 		"migrations/README.md":                                    true,
 		"scripts/e2e_invite_flow.sh":                              true,
 		"internal/core/benchmark_schedules_test.go":               true,
+		"internal/leaser/integration_test.go":                     true, // mirrors the lease-table shape; no migration call
 	}
 
 	var bad []string

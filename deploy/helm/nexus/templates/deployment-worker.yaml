@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "nexus.fullname" . }}-gateway
+  name: {{ include "nexus.fullname" . }}-worker
   labels:
     {{- include "nexus.labels" . | nindent 4 }}
-    app.kubernetes.io/component: gateway
+    app.kubernetes.io/component: worker
 spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
+  {{- if not .Values.worker.autoscaling.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
       {{- include "nexus.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: gateway
+      app.kubernetes.io/component: worker
   template:
     metadata:
       annotations:
@@ -21,53 +21,52 @@ spec:
         {{- if not .Values.existingSecret }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
-        {{- with .Values.podAnnotations }}
+        {{- with .Values.worker.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       labels:
         {{- include "nexus.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: gateway
-        {{- with .Values.podLabels }}
+        app.kubernetes.io/component: worker
+        {{- with .Values.worker.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
+      {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "nexus.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: nexus-gateway
+        - name: nexus-worker
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          # The Worker pod exposes only the metrics port. The
+          # OpenAI gateway and the console API are served only by
+          # the Gateway Deployment; the Worker pod is internal
+          # to the cluster and reachable only via ClusterIP.
           ports:
-            - name: gateway
-              containerPort: {{ .Values.ports.gateway }}
-              protocol: TCP
-            - name: console
-              containerPort: {{ .Values.ports.console }}
-              protocol: TCP
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
             {{- end }}
-          # Phase D-1: Gateway pods disable the scheduler
-          # leader-gate. The Worker pods acquire the lease and
-          # tick; Gateway pods only serve traffic and run audit
-          # pathway code paths.
+          # Phase D-1 role wiring. Setting
+          # NEXUS_SCHEDULER_ROLE_ENABLED=true here plus omitting
+          # the gateway listener on this Deployment isolates the
+          # two roles onto distinct pods. Followers sleep on
+          # WaitForLeadership; only the lease holder fires.
           env:
             - name: NEXUS_ROLE
-              value: gateway
+              value: worker
             - name: NEXUS_SCHEDULER_ROLE_ENABLED
-              value: "false"
+              value: "true"
             - name: NEXUS_POSTGRES_MAX_CONNS
-              value: {{ .Values.dependencies.postgres.maxConns | quote }}
-            {{- with .Values.extraEnv }}
+              value: {{ .Values.worker.postgres.maxConns | quote }}
+            {{- with .Values.worker.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           envFrom:
@@ -75,15 +74,12 @@ spec:
                 name: {{ include "nexus.fullname" . }}
             - secretRef:
                 name: {{ include "nexus.secretName" . }}
-            {{- with .Values.envFrom }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
           livenessProbe:
-            {{- toYaml .Values.livenessProbe | nindent 12 }}
+            {{- toYaml .Values.worker.livenessProbe | nindent 12 }}
           readinessProbe:
-            {{- toYaml .Values.readinessProbe | nindent 12 }}
+            {{- toYaml .Values.worker.readinessProbe | nindent 12 }}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.worker.resources | nindent 12 }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
@@ -92,23 +88,23 @@ spec:
               mountPath: {{ .Values.config.metabase.seedDir | default "/etc/nexus/metabase/seed" }}
               readOnly: true
             {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          {{- toYaml . | nindent 12 }}
+          {{- end }}
       volumes:
-        # readOnlyRootFilesystem is on; give the process a writable scratch dir.
         - name: tmp
           emptyDir: {}
         {{- if and .Values.config.metabase .Values.config.metabase.seedDir (not .Values.config.metabase.seedFromExisting) }}
-        # The seed ConfigMap contains 3 reference collections plus any
-        # operator-supplied extras (config.metabase.extraSeeds). Boot-time
-        # metabase bootstrap reads *.json here and registers each as a
-        # Metabase "Nexus - <name>" collection + cards. The volume is
-        # readOnly; the bootstrapper never writes here.
         - name: metabase-seed
           configMap:
             name: {{ include "nexus.fullname" . }}-metabase-seed
         {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
-        {{- toYaml . | nindent 8 }}
+      {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.affinity }}
       affinity:
@@ -116,9 +112,5 @@ spec:
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.topologySpreadConstraints }}
-      topologySpreadConstraints:
-        {{- toYaml . | nindent 8 }}
+      {{- toYaml . | nindent 8 }}
       {{- end }}

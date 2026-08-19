@@ -12,6 +12,7 @@ spec:
   type: {{ .Values.service.type }}
   selector:
     {{- include "nexus.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
   ports:
     - name: gateway
       port: {{ .Values.ports.gateway }}

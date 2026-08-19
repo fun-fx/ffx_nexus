@@ -84,6 +84,15 @@ type Runner struct {
 	store  Store
 	lander Lander
 	log    *slog.Logger
+	// leader, when non-nil, gates Run() to a single replica. The
+	// current Acquire protocol returns a "leader only" context;
+	// the runner's tick() rechecks leadership on every iteration
+	// so a handover can resolve without a process restart.
+	leader LeaderGate
+	// leaderRole is the role name passed to leader.Acquire. It
+	// defaults to "benchmark_scheduler" so production wires
+	// keep a stable token even if they forget to set it.
+	leaderRole string
 
 	mu         sync.Mutex
 	lastErrors map[string]string // schedule_id → last error string
@@ -100,15 +109,52 @@ func New(store Store, lander Lander, log *slog.Logger) *Runner {
 		store:      store,
 		lander:     lander,
 		log:        log,
+		leaderRole: "benchmark_scheduler",
 		lastErrors: map[string]string{},
 	}
 }
 
+// SetLeader wires a single-leader gate into the runner. When
+// leader is nil the runner keeps the pre-Phase-D-1 "every replica
+// fires" semantics; passing a LeaderGate (e.g. via
+// LeaderGateFromManager) confines ticking to the lease holder.
+func (r *Runner) SetLeader(leader LeaderGate) {
+	r.mu.Lock()
+	r.leader = leader
+	r.mu.Unlock()
+}
+
+// SetLeaderRole overrides the role name passed to the leader
+// gate. Defaults to "benchmark_scheduler".
+func (r *Runner) SetLeaderRole(role string) {
+	if role == "" {
+		return
+	}
+	r.mu.Lock()
+	r.leaderRole = role
+	r.mu.Unlock()
+}
+
 // Run loops until ctx is done. The loop is safe to start on every
-// replica: UPDATE next_launch_at is the only stateful write, and the
-// result is independent of who wins the stamp because the next due
-// time follows from cadence, not the timestamp.
+// replica without a leader gate because UPDATE next_launch_at is the
+// only stateful write, and the result is independent of who wins the
+// stamp because the next due time follows from cadence, not the
+// timestamp.
+//
+// Phase D-1 changes this model. When SetLeader(...) is wired, only
+// the lease holder ticks; followers sleep on a leadership
+// acquisition loop until they take over.
 func (r *Runner) Run(ctx context.Context) {
+	if r.leader != nil {
+		r.runLeader(ctx)
+		return
+	}
+	r.runFollowers(ctx)
+}
+
+// runFollowers is the pre-Phase-D-1 path: every replica ticks
+// idempotently.
+func (r *Runner) runFollowers(ctx context.Context) {
 	t := time.NewTicker(tickInterval)
 	defer t.Stop()
 	// Tickers drop ticks when the consumer takes too long; poll
@@ -116,6 +162,60 @@ func (r *Runner) Run(ctx context.Context) {
 	// wait one tick before its first fire. The risk is double-fire on
 	// the very first tick (this synth + first ticker) and the read
 	// itself is cheap enough we accept it.
+	r.tick(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			r.tick(ctx)
+			r.stalenessTick(ctx)
+		}
+	}
+}
+
+// runLeader is the Phase D-1 path: only the lease holder ticks.
+// The runner blocks on WaitForLeadership until it owns the role,
+// then runs the ordinary tick loop. If the lease expires (heartbeat
+// fails past TTL, or the acquirer pod is preempted) the runner
+// returns to WaitForLeadership to compete for the role again.
+func (r *Runner) runLeader(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		leaseCtx, err := WaitForLeadership(ctx, r.leader, r.leaderRole)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			r.log.Warn("cron: leader gate error; backing off",
+				"role", r.leaderRole, "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+				continue
+			}
+		}
+		if leaseCtx == nil {
+			// WaitForLeadership returned (nil, nil) only when it
+			// was cancelled mid-wait. Treat as shutdown.
+			return
+		}
+		// We hold the lease. Run the ordinary tick loop until
+		// the lease is lost or ctx is done.
+		r.tickUnderLease(leaseCtx)
+	}
+}
+
+// tickUnderLease is runFollowers with an additional cancellation
+// source (the lease context). It does NOT re-acquire leadership;
+// when the lease expires the runner returns to runLeader's outer
+// loop and competes for the role again.
+func (r *Runner) tickUnderLease(ctx context.Context) {
+	t := time.NewTicker(tickInterval)
+	defer t.Stop()
 	r.tick(ctx)
 	for {
 		select {

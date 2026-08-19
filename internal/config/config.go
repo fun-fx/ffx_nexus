@@ -142,6 +142,13 @@ type Config struct {
 	RouteWBench        float64
 	RouteBenchHalfLife time.Duration
 
+	// SchedulerRoleEnabled (Phase D-1) turns on the single-leader
+	// gate for the benchmark scheduler. When true, only the lease
+	// holder in the benchmark_scheduler_leases row fires; followers
+	// sleep on WaitForLeadership. Migrate this to true once the
+	// Worker pods are deployed alongside the Gateway pods.
+	SchedulerRoleEnabled bool
+
 	// --- V5 high-concurrency tuning -------------------------------------
 	// MaxConcurrentPerKey caps *concurrent* in-flight requests per virtual
 	// key, on a single replica. Use it to keep one noisy virtual key
@@ -459,6 +466,7 @@ func load() Config {
 		RouteRefresh:              envDuration("NEXUS_ROUTE_REFRESH", 30*time.Second),
 		RouteWBench:               envFloat("NEXUS_ROUTE_W_BENCH", 0.5),
 		RouteBenchHalfLife:        envDuration("NEXUS_ROUTE_BENCH_HALF_LIFE", 7*24*time.Hour),
+		SchedulerRoleEnabled:      envBool("NEXUS_SCHEDULER_ROLE_ENABLED", false),
 		OTLPEnabled:               envBool("NEXUS_OTLP_ENABLED", false),
 		OTLPEndpoint:              env("NEXUS_OTLP_ENDPOINT", ""),
 		MetricsAddr:               env("NEXUS_METRICS_ADDR", ""),
