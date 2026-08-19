@@ -54,4 +54,4 @@ LABEL org.opencontainers.image.title="ffx_nexus dev" \
       org.opencontainers.image.source="https://github.com/fun-fx/ffx_nexus" \
       devcontainer.metadata="{\"dockerComposeFile\": \"../deploy/docker-compose.yml\"}"
 
-CMD ["sleep", "infinity"]
+CMD ["sleep", "infinity"] 

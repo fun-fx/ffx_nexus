@@ -343,6 +343,12 @@ jobs:
         # Catches insecure Kubernetes and Dockerfile patterns in the artefacts a
         # customer actually applies: a container running as root, a missing
         # readOnlyRootFilesystem, a privileged securityContext.
+        #
+        # The .devcontainer/Dockerfile intentionally runs as root because the
+        # dev container is the Docker-in-Docker host; trivy DS-0002 cannot be
+        # fixed there without breaking the dev workflow. eval-service/Dockerfile
+        # is now run-as-nobody in CI (see file). The skip list is therefore
+        # only the devcontainer image, not anything a customer ships.
         uses: aquasecurity/trivy-action@v0.31.0
         with:
           scan-type: config
@@ -355,6 +361,9 @@ jobs:
           format: table
           severity: HIGH,CRITICAL
           exit-code: "1"
+          # The dev-container image is root-on-purpose (Docker-in-Docker).
+          # See .devcontainer/README.md for the rationale.
+          skip-files: .devcontainer/Dockerfile
 
   eval-service:
     name: Eval service (Python)
