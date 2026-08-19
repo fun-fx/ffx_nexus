@@ -22,6 +22,52 @@ accepted Trivy finding. Its twin responsibilities are:
 | Found scan, snapshot written     | trivy image + config (report mode)    | n/a              | n/a                 |
 | Following scans                 | trivy image + config (gate mode)      | FAIL on **new** ≥HIGH | FAIL on **new** ≥HIGH |
 
+## Initial baseline (snapshot at 2026-08-19, commit hash on `feat/release-candidate-structural-foundations`)
+
+Captured with Trivy v0.74.0 against the `.` scan-ref without any
+container build (so only the config scanner ran; libs cover the
+container stage when an image build is present in CI):
+
+| Surface                | Total ≥HIGH fresh findings | Action                         | `.trivyignore` entry |
+|------------------------|----------------------------|--------------------------------|----------------------|
+| `trivy fs misconfig .` | 1                          | Accept on file (`Dockerfile.mock` is dev-only; runtime USER non-root in `Dockerfile`) | `DS-0002`            |
+
+The single accepted finding (`DS-0002`, "Image user should not
+be 'root'") flags the implicit-root multi-stage build context
+that `Dockerfile` sets in the build stage. The runtime stage
+runs as UID 65532 (`nexus`) and that is the value trivy cannot
+infer — the rule fires on the COPY context, not the run
+context. A findable fix is to add `USER nexus` to the build
+stage even though that's not where the binary executes; we
+have a tracked ticket for that.
+
+## How to add a new `.trivyignore` entry
+
+1. Run `trivy fs --scanners misconfig .` locally; reproduce the
+   finding on the same scanner version listed above.
+2. Add the ID, a 2-line rationale, the owner, and an explicit
+   `<YYYY-Qn>` expiry comment to the file.
+3. PR review requires the rationale to:
+   - name the code path that produces the finding,
+   - explain why a runtime-only mitigation is acceptable, OR
+   - explicitly call out the tracked ticket that supersedes it.
+4. The new entry must appear in the
+   `docs/trivy-baseline.md` `Exception register` table below
+   on the same PR.
+
+## Exception register
+
+Each entry below corresponds to a `skip-files` or `--ignorefile` line
+in CI. The table is the source of truth, the workflow annotation is a
+reminder.
+
+| Scope                | Path                     | Reason                                               | Review by  | Owner                |
+|----------------------|--------------------------|------------------------------------------------------|------------|----------------------|
+| Container scan       | *(none)*                 | n/a                                                  | n/a        | n/a                  |
+| Config scan (skip)   | `.devcontainer/Dockerfile`| Dev container needs root for Docker-in-Docker socket; not a customer artefact. See `.devcontainer/README.md`. | 2026-Q4    | platform-team@fun-fx |
+| Config scan (DS-0002)| `Dockerfile` (build stage) | Runtime USER directive drops to UID 65532; trivy flags the implicit-root build stage. Runtime is verified non-root. Supersede: add `USER nexus` to the build stage. | 2026-Q4    | platform-team@fun-fx |
+
+
 This document pairs with the live policy in
 `.github/workflows/ci.yml`: every accept-list entry must be registered
 below *and* carry an explicit expiry in the workflow comments so a

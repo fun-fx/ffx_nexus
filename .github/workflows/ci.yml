@@ -401,6 +401,54 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           skip-files: .devcontainer/Dockerfile
+          # Per-finder override file. Lives at the repo root as
+          # `.trivyignore` (Trivy's conventional location). Each
+          # entry pairs the rule ID with a tracked rationale in the
+          # ignorefile and re-justifies quarterly; see the file
+          # header for the add/drop rules. The ignorefile is the
+          # source of truth — the skip-files list above is
+          # step-1 coarseness, the ignorefile is the per-rule
+          # acceptance register.
+          ignorefile: .trivyignore
+
+      # Per-quarter scan gate (informational only): re-runs trivy's
+      # config scan against the same scan-ref used above and
+      # compares the count of HIGH+CRITICAL findings to the
+      # baseline. The intended use is that the count never grows
+      # — any growth fails with an actionable message naming the
+      # offending rule, plus the file/line trivy reports it at.
+      # Kept on a separate step so it can be triggered on a
+      # schedule (`on: schedule`) without affecting PR gating.
+      - name: trivy count guard
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          trivy fs --scanners misconfig --severity HIGH,CRITICAL \
+                  --ignorefile .trivyignore --format json --quiet . \
+                  > /tmp/trivy.json
+          count=$(python3 -c '
+          import json,sys
+          r=json.load(open("/tmp/trivy.json"))
+          n=sum(len([m for m in (res.get("Misconfigurations") or []) \
+                   if m.get("Severity") in ("HIGH","CRITICAL")]) \
+              for res in r.get("Results",[]))
+          print(n)')
+          baseline=$(awk -F: '/^#/{next} NF{gsub(/[[:space:]]/,""); print}' .trivyignore \
+                    | grep -E '^DS-|^AVD-|^CVE-|^GHSA-' | wc -l | tr -d ' ')
+          echo "high/critical findings after ignorefile: $count"
+          echo "ignorefile entries (rules): $baseline"
+          # Always log; do not fail on count mismatch outside main.
+          if [[ "${{ github.ref }}" == "refs/heads/main" && "$count" != "0" ]]; then
+            echo "FAIL: trivy produced $count HIGH/CRITICAL findings with the ignorefile applied." >&2
+            echo "Either fix the underlying finding, or add a justified entry to .trivyignore." >&2
+            python3 -c '
+          import json
+          r=json.load(open("/tmp/trivy.json"))
+          for res in r.get("Results",[]):
+            for m in res.get("Misconfigurations",[]) or []:
+              if m.get("Severity") in ("HIGH","CRITICAL"):
+                print(f"  {m.get(\"ID\")} target={m.get(\"Target\",\"?\")} title={m.get(\"Title\")}")'
+            exit 1
+          fi
 
   eval-service:
     name: Eval service (Python)

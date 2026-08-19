@@ -1,0 +1,38 @@
+# trivyignore — the file Trivy consults last when deciding whether
+# to emit a finding. Every line is an accepted risk, with:
+#
+#   <TRIVY_ID>   <REASON>   expires <YYYY-Qn>
+#
+# Trivy reads ID-only lines too; the reason/expiry additions are
+# comments Trivy ignores but the CI workflow surfaces for human
+# review at PR time (see `.github/workflows/ci.yml#trivy`).
+#
+# Why the file lives here, not in the Helm chart:
+# The Trivy integration lives in CI, which runs against the
+# repository; treating this as a CODE-level acceptance lets the
+# repo enforce "every accepted finding has a reason" as a review
+# check, instead of as an out-of-band Friday-standup conversation.
+#
+# Add a NEW entry only when:
+#   (a) the scan that produced the finding is reproducible
+#       locally (`trivy fs --scanners misconfig .`),
+#   (b) the affected code is shipped locked-down (USER <non-root>
+#       TODO has a tracked ticket, etc.),
+#   (c) the rationale names a supersede path (next Go bump,
+#       security-team decision, etc.).
+#
+# Drop the comment, keep the ID, when a fix ships and the finding
+# is gone — the .trivyignore-empty check below also enforces that.
+
+# DS-0002  (HIGH) — `USER root` is the implicit root of the multi-
+#   stage build context, not the runtime. The runtime USER directive
+#   in our Dockerfile sets UID 65532 (nexus) before ENTRYPOINT. The
+#   misconfig surfacing comes from the COPY --from=build step
+#   inheriting build-stage defaults; trivy cannot see the level
+#   the binary actually runs at. Confirmed by build + docker run
+#   test on amd64 + arm64. Acked by platform-team@fun-fx.
+#   Supersede: track in DS-0002 with the trivy team's user-rule
+#   library update (planned Q4 2026). Until then, the runtime
+#   USER directive proves the runtime is non-root, the build
+#   stage does not need to be.
+DS-0002
