@@ -90,10 +90,22 @@ func (e *chExecutor) Applied(ctx context.Context) (map[string]LedgerEntry, error
 }
 
 // Apply runs each statement in the file, then records the outcome. Statements
-// are split on ';' because the Go driver's Exec takes one statement at a time.
+// are split on ';' that fall OUTSIDE a `--` line comment, because the Go
+// driver's Exec takes one statement at a time and CH is strict about partial
+// fragments from a misplaced semicolon.
+//
+// The comment-aware split is the load-bearing fix: a CH migration's first
+// statement often ends inside a comment block (semicolons appearing in prose
+// like `-- status: pending | running | completed | failed;`), and a naive
+// strings.Split(m.SQL, ";") turns those comment fragments into garbage
+// statements that CH rejects with code: 62. The naive split was previously
+// OK by accident because no CH migration had a `;` inside a comment line;
+// 009_benchmark_runs.sql now does, and the previous behaviour manifested as
+// `failed at position N ('(')` on the append-only audit test we wrote on the
+// way through Chapter 2.
 func (e *chExecutor) Apply(ctx context.Context, m Migration) error {
 	start := time.Now()
-	for _, stmt := range strings.Split(m.SQL, ";") {
+	for _, stmt := range splitCHStatements(m.SQL) {
 		if !hasSQL(stmt) {
 			continue
 		}
@@ -104,6 +116,63 @@ func (e *chExecutor) Apply(ctx context.Context, m Migration) error {
 	}
 	e.record(ctx, m, time.Since(start), true, "")
 	return nil
+}
+
+// SplitCHStatementsForTest exposes the comment-aware splitter for the test
+// suite so a regression to naive strings.Split can be caught without spinning
+// up a ClickHouse container. The "ForTest" suffix is the codebase convention
+// for test-only exports — production callers must use Apply().
+func SplitCHStatementsForTest(sql string) []string {
+	return splitCHStatements(sql)
+}
+
+// splitCHStatements splits a CH migration into executable statements,
+// respecting `--` line comments. A `;` inside a `--` comment is part of the
+// comment, not a statement terminator; CH is strict about partial fragments
+// (code: 62) and a naive strings.Split m.SQL on ";" turns comment fragments
+// into garbage statements. The naive form was previously OK by accident
+// because no CH migration had a `;` inside a comment line; 009_benchmark_runs
+// does, and the previous behaviour broke the E2E playwright run that calls
+// `nexus migrate` on the persistent CH volume.
+//
+// Strings quoted with single quote, double quote, or backtick are not common
+// in CH migration prose today; if they become common, the splitter will need
+// to learn them. Inline `--` comments are stripped conservatively (only the
+// `-- ` form, not the run-on `--` form) so a statement like
+// `id String, -- inline note` does not bleed markers into the next line.
+func splitCHStatements(sql string) []string {
+	var out []string
+	var stmtLines []string
+	for _, line := range strings.Split(sql, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		if i := strings.Index(line, " -- "); i >= 0 {
+			line = line[:i]
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		stmtLines = append(stmtLines, line)
+		// A statement ends on the first line that closes with `;`.
+		if !strings.HasSuffix(strings.TrimSpace(line), ";") {
+			continue
+		}
+		joined := strings.TrimSpace(strings.Join(stmtLines, "\n"))
+		joined = strings.TrimSuffix(joined, ";")
+		if joined != "" {
+			out = append(out, joined)
+		}
+		stmtLines = nil
+	}
+	if len(stmtLines) > 0 {
+		joined := strings.TrimSpace(strings.Join(stmtLines, "\n"))
+		joined = strings.TrimSuffix(joined, ";")
+		if joined != "" {
+			out = append(out, joined)
+		}
+	}
+	return out
 }
 
 func (e *chExecutor) record(ctx context.Context, m Migration, took time.Duration, ok bool, errMsg string) {

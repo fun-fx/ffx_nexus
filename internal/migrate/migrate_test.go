@@ -495,3 +495,73 @@ func TestPendingReportsOutstandingWithoutLocking(t *testing.T) {
 		t.Errorf("Pending = %v after a full run, want empty", pending)
 	}
 }
+
+// TestSplitCHStatementsSemicolonsInsideCommentsStayOutOfSplit exercises the
+// comment-aware CH statement splitter that replaced the naive strings.Split
+// on `;` after 009_benchmark_runs.sql began failing parse in CI with code: 62.
+// A `;` inside a `-- ` comment line must NOT terminate a statement, and the
+// SETTINGS terminator must be consumed so the next statement opens cleanly.
+func TestSplitCHStatementsSemicolonsInsideCommentsStayOutOfSplit(t *testing.T) {
+	sql := "-- header; why this file exists.\n" +
+		"CREATE TABLE IF NOT EXISTS t (id String)\n" +
+		"ENGINE = MergeTree\n" +
+		"ORDER BY id\n" +
+		"SETTINGS index_granularity = 8192;\n" +
+		"\n" +
+		"-- trailing note; do not break this.\n" +
+		"ALTER TABLE t ADD INDEX i (id) TYPE bloom_filter() GRANULARITY 4;\n"
+	parts := migrate.SplitCHStatementsForTest(sql)
+	if len(parts) != 2 {
+		t.Fatalf("split = %d parts, want 2 — naive Split(m.SQL, \";\") style bug regressed:\n%#v",
+			len(parts), parts)
+	}
+	if !strings.Contains(parts[0], "CREATE TABLE") || strings.HasSuffix(strings.TrimSpace(parts[0]), ";") {
+		t.Errorf("first part %q must contain CREATE TABLE and have no trailing semicolon", parts[0])
+	}
+	if !strings.Contains(parts[1], "ALTER TABLE") || !strings.Contains(parts[1], "bloom_filter") {
+		t.Errorf("second part %q must contain ALTER TABLE and bloom_filter", parts[1])
+	}
+	if strings.Contains(parts[0], "header") || strings.Contains(parts[1], "trailing note") {
+		t.Errorf("comment prose leaked into a statement: %q / %q", parts[0], parts[1])
+	}
+}
+
+// TestSplitCHStatementsNaiveSplitRegressionDetected is the load-bearing
+// mutation test. The naive split -- strings.Split on ";" -- keeps the
+// terminator in the emitted part, so a single `;`-terminated statement
+// produces a part whose content ends with ";". The comment-aware splitter
+// trims that trailing `;` because CH's driver parses a fragment with a
+// stray trailing `;` strictly. The tripwire is therefore: under the
+// comment-aware form there must be NO part whose trimmed text ends with
+// ";".
+func TestSplitCHStatementsNaiveSplitRegressionDetected(t *testing.T) {
+	sql := "-- header line with embedded ; semicolon.\n" +
+		"CREATE TABLE t (id String)\n" +
+		"ENGINE = MergeTree\n" +
+		"ORDER BY id\n" +
+		"SETTINGS index_granularity = 8192;"
+	parts := migrate.SplitCHStatementsForTest(sql)
+	for i, p := range parts {
+		if strings.HasSuffix(strings.TrimSpace(p), ";") {
+			t.Fatalf("part %d ends with \";\" (%q) — a regression to the naive "+
+				"strings.Split form retains the terminator inside the part because "+
+				"the comment-aware trim step is what removes it", i, p)
+		}
+	}
+}
+
+// TestSplitCHStatementsSingleStatementNoTrailingSemicolon asserts the trim
+// step strips a final `;` so a single-statement file with `;` produces one
+// SQL chunk that CH's driver can consume.
+func TestSplitCHStatementsSingleStatementNoTrailingSemicolon(t *testing.T) {
+	parts := migrate.SplitCHStatementsForTest("CREATE TABLE t (id String) ENGINE = MergeTree ORDER BY id;")
+	if len(parts) != 1 {
+		t.Fatalf("split = %d parts, want 1: %#v", len(parts), parts)
+	}
+	if strings.HasSuffix(strings.TrimSpace(parts[0]), ";") {
+		t.Errorf("trailing semicolon not stripped: %q", parts[0])
+	}
+	if !strings.Contains(parts[0], "CREATE TABLE") {
+		t.Errorf("missing CREATE TABLE: %q", parts[0])
+	}
+}
