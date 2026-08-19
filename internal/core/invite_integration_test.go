@@ -37,7 +37,21 @@ func inviteTestPool(t *testing.T) (*pgxpool.Pool, *Store) {
 	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pgxCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse DSN: %v", err)
+	}
+	// Invariant: every goroutine in TestIntegrationConcurrentAcceptsYieldExactlyOneUser
+	// holds a transaction connection and the winner additionally tries to grab
+	// fresh pool connections for the audit inserts that run after the FOR UPDATE
+	// region but before commit. With 5 racers + the 2 extra audit grabs the worst
+	// case is 7 live pool connections, well above pgxpool's default floor of 4.
+	// The previous tests held at <2 connections; this race bumps the ceiling
+	// explicitly so a future default change cannot regress to a pool-starvation
+	// hang masquerading as a concurrent-accept test failure.
+	const maxLiveConns = 10
+	pgxCfg.MaxConns = maxLiveConns
+	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -62,7 +76,12 @@ func inviteTestPool(t *testing.T) (*pgxpool.Pool, *Store) {
 	}
 	// Pooled connections each need the search_path, so pin it on the DSN.
 	pool.Close()
-	pool, err = pgxpool.New(ctx, dsn+"&search_path="+schema)
+	pgxCfg, err = pgxpool.ParseConfig(dsn + "&search_path=" + schema)
+	if err != nil {
+		t.Fatalf("parse DSN with search_path: %v", err)
+	}
+	pgxCfg.MaxConns = maxLiveConns
+	pool, err = pgxpool.NewWithConfig(ctx, pgxCfg)
 	if err != nil {
 		t.Fatalf("reconnect with search_path: %v", err)
 	}
@@ -195,7 +214,8 @@ func TestIntegrationInviteIsSingleUse(t *testing.T) {
 // accepted_at IS NULL and both insert.
 func TestIntegrationConcurrentAcceptsYieldExactlyOneUser(t *testing.T) {
 	pool, store := inviteTestPool(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	orgID, adminID := seedOrgAndAdmin(t, pool)
 
 	issued, err := store.CreateInvite(ctx, orgID, adminID,

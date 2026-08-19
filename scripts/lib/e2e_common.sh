@@ -36,6 +36,19 @@ stop_nexus() {
 
 start_nexus() {
   stop_nexus
+  # Apply pending schema migrations before launching the server. The docker-
+  # compose volume is persistent across scripts and testers, but every PR
+  # that adds or alters migrations leaves the binary ahead of the volume.
+  # Running the binary in --check-then-run pattern here keeps the volume
+  # honest without forcing a separate migration Job (the Helm chart owns
+  # that contract for production; this helper only level-sets the E2E
+  # playground so the first `Failed audit missing ...` failure we hit can
+  # only be a code defect, not a missed migration).
+  if [[ -x "$BIN" ]]; then
+    "$BIN" migrate >/tmp/e2e_migrate.log 2>&1 || {
+      echo "nexus migrate failed; log:"; cat /tmp/e2e_migrate.log; return 1
+    }
+  fi
   # Optional env overrides passed as arguments: KEY=VAL KEY2=VAL2 command
   if [[ $# -gt 0 ]]; then
     env "$@" "$BIN" &

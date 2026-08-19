@@ -137,7 +137,7 @@ jobs:
         # `go test ./...` skips it for want of NEXUS_TEST_POSTGRES_URL. Reading a
         # schedule back had been failing with "column last_run_id does not
         # exist" on every database built from the migration set.
-        run: go test ./internal/core/ -count=1 -v
+        run: go test ./internal/core/ -count=1 -timeout 8m -v
 
       - name: empty-install smoke — every console read answers on a fresh database
         env:
@@ -308,7 +308,7 @@ jobs:
         run: docker build -t nexus:ci-scan .
 
       - name: trivy image scan
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.31.0
         with:
           image-ref: nexus:ci-scan
           format: table
@@ -325,7 +325,7 @@ jobs:
         # Catches insecure Kubernetes and Dockerfile patterns in the artefacts a
         # customer actually applies: a container running as root, a missing
         # readOnlyRootFilesystem, a privileged securityContext.
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.31.0
         with:
           scan-type: config
           scan-ref: .
