@@ -308,7 +308,7 @@ jobs:
         run: docker build -t nexus:ci-scan .
 
       - name: trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: nexus:ci-scan
           format: table
@@ -325,7 +325,7 @@ jobs:
         # Catches insecure Kubernetes and Dockerfile patterns in the artefacts a
         # customer actually applies: a container running as root, a missing
         # readOnlyRootFilesystem, a privileged securityContext.
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: config
           scan-ref: .

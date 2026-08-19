@@ -14,10 +14,10 @@
 //
 // Whenever a constant is added, removed, or its value changed:
 //
-//   1. internal/core/audit_inventory_test.go must be updated so the AST
-//      inventory still passes.
-//   2. docs/audit-action-constants.md is the canonical list cited by SIEM
-//      rules; update it alongside.
+//  1. internal/core/audit_inventory_test.go must be updated so the AST
+//     inventory still passes.
+//  2. docs/audit-action-constants.md is the canonical list cited by SIEM
+//     rules; update it alongside.
 //
 // # Categorisation
 //
@@ -104,38 +104,38 @@ type AuditAction string
 // egress); a denied action always has a reason from the Reason catalog.
 const (
 	// --- Authentication ---
-	AuditActionAuthLoginSucceeded     AuditAction = "auth.login.succeeded"
-	AuditActionAuthLoginDenied        AuditAction = "auth.login.denied"
-	AuditActionAuthLogoutSucceeded    AuditAction = "auth.logout.succeeded"
-	AuditActionAuthMFAChallengeSent   AuditAction = "auth.mfa.challenge.sent"
-	AuditActionAuthMFAVerified        AuditAction = "auth.mfa.verified"
-	AuditActionAuthMFAFailed          AuditAction = "auth.mfa.failed"
+	AuditActionAuthLoginSucceeded   AuditAction = "auth.login.succeeded"
+	AuditActionAuthLoginDenied      AuditAction = "auth.login.denied"
+	AuditActionAuthLogoutSucceeded  AuditAction = "auth.logout.succeeded"
+	AuditActionAuthMFAChallengeSent AuditAction = "auth.mfa.challenge.sent"
+	AuditActionAuthMFAVerified      AuditAction = "auth.mfa.verified"
+	AuditActionAuthMFAFailed        AuditAction = "auth.mfa.failed"
 
 	// --- SSO ---
-	AuditActionSSOCallbackSucceeded   AuditAction = "sso.callback.succeeded"
-	AuditActionSSOCallbackDenied      AuditAction = "sso.callback.denied"
-	AuditActionSSOStateMismatch       AuditAction = "sso.state.mismatch"
-	AuditActionSSONonceMismatch       AuditAction = "sso.nonce.mismatch"
+	AuditActionSSOCallbackSucceeded AuditAction = "sso.callback.succeeded"
+	AuditActionSSOCallbackDenied    AuditAction = "sso.callback.denied"
+	AuditActionSSOStateMismatch     AuditAction = "sso.state.mismatch"
+	AuditActionSSONonceMismatch     AuditAction = "sso.nonce.mismatch"
 
 	// --- Org / tenancy boundary ---
-	AuditActionOrgBoundaryViolated    AuditAction = "denied.org.boundary"
-	AuditActionOriginBlocked          AuditAction = "denied.origin"
-	AuditActionRequestSizeExceeded    AuditAction = "denied.request_size"
+	AuditActionOrgBoundaryViolated AuditAction = "denied.org.boundary"
+	AuditActionOriginBlocked       AuditAction = "denied.origin"
+	AuditActionRequestSizeExceeded AuditAction = "denied.request_size"
 
 	// --- Rate limit / CORS / egress ---
-	AuditActionRateLimited            AuditAction = "denied.rate_limit"
-	AuditActionCORSDenied             AuditAction = "denied.cors"
-	AuditActionEgressBlocked          AuditAction = "denied.egress"
-	AuditActionEgressAddressRejected  AuditAction = "denied.egress.address"
+	AuditActionRateLimited           AuditAction = "denied.rate_limit"
+	AuditActionCORSDenied            AuditAction = "denied.cors"
+	AuditActionEgressBlocked         AuditAction = "denied.egress"
+	AuditActionEgressAddressRejected AuditAction = "denied.egress.address"
 
 	// --- API key lifecycle ---
-	AuditActionKeyCreated             AuditAction = "key.create"
-	AuditActionKeyRevoked             AuditAction = "key.revoke"
-	AuditActionKeyRotated             AuditAction = "key.rotate"
-	AuditActionKeyRejectedInvalid     AuditAction = "key.rejected.invalid"
-	AuditActionKeyRejectedExpired     AuditAction = "key.rejected.expired"
-	AuditActionKeyRejectedRevoked     AuditAction = "key.rejected.revoked"
-	AuditActionKeyAccepted            AuditAction = "key.accepted"
+	AuditActionKeyCreated         AuditAction = "key.create"
+	AuditActionKeyRevoked         AuditAction = "key.revoke"
+	AuditActionKeyRotated         AuditAction = "key.rotate"
+	AuditActionKeyRejectedInvalid AuditAction = "key.rejected.invalid"
+	AuditActionKeyRejectedExpired AuditAction = "key.rejected.expired"
+	AuditActionKeyRejectedRevoked AuditAction = "key.rejected.revoked"
+	AuditActionKeyAccepted        AuditAction = "key.accepted"
 
 	// --- Credentials (provider) ---
 	AuditActionCredentialCreated      AuditAction = "credential.create"
@@ -145,20 +145,20 @@ const (
 	AuditActionCredentialBaseURLSaved AuditAction = "credential.base_url.saved"
 
 	// --- Users & invites ---
-	AuditActionUserCreated            AuditAction = "user.create"
-	AuditActionUserUpdated            AuditAction = "user.update"
-	AuditActionUserDeleted            AuditAction = "user.delete"
-	AuditActionUserLoginSucceeded     AuditAction = "user.login.succeeded"
-	AuditActionUserLoginDenied        AuditAction = "user.login.denied"
-	AuditActionInviteIssued           AuditAction = "invite.issue"
-	AuditActionInviteAccepted         AuditAction = "invite.accept"
-	AuditActionInviteRejectedInvalid  AuditAction = "invite.rejected.invalid"
-	AuditActionInviteRejectedExpired  AuditAction = "invite.rejected.expired"
-	AuditActionInviteReplayRejected   AuditAction = "invite.rejected.replay"
+	AuditActionUserCreated           AuditAction = "user.create"
+	AuditActionUserUpdated           AuditAction = "user.update"
+	AuditActionUserDeleted           AuditAction = "user.delete"
+	AuditActionUserLoginSucceeded    AuditAction = "user.login.succeeded"
+	AuditActionUserLoginDenied       AuditAction = "user.login.denied"
+	AuditActionInviteIssued          AuditAction = "invite.issued"
+	AuditActionInviteAccepted        AuditAction = "invite.accepted"
+	AuditActionInviteRejectedInvalid AuditAction = "invite.rejected.invalid"
+	AuditActionInviteRejectedExpired AuditAction = "invite.rejected.expired"
+	AuditActionInviteReplayRejected  AuditAction = "invite.rejected.replay"
 
 	// --- Routing / quality-aware failover ---
-	AuditActionRoutingDecision        AuditAction = "routing.decision"
-	AuditActionRoutingFailover        AuditAction = "routing.failover"
+	AuditActionRoutingDecision AuditAction = "routing.decision"
+	AuditActionRoutingFailover AuditAction = "routing.failover"
 
 	// --- Eval / benchmark / integration ---
 	AuditActionEvalRunCreated         AuditAction = "eval.run.create"
@@ -174,16 +174,16 @@ const (
 	AuditActionConcurrencyCapDenied   AuditAction = "denied.concurrency.cap"
 
 	// --- Policy / security / safety ---
-	AuditActionPolicyCreated          AuditAction = "policy.create"
-	AuditActionPolicyDeleted          AuditAction = "policy.delete"
-	AuditActionSecurityAlert          AuditAction = "security.alert"
-	AuditActionPanicRecovered         AuditAction = "security.panic.recovered"
+	AuditActionPolicyCreated  AuditAction = "policy.create"
+	AuditActionPolicyDeleted  AuditAction = "policy.delete"
+	AuditActionSecurityAlert  AuditAction = "security.alert"
+	AuditActionPanicRecovered AuditAction = "security.panic.recovered"
 
 	// --- Audit metadata access (c0.7) ---
-	AuditActionAuditViewed            AuditAction = "audit.view"
-	AuditActionAuditExported          AuditAction = "audit.export"
-	AuditActionAuditViewDenied        AuditAction = "denied.audit.view"
-	AuditActionAuditExportDenied      AuditAction = "denied.audit.export"
+	AuditActionAuditViewed       AuditAction = "audit.view"
+	AuditActionAuditExported     AuditAction = "audit.export"
+	AuditActionAuditViewDenied   AuditAction = "denied.audit.view"
+	AuditActionAuditExportDenied AuditAction = "denied.audit.export"
 
 	// --- Schema contract enforcement (c0.3 hooked here too) ---
 	AuditActionSchemaContractViolated AuditAction = "denied.schema.contract"
@@ -211,6 +211,7 @@ func AllAuditActionStrings() []string {
 	}
 	return out
 }
+
 // knownActions is the canonical list of every AuditAction constant. The
 // inventory test pins against this list so adding "dead" code (a declared
 // constant with no callers) is loud at CI time.
@@ -298,8 +299,8 @@ var knownActions = []AuditAction{
 type AuditFailureClass string
 
 const (
-	FailStopClass    AuditFailureClass = "fail_stop"
-	BestEffortClass  AuditFailureClass = "best_effort"
+	FailStopClass   AuditFailureClass = "fail_stop"
+	BestEffortClass AuditFailureClass = "best_effort"
 )
 
 // auditFailureClass is the closed map aligning AuditAction to its
@@ -320,45 +321,45 @@ const (
 // inventory refuses silent drift in either direction.
 var auditFailureClass = map[AuditAction]AuditFailureClass{
 	// --- Audit access (high-privilege reads) ---
-	AuditActionAuditViewed:           FailStopClass,
-	AuditActionAuditExported:         FailStopClass,
-	AuditActionAuditViewDenied:       FailStopClass,
-	AuditActionAuditExportDenied:     FailStopClass,
+	AuditActionAuditViewed:       FailStopClass,
+	AuditActionAuditExported:     FailStopClass,
+	AuditActionAuditViewDenied:   FailStopClass,
+	AuditActionAuditExportDenied: FailStopClass,
 
 	// --- Authentication / SSO ---
-	AuditActionAuthLoginSucceeded:    FailStopClass,
-	AuditActionAuthLoginDenied:       BestEffortClass,
-	AuditActionAuthLogoutSucceeded:   FailStopClass,
-	AuditActionAuthMFAChallengeSent:  BestEffortClass,
-	AuditActionAuthMFAVerified:       FailStopClass,
-	AuditActionAuthMFAFailed:         BestEffortClass,
-	AuditActionUserLoginSucceeded:    FailStopClass,
-	AuditActionUserLoginDenied:       BestEffortClass,
-	AuditActionSSOCallbackSucceeded:  FailStopClass,
-	AuditActionSSOCallbackDenied:     BestEffortClass,
-	AuditActionSSOStateMismatch:      BestEffortClass,
-	AuditActionSSONonceMismatch:      BestEffortClass,
+	AuditActionAuthLoginSucceeded:   FailStopClass,
+	AuditActionAuthLoginDenied:      BestEffortClass,
+	AuditActionAuthLogoutSucceeded:  FailStopClass,
+	AuditActionAuthMFAChallengeSent: BestEffortClass,
+	AuditActionAuthMFAVerified:      FailStopClass,
+	AuditActionAuthMFAFailed:        BestEffortClass,
+	AuditActionUserLoginSucceeded:   FailStopClass,
+	AuditActionUserLoginDenied:      BestEffortClass,
+	AuditActionSSOCallbackSucceeded: FailStopClass,
+	AuditActionSSOCallbackDenied:    BestEffortClass,
+	AuditActionSSOStateMismatch:     BestEffortClass,
+	AuditActionSSONonceMismatch:     BestEffortClass,
 
 	// --- Users & lifecycle ---
-	AuditActionUserCreated:           FailStopClass,
-	AuditActionUserUpdated:           FailStopClass,
-	AuditActionUserDeleted:           FailStopClass,
+	AuditActionUserCreated: FailStopClass,
+	AuditActionUserUpdated: FailStopClass,
+	AuditActionUserDeleted: FailStopClass,
 
 	// --- Credentials (security-state changes) ---
-	AuditActionCredentialCreated:     FailStopClass,
-	AuditActionCredentialUpdated:     FailStopClass,
-	AuditActionCredentialRotate:      FailStopClass,
-	AuditActionCredentialDeleted:     FailStopClass,
+	AuditActionCredentialCreated:      FailStopClass,
+	AuditActionCredentialUpdated:      FailStopClass,
+	AuditActionCredentialRotate:       FailStopClass,
+	AuditActionCredentialDeleted:      FailStopClass,
 	AuditActionCredentialBaseURLSaved: FailStopClass,
 
 	// --- API keys ---
-	AuditActionKeyCreated:            FailStopClass,
-	AuditActionKeyRevoked:            FailStopClass,
-	AuditActionKeyRotated:            FailStopClass,
-	AuditActionKeyRejectedInvalid:    BestEffortClass,
-	AuditActionKeyRejectedExpired:    BestEffortClass,
-	AuditActionKeyRejectedRevoked:    BestEffortClass,
-	AuditActionKeyAccepted:           BestEffortClass,
+	AuditActionKeyCreated:         FailStopClass,
+	AuditActionKeyRevoked:         FailStopClass,
+	AuditActionKeyRotated:         FailStopClass,
+	AuditActionKeyRejectedInvalid: BestEffortClass,
+	AuditActionKeyRejectedExpired: BestEffortClass,
+	AuditActionKeyRejectedRevoked: BestEffortClass,
+	AuditActionKeyAccepted:        BestEffortClass,
 
 	// --- Invites ---
 	AuditActionInviteIssued:          FailStopClass,
@@ -380,22 +381,22 @@ var auditFailureClass = map[AuditAction]AuditFailureClass{
 	AuditActionConcurrencyCapDenied:  BestEffortClass,
 
 	// --- Policy / security / safety ---
-	AuditActionPolicyCreated:         FailStopClass,
-	AuditActionPolicyDeleted:         FailStopClass,
-	AuditActionSecurityAlert:         FailStopClass,
-	AuditActionPanicRecovered:        FailStopClass,
+	AuditActionPolicyCreated:  FailStopClass,
+	AuditActionPolicyDeleted:  FailStopClass,
+	AuditActionSecurityAlert:  FailStopClass,
+	AuditActionPanicRecovered: FailStopClass,
 
 	// --- Routing / eval / benchmark (operational, not security) ---
-	AuditActionRoutingDecision:       BestEffortClass,
-	AuditActionRoutingFailover:       BestEffortClass,
-	AuditActionEvalRunCreated:        BestEffortClass,
-	AuditActionEvalRunScored:         BestEffortClass,
-	AuditActionEvalPluginInstalled:   FailStopClass,
+	AuditActionRoutingDecision:        BestEffortClass,
+	AuditActionRoutingFailover:        BestEffortClass,
+	AuditActionEvalRunCreated:         BestEffortClass,
+	AuditActionEvalRunScored:          BestEffortClass,
+	AuditActionEvalPluginInstalled:    FailStopClass,
 	AuditActionEvalPluginManifestFail: BestEffortClass,
-	AuditActionBenchmarkCreated:      BestEffortClass,
-	AuditActionBenchmarkRunStarted:   BestEffortClass,
-	AuditActionBenchmarkRunFinished:  BestEffortClass,
-	AuditActionBenchmarkScheduleHit:  BestEffortClass,
+	AuditActionBenchmarkCreated:       BestEffortClass,
+	AuditActionBenchmarkRunStarted:    BestEffortClass,
+	AuditActionBenchmarkRunFinished:   BestEffortClass,
+	AuditActionBenchmarkScheduleHit:   BestEffortClass,
 
 	// --- Schema contract (call out as a fail-stop — drift means SQL is unsafe to run) ---
 	AuditActionSchemaContractViolated: FailStopClass,
@@ -422,11 +423,12 @@ func FailureClassForTest() map[AuditAction]AuditFailureClass {
 	}
 	return out
 }
+
 type AuditReason string
 
 const (
-	AuditReasonUnknown                  AuditReason = "unknown"
-	AuditReasonForbidden                AuditReason = "forbidden"
+	AuditReasonUnknown                   AuditReason = "unknown"
+	AuditReasonForbidden                 AuditReason = "forbidden"
 	AuditReasonInvalidCredentials        AuditReason = "invalid_credentials"
 	AuditReasonKeyInvalid                AuditReason = "key_invalid"
 	AuditReasonKeyExpired                AuditReason = "key_expired"

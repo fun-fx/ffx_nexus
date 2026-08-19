@@ -129,11 +129,11 @@ func TestResolveSourceHeadersOverCapAreRejected(t *testing.T) {
 // truncating the IPv6 prefix that distinguishes sites.
 func TestMaskedIsPrivacyAware(t *testing.T) {
 	cases := map[string]string{
-		"203.0.113.5":     "203.0.113.0",
-		"10.0.0.42":       "10.0.0.0",
-		"2001:db8::abcd":  "2001:db8::",
-		"":                "",
-		"not-an-ip":       "not-an-ip",
+		"203.0.113.5":    "203.0.113.0",
+		"10.0.0.42":      "10.0.0.0",
+		"2001:db8::abcd": "2001:db8::",
+		"":               "",
+		"not-an-ip":      "not-an-ip",
 	}
 	for in, want := range cases {
 		if got := Masked(in); got != want {

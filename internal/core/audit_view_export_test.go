@@ -154,17 +154,17 @@ func TestExportAuditCSVDefendsFormulaInjection(t *testing.T) {
 	// We exercise csvSafeCell directly; the SQL path is verified in
 	// TestExportAuditStreamsAsCSV.
 	cases := map[string]string{
-		"=cmd|...":                    "'=cmd|...",
-		"+evil":                       "'+evil",
-		"-1":                          "'-1",
-		"@calc":                       "'@calc",
-		"hello world":                 "hello world",
-		"":                            "",
-		"=SUM(A1:A99)/5":              "'=SUM(A1:A99)/5",
-		"\tleading-tab":               " leading-tab",
-		"\r\r\r":                      "",
-		"plain text with = mid-line":  "plain text with = mid-line",
-		"\n=evil\nnewline":            " =evil newline",
+		"=cmd|...":                   "'=cmd|...",
+		"+evil":                      "'+evil",
+		"-1":                         "'-1",
+		"@calc":                      "'@calc",
+		"hello world":                "hello world",
+		"":                           "",
+		"=SUM(A1:A99)/5":             "'=SUM(A1:A99)/5",
+		"\tleading-tab":              " leading-tab",
+		"\r\r\r":                     "",
+		"plain text with = mid-line": "plain text with = mid-line",
+		"\n=evil\nnewline":           " =evil newline",
 	}
 	for in, want := range cases {
 		if got := csvSafeCell(in); got != want {

@@ -94,9 +94,9 @@ func NewMetricsRecorder(addr string, logger *slog.Logger) *MetricsRecorder {
 		qualityScoreSum:    map[string]float64{},
 		qualityScoreCount:  map[string]uint64{},
 		otlpExportFailures: map[string]uint64{},
-		auditWriteFailures:  map[labelsKey]uint64{},
-		logger:              logger,
-		addr:                addr,
+		auditWriteFailures: map[labelsKey]uint64{},
+		logger:             logger,
+		addr:               addr,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", r.handleMetrics)

@@ -696,7 +696,6 @@ func (s *Store) AuditDenial(ctx context.Context, e AuditEvent, fp string, window
 	}
 }
 
-
 // Audit inserts one record into audit_log. The correlation id and the
 // client request id are *not* sourced from caller arguments: they come
 // from auditid.FromContext(ctx) and auditid.ClientRequestID(ctx), so

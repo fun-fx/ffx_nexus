@@ -26,7 +26,7 @@ func TestAuditCategoriesAreFullyImplemented(t *testing.T) {
 	}{
 		{"auth.", "auth.login.succeeded"},
 		{"user.", "user.login.succeeded"},
-		{"invite.", "invite.issue"},
+		{"invite.", "invite.issued"},
 		{"key.", "key.create"},
 		{"credential.", "credential.create"},
 		{"routing.", "routing.decision"},

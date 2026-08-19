@@ -11,6 +11,7 @@ import (
 // action must:
 //   - be a denied-attempt-style event (never a state-change success);
 //   - be high-volume-enough under attack to justify burst-collapse.
+//
 // Adding a new entry to the set without updating this list will fail CI;
 // removing an entry will fail because the corresponding "must-collapse"
 // test below asserts the action was still aggregated.

@@ -419,8 +419,8 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request, u core.User) {
 			s.writeStoreErr(w, err, "update failed")
 			return
 		}
-s.audit(r.Context(), u.ID, u.OrgID, core.AuditAction(core.AuditMeUpdate), u.ID,
-		fmt.Sprintf("enforce_limits=%t", *req.EnforceLimits))
+		s.audit(r.Context(), u.ID, u.OrgID, core.AuditAction(core.AuditMeUpdate), u.ID,
+			fmt.Sprintf("enforce_limits=%t", *req.EnforceLimits))
 		u.EnforceLimits = *req.EnforceLimits
 	}
 	writeJSON(w, http.StatusOK, u)

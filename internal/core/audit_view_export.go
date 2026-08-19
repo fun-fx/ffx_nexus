@@ -33,17 +33,17 @@ import (
 // accidentally passing a free-form org-id into the wrong slot at
 // handler boundaries.
 type AuditFilter struct {
-	OrgID         string
-	ActionPrefix  string // "" returns all actions
-	Actor         string // "" returns all actors
-	TargetPrefix  string // "" returns all targets
-	FromTime      time.Time
-	ToTime        time.Time
-	RequestID     string // optional
-	ClientReqID   string // optional
+	OrgID           string
+	ActionPrefix    string // "" returns all actions
+	Actor           string // "" returns all actors
+	TargetPrefix    string // "" returns all targets
+	FromTime        time.Time
+	ToTime          time.Time
+	RequestID       string     // optional
+	ClientReqID     string     // optional
 	CursorCreatedAt *time.Time // last seen created_at for cursor-pagination
-	CursorID      int64       // last seen id for cursor-pagination
-	Limit         int
+	CursorID        int64      // last seen id for cursor-pagination
+	Limit           int
 }
 
 // AuditRow is the row shape returned to the view/export surface. The
@@ -52,19 +52,19 @@ type AuditFilter struct {
 // audit_log schema so an admin reading the CSV sees exactly what
 // Postgres wrote.
 type AuditRow struct {
-	ID            int64
-	OrgID         string
-	Actor         string
-	Action        string
-	TargetID      string
-	Detail        string
-	RequestID     string
-	ClientReqID   string
-	Count         int
-	FirstAt       *time.Time
-	LastAt        *time.Time
-	CreatedAt     time.Time
-	ResourceFP    string
+	ID          int64
+	OrgID       string
+	Actor       string
+	Action      string
+	TargetID    string
+	Detail      string
+	RequestID   string
+	ClientReqID string
+	Count       int
+	FirstAt     *time.Time
+	LastAt      *time.Time
+	CreatedAt   time.Time
+	ResourceFP  string
 }
 
 // ViewMaxRows is the documented upper bound on a single audit page.
@@ -79,7 +79,7 @@ const ExportMaxRows = 100_000
 // view caps at 90 days; export at 30 days to keep CSV download
 // practical.
 const (
-	DefaultViewTimeSpan  = 90 * 24 * time.Hour
+	DefaultViewTimeSpan   = 90 * 24 * time.Hour
 	DefaultExportTimeSpan = 30 * 24 * time.Hour
 )
 

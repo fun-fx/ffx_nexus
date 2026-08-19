@@ -4,20 +4,20 @@
 //
 // In practice, the contracts the aggregator exposes are:
 //
-//   1. AggregatedAction(action) tells the caller whether the event is
-//      aggregated or written individually. Policies live here because
-//      they belong to the durability/performance side of the audit
-//      system, not the routing side.
+//  1. AggregatedAction(action) tells the caller whether the event is
+//     aggregated or written individually. Policies live here because
+//     they belong to the durability/performance side of the audit
+//     system, not the routing side.
 //
-//   2. ResourceFingerprint(target) gives a stable, bounded hex digest
-//      of the resource the event targets. Two requests with the same
-//      fingerprint fall into the same audit row.
+//  2. ResourceFingerprint(target) gives a stable, bounded hex digest
+//     of the resource the event targets. Two requests with the same
+//     fingerprint fall into the same audit row.
 //
-//   3. WindowBoundary(now) returns the start time of the aggregation
-//      window. SQL uses the start as the dedup key.
+//  3. WindowBoundary(now) returns the start time of the aggregation
+//     window. SQL uses the start as the dedup key.
 //
-//   4. The Store.Audit layered on top applies the rules and writes
-//      either a row or upserts an existing row's count + last_at.
+//  4. The Store.Audit layered on top applies the rules and writes
+//     either a row or upserts an existing row's count + last_at.
 //
 // This file is policy + helpers; the SQL is in Store.AuditDenial.
 package auditaggregator

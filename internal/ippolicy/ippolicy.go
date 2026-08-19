@@ -49,11 +49,11 @@ import (
 // anchor regardless.
 type Source struct {
 	RawSocketAddr    string
-	RawSocketHost    string // host portion after SplitHostPort, no port
-	TrustProxyHeader bool   // whether the proxy chain is trusted for header reading
-	HopsUsed         int    // how many hops were parsed successfully
+	RawSocketHost    string   // host portion after SplitHostPort, no port
+	TrustProxyHeader bool     // whether the proxy chain is trusted for header reading
+	HopsUsed         int      // how many hops were parsed successfully
 	HeaderChain      []string // the parsed hops in order
-	EffectiveIP      string  // the final effective source IP
+	EffectiveIP      string   // the final effective source IP
 }
 
 // ResolveTakesConfig returns true when the request's RemoteAddr falls

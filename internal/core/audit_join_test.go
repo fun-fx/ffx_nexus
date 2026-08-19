@@ -171,7 +171,7 @@ func TestAuditRowZeroContextStillHasNonEmptyCorrelationId(t *testing.T) {
 		t.Fatalf("query: %v", err)
 	}
 	if rid == "" {
-		t.Fatalf("Store.Audit with bare context.Background inserted an empty request_id; "+
+		t.Fatalf("Store.Audit with bare context.Background inserted an empty request_id; " +
 			"c0.1 requires the row to ALWAYS carry a non-empty correlation id")
 	}
 }
