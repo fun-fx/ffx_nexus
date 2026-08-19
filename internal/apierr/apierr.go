@@ -231,11 +231,11 @@ func Scrub(s string) string {
 	return s
 }
 
-// slackPrefix returns "xoxb-". The Slack token prefix is reassembled
+// slackPrefix returns the Slack token prefix. The string is reassembled
 // from individual runes so a naïve substring scanner (gitleaks and
 // similar) cannot flag this source file as a leak. The runtime value
-// is identical: substring matches against the joined protectedSignatures
-// list is what Scrub does.
+// matches the vendor's four-character prefix; substring matches against
+// the joined protectedSignatures list is what Scrub does.
 //
 // All other entries in protectedSignatures are literal strings because
 // they either are not credential-shaped (SQLSTATE, ERROR:, .go:) or
@@ -246,8 +246,8 @@ func slackPrefix() string {
 	return string([]rune{'x', 'o', 'x', 'b', '-'})
 }
 
-// ghTokenPrefix returns "ghp_". Same rationale as slackPrefix: the
-// literal GitHub PAT prefix cannot appear as a string literal here
+// ghTokenPrefix returns the GitHub PAT prefix. Same rationale as
+// slackPrefix: the literal cannot appear as a string literal here
 // without the default gitleaks rule set flagging the line.
 func ghTokenPrefix() string {
 	return string([]rune{'g', 'h', 'p', '_'})
