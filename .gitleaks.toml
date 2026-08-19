@@ -97,7 +97,9 @@ regexes = [
 #   inside the very file that exists to scrub leaks.
 [[rules.allowlists]]
 description = "scrub_test.go + apierr.go reference vendor prefixes as part of the leak-prevention contract itself"
-targetRules = ["slack-bot-token", "github-pat"]
+# targetRules by name from the maintained gitleaks default set; both rules
+# fire on the literal substring alone, so the allowlist is keyword-based.
+targetRules = ["Slack", "GitHub"]
 regexes = [
   '''["']xoxb-["']''',
   '''["']ghp_["']''',
