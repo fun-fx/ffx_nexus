@@ -1047,11 +1047,40 @@ func (s *Server) live(w http.ResponseWriter, r *http.Request, u core.User) {
 // log when one is available. Failures are swallowed (audit is best-effort
 // by design; see core.Store.Audit). actorID is the user_id of the caller;
 // pass "" for system actions.
-func (s *Server) audit(ctx context.Context, actorID, orgID, action, targetID, detail string) {
+// Audit records a single audit-log row. The detail string is Scrub'd
+// before it reaches the store, so a SQL fragment or stack trace that an
+// operator typed into a "failure reason" cannot leak through the audit
+// history of an admin reading it back. The actor, action, target id, and
+// org are scrubbed too so a cross-org id echo cannot enumerate other
+// tenants through the audit feed.
+//
+// RequestID, when present in the context (under resp.RequestIDKey()), is
+// stored on the row so a customer's request can be joined from the
+// response -> server log -> audit row in a single id. This is the load-
+// bearing property of the audit/error correlation work.
+// audit is the console-side convenience wrapper that scrubs sensitive
+// fields and dispatches to Store.Audit. All callers MUST pass an
+// AuditAction constant (or coerced string from one). Keep this signature
+// stable so future call sites can't drift away from the audit subsystem.
+//
+// Request correlation is handled inside Store.Audit using
+// auditid.FromContext(ctx). The response -> server log -> audit row
+// triple is joinable on that single id by construction.
+func (s *Server) audit(ctx context.Context, actorID, orgID string, action core.AuditAction, targetID, detail string) {
 	if s.store == nil {
 		return
 	}
-	s.store.Audit(ctx, actorID, orgID, action, targetID, detail)
+	detail = scrubDetail(detail)
+	targetID = scrubTargetID(targetID)
+	actorID = scrubTargetID(actorID)
+	orgID = scrubTargetID(orgID)
+	s.store.Audit(ctx, core.AuditEvent{
+		ActorID:  actorID,
+		OrgID:    orgID,
+		Action:   action,
+		TargetID: targetID,
+		Detail:   detail,
+	})
 }
 
 // playgroundCatalog exposes the merged model catalog for any

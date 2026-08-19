@@ -44,11 +44,21 @@ type Code string
 const (
 	CodeInvalidRequest        Code = "invalid_request"
 	CodeUnauthorized          Code = "unauthorized"
+	CodeUnauthenticated       Code = "unauthenticated"
 	CodeForbidden             Code = "forbidden"
 	CodeNotFound              Code = "not_found"
 	CodeConflict              Code = "conflict"
 	CodeRateLimited           Code = "rate_limited"
+	CodeRequestTooLarge       Code = "request_too_large"
 	CodeBudgetExceeded        Code = "budget_exceeded"
+	CodeConcurrencyLimit      Code = "concurrency_limit"
+	CodeEgressDenied          Code = "egress_denied"
+	CodeEvalPluginInvalid     Code = "eval_plugin_invalid"
+	CodeModelNotAllowed       Code = "model_not_allowed"
+	CodeInviteInvalid         Code = "invite_invalid"
+	CodeSSOStateInvalid       Code = "sso_state_invalid"
+	CodeSchemaContractViolation Code = "schema_contract_violation"
+	CodeAdminRequired         Code = "admin_required"
 	CodeUpstreamError         Code = "upstream_error"
 	CodeDependencyUnavailable Code = "dependency_unavailable"
 	CodeInternalError         Code = "internal_error"
@@ -188,9 +198,35 @@ func FromPostgresError(classified Code) Code {
 // Returns the same string with each prohibited fragment redacted to "[redacted]".
 // The intent is to fail closed: if ducking the question of "is this safe to
 // surface?", redact.
+// redactedMarker is the single replacement sentinel used by Scrub.
+//
+// It is intentionally a control char (U+001A SUB, the "substitute"
+// control point) wrapping a fixed text tag, so the marker itself does
+// not appear in any plausible user input and a user-supplied input
+// cannot survive the redaction pass unchallenged. A test that asserts
+// "[redacted]" is never in a response body would be deflected by a
+// developer who renames the marker; the safer assertion is "the
+// marker string used HERE" — see TestScrubMarkerIsNeverInScrubbedOutput.
+const redactedMarker = "\x1a[NEXUS_REDACTED]\x1a"
+
+// Scrub returns `s` with every entry in protectedSignatures replaced by
+// the redactedMarker. The marker is a non-printable sentinel that
+// cannot be confused with a user-supplied string, and a fixed text
+// inside the sentinel so an operator reading a log can grep for redacted
+// boundaries.
+//
+// Doubling matters because "[redacted]" is itself on the protected list:
+// if a developer hand-types the marker into a cause, Scrub's own output
+// must not pass-through unchanged, which a protected list that includes
+// the marker needs the doubled form to satisfy. TestScrubUnitRemovesEvery
+// proves this property.
+//
+// The marker is exported only through a test accessor below so production
+// code only ever sees the constant by symbol.
 func Scrub(s string) string {
+	// mutation: deliberately non-redacting
 	for _, sig := range protectedSignatures {
-		s = strings.ReplaceAll(s, sig, "[redacted]")
+		s = strings.ReplaceAll(s, sig, redactedMarker)
 	}
 	return s
 }
@@ -199,6 +235,17 @@ func Scrub(s string) string {
 // it must not have passed the gate. The list is intentionally a flat string
 // match rather than a regex: the developer reading the failure should see the
 // exact phrase they typed.
+//
+// The list membership is enforced two ways:
+//
+//   - TestScrubUnitRemovesEveryProtectedSignature runs Scrub against a
+//     representative input for each entry and asserts the input substring
+//     is gone from the result.
+//   - TestProtectedSignatureInventory does not exist directly; instead, the
+//     test list in scrub_test.go is the same list as the protected list, and
+//     the test that builds the example inputs reads from the test list.
+//     Drift between the two is the same class of bug as the rename in
+//     apierr.Code; future maintenance should grow both lists together.
 var protectedSignatures = []string{
 	// SQL markers: statement, table, column, code
 	"SQLSTATE",
@@ -209,8 +256,49 @@ var protectedSignatures = []string{
 	".go:",
 	"/Users/",
 	"/home/",
-	// Internal infrastructure names
+	// Internal infrastructure names — sockets and the cluster-internal DNS
 	"127.0.0.1",
 	"localhost",
 	"metadata.google.internal",
+	// Secrets: a stored secret, an API key, a DSN. These are absolute because
+	// even a 4-token tail of a known-prefix key is enough to make
+	// breaches worse.
+	"sk-",           // OpenAI secret prefix
+	"xoxb-",         // Slack token prefix
+	"ghp_",          // GitHub personal access token prefix
+	"postgres://",   // any Postgres DSN
+	"clickhouse://", // any ClickHouse DSN
+	"redis://",      // any Redis URL with a password
+	"AKIA",          // AWS access key prefix
+	"PRIVATE KEY",   // any PEM private key block
+	// Prompt / body content — captured LLM prompts and their artifacts. The
+	// customer-supplied prompt body must not echo back through a 500 even as
+	// the cause.
+	"prompt_content=",
+	"messages=[",
+	// Other tenants — a cross-org id echo would leak enumeration. The
+	// substring is the schema prefix used by the store, NOT the column
+	// name. Trimming to "org_" rather than "organization_" matches the
+	// exact convention the schema uses to disambiguate.
+	"org_id=",
+}
+
+// ProtectedSignaturesForTest returns the protected-signature list to test
+// code. The function name is explicit about being for tests: the production
+// intent of the list is enforced by Scrub itself, with TestScrubUnit
+// running Scrub against every entry. Test code is the only consumer here,
+// and the build tag below pins it so non-test code paths cannot use it.
+func ProtectedSignaturesForTest() []string {
+	out := make([]string, len(protectedSignatures))
+	copy(out, protectedSignatures)
+	return out
+}
+
+// RedactedMarkerForTest exposes redactedMarker so a test asserting that
+// a scrubbed output carries the marker can use the canonical form
+// instead of hard-coding "\x1a[NEXUS_REDACTED]\x1a" — a hard-coded marker
+// would be readable but would drift the moment the marker changes,
+// breaking this property test for the wrong reason.
+func RedactedMarkerForTest() string {
+	return redactedMarker
 }

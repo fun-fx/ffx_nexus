@@ -1,0 +1,22 @@
+-- Add client_request_id (separate column) so customer-supplied X-Request-Id
+-- values survive into the row for forensics WITHOUT contaminating the
+-- server-generated join key. c0.1 enforces this separation: the auditid
+-- package writes the server-generated id (prefix "req-" / "job-") to
+-- request_id, and the sanitised client header to client_request_id.
+--
+-- We do NOT use the header value as the join key — clients can put
+-- anything in the header and we don't want id collisions or log-injection
+-- vectors — but support sometimes needs it to reconcile a customer's
+-- report ("my X-Request-Id was abc-123") with our server-generated id.
+--
+-- The auditid package writes "" whenever the header is empty, too long,
+-- or contains characters outside [A-Za-z0-9._-]{1,128}. Reading "" plus
+-- the server-generated request_id still gives support a single-grep path
+-- back to the response.
+--
+-- Column rationale for NOT indexing: client_request_id is for forensics,
+-- not for cardinality-bound queries. An index here would invite an org
+-- key flood that mirrors the bug class b1.2 / 016_invite_tokens is
+-- designed to defend against.
+ALTER TABLE audit_log
+    ADD COLUMN IF NOT EXISTS client_request_id TEXT NOT NULL DEFAULT '';

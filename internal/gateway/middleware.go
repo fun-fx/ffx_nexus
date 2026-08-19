@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/ffxnexus/nexus/internal/resp"
+	"github.com/google/uuid"
 )
 
 type ctxKey string
@@ -86,7 +86,7 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				if rec := recover(); rec != nil {
 					log.Error("panic recovered", "err", rec, "path", r.URL.Path)
-					writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+					writeError(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -128,12 +128,12 @@ func Auth(auth VKeyAuthenticator) func(http.Handler) http.Handler {
 
 			token := bearerToken(r)
 			if token == "" {
-				writeError(w, http.StatusUnauthorized, "authentication_error", "missing or malformed Authorization header")
+				writeError(w, r, http.StatusUnauthorized, "authentication_error", "missing or malformed Authorization header")
 				return
 			}
 			res, err := auth(r.Context(), token)
 			if err != nil {
-				writeError(w, http.StatusUnauthorized, "authentication_error", "invalid virtual key")
+				writeError(w, r, http.StatusUnauthorized, "authentication_error", "invalid virtual key")
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxKeyOrgID, res.OrgID)
@@ -163,7 +163,7 @@ func Enforce(lim Limiter) func(http.Handler) http.Handler {
 			if budget, _ := r.Context().Value(ctxKeyMonthlyBudget).(float64); budget > 0 {
 				spent, err := lim.MonthlySpend(r.Context(), vkeyID)
 				if err == nil && spent >= budget {
-					writeError(w, http.StatusPaymentRequired, "budget_exceeded",
+					writeError(w, r, http.StatusPaymentRequired, "budget_exceeded",
 						"monthly budget exhausted for this virtual key")
 					return
 				}
@@ -174,7 +174,7 @@ func Enforce(lim Limiter) func(http.Handler) http.Handler {
 			allowed, err := lim.Allow(r.Context(), vkeyID, rpm)
 			if err == nil && !allowed {
 				w.Header().Set("Retry-After", "60")
-				writeError(w, http.StatusTooManyRequests, "rate_limit_exceeded",
+				writeError(w, r, http.StatusTooManyRequests, "rate_limit_exceeded",
 					"requests-per-minute limit exceeded for this virtual key")
 				return
 			}
@@ -202,7 +202,7 @@ func Concurrency(cap CapIface) func(http.Handler) http.Handler {
 			}
 			if !cap.Acquire(r.Context(), vkeyID) {
 				w.Header().Set("Retry-After", "1")
-				writeError(w, http.StatusTooManyRequests, "concurrency_exceeded",
+				writeError(w, r, http.StatusTooManyRequests, "concurrency_exceeded",
 					"too many concurrent requests for this virtual key; retry shortly")
 				return
 			}

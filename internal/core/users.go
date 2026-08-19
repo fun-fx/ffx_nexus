@@ -54,7 +54,7 @@ func (s *Store) CreateUser(ctx context.Context, orgID, actorID, email, password,
 		}
 		return User{}, err
 	}
-	s.Audit(ctx, actorID, orgID, AuditUserCreate, u.ID, email)
+	s.Audit(ctx, AuditEvent{ActorID: actorID, OrgID: orgID, Action: auditUserCreate, TargetID: u.ID, Detail: email})
 	return u, nil
 }
 
@@ -212,7 +212,7 @@ func (s *Store) DeleteUser(ctx context.Context, orgID, actorID, id string) error
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, actorID, orgID, AuditUserDelete, id, "")
+	s.Audit(ctx, AuditEvent{ActorID: actorID, OrgID: orgID, Action: auditUserDelete, TargetID: id})
 	return nil
 }
 
@@ -258,7 +258,7 @@ func (s *Store) Authenticate(ctx context.Context, orgID, email, password string,
 	if err != nil {
 		return "", User{}, err
 	}
-	s.Audit(ctx, u.ID, orgID, AuditUserLogin, u.ID, email)
+	s.Audit(ctx, AuditEvent{ActorID: u.ID, OrgID: orgID, Action: auditUserLogin, TargetID: u.ID, Detail: email})
 	return token, u, nil
 }
 
@@ -313,7 +313,7 @@ func (s *Store) RotateUserCredential(ctx context.Context, orgID, userID, id, new
 	if uid != nil {
 		c.UserID = *uid
 	}
-	s.Audit(ctx, userID, orgID, AuditCredentialRotate, c.ID, c.Provider)
+	s.Audit(ctx, AuditEvent{ActorID: userID, OrgID: orgID, Action: auditCredentialRotate, TargetID: c.ID, Detail: c.Provider})
 	return c, nil
 }
 
@@ -327,7 +327,7 @@ func (s *Store) DeleteUserCredential(ctx context.Context, orgID, userID, id stri
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, userID, orgID, AuditCredentialDelete, id, "")
+	s.Audit(ctx, AuditEvent{ActorID: userID, OrgID: orgID, Action: auditCredentialDelete, TargetID: id})
 	return nil
 }
 

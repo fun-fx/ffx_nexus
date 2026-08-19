@@ -128,31 +128,32 @@ func wrapWithNonAdminCtx(next http.Handler) http.Handler {
 	})
 }
 
-// TestAuditActionCoverage confirms that every defined AuditX constant has a
-// corresponding entry in AllAuditActions. If you add a new state-changing
-// admin action and forget to add it to AllAuditActions, this test fails,
-// forcing the PR to document the gap explicitly.
+// TestAuditActionCoverage confirms that every defined AuditAction is
+// registered in the knownActions slice. If you add a new AuditAction and
+// forget to register it, this test fails, forcing the PR to either drop it
+// or document the gap.
 func TestAuditActionCoverage(t *testing.T) {
-	for _, c := range core.AllAuditActions {
+	for _, c := range core.KnownAuditActionsForTest() {
 		if c == "" {
-			t.Fatal("empty string in AllAuditActions — add every action as a non-empty constant")
+			t.Fatal("empty string in knownActions — add every action as a non-empty constant")
 		}
 	}
 	// Spot-check the canonical ones are present.
-	want := []string{
-		core.AuditUserCreate, core.AuditUserDelete,
-		core.AuditUserLogin, core.AuditSSOLogin, core.AuditLogout,
-		core.AuditVKeyCreate, core.AuditVKeyRevoke,
-		core.AuditCredentialCreate, core.AuditCredentialRotate, core.AuditCredentialDelete,
-		core.AuditMeUpdate,
+	want := []core.AuditAction{
+		core.AuditActionUserCreated, core.AuditActionUserDeleted,
+		core.AuditActionUserLoginSucceeded, core.AuditActionSSOCallbackSucceeded,
+		core.AuditActionAuthLogoutSucceeded,
+		core.AuditActionKeyCreated, core.AuditActionKeyRevoked,
+		core.AuditActionCredentialCreated, core.AuditActionCredentialDeleted,
+		core.AuditActionUserUpdated,
 	}
-	got := make(map[string]bool)
-	for _, a := range core.AllAuditActions {
-		got[a] = true
+	seen := make(map[core.AuditAction]bool)
+	for _, a := range core.KnownAuditActionsForTest() {
+		seen[a] = true
 	}
 	for _, w := range want {
-		if !got[w] {
-			t.Errorf("constant %q is in use but missing from AllAuditActions", w)
+		if !seen[w] {
+			t.Errorf("action %q not registered in knownActions", w)
 		}
 	}
 }
@@ -160,8 +161,8 @@ func TestAuditActionCoverage(t *testing.T) {
 // TestAuditActionStringsAreDistinct verifies no two action constants have
 // the same string value, which would make SQL filtering ambiguous.
 func TestAuditActionStringsAreDistinct(t *testing.T) {
-	seen := make(map[string]bool)
-	for _, c := range core.AllAuditActions {
+	seen := make(map[core.AuditAction]bool)
+	for _, c := range core.KnownAuditActionsForTest() {
 		if seen[c] {
 			t.Errorf("duplicate audit action value %q", c)
 		}

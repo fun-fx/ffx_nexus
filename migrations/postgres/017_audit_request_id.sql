@@ -1,0 +1,25 @@
+-- Add the request_id column to audit_log so an HTTP response, the server
+-- log line, and the audit row are all joinable by a single id.
+--
+-- The customer-facing path renders one id in the X-Request-Id header and in
+-- the response body (resp.HTTP sets it once per request). resp.HTTP also
+-- logs the same id with the cause. If a state-changing console action runs
+-- inside the request, the audit log must carry the same id so support can
+-- join the three: customer tickets the response code -> asks for the id
+-- -> support greps the server log by id -> sees the audit row by id.
+--
+-- Without request_id on the audit row, the join is by time + action + actor,
+-- which fails the moment a high-volume org produces two audit rows in the
+-- same minute. The id is constant within an HTTP request and is the only
+-- field that uniquely ties the audit to the response.
+--
+-- ALTER ... ADD COLUMN IF NOT EXISTS is idempotent: a re-run on a partial
+-- migration is a catalogue-only change and adds nothing. New rows insert
+-- request_id explicitly; old rows keep request_id = '' because the column
+-- is NULL-tolerant.
+--
+-- Phase D-1 will add an index on (request_id) once auditors routinely join
+-- by id; the index is deferred because Phase E introduces role-split reads
+-- which is when query patterns stabilise.
+ALTER TABLE audit_log
+    ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT '';

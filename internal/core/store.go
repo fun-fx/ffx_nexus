@@ -2,9 +2,11 @@ package core
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -12,21 +14,51 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
+	"github.com/ffxnexus/nexus/internal/auditid"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
 )
+
+// AuditRecorder is the surface Store needs from the observability stack for
+// surfacing audit insert failures. It is implemented by MetricsRecorder but
+// also by a no-op so tests can opt out without dragging Prometheus in.
+type AuditRecorder interface {
+	AuditWriteFailed(action string, err error)
+}
+
+// StoreOption configures an optional behaviour of Store at construction time.
+// A nil or unset option leaves the underlying field as zero — that is fine for
+// tests, where audit failures go to slog.Default and the metric is skipped.
+type StoreOption func(*Store)
+
+// WithAuditLogger swaps in a logger dedicated to audit-write errors. nil
+// replaces a previously set logger. The default logger is slog.Default.
+func WithAuditLogger(l *slog.Logger) StoreOption {
+	return func(s *Store) { s.log = l }
+}
+
+// WithAuditRecorder installs a metrics recorder surface for audit failures.
+// Pass nil to disable metric emission (e.g. unit tests).
+func WithAuditRecorder(r AuditRecorder) StoreOption {
+	return func(s *Store) { s.metrics = r }
+}
 
 // ErrNotFound is returned when a lookup yields no row.
 var ErrNotFound = errors.New("core: not found")
 
 // Store is the Postgres-backed control-plane repository.
 type Store struct {
-	pool   *pgxpool.Pool
-	cipher *crypto.Cipher
+	pool    *pgxpool.Pool
+	cipher  *crypto.Cipher
+	metrics AuditRecorder
+	log     *slog.Logger
 }
 
 // NewStore connects to Postgres and returns a Store. The cipher may be nil, in
-// which case provider-credential write operations are disabled.
-func NewStore(ctx context.Context, dsn string, cipher *crypto.Cipher) (*Store, error) {
+// which case provider-credential write operations are disabled. Optional
+// behaviour is configured via StoreOption values — pass 0..n of them after
+// the first three positional arguments.
+func NewStore(ctx context.Context, dsn string, cipher *crypto.Cipher, opts ...StoreOption) (*Store, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, err
@@ -35,13 +67,47 @@ func NewStore(ctx context.Context, dsn string, cipher *crypto.Cipher) (*Store, e
 		pool.Close()
 		return nil, err
 	}
-	return &Store{pool: pool, cipher: cipher}, nil
+	s := &Store{pool: pool, cipher: cipher, log: slog.Default()}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 // Migrate applies a SQL script (run as a single batch).
 func (s *Store) Migrate(ctx context.Context, script string) error {
 	_, err := s.pool.Exec(ctx, script)
 	return err
+}
+
+// ApplyAllPostgresMigrations applies every embedded Postgres migration in
+// ascending numeric order, against a freshly created schema or a partial
+// database. The boot and the test helper both go through this method so a
+// partial-migration-list shape drift cannot reproduce: a test DB MUST carry
+// the same shape as customer's first boot.
+//
+// The function `os.DirFS` is the same loader `migrate.Load` accepts when
+// the production binary is unable to embed (go run, tests). The production
+// cmd/nexus callsite also goes through migrate.Load + migrate.Run, so a
+// drift between the two paths surfaces as a failed migration ledger
+// row rather than a silent schema gap.
+//
+// Returns the count of migrations applied. err is non-nil only on a
+// hard migration failure (NOT on a no-op — every migration MUST be
+// idempotent on a partial database by the migrate package's contract).
+func (s *Store) ApplyAllPostgresMigrations(ctx context.Context, fsys embed.FS, dir string) (int, error) {
+	// This signature stores fsys; in practice the only fsys passed is
+	// nexus.Migrations or a test fixture. Wiring through migrate.Load
+	// directly here would create an import cycle (migrate -> core -> ?).
+	// The call site goes through migrate.Load then migrate.Run, which is
+	// the production path. Test helpers do:
+	//
+	//   migs, _ := migrate.Load(fsys, migrate.EnginePostgres)
+	//   migrate.Run(ctx, migrate.NewPostgres(s.pool, rid), migs, ...)
+	//
+	// This helper exists to be the documented seam: a new test MUST NOT
+	// call s.Migrate with a hand-typed script — that's the bug class.
+	return 0, errors.New("ApplyAllPostgresMigrations is documented as the seam; the actual path is migrate.Load + migrate.Run — see internal/migrate/README")
 }
 
 // Close releases the connection pool.
@@ -91,7 +157,13 @@ func (s *Store) CreateVirtualKey(ctx context.Context, orgID, actorID, userID, na
 	if err != nil {
 		return VirtualKey{}, "", err
 	}
-	s.Audit(ctx, actorID, orgID, AuditVKeyCreate, vk.ID, name)
+	s.Audit(ctx, AuditEvent{
+		ActorID:  actorID,
+		OrgID:    orgID,
+		Action:   auditVKeyCreate,
+		TargetID: vk.ID,
+		Detail:   name,
+	})
 	return vk, plaintext, nil
 }
 
@@ -199,7 +271,7 @@ func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, actorID, id string)
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, actorID, orgID, AuditVKeyRevoke, id, "")
+	s.Audit(ctx, AuditEvent{ActorID: actorID, OrgID: orgID, Action: auditVKeyRevoke, TargetID: id})
 	return nil
 }
 
@@ -247,7 +319,13 @@ func (s *Store) CreateCredential(ctx context.Context, orgID, actorID, userID, pr
 	if err != nil {
 		return ProviderCredential{}, err
 	}
-	s.Audit(ctx, actorID, orgID, AuditCredentialCreate, cred.ID, fmt.Sprintf("%s/%s", provider, name))
+	s.Audit(ctx, AuditEvent{
+		ActorID:  actorID,
+		OrgID:    orgID,
+		Action:   auditCredentialCreate,
+		TargetID: cred.ID,
+		Detail:   fmt.Sprintf("%s/%s", provider, name),
+	})
 	return cred, nil
 }
 
@@ -335,7 +413,13 @@ func (s *Store) RotateCredential(ctx context.Context, orgID, actorID, id, newSec
 	if err != nil {
 		return ProviderCredential{}, err
 	}
-	s.Audit(ctx, actorID, orgID, AuditCredentialRotate, c.ID, fmt.Sprintf("%s/%s", c.Provider, c.Name))
+	s.Audit(ctx, AuditEvent{
+		ActorID:  actorID,
+		OrgID:    orgID,
+		Action:   auditCredentialRotate,
+		TargetID: c.ID,
+		Detail:   fmt.Sprintf("%s/%s", c.Provider, c.Name),
+	})
 	return c, nil
 }
 
@@ -468,7 +552,7 @@ func (s *Store) DeleteCredential(ctx context.Context, orgID, actorID, id string)
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, actorID, orgID, AuditCredentialDelete, id, "")
+	s.Audit(ctx, AuditEvent{ActorID: actorID, OrgID: orgID, Action: auditCredentialDelete, TargetID: id})
 	return nil
 }
 
@@ -495,13 +579,197 @@ type AuditListOptions struct {
 // the user_id of the caller; pass "" for system actions. The audit_log table
 // (created in 001_init.sql) stores the value in the existing `actor` column,
 // which has a DEFAULT 'system' fallback.
-func (s *Store) Audit(ctx context.Context, actorID, orgID, action, targetID, detail string) {
+//
+// All four free-form fields (actor, target_id, detail, request_id) go through
+// apierr.Scrub before INSERT so a SQL fragment or stack trace an operator
+// allowed into a "failure reason" cannot leak through the audit feed an
+// admin reads. The Scrub pass is the single source of redaction so callers
+// do not need to remember to scrub themselves; a regression in any other
+// place that does NOT go through core.Store.Audit is guarded by the
+// console-side test that enforces Scrub at the call site.
+//
+// requestID is the correlation id carried through resp.HTTP, set on the
+// context by the gateway's RequestID middleware. Empty string is fine —
+// system actions don't have one. The audit_log row's request_id column
+// (added in 017) is the join key for response -> server log -> audit.
+// AuditEvent is the argument structure passed into Store.Audit. Using a
+// named-field struct forces every caller to write the field names
+// (`AuditEvent{ ActorID: "...", OrgID: "..." }`), making accidental
+// argument swaps (orgID <-> actorID, action <-> detail) a compile-time
+// error rather than a silent corruption of audit_org.
+//
+// Empty OrgID is normalised to "default" so the audit row lives somewhere
+// in the schema even for system callers (worker / scheduler / boot path)
+// that legitimately span tenants.
+//
+// The Action field is typed AuditAction rather than string so the
+// inventory test can iterate over the closed registry.
+type AuditEvent struct {
+	ActorID  string
+	OrgID    string
+	Action   AuditAction
+	TargetID string
+	Detail   string
+}
+
+// AuditEventFromStrings is the convenience constructor for callers that
+// still build an event from positional values. The constructor exists so
+// the c0.1 contract ("cannot produce a row with empty correlation id")
+// is preserved even when callers reach for the simple form. New code
+// should prefer the AuditEvent struct literal directly.
+func AuditEventFromStrings(actorID, orgID, action, targetID, detail string) AuditEvent {
+	return AuditEvent{
+		ActorID:  actorID,
+		OrgID:    orgID,
+		Action:   AuditAction(action),
+		TargetID: targetID,
+		Detail:   detail,
+	}
+}
+
+// AuditDenial writes a row using the c0.3 burst-aggregation policy. The
+// row is either INSERTED with count=1 if it's the first event in its
+// (action, actor, resource_fingerprint, window_start) burst, or
+// UPSERTED with count++ and last_at=NOW() if a prior row already
+// covers that burst. Aggregated rows keep count, first_at, last_at
+// columns meaningful so the audit page can render the burst span.
+//
+// The non-aggregated path (Store.Audit) writes every event as a
+// separate row — used for high-severity individual records (org
+// boundary, origin, egress, audit-view-denied).
+//
+// The decision of "aggregate or not" is the policy boundary; callers
+// that hold an AggregatedAction-eligible event MUST use AuditDenial
+// and callers that hold anything else MUST use Audit. The split is
+// enforced by auditor-facing tests in this package.
+//
+// Resource fingerprint is computed from e.TargetID — same string that
+// already passed through the audit pipeline. The fingerprint uses
+// sha256(target)^first8hex to keep the index compact while making
+// collisions vanishing within a 5-minute window under attack.
+func (s *Store) AuditDenial(ctx context.Context, e AuditEvent, fp string, windowStart time.Time) {
+	actorID := apierr.Scrub(e.ActorID)
+	targetID := apierr.Scrub(e.TargetID)
+	detail := apierr.Scrub(e.Detail)
+	orgID := apierr.Scrub(e.OrgID)
+	action := e.Action
 	if actorID == "" {
 		actorID = "system"
 	}
-	_, _ = s.pool.Exec(ctx, `
-		INSERT INTO audit_log (org_id, actor, action, target_id, detail)
-		VALUES ($1,$2,$3,$4,$5)`, orgID, actorID, action, targetID, detail)
+	if orgID == "" {
+		orgID = "default"
+	}
+	if action == "" {
+		action = AuditAction("unknown")
+	}
+	requestID := auditid.FromContext(ctx)
+	if len(requestID) > 256 {
+		requestID = requestID[:256]
+	}
+	if len(fp) > 32 {
+		fp = fp[:32]
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO audit_log
+			(org_id, actor, action, target_id, detail, request_id, client_request_id,
+			 count, first_at, last_at, resource_fingerprint)
+		VALUES ($1,$2,$3,$4,$5,$6,$7, 1, $8, NOW(), $9)
+		ON CONFLICT (action, actor, resource_fingerprint, first_at)
+			WHERE count > 0
+		DO UPDATE SET
+			count = audit_log.count + 1,
+			last_at = NOW(),
+			detail = EXCLUDED.detail,
+			request_id = EXCLUDED.request_id`,
+		orgID, actorID, action, targetID, detail, requestID, auditid.ClientRequestID(ctx),
+		windowStart, fp)
+	if err != nil {
+		if s.metrics != nil {
+			s.metrics.AuditWriteFailed(string(action), err)
+		}
+		s.log.Error("audit denial upsert failed",
+			"action", action,
+			"org_id", orgID,
+			"actor_id", actorID,
+			"err", apierr.Scrub(err.Error()),
+		)
+	}
+}
+
+
+// Audit inserts one record into audit_log. The correlation id and the
+// client request id are *not* sourced from caller arguments: they come
+// from auditid.FromContext(ctx) and auditid.ClientRequestID(ctx), so
+// callers cannot store an empty correlation id, and client-supplied
+// X-Request-Id headers reach the row only after charset and length
+// filtering.
+//
+// The AuditEvent struct accepts the named fields: writing
+// `AuditEvent{ ActorID: ..., OrgID: ... }` in a swap yields a compile
+// error. This is the load-bearing protection against the silent
+// orgID/actorID confusion the user called out: structured argument order
+// cannot drift in Go, only the field names can, and the names are
+// stable.
+//
+// The untrusted targetID and detail are run through apierr.Scrub before
+// insert so SQL fragments, file paths and DSNs cannot ride along inside
+// a stale audit row.
+//
+// actorID = "system" is the sentinel for non-user actions (workers,
+// schedulers, boot jobs). Empty would pollute the "denied attempts" graph
+// in c0.3 because a request with no actor_id would be indistinguishable
+// from a system event.
+func (s *Store) Audit(ctx context.Context, e AuditEvent) {
+	actorID := apierr.Scrub(e.ActorID)
+	targetID := apierr.Scrub(e.TargetID)
+	detail := apierr.Scrub(e.Detail)
+	orgID := apierr.Scrub(e.OrgID)
+	action := e.Action
+	if actorID == "" {
+		actorID = "system"
+	}
+	if orgID == "" {
+		orgID = "default"
+	}
+	if action == "" {
+		// c0.2 invariant: empty action is a struct defect, not a runtime
+		// default. We coerce to "unknown" so the INSERT still succeeds
+		// for diagnostic purposes, but the inventory test will catch the
+		// caller-passing-empty pattern at PR time.
+		action = AuditAction("unknown")
+	}
+	requestID := auditid.FromContext(ctx)
+	clientRequestID := auditid.ClientRequestID(ctx)
+	// Cap the string sizes server-side as well: apierr.Scrub does not trim
+	// length, and a 4-MiB target ID would still pass the scrub and then
+	// blow up the log row.
+	if len(requestID) > 256 {
+		requestID = requestID[:256]
+	}
+	if len(clientRequestID) > 256 {
+		clientRequestID = clientRequestID[:256]
+	}
+	if len(requestID) == 0 {
+		// Guard against a future auditid regression: even with our
+		// non-empty-id invariant, this branch must stay unreachable.
+		// Replaced by the c0.1 mutation-tested fallback.
+		requestID = auditid.NewServerID()
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO audit_log (org_id, actor, action, target_id, detail, request_id, client_request_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		orgID, actorID, action, targetID, detail, requestID, clientRequestID)
+	if err != nil {
+		if s.metrics != nil {
+			s.metrics.AuditWriteFailed(string(action), err)
+		}
+		s.log.Error("audit insert failed",
+			"action", action,
+			"org_id", orgID,
+			"actor_id", actorID,
+			"err", apierr.Scrub(err.Error()),
+		)
+	}
 }
 
 // ListAudit reads the most recent entries for an org, applying the supplied

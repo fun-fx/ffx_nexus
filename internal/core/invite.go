@@ -154,7 +154,7 @@ func (s *Store) CreateInvite(ctx context.Context, orgID, actorID, email, role st
 		}
 		return InviteIssued{}, err
 	}
-	s.Audit(ctx, actorID, orgID, AuditInviteIssue, inv.ID, email)
+	s.Audit(ctx, AuditEvent{ActorID: actorID, OrgID: orgID, Action: auditInviteIssue, TargetID: inv.ID, Detail: email})
 	inv.URL = buildInviteURL(publicBaseURL, raw)
 	return inv, nil
 }
@@ -223,7 +223,7 @@ func (s *Store) RevokeInvite(ctx context.Context, orgID, actorID, inviteID strin
 		}
 		return ErrNotFound
 	}
-	s.Audit(ctx, actorID, orgID, AuditInviteRevoke, inviteID, "")
+	s.Audit(ctx, AuditEvent{ActorID: actorID, OrgID: orgID, Action: auditInviteRevoke, TargetID: inviteID})
 	return nil
 }
 
@@ -332,8 +332,8 @@ func (s *Store) AcceptInvite(ctx context.Context, raw, password string) (User, s
 	if err != nil {
 		return User{}, "", err
 	}
-	s.Audit(ctx, userID, inv.OrgID, AuditInviteAccept, inv.ID, inv.Email)
-	s.Audit(ctx, userID, inv.OrgID, AuditUserCreate, userID, inv.Email)
+	s.Audit(ctx, AuditEvent{ActorID: userID, OrgID: inv.OrgID, Action: auditInviteAccept, TargetID: inv.ID, Detail: inv.Email})
+	s.Audit(ctx, AuditEvent{ActorID: userID, OrgID: inv.OrgID, Action: auditUserCreate, TargetID: userID, Detail: inv.Email})
 	if err := tx.Commit(ctx); err != nil {
 		return User{}, "", err
 	}

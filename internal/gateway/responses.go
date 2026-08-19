@@ -29,17 +29,17 @@ import (
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "cannot read body: "+err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "cannot read body: "+err.Error())
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(rawBody))
 	var req ResponsesRequest
 	if err := json.Unmarshal(rawBody, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 		return
 	}
 	if req.Model == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
 
@@ -54,7 +54,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 
 	chatReq, err := responsesToChat(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 
@@ -68,7 +68,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		// Trace (with error) was already recorded; emit a generic 502 if no
 		// provider succeeded. The execute function ensures the trace reflects
 		// the final state.
-		writeError(w, http.StatusBadGateway, "upstream_error", "all candidate providers failed")
+		writeError(w, r, http.StatusBadGateway, "upstream_error", "all candidate providers failed")
 		return
 	}
 	if trace != nil {
@@ -172,19 +172,19 @@ func (h *Handler) executeResponsesUnary(r *http.Request, req ChatCompletionReque
 func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, respReq ResponsesRequest) {
 	chatReq, err := responsesToChat(respReq)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 	ctx := r.Context()
 	providers, ok := h.pickResponsesChain(ctx, chatReq.Model)
 	if !ok {
-		writeError(w, http.StatusBadGateway, "upstream_error", "no provider for model "+chatReq.Model)
+		writeError(w, r, http.StatusBadGateway, "upstream_error", "no provider for model "+chatReq.Model)
 		return
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal_error", "streaming unsupported")
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "streaming unsupported")
 		return
 	}
 

@@ -42,12 +42,23 @@ func TestRecoverPanicsReturns500(t *testing.T) {
 		t.Fatalf("want 500, got %d", rec.Code)
 	}
 
-	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("response is not JSON (%q): %v", rec.Body.String(), err)
+	var body struct {
+		Error struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			RequestID string `json:"request_id"`
+		} `json:"error"`
 	}
-	if body["request_id"] == "" {
-		t.Error("no request_id: an operator cannot correlate the report to the stack trace")
+	bodyBytes := rec.Body.Bytes()
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		t.Fatalf("response is not apierr.Body JSON (%q): %v", rec.Body.String(), err)
+	}
+	if body.Error.RequestID == "" {
+		t.Errorf("no request_id in body %q; resp.HTTP must stamp it on the recovered-panic response",
+			string(bodyBytes))
+	}
+	if body.Error.Code == "" {
+		t.Errorf("no apierr.Code in body %q; panic recovery bypassed the contract", string(bodyBytes))
 	}
 
 	// The panic value and stack belong in the log, not in a response handed to
@@ -56,6 +67,11 @@ func TestRecoverPanicsReturns500(t *testing.T) {
 		if strings.Contains(rec.Body.String(), leak) {
 			t.Errorf("response body leaks crash internals (%q): %s", leak, rec.Body.String())
 		}
+	}
+	if rec.Header().Get("X-Request-Id") == "" {
+		t.Error("X-Request-Id not stamped on the recovered-panic response; " +
+			"a customer that pastes the response into a support report cannot " +
+			"join it to the server log line")
 	}
 }
 

@@ -8,7 +8,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/limiter"
+	"github.com/ffxnexus/nexus/internal/resp"
 )
 
 // recoverPanics turns a panic in any console handler into a 500 with a request
@@ -21,10 +23,12 @@ import (
 // work midway: without a definite status code, a caller cannot tell a refusal
 // from a partial success.
 //
-// The response body deliberately carries no panic value or stack — those go to
-// the operator's log, keyed by the same request id the caller is shown, so an
-// admin can correlate a user report to a stack trace without the crash detail
-// being echoed to whoever triggered it.
+// The response goes through resp.HTTP so the body shape is the public
+// apierr contract ({code, message, request_id}) and the same X-Request-Id
+// is stamped on the response header. The panic value and stack are NOT
+// in the body; the operator's slog carries them keyed by the same
+// request id so an admin can correlate a user report to a stack trace
+// without the crash detail being echoed to whoever triggered it.
 func (s *Server) recoverPanics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -48,10 +52,10 @@ func (s *Server) recoverPanics(next http.Handler) http.Handler {
 					"stack", string(debug.Stack()),
 				)
 			}
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error":      "internal server error",
-				"request_id": id,
-			})
+			// resp.HTTP guarantees the body is apierr.Body shape with
+			// X-Request-Id stamped. The panic value is part of the slog
+			// entry above; the body is bounded to the public contract.
+			resp.HTTP(w, r, 0, apierr.CodeInternalError, id, nil, s.log)
 		}()
 		next.ServeHTTP(w, r)
 	})
@@ -147,17 +151,16 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 // an attacker cannot drain all routes at once; the 30/min budget is per
 // route per IP. limit/minute comes from the design doc §4.2.5.
 //
-// When the limit is hit we return 429 with a JSON body and the same
-// security headers (those are set by the outer securityHeaders middleware).
+// When the limit is hit we return 429 with the apierr.Body shape so a
+// customer's SDK can branch on `code=rate_limited`. The security headers
+// are set by the outer securityHeaders middleware, so they survive.
 func (s *Server) ipRateLimit(routeName string, lim *limiter.IPLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := clientIP(r)
 			if ip != "" && !lim.Allow(routeName+":"+ip) {
 				w.Header().Set("Retry-After", "60")
-				writeJSON(w, http.StatusTooManyRequests, map[string]string{
-					"error": "rate limit exceeded; try again later",
-				})
+				resp.HTTP(w, r, http.StatusTooManyRequests, apierr.CodeRateLimited, requestIDFrom(r), nil, s.log)
 				return
 			}
 			next.ServeHTTP(w, r)

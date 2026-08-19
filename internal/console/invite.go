@@ -101,9 +101,21 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request, caller cor
 				"invite", inv.ID,
 				"email", email,
 				"actor", caller.ID)
-			s.store.Audit(r.Context(), caller.ID, orgID(r), core.AuditInviteEmailFail, inv.ID, sendErr.Error())
+			s.store.Audit(r.Context(), core.AuditEvent{
+				ActorID:  caller.ID,
+				OrgID:    orgID(r),
+				Action:   core.AuditAction("invite.email.failed"),
+				TargetID: inv.ID,
+				Detail:   sendErr.Error(),
+			})
 		} else {
-			s.store.Audit(r.Context(), caller.ID, orgID(r), core.AuditInviteEmailSent, inv.ID, msgID)
+			s.store.Audit(r.Context(), core.AuditEvent{
+				ActorID:  caller.ID,
+				OrgID:    orgID(r),
+				Action:   core.AuditAction("invite.email.sent"),
+				TargetID: inv.ID,
+				Detail:   msgID,
+			})
 		}
 	}
 	writeJSON(w, http.StatusCreated, inv)

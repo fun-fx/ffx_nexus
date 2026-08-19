@@ -159,6 +159,6 @@ func (s *Server) patchEvalConfig(w http.ResponseWriter, r *http.Request, u core.
 		s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.config.update", "", config.FormatRouteGroups(snap.Routing.Groups))
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.config.update"), "", config.FormatRouteGroups(snap.Routing.Groups))
 	writeJSON(w, http.StatusOK, snap)
 }

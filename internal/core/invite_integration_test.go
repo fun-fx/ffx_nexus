@@ -397,7 +397,7 @@ func TestIntegrationInviteWritesAuditTrail(t *testing.T) {
 		}
 		seen[a] = true
 	}
-	for _, want := range []string{AuditInviteIssue, AuditInviteAccept, AuditUserCreate} {
+	for _, want := range []string{string(auditInviteIssue), string(auditInviteAccept), string(auditUserCreate)} {
 		if !seen[want] {
 			t.Errorf("audit_log missing %q (have %v)", want, seen)
 		}

@@ -12,9 +12,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
 	"github.com/ffxnexus/nexus/internal/observability"
+	"github.com/ffxnexus/nexus/internal/resp"
 )
 
 // sessionTTL is how long a console login session stays valid.
@@ -60,7 +62,7 @@ func (s *Server) requireUser(fn func(http.ResponseWriter, *http.Request, core.Us
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := currentUser(r)
 		if !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login required"})
+			resp.HTTP(w, r, http.StatusUnauthorized, apierr.CodeUnauthorized, "", core.ErrUnauthenticated, s.log)
 			return
 		}
 		fn(w, r, u)
@@ -73,7 +75,7 @@ func (s *Server) requireUser(fn func(http.ResponseWriter, *http.Request, core.Us
 func (s *Server) requireUserHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := currentUser(r); !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login required"})
+			resp.HTTP(w, r, http.StatusUnauthorized, apierr.CodeUnauthorized, "", core.ErrUnauthenticated, s.log)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -297,7 +299,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 			if u, ok := currentUser(r); ok {
 				// Record the logout before deleting the session so the actor
 				// is still resolvable. Best-effort (audit wrapper swallows).
-				s.audit(r.Context(), u.ID, u.OrgID, core.AuditLogout, u.ID, "")
+				s.audit(r.Context(), u.ID, u.OrgID, core.AuditAction(core.AuditLogout), u.ID, "")
 			}
 			_ = s.store.Logout(r.Context(), token)
 		}
@@ -417,8 +419,8 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request, u core.User) {
 			s.writeStoreErr(w, err, "update failed")
 			return
 		}
-		s.audit(r.Context(), u.ID, u.OrgID, core.AuditMeUpdate, u.ID,
-			fmt.Sprintf("enforce_limits=%t", *req.EnforceLimits))
+s.audit(r.Context(), u.ID, u.OrgID, core.AuditAction(core.AuditMeUpdate), u.ID,
+		fmt.Sprintf("enforce_limits=%t", *req.EnforceLimits))
 		u.EnforceLimits = *req.EnforceLimits
 	}
 	writeJSON(w, http.StatusOK, u)

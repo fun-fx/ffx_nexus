@@ -16,6 +16,8 @@ package resp
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -32,6 +34,40 @@ import (
 // internal/apierr/leak_test.go::TestRequestIDPropagatesFromHeaderAndContext
 // will fail and force a coordinated update.
 const requestIDKey contextKey = "request_id"
+
+// reqIDFallback returns a request id when neither the middleware nor the
+// caller supplied one. The format is a UUID v4 hex form because the
+// gateway's middleware uses the same shape; a panic-recovery path that
+// produces logs immediately after a crash should not jump to a different
+// format that operators grep for by mistake.
+//
+// crypto/rand is read on every call: a panic-recovery path is rare and
+// the cost of bytes is dwarfed by the latency of the request that
+// triggered the recovery. The fallback is intentionally simpler than
+// uuid.New() (no third-party import, no fmt.Sprintf on hot paths) so
+// this file stays dependency-light.
+func reqIDFallback() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand on Linux is backed by getrandom; a hard error
+		// here is a kernel fault. Return a UUID-shaped zero string plus
+		// the call site marker so on-call support sees what happened.
+		return "panic-no-rand-00000000-0000-4000-8000-000000000000"
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant
+	out := make([]byte, 36)
+	hex.Encode(out[0:8], b[0:4])
+	out[8] = '-'
+	hex.Encode(out[9:13], b[4:6])
+	out[13] = '-'
+	hex.Encode(out[14:18], b[6:8])
+	out[18] = '-'
+	hex.Encode(out[19:23], b[8:10])
+	out[23] = '-'
+	hex.Encode(out[24:36], b[10:16])
+	return string(out)
+}
 
 type contextKey string
 
@@ -62,6 +98,15 @@ func HTTP(w http.ResponseWriter, r *http.Request, statusCode int, code apierr.Co
 	}
 	if requestID == "" {
 		requestID = RequestIDFromContext(r.Context())
+	}
+	if requestID == "" && r != nil {
+		// Fallback when the request id middleware was not in front of
+		// this call site (e.g. a panic-recovery middleware that runs
+		// before the mux's RequestID wrapper, which is rare but
+		// happens for tests that exercise a middleware in isolation).
+		// We use the same UUID sentinel as the gateway so log lines
+		// from panic recovery and the traced handler share the form.
+		requestID = "panic-" + reqIDFallback()
 	}
 	if code == "" {
 		code = apierr.CodeInternalError

@@ -163,7 +163,7 @@ func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.create", rec.ID, rec.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.create"), rec.ID, rec.Name)
 	writeJSON(w, http.StatusCreated, rec)
 }
 
@@ -234,7 +234,7 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.update", existing.ID, existing.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.update"), existing.ID, existing.Name)
 	writeJSON(w, http.StatusOK, existing)
 }
 
@@ -253,7 +253,7 @@ func (s *Server) deleteEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.delete", id, existing.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.delete"), id, existing.Name)
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
 }
 
@@ -544,6 +544,6 @@ func (s *Server) pluginCreateAutomationRule(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.langsmith.rule.create", res.RuleID, pluginName)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.langsmith.rule.create"), res.RuleID, pluginName)
 	writeJSON(w, http.StatusOK, res)
 }

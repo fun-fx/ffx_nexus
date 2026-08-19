@@ -21,26 +21,54 @@ import (
 // Every .sql file in the repository must be discovered. This is the test that
 // would have caught 009-011, 014_invite_tokens.sql and the ClickHouse
 // benchmark_runs migration all being absent from the hardcoded boot list.
-func TestLoadDiscoversEveryCommittedMigration(t *testing.T) {
-	for _, tc := range []struct {
-		engine   migrate.Engine
-		mustHave []string
-	}{
-		{migrate.EnginePostgres, []string{
-			"postgres/001_init.sql",
-			"postgres/009_eval_plugins.sql",
-			"postgres/012_benchmark_runs.sql",
-			"postgres/013_scheduled_benchmarks.sql",
-			// Previously missing entirely: invites 500'd on every fresh install.
-			"postgres/014_invite_tokens.sql",
-		}},
-		{migrate.EngineClickHouse, []string{
-			"clickhouse/001_init.sql",
-			"clickhouse/008_turn_id.sql",
-			// Previously unreachable behind a duplicate 007 ordinal.
-			"clickhouse/009_benchmark_runs.sql",
-		}},
-	} {
+
+// mustHaveMigrations is the tripwire list: a test mutation that drops one
+// of these entries must fail this test so a regression of the discovery
+// path surfaces immediately. The list is pinned to which migrations MUST
+// be discovered by migrate.Load — listing every Postgres migration file
+// by name. A drift between the file system and this list indicates the
+// discovery path is broken OR a migration was renamed/missing.
+//
+// The point of pinning every expected entry rather than a sparse sample:
+// a `SELECT mustHave WHERE NOT discovered` works the same way the
+// `migrate.Load(nexus.Migrations, ...)` callsite does — the test reads
+// the canonical set rather than a curated one.
+//
+// To add a new migration: also append it here. The next test run will
+// confirm the discovery works. Force-remove an entry below and the
+// test fails — which is the property the discovery contract relies on.
+var mustHaveMigrations = []struct {
+	engine   migrate.Engine
+	mustHave []string
+}{
+	{migrate.EnginePostgres, []string{
+		"postgres/001_init.sql",
+		"postgres/009_eval_plugins.sql",
+		"postgres/012_benchmark_runs.sql",
+		"postgres/013_scheduled_benchmarks.sql",
+		// Invites 500'd on a fresh install until this was added.
+		"postgres/014_invite_tokens.sql",
+		"postgres/015_eval_scores_org.sql",
+		// 016 was added in the Chapter 1 fix to repair the missing
+		// last_run_id column on benchmark_schedules.
+		"postgres/016_benchmark_schedule_last_run.sql",
+		"postgres/017_audit_request_id.sql",
+		"postgres/018_audit_client_request_id.sql",
+		"postgres/019_audit_aggregation.sql",
+		"postgres/020_audit_roles.sql",
+		"postgres/021_audit_view_indexes.sql",
+	}},
+	{migrate.EngineClickHouse, []string{
+		"clickhouse/001_init.sql",
+		"clickhouse/008_turn_id.sql",
+		// Was unreachable behind a duplicate 007 ordinal previously.
+		"clickhouse/009_benchmark_runs.sql",
+		"clickhouse/010_eval_scores_org.sql",
+	}},
+}
+
+func TestLoadDiscoversEveryExpectedMigration(t *testing.T) {
+	for _, tc := range mustHaveMigrations {
 		migs, err := migrate.Load(nexus.Migrations, tc.engine)
 		if err != nil {
 			t.Fatalf("Load(%s): %v", tc.engine, err)

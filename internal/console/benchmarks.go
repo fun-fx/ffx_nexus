@@ -156,7 +156,7 @@ func (s *Server) launchBenchmark(w http.ResponseWriter, r *http.Request, u core.
 			"err", err, "run_id", run.ID, "org", orgID(r), "model", body.Model)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.launch", run.ID, run.Model)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.launch"), run.ID, run.Model)
 	writeJSON(w, http.StatusCreated, run)
 }
 
@@ -216,7 +216,7 @@ func (s *Server) cancelBenchmark(w http.ResponseWriter, r *http.Request, u core.
 		s.failBenchmark(w, r, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.cancel", run.ID, "")
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.cancel"), run.ID, "")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -232,7 +232,7 @@ func (s *Server) deleteBenchmark(w http.ResponseWriter, r *http.Request, u core.
 		s.failBenchmark(w, r, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.delete", run.ID, "")
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.delete"), run.ID, "")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -363,7 +363,7 @@ func (s *Server) putBenchmarkCredential(w http.ResponseWriter, r *http.Request, 
 		s.failBenchmark(w, r, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.credential.set", benchmark.ProviderPrime, "")
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.credential.set"), benchmark.ProviderPrime, "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"configured": true,
@@ -379,7 +379,7 @@ func (s *Server) deleteBenchmarkCredential(w http.ResponseWriter, r *http.Reques
 		s.failBenchmark(w, r, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.credential.clear", benchmark.ProviderPrime, "")
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.credential.clear"), benchmark.ProviderPrime, "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "configured": false})
 }
 

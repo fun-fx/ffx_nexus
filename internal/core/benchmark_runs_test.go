@@ -4,18 +4,45 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	nexus "github.com/ffxnexus/nexus"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
+	"github.com/ffxnexus/nexus/internal/migrate"
 )
 
 // Runs against a real Postgres: the value of this table is that a run
 // survives the poller restarting mid-flight, and the text[] and jsonb
 // round-trips are exactly what a fake would paper over.
+
+// bootDBSchema applies the *production* migration set end-to-end on a
+// fresh database. A partial list (e.g. manually applying only 012 and
+// 013) is the bug class that hid the missing 016 columns from CI; the
+// helper pins us to migrate.Load(nexus.Migrations, ...) so the test
+// database carries the same shape as a customer's first boot.
+//
+// Performance: every test that calls bootDBSchema pays one
+// migrate.Run round-trip to load migrations, but the migration ledger
+// short-circuits re-runs because all migrations have already been
+// applied. Subsequent calls in the same package run therefore only run
+// the EnsureLedger check.
+func bootDBSchema(t *testing.T, ctx context.Context, store *Store) {
+	t.Helper()
+	migs, err := migrate.Load(nexus.Migrations, migrate.EnginePostgres)
+	if err != nil {
+		t.Fatalf("migrate.Load: %v", err)
+	}
+	exec := migrate.NewPostgres(store.pool, "test-"+t.Name())
+	if _, err := migrate.Run(ctx, exec, migs, migrate.Options{
+		Logger: slog.Default(),
+	}); err != nil {
+		t.Fatalf("migrate.Run: %v", err)
+	}
+}
 
 func benchTestStore(t *testing.T) *Store {
 	t.Helper()
@@ -33,24 +60,11 @@ func benchTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Skipf("postgres not reachable at %s: %v", dsn, err)
 	}
-	// bench-using tests fan in here, so apply every benchmark-schema
-	// migration the production boot is expected to bring along. The
-	// list stays in 0xx ascending order; future migrations on
-	// benchmark_runs must be appended here so the test DB carries the
-	// same shape as the cluster.
-	migrations := []string{
-		"012_benchmark_runs.sql",
-		"013_scheduled_benchmarks.sql",
-	}
-	for _, name := range migrations {
-		schema, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", name))
-		if err != nil {
-			t.Fatalf("read migration %s: %v", name, err)
-		}
-		if err := store.Migrate(ctx, string(schema)); err != nil {
-			t.Fatalf("apply migration %s: %v", name, err)
-		}
-	}
+	// Apply every embedded migration the production boot brings along
+	// — and only those. The numeric order, idempotency, and ledger
+	// updates are the migration package's contract; the test must
+	// replay the production path verbatim, not a hand-picked subset.
+	bootDBSchema(t, ctx, store)
 	if _, err := store.pool.Exec(ctx, `DELETE FROM benchmark_runs`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

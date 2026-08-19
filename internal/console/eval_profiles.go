@@ -152,7 +152,7 @@ func (s *Server) createEvalProfile(w http.ResponseWriter, r *http.Request, u cor
 		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.profile.create", p.ID, p.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.profile.create"), p.ID, p.Name)
 	writeJSON(w, http.StatusCreated, p)
 }
 
@@ -203,7 +203,7 @@ func (s *Server) patchEvalProfile(w http.ResponseWriter, r *http.Request, u core
 		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.profile.update", existing.ID, existing.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.profile.update"), existing.ID, existing.Name)
 	writeJSON(w, http.StatusOK, existing)
 }
 
@@ -228,7 +228,7 @@ func (s *Server) deleteEvalProfile(w http.ResponseWriter, r *http.Request, u cor
 		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.profile.delete", id, existing.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.profile.delete"), id, existing.Name)
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
 }
 

@@ -137,9 +137,10 @@ func TestMutationRemovingAMigrationDoesNotLeakSchemaDetailsToClient(t *testing.T
 		t.Errorf("captured log request_id = %q, want %q", gotID, id)
 	}
 	cause, _ := last["cause"].(string)
-	if !strings.Contains(cause, "column") && !strings.Contains(cause, "[redacted]") {
-		t.Errorf("captured log cause = %q; want the cause (scrubbed of protected "+
-			"substrings) so support can trace it via the request id.", cause)
+	if !strings.Contains(cause, "column") && !strings.Contains(cause, apierr.RedactedMarkerForTest()) {
+		t.Errorf("captured log cause = %q; cause should carry the SQL fragment AND "+
+			"the protection marker so support can trace it via the request id.",
+			cause)
 	}
 }
 

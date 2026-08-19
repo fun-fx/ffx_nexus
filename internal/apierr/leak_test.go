@@ -59,6 +59,39 @@ func (c *captureLogHandler) lastAssert(t *testing.T) map[string]any {
 	return c.calls[len(c.calls)-1]
 }
 
+// lastAssertSafeForLog is the protected-signature-aware twin of lastAssert.
+// It walks every captured log entry and asserts no protected substring
+// survives. The Scrub implementation in apierr.go is the only thing that
+// guarantees this; reverting Scrub to a no-op would surface exactly here.
+func (c *captureLogHandler) lastAssertSafeForLog(t *testing.T) {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.calls) == 0 {
+		t.Fatal("no http_error log entry was made; the response leaked the cause " +
+			"instead of logging it")
+	}
+	for i, entry := range c.calls {
+		for _, sig := range apierr.ProtectedSignaturesForTest() {
+			if containsAny(entry, sig) {
+				t.Errorf("log entry %d carried the protected signature %q after Scrub should "+
+					"have removed it; entry=%v. The Scrub func is the single source of "+
+					"redaction between the cause and the slog handler; reverting it to a "+
+					"no-op must surface here.", i, sig, entry)
+			}
+		}
+	}
+}
+
+func containsAny(m map[string]any, sub string) bool {
+	for _, v := range m {
+		if s, ok := v.(string); ok && strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // A handler chain reminiscent of how the console mux would build one:
 // RequestID middleware sets the id, then a panic-prone handler returns the
 // apierr body, log line carrying the cause.
@@ -201,10 +234,11 @@ func TestCauseIsLoggedForEveryErrorResponse(t *testing.T) {
 		t.Errorf("log request_id = %v, want test-id", got["request_id"])
 	}
 	cause, _ := got["cause"].(string)
-	if !strings.Contains(cause, "column") || !strings.Contains(cause, `[redacted]`) {
-		t.Errorf("log cause did not contain the scrubbed SQL signature: %q\n"+
+	if !strings.Contains(cause, "column") || !strings.Contains(cause, apierr.RedactedMarkerForTest()) {
+		t.Errorf("log cause did not contain the scrubbed SQL signature AND the marker: %q\n"+
 			"the scrubber must redacted `ERROR:`, `SQLSTATE`, table/column names, "+
-			"and the like — otherwise support cannot find the root cause",
+			"and replace each substring with the redactedMarker so support can find "+
+			"the redacted boundaries and a user-typed analogue cannot pass through.",
 			cause)
 	}
 }
