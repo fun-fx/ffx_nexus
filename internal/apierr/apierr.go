@@ -285,19 +285,19 @@ var protectedSignatures = []string{
 	// Secrets: a stored secret, an API key, a DSN. These are absolute because
 	// even a 4-token tail of a known-prefix key is enough to make
 	// breaches worse.
-	"sk-",           // OpenAI secret prefix
+	"sk-", // OpenAI secret prefix
 	// Slack and GitHub token prefixes are encoded from individual runes so a
 	// naïve secret scanner matching the literal substring cannot flag this
 	// list. The string value at runtime is identical to "xoxb-"/"ghp_" —
 	// substring matching is what matters for Scrub, and scrubbing happens
 	// against the joined string, not the literal token in source.
-	slackPrefix(),     // Slack token prefix
-	ghTokenPrefix(),   // GitHub personal access token prefix
-	"postgres://",     // any Postgres DSN
-	"clickhouse://",   // any ClickHouse DSN
-	"redis://",        // any Redis URL with a password
-	"AKIA",            // AWS access key prefix
-	"PRIVATE KEY",     // any PEM private key block
+	slackPrefix(),   // Slack token prefix
+	ghTokenPrefix(), // GitHub personal access token prefix
+	"postgres://",   // any Postgres DSN
+	"clickhouse://", // any ClickHouse DSN
+	"redis://",      // any Redis URL with a password
+	"AKIA",          // AWS access key prefix
+	"PRIVATE KEY",   // any PEM private key block
 	// Prompt / body content — captured LLM prompts and their artifacts. The
 	// customer-supplied prompt body must not echo back through a 500 even as
 	// the cause.
