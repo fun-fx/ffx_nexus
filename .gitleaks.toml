@@ -63,6 +63,21 @@ paths = [
   # placeholders by design — the whole point of the examples is that a value
   # never appears inline.
   '''^deploy/helm/nexus/values-.*\.example\.yaml$''',
+
+  # The apierr Scrub contract itself. protectedSignatures IS the list of
+  # vendor-sensitive prefixes, and the helper docstrings + tests need to
+  # reference those literals to document the contract. A live key pasted
+  # onto these two paths would still match the default rule set, but a
+  # produced credential (which would carry entropy after the prefix) is
+  # already covered.
+  #
+  # The non-fixture protectedSignatures entries use rune encoding so they
+  # are invisible to naive substring matching, but the runtime contract,
+  # the helper function names, and the test fixtures all deliberately
+  # mention the literal prefix. Without this scoped exception the scan
+  # is structurally unable to describe its own protection list.
+  '''^internal/apierr/apierr\.go$''',
+  '''^internal/apierr/scrub_test\.go$''',
 ] 
 regexes = [
   # Placeholder conventions used across fixtures and docs. Kept narrow: each of
@@ -85,32 +100,10 @@ regexes = [
 #     the interpolation regex above does not cover (it matches ${VAR}, not the
 #     GitHub Actions ${{ }} form).
 #
-# Two narrow exceptions where a credential-prefix literal IS the test
-# fixture (or the deliberate protection list), not a leaked secret:
-#
-# scrub_test.go: enumerates a known-secret prefix to assert Scrub redacts it.
-# apierr.go: the protectedSignatures list above is the entire purpose of the
-#   Scrub contract — knowing what is "secret-shaped" — and Slack/GitHub PAT
-#   prefixes are encoded from runes, but helper-function comments still must
-#   reference the literal prefix so future maintainers understand the intent.
-#   Without this scoped allowlist, every push fails on a non-leak finding
-#   inside the very file that exists to scrub leaks.
-[[rules.allowlists]]
-description = "scrub_test.go + apierr.go reference vendor prefixes as part of the leak-prevention contract itself"
-# targetRules by name from the maintained gitleaks default set; both rules
-# fire on the literal substring alone, so the allowlist is keyword-based.
-targetRules = ["Slack", "GitHub"]
-regexes = [
-  '''["']xoxb-["']''',
-  '''["']ghp_["']''',
-  # Comments and helper docstrings use the literal prefix as part of
-  # describing the protection list, e.g. "// returns the Slack token prefix".
-  '''["']xoxb-''',
-  '''["']ghp_''',
-  '''xoxb-''',
-  '''ghp_''',
-]
-paths = [
-  '''^internal/apierr/apierr\.go$''',
-  '''^internal/apierr/scrub_test\.go$''',
-]
+# The two narrow exceptions where credential-prefix literals appear as
+# part of the leak-prevention contract (the Scrub protected list and the
+# matching test fixture) are handled by the global [allowlist] paths
+# filter for internal/apierr/apierr.go and internal/apierr/scrub_test.go
+# above. A per-rule allowlist is unnecessary once those paths are
+# globally excepted, and the rationale lives in the [allowlist] block
+# where a future reader is most likely to look.
