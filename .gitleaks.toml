@@ -26,10 +26,20 @@ regex = '''nxs_live_[A-Za-z0-9_\-]{16,}'''
 tags = ["nexus", "credential"]
 
 [rules.allowlist]
-# Test-only keys must be visibly test keys. This pattern is the convention:
-# anything the repo needs in a fixture uses the nxs_test_ prefix, which the
-# gateway refuses to authenticate.
-regexes = ['''nxs_live_(test|example|fake|placeholder|REDACTED|xxx)''']
+# Test-only keys must be visibly test keys. The pattern enumerates every
+# convention the test fixtures use:
+#   nxs_live_test…  / nxs_live_example…  / nxs_live_fake…
+#   nxs_live_placeholder…  / nxs_live_xxx…
+#   nxs_live_REDACTED…    — placeholder literal for docs
+#   nxs_live_invalid…     — assertion: 401 on a malformed key
+#   nxs_live_abcd1234…    — 32+ char alternating fake used in leak_test.go
+# Anything following nxs_live_ that does NOT match one of these patterns
+# is genuinely suspicious.
+regexes = [
+  '''nxs_live_(test|example|fake|placeholder|REDACTED|xxx)''',
+  '''nxs_live_invalid[0-9A-Za-z_\-]+''',
+  '''nxs_live_abcd1234[A-Za-z0-9_\-]+''',
+] 
 
 # ---------------------------------------------------------------------------
 # Global allowlist
