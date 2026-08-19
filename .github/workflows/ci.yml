@@ -324,6 +324,11 @@ jobs:
         uses: aquasecurity/trivy-action@v0.31.0
         with:
           image-ref: nexus:ci-scan
+          # Pin the scanner version. The action's default of v0.63.0 was
+          # retracted from the upstream release list, so setup-trivy fails
+          # before the scan runs. v0.74.0 is the current published tag and
+          # carries a working Alpine/glibc database.
+          version: v0.74.0
           format: table
           # HIGH and CRITICAL block. Lower severities are reported in the run log
           # but do not fail: a self-hosted product cannot ship a release blocked
