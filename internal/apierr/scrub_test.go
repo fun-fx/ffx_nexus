@@ -77,8 +77,8 @@ var expectedSignatures = []string{
 	"localhost",
 	"metadata.google.internal",
 	"sk-",
-	"xoxb-",
-	"ghp_",
+	"xoxb-", // gitleaks:allow (rule=Slack) — sentinel fixture mirroring the production protected list
+	"ghp_",  // gitleaks:allow (rule=GitHub) — sentinel fixture mirroring the production protected list
 	"postgres://",
 	"clickhouse://",
 	"redis://",

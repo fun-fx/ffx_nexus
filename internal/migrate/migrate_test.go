@@ -565,3 +565,73 @@ func TestSplitCHStatementsSingleStatementNoTrailingSemicolon(t *testing.T) {
 		t.Errorf("missing CREATE TABLE: %q", parts[0])
 	}
 }
+
+// TestSplitCHStatementsSemicolonInsideSingleQuoteStringIsNotATerminator
+// is the trap case for string literals. A `;` inside a quoted value
+// is data, not a separator, so an INSERT INTO tbl VALUES ('a;b')
+// must be emitted as a single statement.
+func TestSplitCHStatementsSemicolonInsideSingleQuoteStringIsNotATerminator(t *testing.T) {
+	sql := "INSERT INTO log (msg) VALUES ('one');"
+	parts := migrate.SplitCHStatementsForTest(sql)
+	if len(parts) != 1 {
+		t.Fatalf("split = %d parts, want 1 — splitter split on a literal inside a string value:\n%#v",
+			len(parts), parts)
+	}
+	if !strings.Contains(parts[0], "'one'") {
+		t.Errorf("string value lost: %q", parts[0])
+	}
+}
+
+// TestSplitCHStatementsSemicolonInsideBacktickIdentifierIsNotATerminator
+// is the trap case for ClickHouse-style backtick identifier quoting.
+// A `\`my;col\“ is a quoted column name, and the `;` between `my` and
+// `col` is part of the identifier — not a statement boundary.
+func TestSplitCHStatementsSemicolonInsideBacktickIdentifierIsNotATerminator(t *testing.T) {
+	sql := "CREATE TABLE t (`weird;name` String) ENGINE = MergeTree ORDER BY `weird;name`;"
+	parts := migrate.SplitCHStatementsForTest(sql)
+	if len(parts) != 1 {
+		t.Fatalf("split = %d parts, want 1 — splitter split inside a backtick identifier:\n%#v",
+			len(parts), parts)
+	}
+}
+
+// TestSplitCHStatementsBlockCommentWithEmbeddedSemicolons confirms
+// `/* ... ; ... */` does not split. CH accepts block comments and
+// uses them in long WITH-CTE-style migrations for headers.
+func TestSplitCHStatementsBlockCommentWithEmbeddedSemicolons(t *testing.T) {
+	sql := "/* Migration: do this; then do that; carefully. */\n" +
+		"CREATE TABLE t (id String) ENGINE = MergeTree ORDER BY id;"
+	parts := migrate.SplitCHStatementsForTest(sql)
+	if len(parts) != 1 {
+		t.Fatalf("split = %d parts, want 1 — block comment split (was that; comment was real):\n%#v",
+			len(parts), parts)
+	}
+	if !strings.Contains(parts[0], "CREATE TABLE") {
+		t.Errorf("CREATE TABLE lost: %q", parts[0])
+	}
+}
+
+// TestSplitCHStatementsNestedBlockCommentKeepsSplit covers nested
+// /* /*  ... */ */ block comments. ClickHouse supports them and the
+// splitter must respect the depth so an inner `;` is not a terminator.
+func TestSplitCHStatementsNestedBlockCommentKeepsSplit(t *testing.T) {
+	sql := "/* outer /* inner ; still in comment */ out ; still out */\n" +
+		"SELECT 1;"
+	parts := migrate.SplitCHStatementsForTest(sql)
+	if len(parts) != 1 {
+		t.Fatalf("split = %d parts, want 1 — nested comment let `;` leak as terminator:\n%#v",
+			len(parts), parts)
+	}
+}
+
+// TestSplitCHStatementsDollarQuotedStringKeepsSplit covers the
+// Postgres-style `$$ ... $$` string form which CH accepts in some
+// system-function contexts. The inner `;` is data, not a separator.
+func TestSplitCHStatementsDollarQuotedStringKeepsSplit(t *testing.T) {
+	sql := "SELECT $$not; a; terminator$$;"
+	parts := migrate.SplitCHStatementsForTest(sql)
+	if len(parts) != 1 {
+		t.Fatalf("split = %d parts, want 1 — dollar-quoted `;` leaked as terminator:\n%#v",
+			len(parts), parts)
+	}
+}

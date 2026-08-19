@@ -201,7 +201,7 @@ if [[ "$HAS_PROVIDER" == "1" ]]; then
     -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"hi"}],"max_tokens":64}' >/dev/null
   sleep 4  # wait for eval worker + router refresh
 
-  HAS_EFF=$(curl -s "$CON_URL/api/routing" | python3 -c "
+  HAS_EFF=$(curl -s -b "$ADMIN_JAR" "$CON_URL/api/routing" | python3 -c "
 import sys, json
 rows = json.load(sys.stdin)
 for r in rows:

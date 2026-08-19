@@ -73,21 +73,6 @@ paths = [
   # placeholders by design — the whole point of the examples is that a value
   # never appears inline.
   '''^deploy/helm/nexus/values-.*\.example\.yaml$''',
-
-  # The apierr Scrub contract itself. protectedSignatures IS the list of
-  # vendor-sensitive prefixes, and the helper docstrings + tests need to
-  # reference those literals to document the contract. A live key pasted
-  # onto these two paths would still match the default rule set, but a
-  # produced credential (which would carry entropy after the prefix) is
-  # already covered.
-  #
-  # The non-fixture protectedSignatures entries use rune encoding so they
-  # are invisible to naive substring matching, but the runtime contract,
-  # the helper function names, and the test fixtures all deliberately
-  # mention the literal prefix. Without this scoped exception the scan
-  # is structurally unable to describe its own protection list.
-  '''^internal/apierr/apierr\.go$''',
-  '''^internal/apierr/scrub_test\.go$''',
 ] 
 regexes = [
   # Placeholder conventions used across fixtures and docs. Kept narrow: each of
@@ -100,20 +85,28 @@ regexes = [
   '''CHANGE[-_]?ME''',
 ]
 
-# Deliberately NOT allowlisted, so a finding in one of these fails the build:
+# Deliberately NOT allowlisted, so a finding in any of these fails the build:
 #
-#   - Any *_test.go file. A pasted live key in a test is a leaked live key.
-#   - internal/**, cmd/**. Production code has no business holding a credential.
-#   - deploy/helm/nexus/values.yaml and templates/**. The chart must never carry
-#     a default secret; that is the property the scanner is protecting.
-#   - .github/workflows/**. Workflow secrets belong in ${{ secrets.* }}, which
-#     the interpolation regex above does not cover (it matches ${VAR}, not the
-#     GitHub Actions ${{ }} form).
+#   - Any *_test.go file (except the scrub_test.go fixture for the
+#     sentinel "xoxb-"/"ghp_" prefix, which is allowlisted inline per
+#     line via the `gitleaks:allow` directive).
+#   - internal/**, cmd/** — including internal/apierr/apierr.go. Production
+#     code has no business holding a credential, and the leak-prevention
+#     contract itself is intentionally written in plain source literals
+#     (so maintainers can read it), with each sentinel prefix line tagged
+#     `gitleaks:allow (rule=Slack|GitHub)`. Any *other* code on those
+#     paths is still scanned.
+#   - deploy/helm/nexus/values.yaml and templates/**. The chart must
+#     never carry a default secret; that is the property the scanner is
+#     protecting.
+#   - .github/workflows/**. Workflow secrets belong in ${{ secrets.* }},
+#     which the interpolation regex above does not cover (it matches
+#     ${VAR}, not the GitHub Actions ${{ }} form).
 #
-# The two narrow exceptions where credential-prefix literals appear as
-# part of the leak-prevention contract (the Scrub protected list and the
-# matching test fixture) are handled by the global [allowlist] paths
-# filter for internal/apierr/apierr.go and internal/apierr/scrub_test.go
-# above. A per-rule allowlist is unnecessary once those paths are
-# globally excepted, and the rationale lives in the [allowlist] block
-# where a future reader is most likely to look.
+# Inline `gitleaks:allow` directives are line-scoped: a real credential
+# pasted even one line below a sentinel is caught the same as anywhere
+# else. The previous "file-wide allowlist" shape would have let a real
+# xoxb-* or ghp_* slip past the scanner as long as it landed in
+# internal/apierr. That loophole is closed by restoring the file to
+# full-scanned and rebinding the sentinel-flag to inline markers on
+# just the lines that legitimately name the prefix.

@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/ffxnexus/nexus/internal/auditid"
 )
 
 // bcryptGenerate is a thin layer over bcrypt.GenerateFromPassword at the
@@ -332,8 +334,38 @@ func (s *Store) AcceptInvite(ctx context.Context, raw, password string) (User, s
 	if err != nil {
 		return User{}, "", err
 	}
-	s.Audit(ctx, AuditEvent{ActorID: userID, OrgID: inv.OrgID, Action: auditInviteAccept, TargetID: inv.ID, Detail: inv.Email})
-	s.Audit(ctx, AuditEvent{ActorID: userID, OrgID: inv.OrgID, Action: auditUserCreate, TargetID: userID, Detail: inv.Email})
+	// Track accept.create and invite.accept in the audit_log USING THE
+	// SAME TRANSACTION so a concurrent race does not lose rows to a
+	// pool-connection short circuit. Calling s.Audit here would issue
+	// INSERTs on fresh pool connections after FOR UPDATE has been
+	// released; with MaxConns at the pgxpool default of max(GOMAXPROCS,
+	// 4), five concurrent accepts each holding an outer tx connection
+	// plus the winner now needing two more for the audit inserts would
+	// deadlock. Doing the writes on the open tx connection keeps the
+	// ceiling at 5 forever, regardless of MaxConns.
+	// The non-failure path keeps both inserts ON the tx; on rollback
+	// the audit rows vanish with the user/accept rows, which is the
+	// behaviour the audit_log contract expects.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO audit_log
+			(org_id, actor, action, target_id, detail, request_id, client_request_id)
+		VALUES ($1, $2, $3, $4, $5,
+		        COALESCE($6, ''), COALESCE($7, ''))`,
+		inv.OrgID, userID, string(auditInviteAccept), inv.ID, inv.Email,
+		auditid.FromContext(ctx), auditid.ClientRequestID(ctx),
+	); err != nil {
+		return User{}, "", err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO audit_log
+			(org_id, actor, action, target_id, detail, request_id, client_request_id)
+		VALUES ($1, $2, $3, $4, $5,
+		        COALESCE($6, ''), COALESCE($7, ''))`,
+		inv.OrgID, userID, string(auditUserCreate), userID, inv.Email,
+		auditid.FromContext(ctx), auditid.ClientRequestID(ctx),
+	); err != nil {
+		return User{}, "", err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return User{}, "", err
 	}

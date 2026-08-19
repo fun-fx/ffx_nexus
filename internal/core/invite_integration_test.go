@@ -42,14 +42,12 @@ func inviteTestPool(t *testing.T) (*pgxpool.Pool, *Store) {
 		t.Fatalf("parse DSN: %v", err)
 	}
 	// Invariant: every goroutine in TestIntegrationConcurrentAcceptsYieldExactlyOneUser
-	// holds a transaction connection and the winner additionally tries to grab
-	// fresh pool connections for the audit inserts that run after the FOR UPDATE
-	// region but before commit. With 5 racers + the 2 extra audit grabs the worst
-	// case is 7 live pool connections, well above pgxpool's default floor of 4.
-	// The previous tests held at <2 connections; this race bumps the ceiling
-	// explicitly so a future default change cannot regress to a pool-starvation
-	// hang masquerading as a concurrent-accept test failure.
-	const maxLiveConns = 10
+	// holds a transaction connection while it races the FOR UPDATE region.
+	// Mirrors production NewStore's minimum-safe MaxConns floor (8). The
+	// earlier behaviour (test pool of 10, production default of 4) was a
+	// deadlock trap: the test "passed" with extra headroom while a customer
+	// with the production default got stuck. Now both default to 8.
+	const maxLiveConns = 8
 	pgxCfg.MaxConns = maxLiveConns
 	pool, err := pgxpool.NewWithConfig(ctx, pgxCfg)
 	if err != nil {

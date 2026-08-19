@@ -9,6 +9,7 @@ EMB_PORT=8300
 NEXUS_LOG="/tmp/nexus_lb_cache.log"
 EMB_PID=""
 FAKE_PID=""
+ADMIN_JAR="/tmp/nexus_lb_cache_admin.txt"
 
 start_nexus_logged() {
   stop_nexus
@@ -72,6 +73,18 @@ start_nexus_logged \
   NEXUS_EMBEDDINGS_URL="http://127.0.0.1:$EMB_PORT/v1" \
   NEXUS_SEMANTIC_CACHE_THRESHOLD=0.99
 
+# log in as the bootstrap admin so /api/traces returns data, not a 401
+# envelope — c0.x locked that route down and the cache-hit probe needs
+# the same authenticated the operator would see in production.
+login_resp=$(curl -s -o /dev/null -w '%{http_code}' \
+  -c "$ADMIN_JAR" -X POST "$CON_URL/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"${ADMIN_EMAIL:-admin@nexus.example}\",\"password\":\"${ADMIN_PASS:-adminpass}\"}" 2>/dev/null || true)
+if [[ "$login_resp" != "200" && "$login_resp" != "204" ]]; then
+  skip "semantic cache hit flow (admin login failed; bootstrap admin missing)"
+  summary_exit
+fi
+
 if grep -q "semantic cache enabled" "$NEXUS_LOG"; then
   pass "semantic cache wired at startup"
 else
@@ -95,8 +108,10 @@ curl -sf -X POST "$GW_URL/v1/chat/completions" -H 'Content-Type: application/jso
 sleep 0.3
 curl -sf -X POST "$GW_URL/v1/chat/completions" -H 'Content-Type: application/json' -d "$BODY" >/tmp/sc2.json || true
 
-# Check console traces for cache_hit on the second request.
-TRACES=$(curl -sf "$CON_URL/api/traces?limit=5" 2>/dev/null || echo "[]")
+# Check console traces for cache_hit on the second request. /api/traces
+# is a requireUser route; an anonymous call would 401 today where it
+# earlier worked, so the script must log in first.
+TRACES=$(curl -sf -b "$ADMIN_JAR" "$CON_URL/api/traces?limit=5" 2>/dev/null || echo "[]")
 if echo "$TRACES" | grep -q '"cache_hit":true'; then
   pass "second request served from semantic cache (cache_hit in trace)"
 else

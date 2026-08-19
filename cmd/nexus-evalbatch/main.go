@@ -93,15 +93,25 @@ func run() error {
 	if *evaluator == "heuristic" {
 		eval = evalbatch.NewHeuristicEvaluator()
 	} else {
+		// Operator class: the standalone batch CLI is an operator
+		// tool. Every destination this command can reach comes from
+		// an operator's command line (-service-url for the eval
+		// service, -gateway-url for generation), not from a
+		// tenant-editable eval_profile row, so Operator class is the
+		// correct default for all of them.
+		//
+		// Granting Operator wholesale is NOT the same as letting a
+		// tenant reach loopback through a profile: the eval profile
+		// table is consumed only through the gateway hot path which
+		// defaults EgressClass = EgressClassTenant (see
+		// evals.RemoteConfig zero value). A tenant-supplied
+		// eval_base_url still gets the loopback block there. The two
+		// surfaces stay disjoint — this CLI and the gateway cannot be
+		// conflated by a single config drift.
 		re := evals.NewRemoteEvaluator(evals.RemoteConfig{
-			BaseURL: *serviceURL,
-			Metrics: splitCSV(*metricsCSV),
-			Timeout: *timeout,
-			// Operator class: the standalone batch CLI is an operator
-			// tool. The BaseURL came from a CLI flag, not an eval profile
-			// the tenant can edit, so Tenant class's loopback block is
-			// the wrong default here — it would deny 127.0.0.1 in CI.
-			// The gateway hot path leaves this at Tenant.
+			BaseURL:     *serviceURL,
+			Metrics:     splitCSV(*metricsCSV),
+			Timeout:     *timeout,
 			EgressClass: evals.EgressClassOperator,
 		})
 		if re == nil {

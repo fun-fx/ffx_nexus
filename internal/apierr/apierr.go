@@ -231,27 +231,12 @@ func Scrub(s string) string {
 	return s
 }
 
-// slackPrefix returns the Slack token prefix. The string is reassembled
-// from individual runes so a naïve substring scanner (gitleaks and
-// similar) cannot flag this source file as a leak. The runtime value
-// matches the vendor's four-character prefix; substring matches against
-// the joined protectedSignatures list is what Scrub does.
-//
-// All other entries in protectedSignatures are literal strings because
-// they either are not credential-shaped (SQLSTATE, ERROR:, .go:) or
-// belong to vendor prefixes that gitleaks already allowlists (postgres://,
-// AKIA, AKIA…); only the Slack + GitHub PAT prefixes trip the default
-// rule set.
-func slackPrefix() string {
-	return string([]rune{'x', 'o', 'x', 'b', '-'})
-}
-
-// ghTokenPrefix returns the GitHub PAT prefix. Same rationale as
-// slackPrefix: the literal cannot appear as a string literal here
-// without the default gitleaks rule set flagging the line.
-func ghTokenPrefix() string {
-	return string([]rune{'g', 'h', 'p', '_'})
-}
+// Slack and GitHub are kept as plain string literals above to make the
+// contract legible to maintainers; gitleaks would otherwise flag them, so
+// the full-file path is not allowlisted (which would let a real credential
+// slip through). Instead, only the sentinel lines that mention the literal
+// prefix carry the inline `gitleaks:allow` directive. Anything else on
+// those paths remains scanned.
 
 // protectedSignatures are substrings whose presence in a response body means
 // it must not have passed the gate. The list is intentionally a flat string
@@ -286,14 +271,12 @@ var protectedSignatures = []string{
 	// even a 4-token tail of a known-prefix key is enough to make
 	// breaches worse.
 	"sk-", // OpenAI secret prefix
-	// Slack and GitHub token prefixes are encoded from individual runes so a
-	// naïve secret scanner matching the literal substring cannot flag this
-	// list. The runtime string value matches the vendor prefixes, but the
-	// source carries them as rune arrays instead of string literals. Substring
-	// matching is what matters for Scrub, and scrubbing happens against the
-	// runtime string, not the source token.
-	slackPrefix(),   // Slack token prefix
-	ghTokenPrefix(), // GitHub personal access token prefix
+	// Sentinel Slack token prefix. The string appears here because the
+	// Scrub contract is the list of substrings whose presence in a response
+	// body is a leak; describing the contract must include the literal.
+	"xoxb-", // gitleaks:allow (rule=Slack) — sentinel prefix in the Scrub protected list, not a real token
+	// Sentinel GitHub PAT prefix; same rationale as xoxb-.
+	"ghp_",          // gitleaks:allow (rule=GitHub) — sentinel prefix in the Scrub protected list, not a real token
 	"postgres://",   // any Postgres DSN
 	"clickhouse://", // any ClickHouse DSN
 	"redis://",      // any Redis URL with a password

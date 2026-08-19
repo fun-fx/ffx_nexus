@@ -281,9 +281,12 @@ else
 fi
 
 # --- Assertion 6: /api/routing parity -----------------------------------
+# /api/routing requires authentication (c0.x locked the route down
+# after E2E TestPlan flagged it as a path that briefly served the
+# spec unauthenticated). Both replicas get hit with the admin cookie.
 echo "  fetching /api/routing from each replica…"
-routes_a=$(curl -s "http://127.0.0.1:$GWA_CON_PORT/api/routing")
-routes_b=$(curl -s "http://127.0.0.1:$GWB_CON_PORT/api/routing")
+routes_a=$(curl -s -b "$ADMIN_JAR" "http://127.0.0.1:$GWA_CON_PORT/api/routing")
+routes_b=$(curl -s -b "$ADMIN_JAR" "http://127.0.0.1:$GWB_CON_PORT/api/routing")
 if [[ -n "$routes_a" && -n "$routes_b" ]]; then
   pass "both replicas served /api/routing"
 else

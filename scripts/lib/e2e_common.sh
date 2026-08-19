@@ -64,13 +64,26 @@ start_nexus() {
     "$BIN" &
   fi
   NEXUS_PID=$!
-  for i in $(seq 1 30); do
-    if curl -sf "$GW_URL/healthz" >/dev/null 2>&1; then
+  # Boot sequence matches the Helm chart's ingress contract:
+  #   /healthz  — process up (cheap, liveness)
+  #   /readyz   — schema applied AND dependencies reachable (gates traffic)
+  # A pod past /readyz is the same as a customer pod after its Helm
+  # post-install Jobs have completed. Polling /healthz instead of
+  # /readyz would let an unmigrated pod accept the first request and
+  # return a 500 with "relation does not exist", which is the exact
+  # failure mode this gate exists to prevent.
+  for i in $(seq 1 60); do
+    if curl -sf "$GW_URL/healthz" >/dev/null 2>&1 \
+         && curl -sf "$GW_URL/readyz"  >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.5
   done
-  echo "nexus failed to start on $GW_URL"
+  echo "nexus failed to reach /readyz on $GW_URL after 30s"
+  if [[ -x "$BIN" ]] && [[ -n "${NEXUS_POSTGRES_URL:-}" ]]; then
+    echo "/readyz last reply:"
+    curl -s "$GW_URL/readyz" || true
+  fi
   return 1
 }
 

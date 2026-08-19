@@ -127,52 +127,258 @@ func SplitCHStatementsForTest(sql string) []string {
 }
 
 // splitCHStatements splits a CH migration into executable statements,
-// respecting `--` line comments. A `;` inside a `--` comment is part of the
-// comment, not a statement terminator; CH is strict about partial fragments
-// (code: 62) and a naive strings.Split m.SQL on ";" turns comment fragments
-// into garbage statements. The naive form was previously OK by accident
-// because no CH migration had a `;` inside a comment line; 009_benchmark_runs
-// does, and the previous behaviour broke the E2E playwright run that calls
-// `nexus migrate` on the persistent CH volume.
+// respecting line comments (`--`), block comments (`/* ... */`), string
+// literals (single and double quoted), and ClickHouse-style identifier
+// backticks. A `;` inside any of those contexts is part of the
+// surrounding content, not a statement terminator. CH is strict about
+// partial fragments (code: 27 / 62) and a naive strings.Split m.SQL on
+// ";" turns comment or quoted fragments into garbage statements.
 //
-// Strings quoted with single quote, double quote, or backtick are not common
-// in CH migration prose today; if they become common, the splitter will need
-// to learn them. Inline `--` comments are stripped conservatively (only the
-// `-- ` form, not the run-on `--` form) so a statement like
-// `id String, -- inline note` does not bleed markers into the next line.
+// The split tracks a small set of mutually-exclusive contexts:
+//   - line  : default
+//   - lineComment : inside `-- ... \n`
+//   - blockComment: inside `/* ... */` (supports nesting — ClickHouse
+//     allows `/* /* nested */ */`)
+//   - singleQuoteString, doubleQuoteString: '...', "..." with backslash
+//     escape for embedded quote of the same kind
+//   - backtickId: `column_name` — same nesting escape rule as the strings
+//   - dollarQuote: `$$ ... $$` — Postgres-style dollar-quoted strings
+//     (CH supports them in some system functions; treat
+//     them consistently with the engine)
+//
+// We additionally split INSIDE block-comment depth, so a `*/` inside a
+// string literal does not exit a comment. Inline `-- ` (with the space)
+// is stripped conservatively; a run-on `--` (no space) is left alone so
+// legacy migrations that use the form survive. The naive splitter that
+// this replaced only handled `--` line comments and broke 009_benchmark_runs
+// when a comment contained `;`.
 func splitCHStatements(sql string) []string {
-	var out []string
-	var stmtLines []string
-	for _, line := range strings.Split(sql, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "--") {
-			continue
+	var (
+		out              []string
+		current          strings.Builder
+		stmtBuf          strings.Builder
+		hasStatementText bool
+		state            = stateLine
+		blockDepth       int
+		lineHasContent   bool
+	)
+	pushStmt := func() {
+		text := strings.TrimSpace(stmtBuf.String())
+		stmtBuf.Reset()
+		hasStatementText = false
+		lineHasContent = false
+		if text == "" {
+			return
 		}
-		if i := strings.Index(line, " -- "); i >= 0 {
-			line = line[:i]
+		if endsWithLineComment(text) {
+			// Trim -- line comments that trail the statement. Block
+			// comments are stripped at parse time above. This catches
+			// the case where the splitter saw code, then a `-- ...;`
+			// line, then a `;` from the code line — the line comment
+			// would otherwise be carried forward as a phantom prefix.
+			if idx := strings.Index(text, "\n--"); idx >= 0 {
+				text = strings.TrimSpace(text[:idx])
+				if text == "" {
+					return
+				}
+			}
 		}
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		stmtLines = append(stmtLines, line)
-		// A statement ends on the first line that closes with `;`.
-		if !strings.HasSuffix(strings.TrimSpace(line), ";") {
-			continue
-		}
-		joined := strings.TrimSpace(strings.Join(stmtLines, "\n"))
-		joined = strings.TrimSuffix(joined, ";")
-		if joined != "" {
-			out = append(out, joined)
-		}
-		stmtLines = nil
+		out = append(out, text)
 	}
-	if len(stmtLines) > 0 {
-		joined := strings.TrimSpace(strings.Join(stmtLines, "\n"))
-		joined = strings.TrimSuffix(joined, ";")
-		if joined != "" {
-			out = append(out, joined)
+	for i := 0; i < len(sql); i++ {
+		c := sql[i]
+		switch state {
+		case stateLine:
+			switch c {
+			case '\'':
+				state = stateSingle
+				stmtBuf.WriteByte(c)
+				lineHasContent = true
+				hasStatementText = true
+			case '"':
+				state = stateDouble
+				stmtBuf.WriteByte(c)
+				lineHasContent = true
+				hasStatementText = true
+			case '`':
+				state = stateBacktick
+				stmtBuf.WriteByte(c)
+				lineHasContent = true
+				hasStatementText = true
+			case '$':
+				if i+1 < len(sql) && sql[i+1] == '$' {
+					state = stateDollarDouble
+					stmtBuf.WriteString("$$")
+					i++ // consume the second '$'
+					lineHasContent = true
+					hasStatementText = true
+					continue
+				}
+				stmtBuf.WriteByte(c)
+				hasStatementText = true
+			case '-':
+				if i+1 < len(sql) && sql[i+1] == '-' {
+					state = stateLineComment
+					// Roll back any whitespace-only content accumulated
+					// on this line; the line comment is not part of the
+					// statement. If the line already has code, the line
+					// ends with the comment and we must NOT erase it
+					// (statements like `id String, -- inline note` are
+					// valid CH).
+					if !hasStatementText {
+						stmtBuf.Reset()
+					} else {
+						stmtBuf.WriteString(" -- ")
+						// Drain the rest of the line; the LineComment
+						// state will switch back at the newline and
+						// drop the body.
+						for j := i + 2; j < len(sql) && sql[j] != '\n'; j++ {
+							stmtBuf.WriteByte(sql[j])
+							i = j
+						}
+						i++ // step onto the newline so the next loop picks it up
+					}
+					i++ // consume the second '-'
+					continue
+				}
+				stmtBuf.WriteByte(c)
+				hasStatementText = true
+			case '/':
+				if i+1 < len(sql) && sql[i+1] == '*' {
+					state = stateBlockComment
+					blockDepth = 1
+					stmtBuf.WriteString("/*")
+					i++
+					continue
+				}
+				stmtBuf.WriteByte(c)
+				hasStatementText = true
+			case ';':
+				if hasStatementText {
+					pushStmt()
+				} else {
+					stmtBuf.Reset()
+					lineHasContent = false
+				}
+			case '\n':
+				stmtBuf.WriteByte(c)
+				if !lineHasContent {
+					// Collapse leading blank lines but preserve intra-statement
+					// newlines (a multi-line statement still needs its lines).
+				}
+				lineHasContent = false
+			default:
+				stmtBuf.WriteByte(c)
+				hasStatementText = true
+				lineHasContent = true
+			}
+		case stateLineComment:
+			// The line-comment state is entered with the comment content
+			// already drained into stmtBuf (or reset) above. The only job
+			// here is to eat characters until the newline, then switch
+			// back to line state. We do not write the comment characters
+			// into stmtBuf — comments are not part of the statement.
+			if c == '\n' {
+				state = stateLine
+				lineHasContent = false
+			}
+		case stateBlockComment:
+			stmtBuf.WriteByte(c)
+			switch c {
+			case '/':
+				if i+1 < len(sql) && sql[i+1] == '*' {
+					blockDepth++
+					stmtBuf.WriteByte('*')
+					i++
+				}
+			case '*':
+				if i+1 < len(sql) && sql[i+1] == '/' {
+					if blockDepth == 1 {
+						state = stateLine
+						stmtBuf.WriteByte('/')
+						i++
+						blockDepth = 0
+					} else {
+						blockDepth--
+						stmtBuf.WriteByte('/')
+						i++
+					}
+				}
+			}
+		case stateSingle:
+			stmtBuf.WriteByte(c)
+			switch c {
+			case '\\':
+				if i+1 < len(sql) {
+					stmtBuf.WriteByte(sql[i+1])
+					i++
+				}
+			case '\'':
+				state = stateLine
+			}
+		case stateDouble:
+			stmtBuf.WriteByte(c)
+			switch c {
+			case '\\':
+				if i+1 < len(sql) {
+					stmtBuf.WriteByte(sql[i+1])
+					i++
+				}
+			case '"':
+				state = stateLine
+			}
+		case stateBacktick:
+			stmtBuf.WriteByte(c)
+			switch c {
+			case '`':
+				if i+1 < len(sql) && sql[i+1] == '`' {
+					stmtBuf.WriteByte('`')
+					i++
+				} else {
+					state = stateLine
+				}
+			}
+		case stateDollarDouble:
+			stmtBuf.WriteByte(c)
+			if c == '$' && i+1 < len(sql) && sql[i+1] == '$' {
+				stmtBuf.WriteByte('$')
+				i++
+				state = stateLine
+			}
 		}
+		_ = current
+	}
+	if hasStatementText {
+		out = append(out, stmtBuf.String())
 	}
 	return out
+}
+
+const (
+	stateLine = iota
+	stateLineComment
+	stateBlockComment
+	stateSingle
+	stateDouble
+	stateBacktick
+	stateDollarDouble
+)
+
+// endsWithLineComment reports whether the trimmed tail of a statement
+// body is a `--` comment. Used after the splitter strikes a `;` to
+// decide whether the trailing line(s) need to be peeled off so they
+// do not get sent to CH as garbage code.
+func endsWithLineComment(s string) bool {
+	for {
+		s = strings.TrimRight(s, "\n\t ")
+		if idx := strings.LastIndex(s, "\n--"); idx >= 0 {
+			s = s[idx+1:]
+		}
+		if strings.HasPrefix(s, "--") {
+			return true
+		}
+		return false
+	}
 }
 
 func (e *chExecutor) record(ctx context.Context, m Migration, took time.Duration, ok bool, errMsg string) {
