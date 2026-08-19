@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,9 +17,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ffxnexus/nexus/internal/apierr"
+	"github.com/ffxnexus/nexus/internal/auditaggregator"
 	"github.com/ffxnexus/nexus/internal/auditid"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
 )
+
+// aggregationWindowSize mirrors auditaggregator.WindowSize but lives
+// here so store.go stays independent of the aggregator package's
+// re-export path. Keeping the constant here also gives us a single
+// place to change the bucket width without breaking the unique
+// constraint that already shipped.
+const aggregationWindowSize = auditaggregator.WindowSize
 
 // AuditRecorder is the surface Store needs from the observability stack for
 // surfacing audit insert failures. It is implemented by MetricsRecorder but
@@ -56,10 +66,33 @@ type Store struct {
 
 // NewStore connects to Postgres and returns a Store. The cipher may be nil, in
 // which case provider-credential write operations are disabled. Optional
-// behaviour is configured via StoreOption values — pass 0..n of them after
-// the first three positional arguments.
+// behaviour is configured via StoreOption values, e.g. NewStore(ctx, dsn,
+// nil, WithAuditLogger(slog), WithAuditRecorder(m)).
 func NewStore(ctx context.Context, dsn string, cipher *crypto.Cipher, opts ...StoreOption) (*Store, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	// Honour an operator-supplied MaxConns override via
+	// ?pool_max_conns=N in the DSN or the NEXUS_POSTGRES_MAX_CONNS
+	// env var; fall back to a documented minimum (8) so a single
+	// invite accept never deadlocks against its own audit write.
+	//
+	// Why a floor matters: AcceptInvite holds n connections while
+	// n concurrent invitees race the same token. The pin was previously
+	// set by tests; lifting it here means production customers get the
+	// safe behaviour by default. pgxpool's default of max(GOMAXPROCS, 4)
+	// is the deadlock ceiling we observed on the InviteAccept test.
+	const minSafeMaxConns int32 = 8
+	if cfg.MaxConns < minSafeMaxConns {
+		cfg.MaxConns = minSafeMaxConns
+	}
+	if override := strings.TrimSpace(os.Getenv("NEXUS_POSTGRES_MAX_CONNS")); override != "" {
+		if n, err := strconv.Atoi(override); err == nil && n > 0 {
+			cfg.MaxConns = int32(n)
+		}
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -669,12 +702,28 @@ func (s *Store) AuditDenial(ctx context.Context, e AuditEvent, fp string, window
 	if len(fp) > 32 {
 		fp = fp[:32]
 	}
+	// Aggregation invariant: two denied events with the same
+	// (action, actor, resource_fingerprint) MUST collapse into one row
+	// only if they share the same 5-minute window boundary. A caller
+	// passing a non-zero windowStart that doesn't line up with the
+	// bucket floor would silently break collapse — every event becomes
+	// a separate row and the burst defeats the SIEM rule that relies
+	// on the aggregated count. Floor-align here so callers MUST not
+	// think about the boundary. Test 2-1 below proves the property:
+	// 100 events at 1-second intervals collapse to count=100 in a
+	// single row even when the caller passes the literal `now`.
+	if !windowStart.IsZero() {
+		// Floor to the global WindowSize boundary — the index unique
+		// constraint (action, actor, resource_fingerprint, first_at)
+		// requires it.
+		windowStart = windowStart.Truncate(aggregationWindowSize)
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO audit_log
 			(org_id, actor, action, target_id, detail, request_id, client_request_id,
 			 count, first_at, last_at, resource_fingerprint)
 		VALUES ($1,$2,$3,$4,$5,$6,$7, 1, $8, NOW(), $9)
-		ON CONFLICT (action, actor, resource_fingerprint, first_at)
+		ON CONFLICT (org_id, action, actor, resource_fingerprint, first_at)
 			WHERE count > 0
 		DO UPDATE SET
 			count = audit_log.count + 1,

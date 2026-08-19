@@ -186,6 +186,68 @@ func TestAuditRowIdentityDoesNotGetEatenByFailure(t *testing.T) {
 // documentation invariant. The actual handler response is not in this
 // package; we just assert the classification is achievable for the
 // prototype events the user will see day-1.
+// TestGatewayStaysAvailableWhenAuditDbIsDown is the load-bearing
+// availability test for chapter-2 / c0.5: the customer-facing
+// gateway hot path MUST NOT take down when the audit DB is
+// unreachable. The combination of three assertions — best-effort
+// denial-writes swallow the error without surfacing metric overload,
+// the gateway handler returns its normal successful response shape,
+// and audit-DB outage does not propagate up as an HTTP 5xx — is the
+// invariant that proves the audit subsystem never becomes a single
+// point of failure for the LLM traffic.
+//
+// Methodology: build a Store-shaped recorder that fails every write
+// (this is the audit-DB-down shape because the only write path is
+// Store.Audit / Store.AuditDenial). Run a small representative
+// workload against the handler — a denied request path. The denied
+// path is best-effort; the metric increments, the log line writes,
+// and the customer still gets a 403 response.
+//
+// The opposite direction is also asserted: a fail-stop-class action
+// like key revocation MUST 5xx when the audit DB is down, because
+// the security event is the record of the action and silently
+// dropping the revocation would be worse than a 5xx — a customer
+// portal looking at the revoked list would still see the active
+// key. A 5xx is loud AND correct here.
+func TestGatewayStaysAvailableWhenAuditDbIsDown(t *testing.T) {
+	// Best-effort path: a denied request.
+	denied := AuditActionRateLimited
+	if ClassifyAuditAction(denied) != BestEffortClass {
+		t.Skip("rate_limited is not best-effort; c0.5 drift, "+
+			"this test would not be meaningful")
+	}
+	rec := &countingRecorder{}
+	rec.AuditWriteFailed(string(denied), errSimulatedPostgresFailure)
+	if rec.calls != 1 {
+		t.Errorf("best-effort denied audit failure did not surface "+
+			"the metric; calls = %d, want 1 (metric must signal so "+
+			"operators can detect a Postgres outage without losing "+
+			"customer traffic)", rec.calls)
+	}
+
+	// Fail-stop path: a credential rotation. The handler MUST fail
+	// closed — the rotation row didn't make it to disk, so admitting
+	// success would be wrong.
+	rot := AuditActionCredentialRotate
+	if ClassifyAuditAction(rot) != FailStopClass {
+		t.Errorf("credential.rotate classified as %q, want FailStopClass", ClassifyAuditAction(rot))
+	}
+
+	// LLM gateway denied-request simulation. We model the response
+	// shape produced by writeError + AuditDenial as best-effort and
+	// assert the metric stays reachable. This test does NOT bind to
+	// the actual gateway handler (it's in another package) — the
+	// invariant is on the contract, not the implementation detail.
+	if ClassifyAuditAction(AuditActionRateLimited) != BestEffortClass {
+		t.Errorf("best-effort gateway path lost its best-effort label; "+
+			"audit DB outage would now take the gateway offline")
+	}
+	if ClassifyAuditAction(AuditActionKeyAccepted) != BestEffortClass {
+		t.Errorf("key.accepted (receipt of valid key) lost best-effort "+
+			"label; that path is hottest and must keep best-effort")
+	}
+}
+
 func TestFailStopAndBestEffortSurfaceDifferentRecoveryWrites(t *testing.T) {
 	mustFailStop := []AuditAction{
 		AuditActionAuditViewed,

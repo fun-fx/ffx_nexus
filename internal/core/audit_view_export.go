@@ -243,9 +243,42 @@ func isoTime(t *time.Time) string {
 // validateAuditFilter checks the filter shape and bounds. An empty
 // OrgID returns error because every audit query MUST be scoped by
 // org to satisfy isolation.
+//
+// Length and charset bounds are tight on purpose: an attacker who
+// can pass a 1 MB ActionPrefix or an OrgID with control characters
+// could mount CSV-injection or SQL-error-disclosure attacks via the
+// downstream CSV writer. The bounds mirror the DB column limits
+// (org_id VARCHAR(128), actor VARCHAR(128)) so an injection that
+// would overflow the column gets rejected at the boundary instead.
 func validateAuditFilter(f AuditFilter, maxSpan time.Duration) error {
 	if f.OrgID == "" {
 		return errors.New("audit: OrgID is required")
+	}
+	if len(f.OrgID) > 128 {
+		return errors.New("audit: OrgID exceeds 128 chars (column limit)")
+	}
+	if !isAsciiIdent(f.OrgID) {
+		return fmt.Errorf("audit: OrgID contains non-identifier characters: %q",
+			truncateForErr(f.OrgID))
+	}
+	if len(f.Actor) > 128 {
+		return errors.New("audit: Actor exceeds 128 chars (column limit)")
+	}
+	if f.Actor != "" && !isAsciiIdentPermissive(f.Actor) {
+		return fmt.Errorf("audit: Actor contains disallowed characters: %q",
+			truncateForErr(f.Actor))
+	}
+	if len(f.ActionPrefix) > 64 {
+		return errors.New("audit: ActionPrefix exceeds 64 chars")
+	}
+	if len(f.TargetPrefix) > 256 {
+		return errors.New("audit: TargetPrefix exceeds 256 chars")
+	}
+	if len(f.RequestID) > 256 {
+		return errors.New("audit: RequestID exceeds 256 chars")
+	}
+	if len(f.ClientReqID) > 256 {
+		return errors.New("audit: ClientReqID exceeds 256 chars")
 	}
 	if f.Limit <= 0 {
 		return errors.New("audit: Limit must be > 0")
@@ -254,6 +287,106 @@ func validateAuditFilter(f AuditFilter, maxSpan time.Duration) error {
 		return fmt.Errorf("audit: time range exceeds %v", maxSpan)
 	}
 	return nil
+}
+
+// isAsciiIdent returns true when s is alphanumeric, hyphen, underscore,
+// or a single dot — the shape Nexus uses for org/actor identifiers.
+// This rejects spaces, control characters, quotes, and slashes that
+// would otherwise enable CSV-formula injection in the export path.
+func isAsciiIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.' || r == '@':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isAsciiIdentPermissive allows the @ character so email-shaped
+// actor strings (e.g. "alice@example.com") pass; we still reject
+// control chars and whitespace that would enable CSV injection.
+func isAsciiIdentPermissive(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.' || r == '@':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeContentDisposition produces a safe value for the filename*
+// parameter of Content-Disposition. The raw filename can include any
+// byte, including a `\r\n` injection to break out of the header. We
+// strip control characters and replace CR/LF with the default
+// filename, because even "audit_Set-Cookie:" on a single line is a
+// probable header-injection shape (some browsers collapse + trim
+// differently and a normalised-to-underscore version might still
+// pass through a downstream parser). Output policy:
+//
+//   - CR/LF/tab control chars → fall back to default name
+//     `audit-export.csv` so an attacker cannot hide a header
+//     boundary amid the value.
+//   - Other control (<0x20, 0x7F) and quote/backslash → underscore.
+//   - Bound length to 128 to keep the header line under standard
+//     ingress limits.
+//   - Non-ASCII (>=0x80) → default name; safe ASCII keeps the
+//     filename.
+//
+// This is the canonical Content-Disposition defence; without it, a
+// caller asking for file=<ctrl><sep>Set-Cookie: ... could mint an
+// additional response header that bypasses the gateway's CORS and
+// csrf protections.
+func sanitizeContentDisposition(filename string) string {
+	if filename == "" {
+		return "audit-export.csv"
+	}
+	// CR/LF/tab are a header boundary; reject the whole filename.
+	for _, r := range filename {
+		if r == '\r' || r == '\n' || r == '\t' {
+			return "audit-export.csv"
+		}
+	}
+	var b strings.Builder
+	for _, r := range filename {
+		if r < 0x20 || r == 0x7F || r == '"' || r == '\\' {
+			b.WriteByte('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := b.String()
+	if len(out) > 128 {
+		out = out[:128]
+	}
+	for _, r := range out {
+		if r >= 0x80 {
+			return "audit-export.csv"
+		}
+	}
+	return out
+}
+
+func truncateForErr(s string) string {
+	if len(s) > 32 {
+		return s[:32] + "..."
+	}
+	return s
 }
 
 // runAuditQuery executes the audit SELECT with the filter against

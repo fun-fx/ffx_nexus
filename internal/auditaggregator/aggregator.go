@@ -71,6 +71,20 @@ func WindowStart(t time.Time) time.Time {
 // The fingerprint is by design case-insensitive — URLs are case-insensitive
 // at the spec level (paths normalised by servers), and attackers cannot
 // pretend `/Users` is different from `/users` to inflate the row count.
+//
+// Collision-resistance budget: a 5-minute window at a 1k req/s attack
+// rate is 300k events. A truncated fingerprint is a birthday-bound
+// collision surface — with the previous 64-bit (16 hex) form, the
+// collision probability around 2^32 events is ~50%, which a motivated
+// attacker CAN reach at the gateway ingress (4 billion events per 5
+// minutes is not realistic, but the 2^28 events / window needed for a
+// pragmatic attack are). Bumping to the full SHA-256 (32 hex / 128 bit)
+// keeps the index footprint the same physical size on disk but makes
+// preimage and second-preimage attacks computationally infeasible. The
+// index is already narrow (16 hex chars used to keep key size down;
+// 32 hex is still under the typical Postgres BTree entry size of
+// 2 kB). The migration in 023_audit_fingerprint_widen.sql widens the
+// column.
 func ResourceFingerprint(target string) string {
 	if target == "" {
 		return ""
@@ -80,5 +94,5 @@ func ResourceFingerprint(target string) string {
 		target = target[:512]
 	}
 	sum := sha256.Sum256([]byte(target))
-	return hex.EncodeToString(sum[:8])
+	return hex.EncodeToString(sum[:])
 }

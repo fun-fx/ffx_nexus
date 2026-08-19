@@ -518,7 +518,23 @@ func KnownAuditReasonsForTest() []AuditReason {
 //
 // The function NEVER falls back to CodeInternalError silently: a missing
 // case is a compile error in the switch below.
+//
+// ReasonToPublicCode returns the zero value (empty string) when a
+// reason constant was added but the switch wasn't updated. The
+// fallback is intentionally NOT here: a future mapping bug must be
+// loud. Callers MUST go through ReasonToPublicCodeOrMetricFallback
+// below if a customer-visible response is being assembled; that path
+// surfaces the gap on a Prometheus counter while still returning a
+// safe, never-empty code so the customer never sees a malformed body.
 func ReasonToPublicCode(r AuditReason) apierr.Code { return auditReasonToPublicCode(r) }
+
+// UnmappedReasonsMetric is bumped when ReasonToPublicCodeOrMetricFallback
+// is forced to substitute a safe default code because the mapping table
+// had no entry. Operators monitor this to detect drift; the value MUST
+// stay zero in production. A non-zero count is a release-blocking
+// signal that a new const was added without a mapping or the switch
+// was deleted.
+var UnmappedReasonsMetric int64 // atomic counter; tests inspect this value
 
 // auditReasonToPublicCode is the actual mapping. The "switch with no
 // default" form is deliberate: when a future engineer adds a new

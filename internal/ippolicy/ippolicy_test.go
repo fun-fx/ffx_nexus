@@ -151,3 +151,67 @@ func TestParseForwardedForIsLengthBounded(t *testing.T) {
 		t.Errorf("ParseForwardedFor on 700KB input should return nil, got %d", len(out))
 	}
 }
+
+// TestTrustedRemoteAndHopsDefaultsAreLocking is the gold-pinned test
+// for the c0.x #6 default failure mode: a customer who does NOT
+// configure trustedProxyCIDRs (the default) MUST see spoofed
+// X-Forwarded-For / X-Real-IP / Forwarded headers silently
+// discarded, with the raw socket address carrying the audit row.
+//
+// Operator overrides (configuring --trusted-proxy-cidrs=10.0.0.0/8)
+// necessarily trade that property for correct attribution in a
+// Cloudflare-style reverse-proxy deployment, but the default path
+// must be safe-by-default. This test fails if anyone removes the
+// `len(trustedCIDRs) == 0 || trustedHops <= 0` short-circuit in
+// ResolveSource — which would mean spoofed headers started winning.
+func TestTrustedRemoteAndHopsDefaultsAreLocking(t *testing.T) {
+	cases := []struct {
+		name         string
+		cidrs        []*net.IPNet
+		hops         int
+		socket       string
+		xff          string
+		wantEff      string
+		wantTrusted  bool
+	}{
+		// Empty CIDRs, default hops.
+		{"empty-cidrs-default-hops", nil, 1, "203.0.113.5:55555",
+			"1.2.3.4, 10.0.0.1", "203.0.113.5", false},
+		// Empty CIDRs, hops=2 (the production Helm default).
+		{"empty-cidrs-hops-2", nil, 2, "203.0.113.5:55555",
+			"1.2.3.4", "203.0.113.5", false},
+		// Empty CIDRs, hops=0 (explicit override).
+		{"empty-cidrs-hops-0", nil, 0, "203.0.113.5:55555",
+			"1.2.3.4", "203.0.113.5", false},
+		// Untrusted socket, trusted CIDRs, default hops — header MUST
+		// still be dropped because the socket IS the trust anchor.
+		{"untrusted-socket-trusted-cidrs", mustCIDR("10.0.0.0/8"),
+			1, "198.51.100.42:1212", "1.2.3.4", "198.51.100.42", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := &http.Request{RemoteAddr: c.socket, Header: http.Header{}}
+			r.Header.Set("X-Forwarded-For", c.xff)
+			src := ResolveSource(r, c.cidrs, c.hops)
+			if src.EffectiveIP != c.wantEff {
+				t.Errorf("EffectiveIP = %q, want %q — spoofed header "+
+					"was honoured; default-safety invariant broken",
+					src.EffectiveIP, c.wantEff)
+			}
+			if src.TrustProxyHeader != c.wantTrusted {
+				t.Errorf("TrustProxyHeader = %v, want %v", src.TrustProxyHeader, c.wantTrusted)
+			}
+			if src.HopsUsed != 0 {
+				t.Errorf("HopsUsed = %d, want 0 (no hops consumed under default)", src.HopsUsed)
+			}
+		})
+	}
+}
+
+func mustCIDR(s string) []*net.IPNet {
+	_, cidr, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return []*net.IPNet{cidr}
+}

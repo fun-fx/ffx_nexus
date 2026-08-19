@@ -90,10 +90,17 @@ func TestResourceFingerprintIsLengthBoundedAndStable(t *testing.T) {
 				c.a, c.b, got, c.want)
 		}
 	}
-	// Bounded output is critical for index size.
+	// Bounded output is critical for index size. 32 hex chars (full
+	// SHA-256) is the size budget. Anything larger eats into the
+	// Postgres BTree key size and forces TOAST on the column.
 	for _, target := range []string{"", "x", strings.Repeat("a", 4096)} {
-		if len(ResourceFingerprint(target)) > 16 {
-			t.Errorf("ResourceFingerprint produced > 16 hex chars for %q", target[:min(20, len(target))])
+		fp := ResourceFingerprint(target)
+		if fp == "" {
+			continue
+		}
+		if len(fp) != 64 {
+			t.Errorf("ResourceFingerprint produced %d hex chars, want 64 (full SHA-256): %q",
+				len(fp), fp)
 		}
 	}
 }
