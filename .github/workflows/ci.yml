@@ -292,7 +292,14 @@ jobs:
         # trivial datastore passwords in deploy/docker-compose.yml), so those
         # paths are allowlisted in .gitleaks.toml with the reason recorded there.
         # Everything else fails the build.
-        uses: gitleaks/gitleaks-action@v2
+        #
+        # Pin to zricethezav/gitleaks-action@v1: starting with the rename to
+        # gitleaks/gitleaks-action@v2 (June 2022) the action requires a
+        # commercial license for organization-owned repositories. v1 was the
+        # final MIT-licensed release and is sufficient: it scans the same
+        # gitleaks binary with the .gitleaks.toml allowlist. The license is a
+        # separate concern from the scan logic.
+        uses: zricethezav/gitleaks-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
