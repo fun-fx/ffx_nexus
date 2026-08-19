@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -54,7 +55,28 @@ import (
 // Force-fail testing: bumping this constant by 1 makes the test pass
 // from 1 through the pinned count; dropping it by 1 makes the test
 // fail conditionally on the actual hits being below.
-const pinHitCount = 139
+//
+// Monotonicity guard
+// ==================
+// The pin must NOT grow. A future PR that legitimately lands a new
+// bypass must LOWER the pin AND take responsibility for migrating it
+// (otherwise the new site is recorded in
+// docs/pin-hit-count-history.md as a known debt). The detector
+// refuses a pin > pinHi for any reason. Dropping the pin is fine;
+// raising it is a code-review block, no exceptions.
+//
+// Force-migrate-or-document policy at the test runtime:
+//   1. pinHi      — historically recorded maximum (the file
+//                     docs/pin-hit-count-history.md must agree
+//                     or this test fails the PR with a typo-
+//                     visible message).
+//   2. pinHitGoal — upper bound; same as pinHi until the count
+//                     drops below it naturally.
+const (
+	pinHi      = 139
+	pinHitGoal = pinHi
+)
+const pinHitCount = pinHi
 
 func TestConsoleErrorPathsBypassApierr(t *testing.T) {
 	if pinHitCount == 0 {
@@ -63,7 +85,42 @@ func TestConsoleErrorPathsBypassApierr(t *testing.T) {
 			"writeError). Set the constant to re-enable the structural drift " +
 			"detector when migrating a new package.")
 	}
+	if pinHitCount > pinHi {
+		t.Fatalf("pinHitCount=%d GREW above the documented pinHi=%d.\n"+
+			"pinHitCount is monotonically decreasing — a future PR may only "+
+			"DROP the pin after migrating a site through apierr.Render / "+
+			"resp.HTTP / s.fail / writeError. Raising the pin is the "+
+			"regression class this detector exists to catch.\n"+
+			"Update docs/pin-hit-count-history.md in lock-step if there is "+
+			"a justification (the justification survives review; the pin "+
+			"does not).",
+			pinHitCount, pinHi)
+	}
+	if pinHitGoal > pinHitCount {
+		t.Errorf("pinHitGoal=%d is above the current pin %d; the goal is "+
+			"always <= the current pin so the freeze can shrink.",
+			pinHitGoal, pinHitCount)
+	}
+
 	root := "../.."
+
+	// Monotonicity guard for the documentation lag. Read the
+	// latest committed pin from docs/pin-hit-count-history.md
+	// (the "newest first" table) and refuse to allow a code-side
+	// pin LESS THAN the documented one. A drop in source that
+	// forgets to update the doc fails here, so reviewers see the
+	// lag in a single round-trip. The helper returns the
+	// most-recently recorded pin (numeric value of the "New
+	// pin" column from a new-style row); rows in the old "old"/>
+	// new" format are parsed as ordered pairs.
+	if docPin, ok := readLatestDocPin(t, root); ok && pinHitCount < docPin {
+		t.Errorf("pinHitCount=%d is lower than the most recent entry in "+
+			"docs/pin-hit-count-history.md (last committed pin=%d). A drop in "+
+			"this constant must update the doc in lock-step or the next "+
+			"reader cannot tell whether pinHi is right.",
+			pinHitCount, docPin)
+	}
+
 	banned := []string{
 		"internal/console",
 	}
@@ -161,6 +218,91 @@ func freeformErrorBody(e ast.Expr) bool {
 // walk parses every .go file at the given root, calling fn for each.
 // Parse errors are reported as test failures because a syntax error in
 // production code blocks every compile of the package.
+// readLatestDocPin parses the docs/pin-hit-count-history.md table
+// for the most recently committed pin (the "newest first" entry).
+// Returns the value and ok=true; returns 0, false when the doc is
+// missing — the test then logs but does not fail, so a fresh
+// checkout that hasn't yet committed the doc still works.
+//
+// Format spec the reader relies on:
+//
+//	| Commit / Date | Old pin | New pin | Reason |
+//
+// The header row's "Old pin" and "New pin" cells contain the
+// strings "old" / "new"; we skip them by skipping any line
+// containing "---" (the markdown separator). Data rows: the
+// LAST numeric value across columns 2 and 3 is the "New pin".
+// The "Old pin" column either says "(none)" or carries the
+// previous pin number, in which case the FIRST numeric value
+// is the Old pin and the SECOND numeric value is the New pin.
+// We return the second numeric value when there are two
+// numbers, or the only numeric value when there is one.
+// readLatestDocPin takes the body of docs/pin-hit-count-history.md
+// and returns the most-recently committed pinHi (the "New pin"
+// column for the first body row in the table). The doc format is:
+//
+//	| Commit / Date | Old pin | New pin | Reason |
+//	| --- | --- | --- | --- |         <- alignment
+//	| <commit>     | <int>   | <int>   | <reason> |
+//	| <commit>     | <int>   | <int>   | <reason> |
+//	...
+//
+// We accept a single-row old-format doc too:
+//
+//	| (this baseline) | (none) | 139 | initial capture |
+//
+// The strategy is two passes:
+//
+//   1. Walk the lines collecting all digit-bearing rows. The
+//      header row never contains digits; the alignment row
+//      contains dashes (no digits).
+//   2. Pick the LAST digit-bearing row. Numeric column
+//      heuristic: row with two numbers is "{Old},{New}" and we
+//      return the second; row with one number is single-column
+//      and we return the only number.
+//
+// This avoids the header/alignment ambiguity that bit the
+// simple state machine. The dataset is small (under 20 rows in
+// any foreseeable future) so the linear walk is fine. Returns
+// (last, false) if no digit-bearing row was found.
+func readLatestDocPin(t *testing.T, repoRoot string) (int, bool) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "docs", "pin-hit-count-history.md"))
+	if err != nil {
+		return 0, false
+	}
+	var last int
+	var ok bool
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		if strings.Contains(line, "---") {
+			continue
+		}
+		var nums []int
+		for _, c := range strings.Split(line, "|") {
+			c = strings.TrimSpace(c)
+			c = strings.Trim(c, "`")
+			n, err := strconv.Atoi(c)
+			if err != nil {
+				continue
+			}
+			nums = append(nums, n)
+		}
+		switch len(nums) {
+		case 1:
+			last = nums[0]
+			ok = true
+		case 2:
+			last = nums[1]
+			ok = true
+		}
+	}
+	return last, ok
+}
+
 func walk(t *testing.T, root string, fn func(path string, f *ast.File)) {
 	t.Helper()
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
