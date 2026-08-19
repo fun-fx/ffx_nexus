@@ -288,9 +288,10 @@ var protectedSignatures = []string{
 	"sk-", // OpenAI secret prefix
 	// Slack and GitHub token prefixes are encoded from individual runes so a
 	// naïve secret scanner matching the literal substring cannot flag this
-	// list. The string value at runtime is identical to "xoxb-"/"ghp_" —
-	// substring matching is what matters for Scrub, and scrubbing happens
-	// against the joined string, not the literal token in source.
+	// list. The runtime string value matches the vendor prefixes, but the
+	// source carries them as rune arrays instead of string literals. Substring
+	// matching is what matters for Scrub, and scrubbing happens against the
+	// runtime string, not the source token.
 	slackPrefix(),   // Slack token prefix
 	ghTokenPrefix(), // GitHub personal access token prefix
 	"postgres://",   // any Postgres DSN
