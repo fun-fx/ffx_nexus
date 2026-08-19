@@ -300,6 +300,12 @@ jobs:
         # gitleaks binary with the .gitleaks.toml allowlist. The license is a
         # separate concern from the scan logic.
         uses: zricethezav/gitleaks-action@v1
+        with:
+          # The config lives at the repo root (.gitleaks.toml) — not under
+          # .github/. The action's default config-path is
+          # .github/.gitleaks.toml, which is why an explicit override is
+          # required.
+          config-path: .gitleaks.toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
