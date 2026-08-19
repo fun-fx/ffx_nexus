@@ -40,6 +40,40 @@ type RemoteConfig struct {
 	// skip the header altogether). Populated by the worker's secret
 	// resolver when the per-profile key source resolves to a string.
 	APIKey string
+
+	// EgressClass selects which address guard governs the underlying
+	// http.Client. The default (zero value) keeps the production
+	// behaviour: Tenant class, which refuses loopback / RFC1918 so a
+	// tenant-supplied eval endpoint cannot call back into the pod's
+	// admin surface.
+	//
+	// Operator class is reserved for caller-controlled destinations:
+	// the standalone nexus-evalbatch CLI, an offline regression script,
+	// or any code path where the URL was supplied by an operator (env,
+	// CLI flag, Helm value) rather than stored in a profile the tenant
+	// can edit. Independent binaries like cmd/nexus-evalbatch wire this
+	// in; the gateway hot path does not, so a configuration mistake in
+	// one place cannot widen the other.
+	EgressClass EgressClass
+}
+
+// EgressClass mirrors egress.Class without importing internal/egress as a
+// hard dependency from callers who only need the enum. Zero value resolves to
+// egress.Tenant so existing callers that leave the field unset keep their
+// production behaviour.
+type EgressClass uint8
+
+const (
+	EgressClassTenant EgressClass = iota
+	EgressClassOperator
+)
+
+// resolveClass maps EgressClass to egress.Class. Zero value = Tenant.
+func (c EgressClass) resolve() egress.Class {
+	if c == EgressClassOperator {
+		return egress.Operator
+	}
+	return egress.Tenant
 }
 
 // NewRemoteEvaluator builds a remote evaluator. Returns nil when BaseURL is
@@ -55,17 +89,21 @@ func NewRemoteEvaluator(cfg RemoteConfig) *RemoteEvaluator {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 30 * time.Second
 	}
-	// Tenant class: BaseURL comes from an eval profile, and the payload carries
+	// Tenant class default: BaseURL comes from an eval profile, and the payload carries
 	// prompt and completion text plus a judge_url the sidecar will itself call.
 	// The guard supplies the connection pooling this constructor used to
 	// configure by hand, and drops the proxy-from-environment that was here —
 	// a proxy would make the socket connect to the proxy's address, leaving the
 	// real destination in the request line where the address check never sees it.
+	//
+	// Callers that control the URL themselves (the standalone CLI batch tool,
+	// admin scripts) opt in to Operator class via cfg.EgressClass so they can
+	// reach a localhost sidecar in CI without bypassing the gateway hot path.
 	return &RemoteEvaluator{
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		metrics: cfg.Metrics,
 		apiKey:  cfg.APIKey,
-		hc:      egress.Client(egress.Tenant, cfg.Timeout),
+		hc:      egress.Client(cfg.EgressClass.resolve(), cfg.Timeout),
 	}
 }
 

@@ -163,7 +163,7 @@ fi
 # Audit log entries.
 AUDIT_COUNT=$(docker compose -f deploy/docker-compose.yml exec -T postgres \
   psql -U nexus -d nexus -t -A -c \
-  "SELECT count(*) FROM audit_log WHERE action IN ('vkey.create','credential.create');" 2>/dev/null | tr -d ' ')
+  "SELECT count(*) FROM audit_log WHERE action IN ('key.create','credential.create');" 2>/dev/null | tr -d ' ')
 if [[ "${AUDIT_COUNT:-0}" -ge 2 ]]; then
   pass "audit log records key/credential actions (count=$AUDIT_COUNT)"
 else
@@ -297,7 +297,7 @@ fi
 
 AUDIT_DEL=$(docker compose -f deploy/docker-compose.yml exec -T postgres \
   psql -U nexus -d nexus -t -A -c \
-  "SELECT count(*) FROM audit_log WHERE action IN ('vkey.revoke','credential.delete');" 2>/dev/null | tr -d ' ')
+  "SELECT count(*) FROM audit_log WHERE action IN ('key.revoke','credential.delete');" 2>/dev/null | tr -d ' ')
 if [[ "${AUDIT_DEL:-0}" -ge 2 ]]; then
   pass "audit log records revoke/delete"
 else

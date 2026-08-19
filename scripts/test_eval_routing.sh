@@ -180,7 +180,7 @@ fi
 echo ""
 echo "== routing stats (eff_quality) =="
 
-ROUTING=$(curl -s "$CON_URL/api/routing")
+ROUTING=$(curl -s -b "$ADMIN_JAR" "$CON_URL/api/routing")
 if echo "$ROUTING" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)

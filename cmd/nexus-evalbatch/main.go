@@ -97,6 +97,12 @@ func run() error {
 			BaseURL: *serviceURL,
 			Metrics: splitCSV(*metricsCSV),
 			Timeout: *timeout,
+			// Operator class: the standalone batch CLI is an operator
+			// tool. The BaseURL came from a CLI flag, not an eval profile
+			// the tenant can edit, so Tenant class's loopback block is
+			// the wrong default here — it would deny 127.0.0.1 in CI.
+			// The gateway hot path leaves this at Tenant.
+			EgressClass: evals.EgressClassOperator,
 		})
 		if re == nil {
 			return fmt.Errorf("invalid -service-url")

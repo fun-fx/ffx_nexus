@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/egress"
 	"github.com/ffxnexus/nexus/internal/observability"
 )
 
@@ -24,6 +26,62 @@ func sampleTrace() observability.Trace {
 func TestRemoteEvaluatorDisabledWhenNoURL(t *testing.T) {
 	if NewRemoteEvaluator(RemoteConfig{}) != nil {
 		t.Fatal("empty BaseURL should disable (nil) the remote evaluator")
+	}
+}
+
+// TestRemoteEvaluatorEgressClassZeroValueIsTenant is the regression tide-line:
+// leaving EgressClass unset MUST preserve the production behaviour.
+// Operator class is opt-in only. A change that flips the zero value silently
+// to Operator would let a tenant-supplied eval profile ping loopback /
+// RFC1918 — exactly the hole the egress guard exists to close.
+//
+// The internal/evals TestMain relaxes loopback for the package (httptest
+// binds 127.0.0.1), so this test must call TestingStrict first to see the
+// same policy a production Tenant caller would.
+func TestRemoteEvaluatorEgressClassZeroValueIsTenant(t *testing.T) {
+	egress.TestingStrict(t)
+	// Bind on loopback: Tenant class must reject 127.0.0.1 with the
+	// "loopback is not permitted" error. If the zero value drifts to
+	// Operator the call below would succeed.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"scores":[]}`))
+	}))
+	defer srv.Close()
+	re := NewRemoteEvaluator(RemoteConfig{BaseURL: srv.URL})
+	if re == nil {
+		t.Fatal("evaluator should not be nil with a valid BaseURL")
+	}
+	_, err := re.Evaluate(context.Background(), sampleTrace())
+	if err == nil {
+		t.Fatal("Tenant class should refuse loopback; nil err here means the " +
+			"zero-value EgressClass drifted to Operator and widened tenant reach")
+	}
+	if !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("expected loopback denial, got: %v", err)
+	}
+}
+
+// TestRemoteEvaluatorEgressClassOperatorReachesLoopback pins the opt-in
+// path: a CLI / batch caller that supplies operator-sourced URLs needs
+// Operator class to reach localhost in CI. This is the positive-direction
+// assertion; the test above is the negative-direction tide-line. Both must
+// hold for the field to be safe.
+func TestRemoteEvaluatorEgressClassOperatorReachesLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"scores":[{"evaluator":"deepeval","metric":"answer_relevancy","score":0.9,"passed":true}]}`))
+	}))
+	defer srv.Close()
+	re := NewRemoteEvaluator(RemoteConfig{BaseURL: srv.URL, EgressClass: EgressClassOperator})
+	if re == nil {
+		t.Fatal("evaluator should not be nil with a valid BaseURL")
+	}
+	scores, err := re.Evaluate(context.Background(), sampleTrace())
+	if err != nil {
+		t.Fatalf("Operator class should reach loopback, got: %v", err)
+	}
+	if len(scores) != 1 || scores[0].Metric != "answer_relevancy" {
+		t.Fatalf("expected one answer_relevancy score, got %+v", scores)
 	}
 }
 
