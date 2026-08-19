@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	nexusurlpolicy "github.com/ffxnexus/nexus/internal/urlpolicy"
 )
 
 // ResolvedCredential is a decrypted upstream secret plus metadata, as returned
@@ -55,6 +57,11 @@ func ParseKeyMode(s string) KeyMode {
 type CredentialResolver struct {
 	src CredentialSource
 	ttl time.Duration
+	// allowlist is the operator-supplied CIDR list used by urlpolicy at the
+	// dial-time gate. An empty value disables private-network destinations
+	// entirely. The same value is reused across Resolve() calls; setting
+	// it once at startup avoids a per-call CSV parse.
+	allowlist string
 
 	mu    sync.RWMutex
 	cache map[string]cacheEntry
@@ -68,16 +75,36 @@ type cacheEntry struct {
 
 // NewCredentialResolver builds a resolver with the given cache TTL. A zero or
 // negative ttl disables caching (always hits the source).
-func NewCredentialResolver(src CredentialSource, ttl time.Duration) *CredentialResolver {
+func NewCredentialResolver(src CredentialSource, ttl time.Duration, allowlist string) *CredentialResolver {
 	return &CredentialResolver{
-		src:   src,
-		ttl:   ttl,
-		cache: make(map[string]cacheEntry),
+		src:       src,
+		ttl:       ttl,
+		allowlist: allowlist,
+		cache:     make(map[string]cacheEntry),
 	}
+}
+
+// validateAtDialTime applies the urlpolicy gate at resolve-time.
+// Empty BaseURL passes — that is the case for shared env keys
+// that do not override the upstream base. The save-time gate (in
+// Store.CreateCredential) is responsible for catching any bad
+// value the moment the operator saves it.
+func validateAtDialTime(raw, allowlist string) error {
+	if raw == "" {
+		return nil
+	}
+	return nexusurlpolicy.Validate(raw, allowlist)
 }
 
 // Resolve returns the credential for (org, user, provider), using the cache when
 // fresh. The found return distinguishes "no credential" from an error.
+//
+// On hit, the cached BaseURL is re-validated against the save-time
+// gate (urlpolicy.Validate) before being returned. A pre-validate
+// cache hit that no longer passes the gate returns a 502 to the
+// caller rather than dialling an endpoint the operator has since
+// rejected. The gate runs once per Resolve; the cache lookup
+// itself stays fast.
 func (cr *CredentialResolver) Resolve(ctx context.Context, orgID, userID, provider string) (ResolvedCredential, bool, error) {
 	if cr == nil || cr.src == nil {
 		return ResolvedCredential{}, false, nil
@@ -88,12 +115,20 @@ func (cr *CredentialResolver) Resolve(ctx context.Context, orgID, userID, provid
 		e, ok := cr.cache[key]
 		cr.mu.RUnlock()
 		if ok && time.Now().Before(e.expires) {
+			if err := validateAtDialTime(e.cred.BaseURL, cr.allowlist); err != nil {
+				return ResolvedCredential{}, false, err
+			}
 			return e.cred, e.found, nil
 		}
 	}
 	cred, found, err := cr.src.ResolveCredential(ctx, orgID, userID, provider)
 	if err != nil {
 		return ResolvedCredential{}, false, err
+	}
+	if cred.BaseURL != "" {
+		if err := validateAtDialTime(cred.BaseURL, cr.allowlist); err != nil {
+			return ResolvedCredential{}, false, err
+		}
 	}
 	if cr.ttl > 0 {
 		cr.mu.Lock()

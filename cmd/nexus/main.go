@@ -325,7 +325,7 @@ func main() {
 				keyMode = gateway.KeyModeShared
 			}
 		} else {
-			credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 60*time.Second)
+credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 60*time.Second, cfg.EgressTenantAllowedCIDRs)
 			gwHandler.SetCredentialResolution(credResolver, keyMode)
 			log.Info("per-request credential resolution enabled (BYOK)", "mode", cfg.KeyMode)
 		}

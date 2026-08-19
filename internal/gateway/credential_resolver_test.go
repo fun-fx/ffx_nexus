@@ -41,7 +41,7 @@ func TestParseKeyMode(t *testing.T) {
 
 func TestCredentialResolverCaches(t *testing.T) {
 	src := &fakeCredSource{cred: ResolvedCredential{Secret: "sk-user", Source: "user"}, found: true}
-	cr := NewCredentialResolver(src, time.Minute)
+	cr := NewCredentialResolver(src, time.Minute, "")
 
 	for i := 0; i < 3; i++ {
 		cred, found, err := cr.Resolve(context.Background(), "default", "u1", "openai")
@@ -73,7 +73,7 @@ func TestCredentialResolverCaches(t *testing.T) {
 
 func TestCredentialResolverNoCacheTTL(t *testing.T) {
 	src := &fakeCredSource{cred: ResolvedCredential{Secret: "sk"}, found: true}
-	cr := NewCredentialResolver(src, 0) // caching disabled
+	cr := NewCredentialResolver(src, 0, "") // caching disabled
 	for i := 0; i < 3; i++ {
 		if _, _, err := cr.Resolve(context.Background(), "o", "u", "openai"); err != nil {
 			t.Fatal(err)
@@ -86,7 +86,7 @@ func TestCredentialResolverNoCacheTTL(t *testing.T) {
 
 func TestCredentialResolverError(t *testing.T) {
 	src := &fakeCredSource{err: errors.New("db down")}
-	cr := NewCredentialResolver(src, time.Minute)
+	cr := NewCredentialResolver(src, time.Minute, "")
 	if _, _, err := cr.Resolve(context.Background(), "o", "u", "openai"); err == nil {
 		t.Fatal("expected error to propagate")
 	}

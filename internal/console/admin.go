@@ -155,7 +155,7 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request, u core
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider and secret are required"})
 		return
 	}
-	cred, err := s.store.CreateCredential(r.Context(), orgID(r), u.ID, "", req.Provider, req.Name, req.BaseURL, req.Secret, req.Models)
+	cred, err := s.store.CreateCredential(r.Context(), orgID(r), u.ID, "", req.Provider, req.Name, req.BaseURL, req.Secret, req.Models, s.tenantCIDRs)
 	if errors.Is(err, crypto.ErrNoMasterKey) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "credential encryption disabled: set NEXUS_MASTER_KEY (32-byte base64/hex) to store provider keys",

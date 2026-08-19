@@ -20,6 +20,8 @@ import (
 	"github.com/ffxnexus/nexus/internal/auditaggregator"
 	"github.com/ffxnexus/nexus/internal/auditid"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
+
+	nexusurlpolicy "github.com/ffxnexus/nexus/internal/urlpolicy"
 )
 
 // aggregationWindowSize mirrors auditaggregator.WindowSize but lives
@@ -318,12 +320,19 @@ func (s *Store) RevokeVirtualKey(ctx context.Context, orgID, actorID, id string)
 // models carries the optional per-credential model inventory the owner wants
 // advertised at /v1/models; pass an empty CredentialModels (not nil) for
 // built-in providers that ship their own catalog.
-func (s *Store) CreateCredential(ctx context.Context, orgID, actorID, userID, provider, name, baseURL, secret string, models CredentialModels) (ProviderCredential, error) {
+//
+// baseURL is also validated at save-time (see urlpolicy.Validate). The
+// dial-time path in credential_resolver.go runs the same gate before opening
+// a TCP connection.
+func (s *Store) CreateCredential(ctx context.Context, orgID, actorID, userID, provider, name, baseURL, secret string, models CredentialModels, allowlistCSV string) (ProviderCredential, error) {
 	if s.cipher == nil {
 		return ProviderCredential{}, crypto.ErrNoMasterKey
 	}
 	if orgID == "" {
 		orgID = "default"
+	}
+	if err := nexusurlpolicy.Validate(baseURL, allowlistCSV); err != nil {
+		return ProviderCredential{}, err
 	}
 	ct, err := s.cipher.Encrypt([]byte(secret))
 	if err != nil {

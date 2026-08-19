@@ -55,6 +55,12 @@ type Server struct {
 	hub               *Hub
 	reader            *observability.Reader // may be nil when ClickHouse is not configured
 	store             *core.Store           // may be nil when Postgres is not configured
+	// tenantCIDRs is the operator-supplied comma-separated CIDR list that
+	// the credential base_url and plugin manifest gate consults for
+	// private-network destinations. Empty disables the gate. The
+	// egress-policy check does not consult this list — egress has its own
+	// narrower bundle that excludes link-local even when allowlisted.
+	tenantCIDRs string
 	routes            RouteStatsSource      // may be nil when routing is disabled
 	catalog           CatalogSource         // may be nil when the gateway is not co-located
 	reload            func(context.Context) // may be nil when no hot-reload hook is wired
@@ -189,6 +195,11 @@ func (s *Server) SSOLabel() string {
 
 // SetRouteStats attaches a routing stats source for the /api/routing endpoint.
 func (s *Server) SetRouteStats(src RouteStatsSource) { s.routes = src }
+
+// SetTenantPrivateHosts sets the operator-supplied CIDR allowlist used by the
+// credential base_url gate. An empty string disables private-network
+// destinations entirely.
+func (s *Server) SetTenantPrivateHosts(cidrs string) { s.tenantCIDRs = cidrs }
 
 // SetCatalog attaches a catalog source for the /api/me/playground/catalog
 // endpoint. The Playground page consumes this so it can list stock + user

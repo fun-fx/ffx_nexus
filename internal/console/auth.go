@@ -256,7 +256,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var warnings []string
 
 	if req.Provider != "" && req.ProviderSecret != "" {
-		_, credErr := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret, req.Models)
+		_, credErr := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.ProviderName, "", req.ProviderSecret, req.Models, s.tenantCIDRs)
 		switch {
 		case errors.Is(credErr, crypto.ErrNoMasterKey):
 			warnings = append(warnings, "provider key not stored: set NEXUS_MASTER_KEY to enable BYOK credentials")
@@ -618,7 +618,7 @@ func (s *Server) createMyCredential(w http.ResponseWriter, r *http.Request, u co
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider and secret are required"})
 		return
 	}
-	cred, err := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.Name, req.BaseURL, req.Secret, req.Models)
+	cred, err := s.store.CreateCredential(r.Context(), u.OrgID, u.ID, u.ID, req.Provider, req.Name, req.BaseURL, req.Secret, req.Models, s.tenantCIDRs)
 	if errors.Is(err, crypto.ErrNoMasterKey) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "credential encryption disabled: set NEXUS_MASTER_KEY to store provider keys",
