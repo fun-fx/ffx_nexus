@@ -36,18 +36,26 @@ stop_nexus() {
 
 start_nexus() {
   stop_nexus
-  # Apply pending schema migrations before launching the server. The docker-
-  # compose volume is persistent across scripts and testers, but every PR
-  # that adds or alters migrations leaves the binary ahead of the volume.
-  # Running the binary in --check-then-run pattern here keeps the volume
-  # honest without forcing a separate migration Job (the Helm chart owns
-  # that contract for production; this helper only level-sets the E2E
-  # playground so the first `Failed audit missing ...` failure we hit can
-  # only be a code defect, not a missed migration).
+  # Apply pending schema migrations before launching the server, but only when
+  # at least one datastore URL is set. Zero-dependency test scripts deliberately
+  # unset NEXUS_POSTGRES_URL / NEXUS_CLICKHOUSE_URL (test_guardrails.sh,
+  # test_zero_dep.sh) so the binary must not try to dial a missing database;
+  # `nexus migrate` itself emits that exact warning and exits 0 in that mode,
+  # so we trust its output rather than gate on env ourselves.
+  #
+  # The docker-compose volume is persistent across scripts and testers, but
+  # every PR that adds or alters migrations leaves the binary ahead of the
+  # volume. Running the binary here keeps the volume honest without forcing a
+  # separate migration Job (the Helm chart owns that contract for production;
+  # this helper only level-sets the E2E playground so the first
+  # `Failed audit missing ...` failure we hit can only be a code defect, not
+  # a missed migration).
   if [[ -x "$BIN" ]]; then
-    "$BIN" migrate >/tmp/e2e_migrate.log 2>&1 || {
-      echo "nexus migrate failed; log:"; cat /tmp/e2e_migrate.log; return 1
-    }
+    if [[ -n "${NEXUS_POSTGRES_URL:-}${NEXUS_CLICKHOUSE_URL:-}" ]]; then
+      "$BIN" migrate >/tmp/e2e_migrate.log 2>&1 || {
+        echo "nexus migrate failed; log:"; cat /tmp/e2e_migrate.log; return 1
+      }
+    fi
   fi
   # Optional env overrides passed as arguments: KEY=VAL KEY2=VAL2 command
   if [[ $# -gt 0 ]]; then
