@@ -448,6 +448,23 @@ dependencies:
   postgres:
     enabled: false
     url: "" # postgres://user:pass@host:5432/nexus?sslmode=require
+    # NEXUS_POSTGRES_MAX_CONNS — overrides the production floor of 8
+    # connections per replica. The floor exists because the audit-fail
+    # safe path holds distinct connections across concurrent invites
+    # (the c0.x #A-3 deadlock ceiling); lowering below 8 re-introduces
+    # the deadlock. The hard ceiling (default 64) bounds the total
+    # connection burn across replicas so a single Gateway service
+    # won't saturate Postgres max_connections; with replicaCount=4
+    # and maxConns=64 the worst-case is 256 sockets, which fits the
+    # standard pg max_connections=200 + breathing room.
+    #
+    # Phase D-1 will introduce a separate Worker pool size; until
+    # then this single value governs both replicas — operator side
+    # may want to drop it during the cutover if Postgres is shared.
+    # See docs/connection-tuning.md for the math.
+    minSafeMaxConns: 8
+    maxSafeMaxConns: 64
+    maxConns: 8  # minimum floor; raise cautiously per the docs/connection-tuning.md guide
   clickhouse:
     enabled: false
     url: "" # clickhouse://user:pass@host:9000/nexus

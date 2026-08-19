@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,57 @@ import (
 
 	"github.com/ffxnexus/nexus/internal/core"
 )
+
+// TestNewRunnerPanicsOnNilDeps wires the contract from NewRunner's
+// doc comment: Store, Keys, Tokens MUST be non-nil at construction.
+// Future refactors that accidentally drop the panic re-introduce the
+// runtime nil-pointer that motivated this guard; the test fails the
+// build the moment that regression ships.
+func TestNewRunnerPanicsOnNilDeps(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(r *fakeTestConfig)
+		wantSub string
+	}{
+		{"nil-store", func(c *fakeTestConfig) { c.store = nil }, "store is nil"},
+		{"nil-keys", func(c *fakeTestConfig) { c.keys = nil }, "keys is nil"},
+		{"nil-tokens", func(c *fakeTestConfig) { c.tokens = nil }, "tokens is nil"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := fakeTestConfig{
+				store:  &fakeStore{rows: map[string]core.BenchmarkRun{}},
+				keys:   &fakeKeys{},
+				tokens: fakeTokens{token: "x"},
+			}
+			c.mutate(&cfg)
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("want panic for %s", c.name)
+				}
+				if !strings.Contains(fmt.Sprintf("%v", r), c.wantSub) {
+					t.Errorf("panic msg = %v, want substring %q", r, c.wantSub)
+				}
+			}()
+			NewRunner(cfg.store, cfg.keys, cfg.tokens, "https://api.ffx.ai", nil)
+		})
+	}
+	// Opposite-direction: a fully wired runner with all non-nil
+	// deps MUST construct successfully. Without this we would block
+	// every code path that legitimately uses NewRunner.
+	r := NewRunner(&fakeStore{rows: map[string]core.BenchmarkRun{}},
+		&fakeKeys{}, fakeTokens{token: "x"}, "https://api.ffx.ai", nil)
+	if r == nil {
+		t.Errorf("NewRunner with valid deps returned nil")
+	}
+}
+
+type fakeTestConfig struct {
+	store  Store
+	keys   Keys
+	tokens Tokens
+}
 
 // --- fakes ---
 

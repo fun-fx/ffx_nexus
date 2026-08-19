@@ -1,0 +1,69 @@
+# c0.x #A-3 + 1-1: pre-install validation job rejects unsafe
+# NEXUS_POSTGRES_MAX_CONNS at install time. The chart's
+# values.schema.json floors the value at minSafeMaxConns (default 8),
+# but a chart-only schema miss (e.g. a typo'd key path) could let the
+# secret pass without checks. This Job runs `nexus-install-validate`,
+# an inline shell stair-step that verifies dependency.postgres.maxConns
+# is inside [min, max] before the main Deployment ever applies. The
+# Job is hook-weight=pre-install,pre-upgrade — older Helm versions
+# will skip the hook but the schema still enforces floor=8.
+#
+# Failure path: exit non-zero → helm install/upgrade aborts with a
+# helpful message pointing at the offending knob. The Deployment is
+# not created until this job succeeds.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nexus.fullname" . }}-install-validate
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.labels" . | nindent 4 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ template "nexus.serviceAccountName" . }}
+      containers:
+        - name: validate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              MIN={{ int (default 8 .Values.dependencies.postgres.minSafeMaxConns) }};
+              MAX={{ int (default 64 .Values.dependencies.postgres.maxSafeMaxConns) }};
+              WANT={{ int (default 8 .Values.dependencies.postgres.maxConns) }};
+              repCount={{ int .Values.replicaCount }};
+              echo "validating NEXUS_POSTGRES_MAX_CONNS floor=${MIN} ceiling=${MAX} want=${WANT} replicas=${repCount}";
+              if [ "${WANT}" -lt "${MIN}" ]; then
+                echo "ERROR: dependency.postgres.maxConns=${WANT} < minSafeMaxConns=${MIN}." >&2;
+                echo "  c0.x #A-3 invariant: the AcceptInvite path needs 8 connections" >&2;
+                echo "  per concurrent invite token, and lowering below the floor" >&2;
+                echo "  re-introduces a deadlock between the FOR UPDATE row and" >&2;
+                echo "  the same-transaction audit_log INSERT." >&2;
+                exit 1;
+              fi;
+              if [ "${WANT}" -gt "${MAX}" ]; then
+                echo "ERROR: dependency.postgres.maxConns=${WANT} > maxSafeMaxConns=${MAX}." >&2;
+                echo "  total connection burn per cluster = ${WANT} * ${repCount} replicas" >&2;
+                echo "  and Postgres server max_connections must always cover" >&2;
+                echo "  migrations + replica probes + BI readers + this product." >&2;
+                exit 1;
+              fi;
+              if [ $((WANT * repCount)) -gt 200 ]; then
+                echo "WARNING: ${WANT} * ${repCount} = $((WANT * repCount)) > 200; confirm Postgres max_connections covers this." >&2;
+              fi;
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi

@@ -616,7 +616,34 @@
       "description": "This chart does not deploy databases; it connects to customer-managed ones. URLs carry credentials, so prefer existingSecret over inlining them here.",
       "properties": {
         "postgres": {
-          "$ref": "#/definitions/dependency"
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "url": {
+              "type": "string"
+            },
+            "minSafeMaxConns": {
+              "type": "integer",
+              "minimum": 8,
+              "default": 8,
+              "description": "Floor for the per-replica pgxpool MaxConns. c0.x A-3: lowering below 8 re-introduces a deadlock in AcceptInvite because the audit-FOR-UPDATE transaction needs to grab a second connection. The chart enforces this minimum."
+            },
+            "maxSafeMaxConns": {
+              "type": "integer",
+              "minimum": 8,
+              "default": 64,
+              "description": "Ceiling for the per-replica pgxpool MaxConns. Total connection burn = maxSafeMaxConns * replicaCount. Operators must keep this below the Postgres server max_connections so other clients (migrations, replica probes, BI readers) can still connect."
+            },
+            "maxConns": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 8,
+              "description": "Effective per-replica pgxpool MaxConns. 0 means 'use the production floor (8)'. The Chart's pre-install validation (see deploy/helm/nexus/templates/pre-install-validation.yaml) caps this at maxSafeMaxConns and floors it at minSafeMaxConns."
+            }
+          }
         },
         "clickhouse": {
           "$ref": "#/definitions/dependency"

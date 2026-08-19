@@ -90,7 +90,35 @@ type Runner struct {
 
 // NewRunner wires a runner. A nil logger is replaced with a discarding
 // one so tests and embedded uses need not supply one.
+//
+// Boot-time dependency contract: any nil Store / Keys / Tokens is a
+// boot-time programmer error, NOT a runtime condition the runner
+// should react to. Phase D-1 separates Gateway and Worker; the
+// benchmark runner will, in that cutover, sit on the Worker side and
+// its Store/Keys/Tokens will be Worker-side stubs that have to wire
+// into the same machinery as the cron scheduler. Allowing nil into
+// the runner at construction is an attractive nuisance that will
+// explode the FIRST time the scheduler code path runs, which is
+// far away from the wiring-debug scope; failing at boot is the
+// shorter feedback loop and the same convention cmd/nexus/main.go
+// already enforces for several other struct constructors (see
+// validationRequiredAtBoot in docs/audit-failstop-policy.md).
+//
+// Gateway-attached callers (Phase D-1) MUST continue to pass a real
+// Store/Keys; the panic here surfaces the wiring error before
+// replicaA.go launches. Without this guard, a missing Keys argument
+// in production would zero-error Launch and silently skip the
+// credential cleanup phase on every shutdown.
 func NewRunner(store Store, keys Keys, tokens Tokens, gatewayURL string, log *slog.Logger) *Runner {
+	if store == nil {
+		panic("benchmark.NewRunner: store is nil; this is a boot-time wiring error")
+	}
+	if keys == nil {
+		panic("benchmark.NewRunner: keys is nil; this is a boot-time wiring error")
+	}
+	if tokens == nil {
+		panic("benchmark.NewRunner: tokens is nil; this is a boot-time wiring error")
+	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
