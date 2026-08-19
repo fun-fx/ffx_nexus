@@ -347,6 +347,11 @@ jobs:
         with:
           scan-type: config
           scan-ref: .
+          # Pin the scanner version. The action's default of v0.63.0 was
+          # retracted from the upstream release list, so setup-trivy fails
+          # before the scan runs. v0.74.0 is the current published tag and
+          # carries a working configuration-rule database.
+          version: v0.74.0
           format: table
           severity: HIGH,CRITICAL
           exit-code: "1"
