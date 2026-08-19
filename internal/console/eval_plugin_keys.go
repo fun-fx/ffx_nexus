@@ -267,7 +267,7 @@ func (s *Server) putPluginKeys(w http.ResponseWriter, r *http.Request, u core.Us
 		})
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.keys.set", rec.ID, name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.keys.set"), rec.ID, name)
 	writeJSON(w, http.StatusOK, pluginKeysState{
 		Plugin:     name,
 		Configured: len(stripEmpty(body.Keys)) > 0,
@@ -309,7 +309,7 @@ func (s *Server) deletePluginKeys(w http.ResponseWriter, r *http.Request, u core
 		})
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.keys.clear", rec.ID, name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.keys.clear"), rec.ID, name)
 	writeJSON(w, http.StatusOK, pluginKeysState{
 		Plugin:     name,
 		Configured: false,

@@ -134,7 +134,7 @@ func TestMemoryStoreSaveAndGet(t *testing.T) {
 	if err != nil || got.Name != "PII strict" {
 		t.Fatalf("Get: got=%+v err=%v", got, err)
 	}
-	all, err := store.List(context.Background(), "u-other")
+	all, err := store.List(context.Background(), "", "u-other")
 	if err != nil || len(all) != 1 {
 		t.Fatalf("org profile visible to non-owner: got=%v err=%v", all, err)
 	}
@@ -153,7 +153,7 @@ func TestMemoryStoreUserScopeFilter(t *testing.T) {
 		}
 	}
 	// Asking as u-me → org + own user scope only.
-	got, _ := store.List(context.Background(), "u-me")
+	got, _ := store.List(context.Background(), "", "u-me")
 	if len(got) != 2 {
 		t.Fatalf("u-me should see 2 profiles (own+org), got %d", len(got))
 	}

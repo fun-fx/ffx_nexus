@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ffxnexus/nexus/internal/egress"
 )
 
 // MetabaseBootstrapper wires Metabase's read-only analytical UI onto the same
@@ -100,9 +102,9 @@ func NewMetabaseBootstrapper(cfg MetabaseConfig, log *slog.Logger) *MetabaseBoot
 	return &MetabaseBootstrapper{
 		cfg: cfg,
 		log: log,
-		client: &http.Client{
-			Timeout: cfg.RequestTimeout,
-		},
+		// Operator class: NEXUS_METABASE_URL is almost always an in-cluster
+		// ClusterIP, which Tenant class would refuse.
+		client: egress.Client(egress.Operator, cfg.RequestTimeout),
 	}
 }
 

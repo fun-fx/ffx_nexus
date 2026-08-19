@@ -80,7 +80,7 @@ describe("PluginKeysModal", () => {
     await waitFor(() =>
       expect(putPluginKeys).toHaveBeenCalledWith("langfuse-judge", {
         public_key: "pk-lf-1234567890abcd",
-        secret_key: "sk-lf-1234567890abcd",
+        secret_key: "sk-lf-1234567890abcd", // gitleaks:allow fixture for a render assertion, not a live key
       }),
     );
   });

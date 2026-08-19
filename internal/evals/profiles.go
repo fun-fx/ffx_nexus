@@ -42,11 +42,13 @@ const (
 	ProfileRemoteEval            ProfileKind = "remote_eval"
 )
 
-// Scope identifies visibility. Mirrors gateway.Scope so the model-side
-// ergonomics are identical (PR #132/#133/#134). Today the console is
-// single-tenant ("default" org) so `org` collapses to "visible to every
-// member"; the wiring is identical to gateway.Scope so when we ship
-// multi-tenancy the surface does not change.
+// Scope identifies visibility *within* one org: ScopeOrg means every member
+// of the profile's own org, ScopeUser means its owner only. Mirrors
+// gateway.Scope so the model-side ergonomics are identical (PR #132/#133/#134).
+//
+// Scope is not a tenant boundary and must not be used as one. ScopeOrg does
+// not name an org; EvalProfile.OrgID does. Reading "org" here as "one org"
+// is what let a profile from one tenant run against another tenant's traces.
 type Scope string
 
 const (
@@ -89,6 +91,23 @@ const MaxSampleRate = 1.0
 type EvalProfile struct {
 	// ID — server-assigned when the row is persisted; empty on create.
 	ID string `json:"id"`
+	// OrgID is the tenant that owns this profile. It is assigned by the
+	// server from the caller's session and is never read from a request body.
+	//
+	// An empty OrgID means cluster-wide: a profile the operator installed
+	// through env/Helm seeding (default-pii, default-completeness, and the
+	// legacy judge/remote defaults), which applies to every org. Only the
+	// seeding path can produce one — the console API always stamps the
+	// caller's org, so no HTTP request can mint a profile that runs against
+	// another tenant's traffic.
+	//
+	// This field is load-bearing for more than list filtering. Worker
+	// dispatch consults it: without it, an org-scope slm_judge profile
+	// configured by one org was applied to every org's traces, which sent
+	// other tenants' prompts and completions to that org's judge endpoint
+	// under that org's API key. Scope and OwnerUserID cannot express this —
+	// they separate users inside an org, not orgs from each other.
+	OrgID string `json:"org_id,omitempty"`
 	// Name — display-only label surfaced in UI and audit log. Required.
 	Name string `json:"name"`
 	// Kind is the discriminator that picks the evaluator factory.

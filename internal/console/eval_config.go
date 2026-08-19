@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/core"
 )
@@ -155,9 +156,9 @@ func (s *Server) patchEvalConfig(w http.ResponseWriter, r *http.Request, u core.
 	}
 	snap, err := s.evalConfigApply.Apply(patch)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.config.update", "", config.FormatRouteGroups(snap.Routing.Groups))
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.config.update"), "", config.FormatRouteGroups(snap.Routing.Groups))
 	writeJSON(w, http.StatusOK, snap)
 }

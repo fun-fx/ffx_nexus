@@ -22,6 +22,36 @@ type Config struct {
 	//                     that the console may connect to. Wired into
 	//                     the CSP `connect-src` directive so the policy
 	//                     no longer hardcodes any company's domain.
+
+	// EgressTenantAllowedCIDRs re-permits specific address ranges for outbound
+	// requests whose destination an org admin configured — an eval profile's
+	// base_url, a plugin manifest endpoint, a credential base_url.
+	//
+	// Those destinations are refused from private, loopback and link-local
+	// ranges by default, because the pod's network position is a privilege the
+	// API caller does not otherwise have: the same request would otherwise reach
+	// the cloud metadata service, and two of these paths persist the response
+	// where the caller can read it.
+	//
+	// The escape hatch exists for the real case of a customer running Langfuse
+	// or an OTLP collector inside the cluster and wanting org admins to point
+	// plugins at it. It is a CIDR list rather than a boolean so that widening the
+	// policy is a specific decision. It can never re-permit link-local, which is
+	// where instance metadata lives.
+	//
+	// NEXUS_EGRESS_TENANT_ALLOWED_CIDRS, e.g. "10.44.0.0/16,10.45.1.7".
+	EgressTenantAllowedCIDRs string
+	// PublicGrafanaURL is the browser-reachable base URL of the
+	// operator's OWN Grafana. It is used for one thing only: composing
+	// the deep links that GET /api/ui/observability hands to the
+	// console so it can render an "Open in Grafana" affordance. Nexus
+	// never calls Grafana server-side, so an unreachable or wrong value
+	// costs a broken hyperlink and nothing else — in particular it
+	// cannot affect the gateway's request path.
+	//
+	// Empty (the default) makes /api/ui/observability report no Grafana,
+	// and the console omits the link.
+	PublicGrafanaURL string
 	// DocsDir is the on-disk path the console serves documentation
 	// from. Empty falls back to ./docs relative to the binary, which
 	// matches a `go run ./cmd/nexus` invocation; production
@@ -194,6 +224,45 @@ type Config struct {
 	MetabaseHealthTimeout  time.Duration
 	MetabaseRequestTimeout time.Duration
 
+	// Invitation email transport (Resend, V5+).
+	//
+	// Empty ResendAPIKey disables the transport: invites are still
+	// persisted to the invite_tokens table, the admin can still
+	// copy the URL out of the console, and the gating API call
+	// short-circuits to the same response shape so the front-end
+	// has one happy-path. Operators flip this on when they have a
+	// verified domain (e.g. ffx.ai) on Resend and want the
+	// invitee to land in their inbox with the link instead of
+	// pasting it from the admin's clipboard.
+	//
+	// ResendFromAddress is the From header value (RFC 5322 -
+	// "Name <addr@domain>"). Defaults to "Nexus <noreply@ffx.ai>"
+	// in the bootstrap helper since FFX's Resend account already
+	// owns that domain.
+	ResendAPIKey         string
+	ResendFromAddress    string
+	ResendRequestTimeout time.Duration
+	// EmailPublicBaseURL overrides the invite URL embedded in the
+	// outgoing email when the operator wants a different host on the
+	// envelope than the console URL the invitee clicks through.
+	// Empty falls back to PublicBaseURL.
+	EmailPublicBaseURL string
+
+	// AutoMigrate applies outstanding schema migrations during boot.
+	//
+	// Default FALSE, which is a deliberate change from the original behaviour
+	// of migrating on every boot of every replica. In a customer deployment the
+	// schema is advanced by a separate `nexus migrate` step (the Helm
+	// pre-install/pre-upgrade hook Job) so that a migration failure aborts the
+	// release instead of being discovered from user-visible errors after the
+	// rollout. When false and migrations are outstanding, the process starts
+	// but reports NotReady on /readyz with the list of pending migrations, so
+	// it never serves traffic against a schema it does not match.
+	//
+	// Set true for local development (docker compose), where "bring up an empty
+	// database and just work" is worth more than deployment gating.
+	AutoMigrate bool
+
 	// Behavior
 	UpstreamTimeout time.Duration
 
@@ -223,6 +292,41 @@ type Config struct {
 	// AllowSignup enables public self-service registration at POST /api/auth/register.
 	// New accounts are always created with the "member" role.
 	AllowSignup bool
+
+	// DevMode relaxes browser-security defaults that are impossible to satisfy
+	// over plain HTTP on localhost: cookies stop being Secure-only, and
+	// http://localhost / http://127.0.0.1 origins are accepted.
+	//
+	// It must never be set in a customer deployment. Nothing about it is
+	// convenient in production - it only removes protections - so it is a single
+	// obvious flag rather than a scattering of individual overrides, and main.go
+	// logs a warning at boot when it is on.
+	DevMode bool
+
+	// SecureCookies forces the Secure attribute on session and OIDC state
+	// cookies. Defaults to true, and to false when DevMode is set.
+	//
+	// Session cookies previously carried no Secure attribute at all, so a
+	// browser would send a live console session over plain HTTP - to a
+	// downgraded link, or to an attacker who can strip TLS. The console is
+	// always behind TLS in a real deployment, so Secure is correct by default
+	// and the flag exists for the plain-HTTP local case.
+	//
+	// Nexus normally terminates TLS at an ingress and receives plain HTTP, so
+	// this cannot be inferred from the request - hence configuration rather
+	// than detection.
+	SecureCookies bool
+
+	// PublicDocs serves /api/docs/* without a session. Default false.
+	//
+	// The docs tree was previously unauthenticated by accident: a comment
+	// claimed a blanket requireUser middleware protected it, no such middleware
+	// existed, and so the bundle went out to anyone who could reach the port.
+	// None of it is secret, but it enumerates this installation's endpoints,
+	// configuration flags and operational procedures, which for a
+	// single-customer deployment is internal documentation. Authenticated by
+	// default; a public docs site is an explicit choice.
+	PublicDocs bool
 
 	// SSO (OIDC). When Enabled() returns true, Nexus exposes
 	// /api/auth/sso/login and /api/auth/sso/callback and accepts a login
@@ -271,6 +375,24 @@ func (c SSOConfig) Enabled() bool {
 	return c.Issuer != "" && c.ClientID != "" && c.ClientSecret != "" && c.RedirectURL != ""
 }
 
+// EmailEnabled reports whether the Resend-backed invite transport
+// is configured. Returning false here means Inviteflow still
+// persists invites — admin can still copy the URL out of the
+// console — but no envelope email is sent.
+func (c Config) EmailEnabled() bool {
+	return c.ResendAPIKey != "" && strings.TrimSpace(c.ResendFromAddress) != ""
+}
+
+// EmailEnvelope returns the From header Resend should display on
+// outgoing envelopes, defaulted to a FFX-friendly address when
+// the operator didn't override.
+func (c Config) EmailEnvelope() string {
+	if c.ResendFromAddress == "" {
+		return "Nexus <noreply@ffx.ai>"
+	}
+	return c.ResendFromAddress
+}
+
 // LabelOrDefault returns the configured label, or "SSO" if unset.
 func (c SSOConfig) LabelOrDefault() string {
 	if c.Label == "" {
@@ -284,30 +406,44 @@ func (c SSOConfig) LabelOrDefault() string {
 // environment variables always take precedence over .env entries.
 func Load() Config {
 	loadDotEnv(".env")
+	c := load()
+
+	// SecureCookies defaults to on, and follows DevMode down rather than being
+	// a second thing to remember. An operator can still force it back on in dev
+	// (NEXUS_SECURE_COOKIES=true) if they run local TLS.
+	c.SecureCookies = envBool("NEXUS_SECURE_COOKIES", !c.DevMode)
+
+	return c
+}
+
+func load() Config {
 	return Config{
 		GatewayAddr:      env("NEXUS_GATEWAY_ADDR", ":8080"),
 		ConsoleAddr:      env("NEXUS_CONSOLE_ADDR", ":8081"),
 		PublicGatewayURL: env("NEXUS_PUBLIC_GATEWAY_URL", ""),
 		PublicBaseURL:    env("NEXUS_PUBLIC_BASE_URL", ""),
 		PublicWebOrigins: splitCSV(env("NEXUS_PUBLIC_WEB_ORIGINS", "")),
-		DocsDir:          env("NEXUS_DOCS_DIR", ""),
-		PostgresURL:      env("NEXUS_POSTGRES_URL", ""),
-		ClickHouseURL:    env("NEXUS_CLICKHOUSE_URL", ""),
-		RedisURL:         env("NEXUS_REDIS_URL", ""),
-		OpenAIAPIKey:     env("OPENAI_API_KEY", ""),
-		OpenAIBaseURL:    env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-		AnthropicAPIKey:  env("ANTHROPIC_API_KEY", ""),
-		GeminiAPIKey:     env("GEMINI_API_KEY", ""),
-		GroqAPIKey:       env("GROQ_API_KEY", ""),
-		MistralAPIKey:    env("MISTRAL_API_KEY", ""),
-		GridAPIKey:       env("GRID_API_KEY", ""),
-		MasterKey:        env("NEXUS_MASTER_KEY", ""),
-		EvalEnabled:      envBool("NEXUS_EVAL_ENABLED", true),
-		JudgeBaseURL:     env("NEXUS_JUDGE_BASE_URL", ""),
-		JudgeModel:       env("NEXUS_JUDGE_MODEL", "qwen2.5:7b"),
-		JudgeAPIKey:      env("NEXUS_JUDGE_API_KEY", ""),
-		EvalSampleRate:   envFloat("NEXUS_EVAL_SAMPLE_RATE", 1.0),
-		EvalWorkers:      envInt("NEXUS_EVAL_WORKERS", 4),
+
+		EgressTenantAllowedCIDRs: env("NEXUS_EGRESS_TENANT_ALLOWED_CIDRS", ""),
+		PublicGrafanaURL:         env("NEXUS_PUBLIC_GRAFANA_URL", ""),
+		DocsDir:                  env("NEXUS_DOCS_DIR", ""),
+		PostgresURL:              env("NEXUS_POSTGRES_URL", ""),
+		ClickHouseURL:            env("NEXUS_CLICKHOUSE_URL", ""),
+		RedisURL:                 env("NEXUS_REDIS_URL", ""),
+		OpenAIAPIKey:             env("OPENAI_API_KEY", ""),
+		OpenAIBaseURL:            env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		AnthropicAPIKey:          env("ANTHROPIC_API_KEY", ""),
+		GeminiAPIKey:             env("GEMINI_API_KEY", ""),
+		GroqAPIKey:               env("GROQ_API_KEY", ""),
+		MistralAPIKey:            env("MISTRAL_API_KEY", ""),
+		GridAPIKey:               env("GRID_API_KEY", ""),
+		MasterKey:                env("NEXUS_MASTER_KEY", ""),
+		EvalEnabled:              envBool("NEXUS_EVAL_ENABLED", true),
+		JudgeBaseURL:             env("NEXUS_JUDGE_BASE_URL", ""),
+		JudgeModel:               env("NEXUS_JUDGE_MODEL", "qwen2.5:7b"),
+		JudgeAPIKey:              env("NEXUS_JUDGE_API_KEY", ""),
+		EvalSampleRate:           envFloat("NEXUS_EVAL_SAMPLE_RATE", 1.0),
+		EvalWorkers:              envInt("NEXUS_EVAL_WORKERS", 4),
 
 		EvalServiceURL:            env("NEXUS_EVAL_SERVICE_URL", ""),
 		EvalServiceMetrics:        env("NEXUS_EVAL_SERVICE_METRICS", "answer_relevancy,toxicity,bias"),
@@ -337,12 +473,20 @@ func Load() Config {
 		MetabaseSeedDir:           env("NEXUS_METABASE_SEED_DIR", ""),
 		MetabaseHealthTimeout:     envDuration("NEXUS_METABASE_HEALTH_TIMEOUT", 90*time.Second),
 		MetabaseRequestTimeout:    envDuration("NEXUS_METABASE_REQUEST_TIMEOUT", 10*time.Second),
-		UpstreamTimeout:           envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
-		KeyMode:                   env("NEXUS_KEY_MODE", "strict_byok"),
-		AllowSharedKeys:           envBool("NEXUS_ALLOW_SHARED_KEYS", false),
-		AdminEmail:                env("NEXUS_ADMIN_EMAIL", ""),
-		AdminPassword:             env("NEXUS_ADMIN_PASSWORD", ""),
-		AllowSignup:               envBool("NEXUS_ALLOW_SIGNUP", false),
+
+		ResendAPIKey:         env("NEXUS_RESEND_API_KEY", ""),
+		ResendFromAddress:    env("NEXUS_RESEND_FROM_ADDRESS", "Nexus <noreply@ffx.ai>"),
+		ResendRequestTimeout: envDuration("NEXUS_RESEND_REQUEST_TIMEOUT", 10*time.Second),
+		EmailPublicBaseURL:   env("NEXUS_EMAIL_PUBLIC_BASE_URL", ""),
+		AutoMigrate:          envBool("NEXUS_AUTO_MIGRATE", false),
+		UpstreamTimeout:      envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
+		KeyMode:              env("NEXUS_KEY_MODE", "strict_byok"),
+		AllowSharedKeys:      envBool("NEXUS_ALLOW_SHARED_KEYS", false),
+		AdminEmail:           env("NEXUS_ADMIN_EMAIL", ""),
+		AdminPassword:        env("NEXUS_ADMIN_PASSWORD", ""),
+		AllowSignup:          envBool("NEXUS_ALLOW_SIGNUP", false),
+		PublicDocs:           envBool("NEXUS_PUBLIC_DOCS", false),
+		DevMode:              envBool("NEXUS_DEV_MODE", false),
 
 		SSO: SSOConfig{
 			Issuer:       env("NEXUS_SSO_ISSUER", ""),

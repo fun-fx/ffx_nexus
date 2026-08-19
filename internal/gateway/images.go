@@ -17,17 +17,17 @@ import (
 func (h *Handler) Images(w http.ResponseWriter, r *http.Request) {
 	var req ImageGenerationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 		return
 	}
 	if strings.TrimSpace(req.Prompt) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "prompt is required")
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "prompt is required")
 		return
 	}
 
 	ip, resolvedModel, ok := h.registry.ResolveImage(req.Model)
 	if !ok {
-		writeError(w, http.StatusNotFound, "model_not_found",
+		writeError(w, r, http.StatusNotFound, "model_not_found",
 			"no image provider registered for model "+req.Model)
 		return
 	}
@@ -50,7 +50,7 @@ func (h *Handler) Images(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := ip.GenerateImages(ctx, req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "upstream_error",
+		writeError(w, r, http.StatusBadGateway, "upstream_error",
 			"image generation upstream error: "+err.Error())
 		return
 	}

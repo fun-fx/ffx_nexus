@@ -35,7 +35,11 @@ type CHOptions struct {
 
 // NewCHRecorder connects to ClickHouse using a native-protocol DSN and starts
 // the background flusher.
-func NewCHRecorder(ctx context.Context, dsn string, opts CHOptions, log *slog.Logger) (*CHRecorder, error) {
+// NewCHConn opens and verifies a ClickHouse connection without starting any
+// background work. The migration command needs a connection but must not spawn
+// a trace flusher: it exits as soon as the schema is current, and a background
+// goroutine holding a buffer would be pointless at best.
+func NewCHConn(ctx context.Context, dsn string) (driver.Conn, error) {
 	chOpts, err := clickhouse.ParseDSN(dsn)
 	if err != nil {
 		return nil, err
@@ -45,6 +49,15 @@ func NewCHRecorder(ctx context.Context, dsn string, opts CHOptions, log *slog.Lo
 		return nil, err
 	}
 	if err := conn.Ping(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func NewCHRecorder(ctx context.Context, dsn string, opts CHOptions, log *slog.Logger) (*CHRecorder, error) {
+	conn, err := NewCHConn(ctx, dsn)
+	if err != nil {
 		return nil, err
 	}
 
@@ -130,7 +143,31 @@ func (r *CHRecorder) insert(traces []Trace) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	batch, err := r.conn.PrepareBatch(ctx, `INSERT INTO gateway_traces`)
+	// Columns are named rather than bound positionally.
+	//
+	// A bare `INSERT INTO gateway_traces` makes the driver bind against every
+	// column the server currently reports, in the server's order, so the Append
+	// list below has to match the live schema exactly. That held only because
+	// each of the six ALTER TABLE migrations since 001 shipped in the same
+	// commit as its Append argument — which also means the *previous* binary
+	// could never write against the *new* schema, so rolling the application
+	// back after an upgrade silently stopped trace ingestion. Naming the columns
+	// decouples the two: a newer schema with defaulted columns accepts writes
+	// from an older binary, which is the rollback contract in
+	// docs/customer-self-hosted-upgrade-rollback.md.
+	batch, err := r.conn.PrepareBatch(ctx, `INSERT INTO gateway_traces (
+		trace_id, span_id, parent_span_id, timestamp,
+		org_id, virtual_key_id,
+		operation_name, provider_name, request_model, response_model,
+		input_tokens, output_tokens, finish_reason,
+		temperature, top_p, max_tokens,
+		streamed, ttft_ms, latency_ms, cost_usd,
+		status_code, error_type, error_message,
+		input_messages, output_messages,
+		retrieval_contexts, eval_reference,
+		cache_hit, guardrail_action,
+		user_id, credential_source,
+		replica_id, session_id, turn_id)`)
 	if err != nil {
 		return err
 	}

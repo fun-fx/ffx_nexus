@@ -83,11 +83,12 @@ func newLiveReader(t *testing.T) (*Reader, *CHRecorder) {
 // seedTurn writes calls sharing one turn id. It goes through the recorder's
 // synchronous insert rather than Record + Close: Close tears down the shared
 // connection the Reader is about to query on, and can only be called once.
-func seedTurn(t *testing.T, rec *CHRecorder, turnID, userID string, calls []Trace) {
+func seedTurn(t *testing.T, rec *CHRecorder, orgID, turnID, userID string, calls []Trace) {
 	t.Helper()
 	for i := range calls {
 		calls[i].TurnID = turnID
 		calls[i].UserID = userID
+		calls[i].OrgID = orgID
 		if calls[i].TraceID == "" {
 			calls[i].TraceID = fmt.Sprintf("%s-call-%d", turnID, i)
 		}
@@ -110,9 +111,10 @@ func TestTurnPage_LiveGroupsCallsIntoOneRow(t *testing.T) {
 
 	turnID := fmt.Sprintf("live-turn-%d", time.Now().UnixNano())
 	userID := turnID + "-user"
+	org := turnID + "-org"
 	start := time.Now().Add(-2 * time.Minute)
 
-	seedTurn(t, rec, turnID, userID, []Trace{
+	seedTurn(t, rec, org, turnID, userID, []Trace{
 		{
 			Timestamp: start, ProviderName: "grid", RequestModel: "code-prime",
 			InputTokens: 1000, OutputTokens: 100, LatencyMs: 1500,
@@ -132,7 +134,7 @@ func TestTurnPage_LiveGroupsCallsIntoOneRow(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	turns, err := reader.TurnPage(ctx, time.Time{}, start.Add(-time.Minute), 50, userID)
+	turns, err := reader.TurnPage(ctx, time.Time{}, start.Add(-time.Minute), 50, org, userID)
 	if err != nil {
 		t.Fatalf("TurnPage against live clickhouse: %v", err)
 	}
@@ -176,21 +178,22 @@ func TestTurnPage_LiveKeepsSeparateTurnsApart(t *testing.T) {
 
 	stamp := time.Now().UnixNano()
 	userID := fmt.Sprintf("live-user-%d", stamp)
+	org := fmt.Sprintf("live-org-%d", stamp)
 	older := fmt.Sprintf("live-turn-a-%d", stamp)
 	newer := fmt.Sprintf("live-turn-b-%d", stamp)
 	base := time.Now().Add(-2 * time.Minute)
 
-	seedTurn(t, rec, older, userID, []Trace{
+	seedTurn(t, rec, org, older, userID, []Trace{
 		{Timestamp: base, ProviderName: "grid", RequestModel: "code-prime", StatusCode: 200},
 	})
-	seedTurn(t, rec, newer, userID, []Trace{
+	seedTurn(t, rec, org, newer, userID, []Trace{
 		{Timestamp: base.Add(30 * time.Second), ProviderName: "grid", RequestModel: "text-prime", StatusCode: 200},
 		{Timestamp: base.Add(35 * time.Second), ProviderName: "grid", RequestModel: "text-prime", StatusCode: 200},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	turns, err := reader.TurnPage(ctx, time.Time{}, base.Add(-time.Minute), 50, userID)
+	turns, err := reader.TurnPage(ctx, time.Time{}, base.Add(-time.Minute), 50, org, userID)
 	if err != nil {
 		t.Fatalf("TurnPage: %v", err)
 	}
@@ -216,16 +219,17 @@ func TestTurnPage_LiveUngroupedRowsFallBackToTraceID(t *testing.T) {
 
 	stamp := time.Now().UnixNano()
 	userID := fmt.Sprintf("live-legacy-%d", stamp)
+	org := fmt.Sprintf("live-legacy-org-%d", stamp)
 	base := time.Now().Add(-2 * time.Minute)
 
-	seedTurn(t, rec, "", userID, []Trace{
+	seedTurn(t, rec, org, "", userID, []Trace{
 		{TraceID: fmt.Sprintf("legacy-a-%d", stamp), Timestamp: base, ProviderName: "grid", RequestModel: "code-prime", StatusCode: 200},
 		{TraceID: fmt.Sprintf("legacy-b-%d", stamp), Timestamp: base.Add(time.Second), ProviderName: "grid", RequestModel: "code-prime", StatusCode: 200},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	turns, err := reader.TurnPage(ctx, time.Time{}, base.Add(-time.Minute), 50, userID)
+	turns, err := reader.TurnPage(ctx, time.Time{}, base.Add(-time.Minute), 50, org, userID)
 	if err != nil {
 		t.Fatalf("TurnPage: %v", err)
 	}
@@ -249,21 +253,22 @@ func TestTracePage_LiveTurnFilterReturnsOnlyThatTurn(t *testing.T) {
 
 	stamp := time.Now().UnixNano()
 	userID := fmt.Sprintf("live-drill-%d", stamp)
+	org := fmt.Sprintf("live-drill-org-%d", stamp)
 	wanted := fmt.Sprintf("live-drill-turn-%d", stamp)
 	other := fmt.Sprintf("live-other-turn-%d", stamp)
 	base := time.Now().Add(-2 * time.Minute)
 
-	seedTurn(t, rec, wanted, userID, []Trace{
+	seedTurn(t, rec, org, wanted, userID, []Trace{
 		{Timestamp: base, ProviderName: "grid", RequestModel: "code-prime", StatusCode: 200},
 		{Timestamp: base.Add(time.Second), ProviderName: "grid", RequestModel: "code-prime", StatusCode: 200},
 	})
-	seedTurn(t, rec, other, userID, []Trace{
+	seedTurn(t, rec, org, other, userID, []Trace{
 		{Timestamp: base.Add(2 * time.Second), ProviderName: "grid", RequestModel: "text-prime", StatusCode: 200},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	page, err := reader.TracePage(ctx, time.Time{}, base.Add(-time.Minute), 50, userID, TraceFilter{Turn: wanted})
+	page, err := reader.TracePage(ctx, time.Time{}, base.Add(-time.Minute), 50, org, userID, TraceFilter{Turn: wanted})
 	if err != nil {
 		t.Fatalf("TracePage with turn filter: %v", err)
 	}

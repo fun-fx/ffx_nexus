@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ffxnexus/nexus/internal/egress"
 )
 
 // Client talks to one provider account. The token is held per client
@@ -31,7 +33,10 @@ func NewClient(base, token string, hc *http.Client) *Client {
 	if hc == nil {
 		// Generous but finite: the launch call provisions a sandbox
 		// before answering, so it is slower than a plain API write.
-		hc = &http.Client{Timeout: 30 * time.Second}
+		//
+		// Operator class: the provider base is a vendor constant, overridable
+		// only from a test helper, and the token comes from the operator's vault.
+		hc = egress.Client(egress.Operator, 30*time.Second)
 	}
 	return &Client{base: strings.TrimRight(base, "/"), token: token, hc: hc}
 }

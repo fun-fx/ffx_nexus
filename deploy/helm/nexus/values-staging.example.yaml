@@ -1,0 +1,186 @@
+# =============================================================================
+# Nexus - customer STAGING example values
+# =============================================================================
+# Copy this file, replace every <PLACEHOLDER>, and install with:
+#
+#   helm install nexus oci://ghcr.io/fun-fx/charts/nexus \
+#     --version <CHART_VERSION> \
+#     --namespace nexus-staging --create-namespace \
+#     -f values-staging.yaml
+#
+# This file contains NO credentials. Every secret is supplied through a
+# Kubernetes Secret you create out-of-band (or that External Secrets Operator
+# / Vault Agent projects for you). See:
+#   docs/customer-self-hosted-install.md      - prerequisites + first login
+#   docs/customer-self-hosted-security.md     - what each secret protects
+#
+# Staging differs from production only in scale and strictness; keep the
+# topology identical so an upgrade rehearsal here is meaningful.
+# =============================================================================
+
+# --- Image -------------------------------------------------------------------
+# ALWAYS pin. An unpinned tag makes "which build is running" unanswerable and
+# makes rollback impossible. Use the digest form in production.
+image:
+  repository: ghcr.io/fun-fx/ffx_nexus
+  tag: "<NEXUS_VERSION>"          # e.g. "0.6.12"
+  pullPolicy: IfNotPresent
+
+# Only needed if the registry is private. Create with:
+#   kubectl -n nexus-staging create secret docker-registry nexus-registry \
+#     --docker-server=ghcr.io --docker-username=<USER> --docker-password=<PAT>
+imagePullSecrets: []
+# - name: nexus-registry
+
+replicaCount: 2
+
+# --- Application configuration (non-secret) ----------------------------------
+config:
+  # Public origins. These must match what a browser actually types, including
+  # scheme. publicWebOrigins is the CORS + CSP allow-list: if it is empty the
+  # console falls back to same-origin only, which is safe but breaks a split
+  # console/gateway hostname setup.
+  publicBaseUrl: "https://nexus-staging.<CUSTOMER_DOMAIN>"
+  publicGatewayUrl: "https://nexus-api-staging.<CUSTOMER_DOMAIN>"
+  publicWebOrigins:
+    - "https://nexus-staging.<CUSTOMER_DOMAIN>"
+
+  # How upstream provider keys are resolved. "strict_byok" requires every
+  # caller to register their own provider key and is the most conservative;
+  # "shared" lets everyone use one org-level key. Start with the mode you
+  # intend to run in production so staging exercises the same code path.
+  keyMode: "strict_byok"
+
+  # Public self-service signup. Keep false: users arrive by SSO or invite.
+  allowSignup: false
+
+  # --- SSO (customer IdP) ----------------------------------------------------
+  # The client secret is NOT here - it comes from existingSecret below as
+  # NEXUS_SSO_CLIENT_SECRET. Register redirectUrl in the IdP first.
+  sso:
+    issuer: "<IDP_ISSUER_URL>"    # e.g. https://<tenant>.okta.com/oauth2/default
+    clientId: "<IDP_CLIENT_ID>"
+    redirectUrl: "https://nexus-staging.<CUSTOMER_DOMAIN>/api/auth/sso/callback"
+    label: "Sign in with <CUSTOMER_IDP_NAME>"
+
+  # --- Invite email ----------------------------------------------------------
+  # Sends from a domain YOU control. Password/API key comes from
+  # existingSecret (NEXUS_SMTP_PASSWORD or NEXUS_RESEND_API_KEY).
+  email:
+    provider: "smtp"
+    fromAddress: "Nexus <no-reply@<CUSTOMER_DOMAIN>>"
+    smtp:
+      host: "<SMTP_HOST>"         # e.g. smtp.<CUSTOMER_DOMAIN>
+      port: 587
+      username: "<SMTP_USERNAME>"
+      encryption: "starttls"
+
+  # --- Observability link ----------------------------------------------------
+  # Browser-reachable base of YOUR Grafana. Nexus only renders a link; it
+  # never calls Grafana server-side, so a Grafana outage cannot affect the
+  # gateway. Leave empty to hide the link.
+  publicGrafanaUrl: "https://grafana-staging.<CUSTOMER_DOMAIN>"
+
+  # Export traces to your own collector. Optional and fully async: a collector
+  # outage drops trace envelopes, it never fails a user's LLM request.
+  otlp:
+    enabled: false
+    endpoint: ""                  # e.g. http://otel-collector.observability.svc:4318/v1/traces
+
+  # Go runtime advisory. Set gomemlimit to ~85% of resources.limits.memory.
+  runtime:
+    gomemlimit: "870MiB"
+    gogc: "100"
+
+  # Cap concurrent in-flight requests per virtual key, per replica.
+  maxConcurrentPerKey: 16
+
+# --- Prometheus scrape surface -----------------------------------------------
+# The exporter binds a dedicated port that is NOT published through Ingress.
+# Set serviceMonitor.enabled only if this cluster runs the Prometheus Operator
+# (the ServiceMonitor CRD must exist or the release will fail).
+metrics:
+  enabled: true
+  port: 9101
+  path: "/metrics"
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    additionalLabels: {}          # e.g. { release: kube-prometheus-stack }
+
+# --- Datastores (customer-managed) -------------------------------------------
+# This chart does NOT deploy databases. Provide connection URLs through the
+# Secret named in existingSecret (NEXUS_POSTGRES_URL / NEXUS_CLICKHOUSE_URL /
+# NEXUS_REDIS_URL) and only flip `enabled` here.
+#
+# Redis is REQUIRED whenever replicaCount > 1 or autoscaling is on: without it
+# rate limits and budgets are enforced per-pod, so N replicas mean N x the
+# intended limit.
+dependencies:
+  postgres:
+    enabled: true
+  clickhouse:
+    enabled: true
+  redis:
+    enabled: true
+
+# --- Secrets -----------------------------------------------------------------
+# Create this Secret before installing. See
+# docs/customer-self-hosted-install.md for the full key list and an External
+# Secrets Operator example.
+#
+#   kubectl -n nexus-staging create secret generic nexus-staging-secrets \
+#     --from-literal=NEXUS_POSTGRES_URL='postgres://...' \
+#     --from-literal=NEXUS_CLICKHOUSE_URL='clickhouse://...' \
+#     --from-literal=NEXUS_REDIS_URL='redis://...' \
+#     --from-literal=NEXUS_MASTER_KEY="$(openssl rand -hex 32)" \
+#     --from-literal=NEXUS_SSO_CLIENT_SECRET='...' \
+#     --from-literal=NEXUS_SMTP_PASSWORD='...'
+#
+# BACK UP NEXUS_MASTER_KEY. Losing it makes every stored provider credential
+# permanently undecryptable.
+existingSecret: "nexus-staging-secrets"
+
+# --- Ingress -----------------------------------------------------------------
+# Two hostnames: the console (operators + browser SSO) and the gateway (app
+# traffic). Expose the console only where your operators are - ideally an
+# internal-only ingress class or an IP allow-list.
+ingress:
+  enabled: true
+  className: "<INGRESS_CLASS>"    # e.g. nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "<CLUSTER_ISSUER>"
+  hosts:
+    - host: nexus-api-staging.<CUSTOMER_DOMAIN>
+      paths:
+        - path: /
+          pathType: Prefix
+          port: gateway
+  tls:
+    - secretName: nexus-staging-gateway-tls
+      hosts:
+        - nexus-api-staging.<CUSTOMER_DOMAIN>
+
+# --- Scheduling / resilience -------------------------------------------------
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: nexus

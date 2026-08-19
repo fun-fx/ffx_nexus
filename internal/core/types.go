@@ -75,6 +75,12 @@ const (
 	RoleMember = "member"
 )
 
+// DefaultOrgID is the org a single-org installation uses, and the org a
+// pre-login request is resolved against. Named rather than repeated as a bare
+// "default" literal so the fallback is greppable: every occurrence is a place
+// where no session had yet pinned the tenant.
+const DefaultOrgID = "default"
+
 // keyAlphabet for the random body of a virtual key (Crockford-ish base32).
 var keyEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
 

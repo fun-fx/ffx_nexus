@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	nexus "github.com/ffxnexus/nexus"
 	"github.com/ffxnexus/nexus/internal/balancer"
 	"github.com/ffxnexus/nexus/internal/benchmark"
 	"github.com/ffxnexus/nexus/internal/config"
@@ -31,6 +30,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/gateway"
 	"github.com/ffxnexus/nexus/internal/gateway/providers"
 	"github.com/ffxnexus/nexus/internal/guardrails"
+	"github.com/ffxnexus/nexus/internal/health"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
@@ -71,8 +71,41 @@ func (heuristicLocalEvaluator) Evaluate(
 }
 
 func main() {
+	// Subcommand dispatch. `nexus` with no arguments runs the server, which
+	// keeps every existing image ENTRYPOINT working unchanged; `nexus migrate`
+	// applies schema changes and exits, which is what the Helm pre-upgrade hook
+	// Job runs so a failed migration stops the rollout instead of surfacing as
+	// user-visible 500s afterwards.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		switch os.Args[1] {
+		case "migrate":
+			os.Exit(runMigrateCommand(os.Args[2:]))
+		case "serve":
+			// Explicit spelling of the default, so a Kubernetes manifest can
+			// state its intent rather than relying on an empty args list.
+		default:
+			fmt.Fprintf(os.Stderr, "unknown command %q; known commands: serve, migrate\n", os.Args[1])
+			os.Exit(2)
+		}
+	}
+
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := config.Load()
+
+	// Readiness gate. Conditions are registered below as each dependency is
+	// resolved; an unmigrated schema or a missing required datastore withholds
+	// traffic rather than serving errors. Liveness deliberately stays a plain
+	// "the process is up" check, because restarting a pod does not apply a
+	// migration and a dependency blip must not cause a restart storm.
+	ready := health.New()
+
+	// Outbound HTTP policy, installed before anything that can make a request.
+	//
+	// The order matters: components built later in this function capture their
+	// HTTP client at construction time, so a guard installed after them would
+	// leave those paths on the strict fallback policy and quietly break an
+	// operator's in-cluster collector.
+	installEgressGuard(cfg, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -92,34 +125,15 @@ func main() {
 		if err != nil {
 			log.Error("postgres connect failed; continuing without control plane", "err", err)
 		} else {
-			for _, path := range []string{
-				"migrations/postgres/001_init.sql",
-				"migrations/postgres/002_byok.sql",
-				"migrations/postgres/003_sso.sql",
-				"migrations/postgres/004_audit_index.sql",
-				"migrations/postgres/005_credential_models.sql",
-				"migrations/postgres/006_eval_scores.sql",
-				"migrations/postgres/007_eval_scores_model.sql",
-				"migrations/postgres/008_onboarded_at.sql",
-				// 009-011 shipped with the eval-plugin work but were
-				// never added here, so eval_plugins never existed and
-				// the runtime silently fell back to an in-memory
-				// plugin store: every rolling update uninstalled every
-				// console-installed plugin and dropped its keys.
-				"migrations/postgres/009_eval_plugins.sql",
-				"migrations/postgres/010_eval_scores_kind.sql",
-				"migrations/postgres/011_eval_plugin_keys.sql",
-				// Benchmark scheduling — splits operator intent from
-				// settled runs so the cron runner can re-stamp due
-				// times without polluting benchmark_runs.
-				"migrations/postgres/013_scheduled_benchmarks.sql",
-				"migrations/postgres/012_benchmark_runs.sql",
-			} {
-				schema, _ := nexus.Migrations.ReadFile(path)
-				if err := st.Migrate(ctx, string(schema)); err != nil {
-					log.Error("postgres migrate failed", "file", path, "err", err)
-				}
-			}
+			// Schema handling. Migrations are no longer a hardcoded list run on
+			// every boot: they are discovered from the embedded filesystem,
+			// ordered, recorded in a ledger, and by default applied by a
+			// separate `nexus migrate` step (the Helm pre-upgrade hook Job) so a
+			// failure stops the rollout. At boot we only VERIFY, and withhold
+			// readiness when the schema is behind the binary — the previous
+			// behaviour logged the error and served traffic anyway.
+			applySchemaAtBoot(ctx, st.Pool(), cfg, ready, log)
+
 			store = st
 			auth = makeAuthenticator(st)
 			log.Info("control plane enabled (virtual key auth + credential store)",
@@ -178,21 +192,13 @@ func main() {
 		if err != nil {
 			log.Error("clickhouse connect failed; continuing without persistence", "err", err)
 		} else {
-			for _, path := range []string{
-				"migrations/clickhouse/001_init.sql",
-				"migrations/clickhouse/002_eval_context.sql",
-				"migrations/clickhouse/003_dashboard.sql",
-				"migrations/clickhouse/004_byok.sql",
-				"migrations/clickhouse/005_eval_user.sql",
-				"migrations/clickhouse/006_replica_id.sql",
-				"migrations/clickhouse/007_session_id.sql",
-				"migrations/clickhouse/008_turn_id.sql",
-			} {
-				schema, _ := nexus.Migrations.ReadFile(path)
-				if err := rec.Migrate(ctx, string(schema)); err != nil {
-					log.Error("clickhouse migrate failed", "file", path, "err", err)
-				}
-			}
+			// Same treatment as Postgres. Note the ClickHouse list previously
+			// omitted the benchmark_runs migration entirely (it collided on
+			// ordinal 007 with 007_session_id.sql), so benchmark history was
+			// never persisted; discovery-based loading fixes that class of bug
+			// by construction.
+			applyClickHouseSchemaAtBoot(ctx, rec.Conn(), cfg, ready, log)
+
 			chRec = rec
 			log.Info("clickhouse trace persistence enabled")
 		}
@@ -328,7 +334,7 @@ func main() {
 	gwSrv := &http.Server{
 		Addr: cfg.GatewayAddr,
 		// V5 per-vkey concurrency cap. nil -> disabled (zero-dep mode).
-		Handler: gateway.NewMux(gwHandler, auth, lim, limiter.NewConcurrencyCap(cfg.MaxConcurrentPerKey), log),
+		Handler: gateway.NewMux(gwHandler, auth, lim, limiter.NewConcurrencyCap(cfg.MaxConcurrentPerKey), ready, log),
 	}
 
 	// Console server.
@@ -340,9 +346,66 @@ func main() {
 	// means the gateway/CDN is replacing Nexus's response.
 	consoleSrvHandler.SetBuildTag(nexusBuildTag)
 	consoleSrvHandler.SetAllowSignup(cfg.AllowSignup)
+	consoleSrvHandler.SetPublicDocs(cfg.PublicDocs)
+
+	// Browser-security wiring, deliberately unconditional.
+	//
+	// SetCSPOrigins is also called further down, but only inside the block that
+	// runs when the eval runtime is wired. The same list now drives the CORS
+	// allowlist, the state-changing Origin check and the WebSocket upgrade
+	// check, so leaving it behind that condition would mean a deployment with
+	// evals disabled silently fell back to same-origin-only and the operator's
+	// separate console origin stopped working — a confusing failure with no
+	// obvious link to NEXUS_EVAL_ENABLED. Order matters: dev mode first, since
+	// it changes how the origin list is interpreted.
+	consoleSrvHandler.SetDevMode(cfg.DevMode)
+	consoleSrvHandler.SetCSPOrigins(cfg.PublicWebOrigins)
+	consoleSrvHandler.SetSecureCookies(cfg.SecureCookies)
+
+	if cfg.DevMode {
+		log.Warn("development mode is ON — browser protections are relaxed",
+			"reason", "NEXUS_DEV_MODE=true",
+			"effect", "loopback HTTP origins accepted; session cookies not marked Secure",
+			"action", "unset NEXUS_DEV_MODE for any deployment reachable by a browser you do not control")
+	}
+	if !cfg.SecureCookies && !cfg.DevMode {
+		log.Warn("session cookies are NOT marked Secure",
+			"reason", "NEXUS_SECURE_COOKIES=false",
+			"effect", "a browser will send a live console session over plain HTTP")
+	}
+	if len(cfg.PublicWebOrigins) == 0 {
+		// Not an error: a console served from the same origin as its API needs
+		// no allowlist at all, which is the common single-host deployment.
+		log.Info("no cross-origin web origins configured; console accepts same-origin browser requests only",
+			"set", "NEXUS_PUBLIC_WEB_ORIGINS to permit a console served from another origin")
+	}
+	if cfg.PublicDocs {
+		// Logged so an unauthenticated docs tree is always traceable to a
+		// deliberate configuration change rather than discovered during a
+		// customer's penetration test.
+		log.Warn("serving /api/docs without authentication",
+			"reason", "NEXUS_PUBLIC_DOCS=true",
+			"note", "the docs bundle enumerates this installation's endpoints and configuration flags")
+	}
 	consoleSrvHandler.SetGatewayProxy(cfg.GatewayAddr)
+	consoleSrvHandler.SetReadiness(ready)
 	consoleSrvHandler.SetPublicGatewayURL(cfg.PublicGatewayURL)
-	consoleSrvHandler.SetPublicBaseURL(cfg.PublicBaseURL)
+	// Link-only Grafana wiring: composes the deep links served by
+	// GET /api/ui/observability. No Grafana client, no health check, no
+	// server-side request — so Grafana being down or misconfigured can
+	// never reach the gateway's request path.
+	consoleSrvHandler.SetPublicGrafanaURL(cfg.PublicGrafanaURL)
+	// PublicBaseURL is what the admin-facing invite URL is rooted
+	// on (it lives next to the console). EmailPublicBaseURL is the
+	// host embedded inside the outgoing email body — operators
+	// flip them apart when the public envelope host differs from
+	// the operator-facing console host (e.g. nexus.ffx.ai
+	// console vs api.ffx.ai accept endpoint).
+	consoleSrvHandler.SetPublicBaseURL(publicBaseForInvites(cfg))
+	if cfg.EmailEnabled() {
+		consoleSrvHandler.SetResendClient(
+			console.NewResendClient(cfg.ResendAPIKey, cfg.EmailEnvelope(), cfg.ResendRequestTimeout))
+	}
 	// OIDC SSO: discovery runs against cfg.SSO.Issuer at boot. Failures
 	// here only log a warning; the console still serves password login
 	// and the SSO routes simply return 404.
@@ -465,6 +528,20 @@ func main() {
 		dispatcher.SetSecretResolver(pluginSecrets)
 		collector.SetSecretResolver(pluginSecrets)
 		collector.SetLogger(log)
+		// Attribution for inbound vendor scores. A webhook POST from
+		// LangSmith carries no Nexus session, so the trace id it echoes is
+		// the only tenant signal; without this the collector can only fall
+		// back to the plugin's own org, and a Helm-installed (cluster-wide)
+		// plugin has none. Scores it cannot attribute are written as
+		// evals.UnattributedOrgID rather than guessed into the default org.
+		if stack.TraceOrgs != nil {
+			collector.SetTraceOrgResolver(stack.TraceOrgs)
+		} else {
+			log.Info("eval plugin score attribution is limited",
+				"reason", "no trace store configured",
+				"effect", "scores from cluster-wide plugins are recorded as unattributed",
+				"action", "install eval plugins per organisation, or configure ClickHouse")
+		}
 		// Mirror every persisted eval score to an OTLP /v1/logs
 		// collector via OTLPEvaluationEventEnvelope. Noop by default
 		// unless NEXUS_OTLP_LOGS_ENDPOINT (or NEXUS_OTLP_ENDPOINT
@@ -1015,4 +1092,17 @@ func otlpLogsURLFromEnv() string {
 		return strings.TrimSpace(v)
 	}
 	return ""
+}
+
+// publicBaseForInvites returns the host root that should anchor
+// the issued invite URL. EmailPublicBaseURL wins when set so the
+// envelope's hostname can diverge from the console's host
+// (e.g. nexus.ffx.ai). Otherwise we trust PublicBaseURL, which
+// is what SetPublicBaseURL pulled from NEXUS_PUBLIC_BASE_URL in
+// the operator's Helm values.
+func publicBaseForInvites(cfg config.Config) string {
+	if v := strings.TrimSpace(cfg.EmailPublicBaseURL); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/")
 }

@@ -22,7 +22,7 @@ type stubLangSmithRuleCreator struct {
 	calls    int
 }
 
-func (s *stubLangSmithRuleCreator) CreateAutomationRule(_ context.Context, pluginName, sessionID string) (AutomationRuleResult, error) {
+func (s *stubLangSmithRuleCreator) CreateAutomationRule(_ context.Context, _, pluginName, sessionID string) (AutomationRuleResult, error) {
 	s.calls++
 	s.gotLast = pluginName
 	s.gotSessL = sessionID

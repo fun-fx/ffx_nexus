@@ -16,17 +16,17 @@ import (
 func (h *Handler) Moderations(w http.ResponseWriter, r *http.Request) {
 	var req ModerationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 		return
 	}
 	if len(req.Input) == 0 || strings.TrimSpace(string(req.Input)) == "null" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "input is required")
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "input is required")
 		return
 	}
 
 	mp, resolvedModel, ok := h.registry.ResolveModeration(req.Model)
 	if !ok {
-		writeError(w, http.StatusNotFound, "model_not_found",
+		writeError(w, r, http.StatusNotFound, "model_not_found",
 			"no moderation provider registered for model "+req.Model)
 		return
 	}
@@ -51,7 +51,7 @@ func (h *Handler) Moderations(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := mp.Moderate(ctx, req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "upstream_error",
+		writeError(w, r, http.StatusBadGateway, "upstream_error",
 			"moderation upstream error: "+err.Error())
 		return
 	}

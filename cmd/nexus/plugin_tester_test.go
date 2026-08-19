@@ -77,7 +77,7 @@ spec:
 		t.Fatalf("unexpected discard: %d", len(discarded))
 	}
 	tester := newTester(reg, nil, nil)
-	res, err := tester.Test(context.Background(), "langfuse-judge")
+	res, err := tester.Test(context.Background(), "", "langfuse-judge")
 	if err != nil {
 		t.Fatalf("Test returned err: %v", err)
 	}
@@ -129,7 +129,7 @@ spec:
 		}{"abc-123": {name: "langfuse-judge", id: "abc-123"}},
 	}))
 	// Pass the db id; resolver should re-key on metadata.name.
-	res, err := tester.Test(context.Background(), "abc-123")
+	res, err := tester.Test(context.Background(), "", "abc-123")
 	if err != nil {
 		t.Fatalf("Test returned err: %v", err)
 	}
@@ -179,7 +179,7 @@ spec:
 		}}},
 	})
 
-	rec, ok := tester.resolve(context.Background(), "langfuse-judge")
+	rec, ok := tester.resolve(context.Background(), "", "langfuse-judge")
 	if !ok {
 		t.Fatal("resolve by name missed a plugin that exists only in the store")
 	}
@@ -193,7 +193,7 @@ spec:
 	}
 
 	// Resolving by the row id must work through the same path.
-	if _, ok := tester.resolve(context.Background(), "abc-123"); !ok {
+	if _, ok := tester.resolve(context.Background(), "", "abc-123"); !ok {
 		t.Error("resolve by db id missed a store-only plugin")
 	}
 }
@@ -220,7 +220,7 @@ func (s yamlStore) Delete(_ context.Context, _ string) error                 { r
 func TestPluginTester_MissingReturnsError(t *testing.T) {
 	reg := evalplugin.NewRegistry()
 	tester := newTester(reg, nil, nil)
-	_, err := tester.Test(context.Background(), "does-not-exist")
+	_, err := tester.Test(context.Background(), "", "does-not-exist")
 	if err == nil {
 		t.Fatal("expected error for unknown plugin, got nil")
 	}

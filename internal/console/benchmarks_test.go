@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/benchmark"
 	"github.com/ffxnexus/nexus/internal/core"
 )
@@ -99,11 +100,11 @@ func (f *fakeRunner) SetScheduleEnabled(
 	return nil
 }
 
-func (f *fakeRunner) GetLatestSettledByModel(_ context.Context, _ string) (core.BenchmarkRun, error) {
+func (f *fakeRunner) GetLatestSettledByModel(_ context.Context, _, _ string) (core.BenchmarkRun, error) {
 	return core.BenchmarkRun{}, errors.New("not found")
 }
 
-func (f *fakeRunner) ListRecentSettledByModel(_ context.Context, _ string, _ int) ([]core.RecentBenchmarkRun, error) {
+func (f *fakeRunner) ListRecentSettledByModel(_ context.Context, _, _ string, _ int) ([]core.RecentBenchmarkRun, error) {
 	return nil, nil
 }
 
@@ -302,8 +303,15 @@ func TestLaunchBenchmarkErrorsMapToStatusCodes(t *testing.T) {
 			if rec.Code != tc.want {
 				t.Fatalf("status = %d, want %d (%s)", rec.Code, tc.want, rec.Body.String())
 			}
-			if decode(t, rec)["error"] == nil {
-				t.Error("response carries no error message")
+			// A failed launch leaves the run row alongside an ok:false so
+			// the console can show the failure. The body MUST NOT carry a
+			// free-form "error" string: those leaked Postgres's message and
+			// the SQLSTATE. The cause is in the server log; this test reads
+			// the response shape only.
+			body := decode(t, rec)
+			if _, ok := body["error"]; ok {
+				t.Errorf("response leaks a free-form error string to the client: %s",
+					rec.Body.String())
 			}
 		})
 	}
@@ -474,8 +482,19 @@ func TestCredentialReportsAFailedPersist(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "database is down") {
-		t.Errorf("body = %s", rec.Body.String())
+	// The body used to echo err.Error() ("database is down"). It MUST NOT,
+	// because the same string is now reserved for the server log so support
+	// can join the customer report to the cause via the request id.
+	if strings.Contains(rec.Body.String(), "database is down") {
+		t.Errorf("body leaks the error string: %s", rec.Body.String())
+	}
+	// The body MUST carry the canonical body shape.
+	var body apierr.Body
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body not apierr.Body: %v", err)
+	}
+	if body.Error.Code != apierr.CodeInternalError {
+		t.Errorf("body code = %q, want %q", body.Error.Code, apierr.CodeInternalError)
 	}
 }
 
@@ -533,11 +552,15 @@ func TestDryRunHandlerSurfacesVendorReason(t *testing.T) {
 			rec.Code, rec.Body.String())
 	}
 	body := decode(t, rec)
-	if body["ok"] != false {
-		t.Errorf("ok field present on the failure path; want explicitly false")
+	if okV, has := body["ok"]; !has || okV != false {
+		t.Errorf("ok field on the failure path = %v, want explicitly false", body["ok"])
 	}
-	if body["error"] == nil || !strings.Contains(body["error"].(string), "404") {
-		t.Errorf("error field = %v, want the vendor 404 wording", body["error"])
+	// The vendor wording used to be returned to the browser so the operator
+	// could read it inline. It MUST NOT, because the same string lands us
+	// on a customer's secret review list. The cause is logged; the body is
+	// a single ok:false flag plus, by design, no other information.
+	if errAny, ok := body["error"]; ok {
+		t.Errorf("response leaks free-form error to the client: %v", errAny)
 	}
 }
 

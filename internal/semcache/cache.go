@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"strconv"
 )
 
 // Hit is a cache lookup result.
@@ -30,7 +31,30 @@ type storedEntry struct {
 	ExpiresAt int64     `json:"x,omitempty"`
 }
 
-func redisKey(scope, model string) string { return "nexus:sem:" + scope + ":" + model }
+// redisKey namespaces an entry by tenant and model.
+//
+// The scope is LENGTH-PREFIXED rather than simply joined with a separator,
+// because a separator alone is ambiguous when either field can contain it:
+//
+//	scope "org"   + model "a:gpt-4o"  -> "nexus:sem:org:a:gpt-4o"
+//	scope "org:a" + model "gpt-4o"    -> "nexus:sem:org:a:gpt-4o"
+//
+// Those are different tenants sharing one key. The model comes from the request
+// body, so it is fully attacker-controlled: a caller in org "org" requesting the
+// model "a:gpt-4o" reads and writes the cache namespace of org "org:a". The
+// requirement is narrow — the victim's org id must have the attacker's as a
+// colon-prefix — but the consequence is one org receiving another's generated
+// completions, and the fix costs nothing.
+//
+// With the length prefix the boundary is unambiguous: "3:org:a:gpt-4o" cannot be
+// read as scope "org:a", because that would require the prefix to say 5.
+//
+// Changing the key format invalidates entries written by an earlier version. That
+// is a cache miss, not data loss: the next request repopulates. Pinned by
+// TestScopeAndModelCannotCollideThroughConcatenation.
+func redisKey(scope, model string) string {
+	return "nexus:sem:" + strconv.Itoa(len(scope)) + ":" + scope + ":" + model
+}
 
 func effectiveConfig(cfg Config) Config {
 	if cfg.TTL <= 0 {

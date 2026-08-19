@@ -98,7 +98,7 @@ func (f *fakeStore) SetBenchmarkScheduleEnabled(
 	return errors.New("not found")
 }
 
-func (f *fakeStore) ListRecentSettledByModel(_ context.Context, model string, limit int) ([]core.RecentBenchmarkRun, error) {
+func (f *fakeStore) ListRecentSettledByModel(_ context.Context, _, model string, limit int) ([]core.RecentBenchmarkRun, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := []core.RecentBenchmarkRun{}

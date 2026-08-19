@@ -39,5 +39,11 @@ func (a *AuditSink) Emit(ctx context.Context, alert DriftAlert) {
 	if err != nil {
 		raw = []byte(`{"kind":"` + alert.Kind + `"}`)
 	}
-	a.Store.Audit(ctx, "system", "", "benchmark.drift."+alert.Kind, alert.RunID, string(raw))
+	a.Store.Audit(ctx, core.AuditEvent{
+		ActorID:  "system",
+		OrgID:    "",
+		Action:   core.AuditActionBenchmarkScheduleHit,
+		TargetID: alert.RunID,
+		Detail:   string(raw),
+	})
 }

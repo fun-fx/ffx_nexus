@@ -35,6 +35,10 @@ type NexusStack struct {
 	// externally-produced scores without going through the worker.
 	// Lazy-built from the same backend selection as EvalWorker.
 	scoreSink evals.Sink
+	// TraceOrgs resolves a vendor-supplied trace id to its owning org so the
+	// plugin collector can attribute inbound scores. Nil without ClickHouse,
+	// which is also the case where there are no stored traces to resolve.
+	TraceOrgs *observability.TraceOrgLookup
 }
 
 // SinkForPlugins returns the score sink used by the plugin collector.
@@ -55,6 +59,7 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	recorders := []observability.Recorder{hub}
 	if chRec != nil {
 		stack.Reader = chRec.NewReader()
+		stack.TraceOrgs = chRec.NewTraceOrgLookup()
 		stack.TraceStore = traceStoreClickHouse
 		recorders = append(recorders, chRec)
 	}

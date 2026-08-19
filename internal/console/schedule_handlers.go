@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/core"
 )
 
@@ -93,7 +94,7 @@ func (s *Server) createBenchmarkSchedule(w http.ResponseWriter, r *http.Request,
 		NextLaunchAt:   time.Now().UTC().Add(time.Duration(body.CadenceSeconds) * time.Second),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, row)
@@ -106,10 +107,40 @@ func (s *Server) listBenchmarkSchedules(w http.ResponseWriter, r *http.Request, 
 	}
 	rows, err := s.benchmarks.ListSchedules(r.Context(), u.OrgID, 100)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"schedules": rows})
+}
+
+// ownedSchedule fetches a schedule and refuses it unless it belongs to the
+// caller's org. Mirrors ownedBenchmark, and replaces a check that had three
+// separate holes in it:
+//
+//   - `u.OrgID != "" && ...` skipped the comparison entirely for a session
+//     without an org, so the one case that most needs a default got none.
+//   - `row.OrgID != "" && ...` treated a schedule with no org as visible to
+//     everyone. Unlike an eval profile or plugin, a blank org here is not an
+//     operator-installed cluster-wide row — schedules are only ever created
+//     through the console, so a blank org is pre-attribution legacy data and
+//     belongs to the default org, not to all of them.
+//   - a 403 reading "schedule belongs to a different org" confirmed that the
+//     id existed, which is all an enumerator needs.
+func (s *Server) ownedSchedule(w http.ResponseWriter, r *http.Request) (core.BenchmarkSchedule, bool) {
+	row, err := s.benchmarks.GetSchedule(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
+		return core.BenchmarkSchedule{}, false
+	}
+	owner := row.OrgID
+	if owner == "" {
+		owner = core.DefaultOrgID
+	}
+	if owner != orgID(r) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
+		return core.BenchmarkSchedule{}, false
+	}
+	return row, true
 }
 
 func (s *Server) getBenchmarkSchedule(w http.ResponseWriter, r *http.Request, u core.User) {
@@ -117,14 +148,8 @@ func (s *Server) getBenchmarkSchedule(w http.ResponseWriter, r *http.Request, u 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "benchmarks not configured"})
 		return
 	}
-	id := chi.URLParam(r, "id")
-	row, err := s.benchmarks.GetSchedule(r.Context(), id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
-		return
-	}
-	if u.OrgID != "" && row.OrgID != "" && u.OrgID != row.OrgID {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "schedule belongs to a different org"})
+	row, ok := s.ownedSchedule(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, row)
@@ -135,18 +160,12 @@ func (s *Server) deleteBenchmarkSchedule(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "benchmarks not configured"})
 		return
 	}
+	if _, ok := s.ownedSchedule(w, r); !ok {
+		return
+	}
 	id := chi.URLParam(r, "id")
-	row, err := s.benchmarks.GetSchedule(r.Context(), id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
-		return
-	}
-	if u.OrgID != "" && row.OrgID != "" && u.OrgID != row.OrgID {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "schedule belongs to a different org"})
-		return
-	}
 	if err := s.benchmarks.DeleteSchedule(r.Context(), id); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
@@ -179,16 +198,11 @@ func (s *Server) setBenchmarkScheduleEnabled(
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "benchmarks not configured"})
 		return
 	}
+	row, ok := s.ownedSchedule(w, r)
+	if !ok {
+		return
+	}
 	id := chi.URLParam(r, "id")
-	row, err := s.benchmarks.GetSchedule(r.Context(), id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
-		return
-	}
-	if u.OrgID != "" && row.OrgID != "" && u.OrgID != row.OrgID {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "schedule belongs to a different org"})
-		return
-	}
 	// Body is accepted but optional — an empty POST with the URL alone
 	// is enough to act. The body's "enabled" field, when present, must
 	// agree with the route; otherwise we 400 the call.
@@ -214,13 +228,13 @@ func (s *Server) setBenchmarkScheduleEnabled(
 		next = time.Now().UTC().Add(time.Duration(row.CadenceSeconds) * time.Second)
 	}
 	if err := s.benchmarks.SetScheduleEnabled(r.Context(), id, enabled, next); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	row, err = s.benchmarks.GetSchedule(r.Context(), id)
+	updated, err := s.benchmarks.GetSchedule(r.Context(), id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, row)
+	writeJSON(w, http.StatusOK, updated)
 }

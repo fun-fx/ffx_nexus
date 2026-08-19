@@ -34,11 +34,16 @@ func (s *coreProfileStore) nextID() string {
 	return fmt.Sprintf("ep_%d", s.clock().UnixNano())
 }
 
-func (s *coreProfileStore) List(_ context.Context, ownerUserID string) ([]evals.EvalProfile, error) {
+func (s *coreProfileStore) List(_ context.Context, orgID, ownerUserID string) ([]evals.EvalProfile, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]evals.EvalProfile, 0, len(s.profiles))
 	for _, p := range s.profiles {
+		// An empty orgID means "no tenant filter" and is reserved for the
+		// worker snapshot and boot seeding; see ProfileStore.List.
+		if orgID != "" && !p.VisibleToOrg(orgID) {
+			continue
+		}
 		if p.Scope == evals.ScopeUser && ownerUserID != "" && p.OwnerUserID != ownerUserID {
 			continue
 		}

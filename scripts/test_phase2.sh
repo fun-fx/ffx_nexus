@@ -104,7 +104,7 @@ if [[ "$code" == "200" ]]; then pass "valid virtual key -> 200"; else fail "vali
 code=$(http_code "$GW_URL/v1/models")
 if [[ "$code" == "401" ]]; then pass "no auth -> 401"; else fail "no auth -> expected 401, got $code"; fi
 
-code=$(http_code -H "Authorization: Bearer nxs_live_invalid000000000000000000000000" "$GW_URL/v1/models")
+code=$(http_code -H "Authorization: Bearer nxs_live_invalid000000000000000000000000" "$GW_URL/v1/models") # gitleaks:allow deliberately INVALID key; the assertion is that it gets 401
 if [[ "$code" == "401" ]]; then pass "bad virtual key -> 401"; else fail "bad key -> expected 401, got $code"; fi
 
 # --- allowed_models enforcement ---
@@ -163,7 +163,7 @@ fi
 # Audit log entries.
 AUDIT_COUNT=$(docker compose -f deploy/docker-compose.yml exec -T postgres \
   psql -U nexus -d nexus -t -A -c \
-  "SELECT count(*) FROM audit_log WHERE action IN ('vkey.create','credential.create');" 2>/dev/null | tr -d ' ')
+  "SELECT count(*) FROM audit_log WHERE action IN ('key.create','credential.create');" 2>/dev/null | tr -d ' ')
 if [[ "${AUDIT_COUNT:-0}" -ge 2 ]]; then
   pass "audit log records key/credential actions (count=$AUDIT_COUNT)"
 else
@@ -297,7 +297,7 @@ fi
 
 AUDIT_DEL=$(docker compose -f deploy/docker-compose.yml exec -T postgres \
   psql -U nexus -d nexus -t -A -c \
-  "SELECT count(*) FROM audit_log WHERE action IN ('vkey.revoke','credential.delete');" 2>/dev/null | tr -d ' ')
+  "SELECT count(*) FROM audit_log WHERE action IN ('key.revoke','credential.delete');" 2>/dev/null | tr -d ' ')
 if [[ "${AUDIT_DEL:-0}" -ge 2 ]]; then
   pass "audit log records revoke/delete"
 else

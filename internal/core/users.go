@@ -54,7 +54,7 @@ func (s *Store) CreateUser(ctx context.Context, orgID, actorID, email, password,
 		}
 		return User{}, err
 	}
-	s.Audit(ctx, actorID, orgID, AuditUserCreate, u.ID, email)
+	s.Audit(ctx, AuditEvent{ActorID: actorID, OrgID: orgID, Action: auditUserCreate, TargetID: u.ID, Detail: email})
 	return u, nil
 }
 
@@ -69,6 +69,26 @@ func (s *Store) GetUser(ctx context.Context, id string) (User, error) {
 		return User{}, ErrNotFound
 	}
 	return u, err
+}
+
+// UserInOrg reports whether a user id exists inside the given org.
+//
+// Used by handlers that take a user id from the URL — the admin spend views —
+// so a request naming a user from another team is answered with a 404 rather
+// than with an empty result set. The empty set would already be safe, because
+// the analytics queries filter on org too, but it is indistinguishable from
+// "this colleague spent nothing this month", and an admin acting on that
+// reading draws the wrong conclusion. Answering "no such user, to you" makes
+// the boundary legible instead of merely enforced.
+func (s *Store) UserInOrg(ctx context.Context, orgID, userID string) (bool, error) {
+	if orgID == "" {
+		orgID = DefaultOrgID
+	}
+	var exists bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND org_id = $2)`,
+		userID, orgID).Scan(&exists)
+	return exists, err
 }
 
 // ListUsers returns all users in an org (no password hashes).
@@ -192,7 +212,7 @@ func (s *Store) DeleteUser(ctx context.Context, orgID, actorID, id string) error
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, actorID, orgID, AuditUserDelete, id, "")
+	s.Audit(ctx, AuditEvent{ActorID: actorID, OrgID: orgID, Action: auditUserDelete, TargetID: id})
 	return nil
 }
 
@@ -238,7 +258,7 @@ func (s *Store) Authenticate(ctx context.Context, orgID, email, password string,
 	if err != nil {
 		return "", User{}, err
 	}
-	s.Audit(ctx, u.ID, orgID, AuditUserLogin, u.ID, email)
+	s.Audit(ctx, AuditEvent{ActorID: u.ID, OrgID: orgID, Action: auditUserLogin, TargetID: u.ID, Detail: email})
 	return token, u, nil
 }
 
@@ -293,7 +313,7 @@ func (s *Store) RotateUserCredential(ctx context.Context, orgID, userID, id, new
 	if uid != nil {
 		c.UserID = *uid
 	}
-	s.Audit(ctx, userID, orgID, AuditCredentialRotate, c.ID, c.Provider)
+	s.Audit(ctx, AuditEvent{ActorID: userID, OrgID: orgID, Action: auditCredentialRotate, TargetID: c.ID, Detail: c.Provider})
 	return c, nil
 }
 
@@ -307,7 +327,7 @@ func (s *Store) DeleteUserCredential(ctx context.Context, orgID, userID, id stri
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	s.Audit(ctx, userID, orgID, AuditCredentialDelete, id, "")
+	s.Audit(ctx, AuditEvent{ActorID: userID, OrgID: orgID, Action: auditCredentialDelete, TargetID: id})
 	return nil
 }
 

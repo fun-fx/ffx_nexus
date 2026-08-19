@@ -14,6 +14,29 @@ import (
 )
 
 // ModelStats are rolling per-model metrics over a recent window.
+// ModelStats is one model's rolling health, aggregated across the whole
+// installation.
+//
+// TENANCY: this is the one read of eval_scores that is deliberately NOT
+// org-scoped, and the choice is load-bearing enough to state plainly.
+//
+// The question it answers is "is this model healthy right now" — an
+// infrastructure question about a shared upstream, not a question about anyone's
+// data. Splitting the pool per org would make routing worse exactly where it
+// matters most: a five-person department would decide between models on a
+// handful of samples, and every org would have to rediscover a provider
+// regression independently. So the aggregate spans orgs.
+//
+// What keeps that from being a data leak is the shape of this struct: every
+// field is an average or a count keyed by model id. There is no org, user,
+// trace, prompt, rationale or timestamp here, so a caller cannot attribute any
+// number to a tenant, and /api/routing (member-authenticated) exposes nothing
+// beyond model-level operational health.
+//
+// That property is enforced, not assumed — TestModelStatsExposesNoTenantData
+// fails if a field is added that could carry tenant identity. If per-org routing
+// is ever wanted, it needs an org-keyed provider and an org-keyed Router, not a
+// new field here.
 type ModelStats struct {
 	Model          string  `json:"model"`
 	Quality        float64 `json:"quality"`          // avg judge "quality" score, 0..1

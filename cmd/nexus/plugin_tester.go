@@ -99,11 +99,11 @@ type Result = console.Result
 // Earlier Releases routed these four vendors to genericProbe,
 // returning a bare connectivity result; the failures of that
 // shortcut are documented in the individual Ping* funcs.
-func (t *PluginTester) Test(ctx context.Context, ref string) (Result, error) {
+func (t *PluginTester) Test(ctx context.Context, orgID, ref string) (Result, error) {
 	if t == nil || t.reg == nil {
 		return Result{}, errors.New("plugin registry not initialised")
 	}
-	rec, ok := t.resolve(ctx, ref)
+	rec, ok := t.resolve(ctx, orgID, ref)
 	if !ok {
 		return Result{}, fmt.Errorf("plugin %q not found", ref)
 	}
@@ -388,8 +388,20 @@ func (t *PluginTester) probeDatadogCarriedKey() string {
 // absent from the registry until the pod restarts. Resolving it from
 // the store keeps "create, then press Test" working on the same page
 // load instead of reporting `plugin "…" not found`.
-func (t *PluginTester) resolve(ctx context.Context, ref string) (evalplugin.Record, bool) {
-	if rec, ok := t.reg.Lookup(ref); ok {
+// orgID confines every path to one tenant. The probe sends an authenticated
+// request using the plugin's stored vendor key, so resolving another org's row
+// spent that org's credential and reported the vendor's answer to the wrong
+// tenant. Each candidate is checked against the caller's org before it is
+// returned; a cluster-wide row (org "") is inherited by every tenant and stays
+// resolvable.
+func (t *PluginTester) resolve(ctx context.Context, orgID, ref string) (evalplugin.Record, bool) {
+	want := evalplugin.NormalizeOrgID(orgID)
+	ownedByCaller := func(recOrg string) bool {
+		got := evalplugin.NormalizeOrgID(recOrg)
+		return got == "" || got == want
+	}
+
+	if rec, ok := t.reg.LookupForOrg(want, ref); ok && ownedByCaller(rec.OrgID) {
 		return rec, true
 	}
 	if t.source == nil {
@@ -397,13 +409,13 @@ func (t *PluginTester) resolve(ctx context.Context, ref string) (evalplugin.Reco
 	}
 	// Lookup is name-keyed and already falls back to the store, which
 	// is how a just-created plugin resolves.
-	if rec, err := t.source.Lookup(ctx, ref); err == nil {
+	if rec, err := t.source.Lookup(ctx, ref); err == nil && rec != nil && ownedByCaller(rec.OrgID) {
 		if out, ok := t.fromStoreRecord(rec); ok {
 			return out, true
 		}
 	}
 	// Get is id-keyed; kept so a caller holding the UUID still works.
-	if rec, err := t.source.Get(ctx, ref); err == nil {
+	if rec, err := t.source.Get(ctx, ref); err == nil && rec != nil && ownedByCaller(rec.OrgID) {
 		if out, ok := t.fromStoreRecord(rec); ok {
 			return out, true
 		}

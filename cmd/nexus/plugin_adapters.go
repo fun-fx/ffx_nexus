@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/egress"
 	"github.com/ffxnexus/nexus/internal/evalplugin"
 	"github.com/ffxnexus/nexus/internal/evaluators/external"
 )
@@ -13,8 +14,15 @@ import (
 // of trace packets, collector polls/webhooks). The 30s ceiling
 // matches the typical SLA of vendor APIs so a slow vendor
 // doesn't truncate a payload mid-flight.
+//
+// Tenant class: the destination is the plugin manifest's
+// spec.service.endpoint, which an org admin supplies through the
+// console. The dispatcher renders prompt and completion text into
+// the payload, so an unguarded client here would POST one org's
+// content to any address the pod can reach — including the cloud
+// metadata service, whose reply the collector persists as a score.
 func httpClientForPlugins() *http.Client {
-	return &http.Client{Timeout: 30 * time.Second}
+	return egress.Client(egress.Tenant, 30*time.Second)
 }
 
 // httpClientForPluginsTest returns the client used by the admin
@@ -30,7 +38,10 @@ func httpClientForPlugins() *http.Client {
 // request inside the tunnel's deadline while still leaving a
 // generous window for legitimate slow-but-successful responses.
 func httpClientForPluginsTest() *http.Client {
-	return &http.Client{Timeout: 8 * time.Second}
+	// Tenant class for the same reason as httpClientForPlugins, and it matters
+	// more here: the probe's status code and body are rendered straight back to
+	// the admin who typed the endpoint, which is a read primitive.
+	return egress.Client(egress.Tenant, 8*time.Second)
 }
 
 // registerPluginAdapters wires the supported service-type adapters

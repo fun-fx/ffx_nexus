@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/ffxnexus/nexus/internal/egress"
 )
 
 // bufferedNotifier runs a small worker that drains an in-memory queue
@@ -64,8 +66,10 @@ func newBufferedNotifier(opts bufferedNotifierOptions, log *slog.Logger) *buffer
 		opts.cooldown = 0 // off by default; tests opt-in
 	}
 	bn := &bufferedNotifier{
-		log:      log,
-		client:   &http.Client{Timeout: opts.timeout},
+		log: log,
+		// Operator class: the failover webhook and Slack URL come from env, and
+		// an in-cluster alert receiver is a normal target.
+		client:   egress.Client(egress.Operator, opts.timeout),
 		endpoint: opts.endpoint,
 		encode:   opts.encode,
 		ch:       make(chan FailoverEvent, opts.buffer),

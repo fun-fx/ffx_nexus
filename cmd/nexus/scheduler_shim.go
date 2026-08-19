@@ -25,8 +25,8 @@ type schedulerShim struct {
 // REST handler renders this as "no traces collected yet" rather
 // than a 5xx, which has been a common operator-mistake path
 // (typo'd plugin names).
-func (s *schedulerShim) FireManual(ctx context.Context, name, trigger string) (int, error) {
-	plugin := pluginByName(s.reg, name)
+func (s *schedulerShim) FireManual(ctx context.Context, orgID, name, trigger string) (int, error) {
+	plugin := pluginByNameForOrg(s.reg, orgID, name)
 	if plugin == nil {
 		return 0, nil
 	}
@@ -38,22 +38,29 @@ func (s *schedulerShim) FireManual(ctx context.Context, name, trigger string) (i
 // applies so the REST handler can render the count as 0 rather than
 // surfacing a "plugin not found" error to the operator who mistyped
 // the name from the chip click.
-func (s *schedulerShim) FireScheduled(ctx context.Context, name, trigger string) (int, error) {
-	plugin := pluginByName(s.reg, name)
+func (s *schedulerShim) FireScheduled(ctx context.Context, orgID, name, trigger string) (int, error) {
+	plugin := pluginByNameForOrg(s.reg, orgID, name)
 	if plugin == nil {
 		return 0, nil
 	}
 	return s.s.FireScheduled(ctx, plugin, trigger)
 }
 
-// pluginByName returns the *evalplugin.Plugin for metadata.name or
-// nil. Disabled plugins are skipped — the operator who'd be happy
-// to see the answer "no, your toggled-off plugin isn't firing" is
-// well served by the registry returning nil here without a typed
-// error, which is what the shim relies on to render (0, nil).
-func pluginByName(reg *evalplugin.Registry, name string) *evalplugin.Plugin {
-	for _, rec := range reg.Enabled() {
-		if rec.Plugin.Metadata.Name == name {
+// pluginByNameForOrg returns the *evalplugin.Plugin one org may fire under that
+// name, or nil. Disabled plugins are skipped — the operator who'd be happy to
+// see the answer "no, your toggled-off plugin isn't firing" is well served by
+// the registry returning nil here without a typed error, which is what the shim
+// relies on to render (0, nil).
+//
+// This previously scanned reg.Enabled(), which spans every tenant and returned
+// the first name match. Firing dispatches the plugin's buffered traces to its
+// configured vendor, so that scan let an admin of one org flush traffic into
+// another org's vendor account. EnabledForOrg is the resolution the registry
+// documents as the only correct one for dispatch: the caller's own rows, plus
+// the cluster-wide rows they inherit, with their own shadowing the inherited.
+func pluginByNameForOrg(reg *evalplugin.Registry, orgID, name string) *evalplugin.Plugin {
+	for _, rec := range reg.EnabledForOrg(evalplugin.NormalizeOrgID(orgID)) {
+		if rec.Plugin != nil && rec.Plugin.Metadata.Name == name {
 			return rec.Plugin
 		}
 	}

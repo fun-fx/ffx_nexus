@@ -77,6 +77,25 @@ func (s *Server) benchmarkLeaderboard(w http.ResponseWriter, r *http.Request, _ 
 	// query per pull but the size is bounded by the router's
 	// lineup; a deployment with a hundred models pays one
 	// round-trip per pull, which is acceptable for an admin endpoint.
+	//
+	// This snapshot is installation-wide, and that is deliberate — but it means
+	// the row below is assembled from two different scopes, so the split needs
+	// stating rather than discovering.
+	//
+	// AvgScore, CompletedAt and everything derived from them (Freshness,
+	// Effective, BlendedIn, StaleAgeDays) are the numbers the router actually
+	// blends. This page exists to answer "which model is the router leaning on",
+	// so showing a per-org recomputation would answer a question nobody asked
+	// and disagree with the router's own behaviour. They are also safe to share:
+	// a model-level average names no tenant, the same reasoning documented on
+	// router.ModelStats.
+	//
+	// LatestRunID, MinScore, MaxScore and TotalSamples are different. They come
+	// from one specific run, executed with one tenant's spec, dataset and
+	// provider key, and a run id is a handle to that tenant's object. Those are
+	// fetched per-org below. A row can therefore show a blended AvgScore with an
+	// empty LatestRunID, which reads correctly: the router is using benchmark
+	// data for this model, but none of it is yours.
 	rows, err := src.BenchmarkSnapshot(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
@@ -106,7 +125,7 @@ func (s *Server) benchmarkLeaderboard(w http.ResponseWriter, r *http.Request, _ 
 		fresh := router.Freshness(stat, halfLife, now)
 		row := benchmarkLeaderboardRow{
 			Model:        m,
-			LatestRunID:  latestRunFor(s, m),
+			LatestRunID:  latestRunFor(r.Context(), s, orgID(r), m),
 			AvgScore:     stat.AvgScore,
 			CompletedAt:  stat.CompletedAt,
 			Freshness:    fresh,
@@ -115,7 +134,7 @@ func (s *Server) benchmarkLeaderboard(w http.ResponseWriter, r *http.Request, _ 
 			StaleAgeDays: now.Sub(stat.CompletedAt).Hours() / 24,
 		}
 		if s.benchmarks != nil {
-			run, rerr := s.benchmarks.GetLatestSettledByModel(r.Context(), m)
+			run, rerr := s.benchmarks.GetLatestSettledByModel(r.Context(), orgID(r), m)
 			if rerr == nil {
 				row.MinScore = dereqFloatPtr(run.MinScore)
 				row.MaxScore = dereqFloatPtr(run.MaxScore)
@@ -140,11 +159,11 @@ func (s *Server) benchmarkLeaderboard(w http.ResponseWriter, r *http.Request, _ 
 // view and the row detail share the same data path. Errors are
 // swallowed: a missing run renders as "" in the response, which is
 // the operator's expected state when the row just settled.
-func latestRunFor(s *Server, model string) string {
+func latestRunFor(ctx context.Context, s *Server, orgID, model string) string {
 	if s == nil || s.benchmarks == nil {
 		return ""
 	}
-	run, err := s.benchmarks.GetLatestSettledByModel(context.Background(), model)
+	run, err := s.benchmarks.GetLatestSettledByModel(ctx, orgID, model)
 	if err != nil {
 		return ""
 	}

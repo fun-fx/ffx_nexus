@@ -39,6 +39,11 @@ config:
   consoleAddr: ":8081"
   # Public HTTPS base for the OpenAI-compatible gateway (shown in console UI).
   publicGatewayUrl: ""
+  # Public HTTPS base for the CONSOLE. This roots the invite links an admin
+  # copies out of the Users page, and is required by the LangSmith automation
+  # webhook registration. Set it to the same origin your operators type into
+  # the browser, e.g. "https://nexus.customer.example".
+  publicBaseUrl: ""
   # Operator-supplied allow-list of web origins the console may connect to.
   # Wired into CSP `connect-src` (was previously hardcoded to *.ffx.ai in
   # code). Empty list == CSP falls back to 'self' only.
@@ -56,6 +61,31 @@ config:
   publicWebOrigins: []        # []string
   upstreamTimeout: "120s"
   openaiBaseUrl: ""
+
+  # --- Outbound destination policy -------------------------------------------
+  # Nexus refuses outbound requests to private, loopback and link-local
+  # addresses when the DESTINATION was configured through the API by an org
+  # admin: an eval profile's endpoint.base_url, a plugin manifest endpoint, a
+  # credential base_url. Those requests are made from inside your cluster on
+  # behalf of somebody outside it, so the pod's network position would otherwise
+  # be a privilege the caller does not have — including reaching the cloud
+  # instance metadata service, whose reply two of these paths persist where the
+  # caller can read it.
+  #
+  # Destinations you configure yourself (OTLP endpoint, failover webhook,
+  # Metabase URL) are NOT restricted: an in-cluster collector on a ClusterIP or
+  # a sidecar on loopback is a normal self-hosted setup.
+  #
+  # Set this only if you run a vendor INSIDE the cluster and want org admins to
+  # point eval plugins at it. It is a CIDR list, not a switch, so widening the
+  # policy names the range. Link-local (169.254.0.0/16, where instance metadata
+  # lives) can never be re-permitted.
+  #
+  #   egressTenantAllowedCidrs: "10.44.0.0/16,10.45.1.7"
+  #
+  # FQDN-level egress control for SaaS vendors is NOT provided by Nexus or by
+  # the chart's NetworkPolicies; see docs/customer-self-hosted-security.md.
+  egressTenantAllowedCidrs: ""   # NEXUS_EGRESS_TENANT_ALLOWED_CIDRS
 
   # Documentation tree served at /docs in the console. The image
   # ships /etc/nexus/docs (see Dockerfile); override via Helm when
@@ -152,9 +182,188 @@ config:
     # or https://api.honeycomb.io/v1/traces).
     enabled: false
     endpoint: ""
-# NEXUS_METRICS_ADDR exposes a Prometheus /metrics endpoint on the
-# gateway and console. Empty (default) means no scrape surface.
-metricsAddr: ""
+
+  # NEXUS_METRICS_ADDR — raw listen address for the Prometheus text-format
+  # export. Prefer the `metrics.*` block at the bottom of this file, which
+  # also declares the container/Service port and the optional ServiceMonitor.
+  # This escape hatch exists for operators who bind the exporter somewhere
+  # the Service does not publish. When `metrics.enabled` is true it wins and
+  # this value is ignored (the ConfigMap emits NEXUS_METRICS_ADDR once).
+  metricsAddr: ""
+
+  # --- V4 failover alert sinks --------------------------------------------
+  # Both URLs are independently opt-in; empty means "no goroutine, no DNS".
+  # The literal noop notifier (`internal/router/notifier.go`) is wired so
+  # the gateway stays metric-only when these are blank. Set BOTH (or one)
+  # in production so a primary going bad lights up the channel you actually
+  # read on a Saturday morning.
+  failoverWebhook: ""           # NEXUS_FAILOVER_WEBHOOK — generic JSON POST
+  failoverSlack: ""             # NEXUS_FAILOVER_SLACK_WEBHOOK
+  failoverAlertCooldown: 0s     # NEXUS_FAILOVER_ALERT_COOLDOWN; 0 = off
+
+  # --- SSO (any standard OIDC IdP: Okta, Entra ID, Google Workspace,
+  #     Keycloak, Auth0, …) --------------------------------------------------
+  # Independent of any other knob. Empty issuer ⇒ SSOConfig.Enabled()=false
+  # ⇒ /api/auth/sso/* routes are not registered, the UI hides the button.
+  # Set issuer + clientId + redirectUrl here; put the client secret under
+  # secrets.ssoClientSecret (or your existingSecret) below.
+  #
+  #   sso:
+  #     issuer:      "https://<tenant>.okta.com/oauth2/default"
+  #     clientId:    "nexus-console"
+  #     redirectUrl: "https://nexus.<customer>.example/api/auth/sso/callback"
+  #
+  # The redirectUrl MUST be registered in your IdP as a valid redirect URI;
+  # mismatches cause OIDC state-mismatch errors on /api/auth/sso/callback.
+  sso:
+    issuer: ""                  # NEXUS_SSO_ISSUER
+    clientId: ""                # NEXUS_SSO_CLIENT_ID
+    redirectUrl: ""             # NEXUS_SSO_REDIRECT_URL
+    label: ""                   # NEXUS_SSO_LABEL  (defaults to "SSO" in code)
+
+  # --- Metabase BI adapter (mirror of the V3 OTLP toggle) --------------------
+  # Empty url means the adapter is fully off — NewMetabaseBootstrapper returns
+  # nil, no goroutines, no DNS, no boot network calls. Set the URL to point at
+  # a Metabase instance (the `metabase` service in deploy/docker-compose.yml's
+  # `bi` profile fits; `http://metabase.observability.svc.cluster.local:3000`
+  # works in cluster). The bootstrap is one-shot and idempotent — credentials
+  # change by re-deploying Nexus, never a side-effect during request handling.
+  #
+  # IMPORTANT (customer self-hosted): point clickhouseUrl / postgresUrl at a
+  # READ-ONLY analytics account, never the account Nexus itself uses. See
+  # docs/customer-self-hosted-integrations.md.
+  metabase:
+    url: ""                       # NEXUS_METABASE_URL
+    user: ""                      # NEXUS_METABASE_USER
+    password: ""                  # NEXUS_METABASE_PASSWORD
+    clickhouseUrl: ""             # NEXUS_METABASE_CLICKHOUSE_URL (http://host:8123?database=...)
+    postgresUrl: ""               # NEXUS_METABASE_POSTGRES_URL (postgres://...)
+    seedDir: ""                   # NEXUS_METABASE_SEED_DIR (optional).
+                                  # When non-empty AND seedFromExisting is false,
+                                  # a ConfigMap "nexus-metabase-seed" is rendered
+                                  # containing the 3 bundled reference JSONs
+                                  # (01-overview, 02-llm-spend, 03-eval-quality)
+                                  # and mount-bound into the pod. Defaults the
+                                  # operator off (empty string) so unset
+                                  # environments don't accidentally clobber a
+                                  # Metabase instance with our dashboards.
+    seedFromExisting: ""          # Optional: name of an existing ConfigMap to
+                                  # mount at seedDir instead of rendering our
+                                  # own. Useful when an operator wants to
+                                  # preload dashboards owned by their team.
+    extraSeeds: {}                # Map of  filename -> JSON body  for seeds to
+                                  # add to the rendered ConfigMap alongside
+                                  # the bundled three. The bootstrapper iterates
+                                  # every *.json in the mounted dir, so each
+                                  # entry here becomes another collection.
+    healthTimeout: "90s"          # NEXUS_METABASE_HEALTH_TIMEOUT
+    requestTimeout: "10s"         # NEXUS_METABASE_REQUEST_TIMEOUT
+
+  # --- Invite email transport -----------------------------------------------
+  # The invite flow always issues a row + copyable URL — admins
+  # can always paste it out of the console. This block additionally
+  # sends a transactional envelope so the invitee lands in their
+  # inbox with the link, instead of waiting on the admin to
+  # Slack them the URL.
+  #
+  # `provider` selects the transport:
+  #   ""       — auto: resend when secrets.resendApiKey is set, else smtp
+  #              when smtp.host is set, else disabled.
+  #   resend   — Resend HTTP API. Needs secrets.resendApiKey.
+  #   smtp     — any RFC 5321 relay (customer Exchange/Postfix/SES SMTP).
+  #              Needs smtp.host and usually secrets.smtpPassword.
+  #   noop     — accept and discard. LOCAL DEVELOPMENT ONLY; the binary
+  #              refuses to boot with provider=noop unless NEXUS_DEV_MODE
+  #              is set. That flag is deliberately NOT a chart value, so
+  #              this provider cannot be selected in a customer install.
+  #
+  # There is deliberately NO default fromAddress. A self-hosted install
+  # must send from a domain the CUSTOMER controls and has SPF/DKIM for;
+  # shipping a vendor default here caused invite mail to be issued from
+  # a domain the customer could not authenticate. Leave the whole block
+  # empty to run without email — invites still work via copyable URL.
+  email:
+    provider: ""                  # NEXUS_EMAIL_PROVIDER: ""|resend|smtp|noop
+    # NEXUS_EMAIL_FROM_ADDRESS — RFC 5322 From: header, e.g.
+    # "Nexus <no-reply@customer.example>". REQUIRED when a transport
+    # is active; the binary fails fast if a provider is selected
+    # without it (see docs/customer-self-hosted-integrations.md).
+    fromAddress: ""
+    requestTimeout: "10s"         # NEXUS_EMAIL_REQUEST_TIMEOUT
+    # NEXUS_EMAIL_PUBLIC_BASE_URL — overrides the host embedded
+    # inside the outgoing email body. Operators flip this when the
+    # invitee's "click here" host differs from the console's
+    # publicBaseUrl. Empty falls back to config.publicBaseUrl.
+    publicBaseUrl: ""
+    # Resend-specific. The API key itself is a secret: put it in
+    # secrets.resendApiKey or your existingSecret, never here.
+    # apiBaseUrl exists so an air-gapped install can point at an
+    # internal relay that speaks the same contract.
+    resend:
+      apiBaseUrl: ""              # NEXUS_RESEND_API_BASE_URL (default https://api.resend.com)
+    # SMTP-specific. Password goes in secrets.smtpPassword.
+    smtp:
+      host: ""                    # NEXUS_SMTP_HOST
+      port: 587                   # NEXUS_SMTP_PORT
+      username: ""                # NEXUS_SMTP_USERNAME
+      # starttls (default, port 587) | tls (implicit, port 465) | none
+      # `none` sends credentials in cleartext and is refused unless
+      # NEXUS_DEV_MODE is set, which the chart does not expose.
+      encryption: "starttls"      # NEXUS_SMTP_ENCRYPTION
+
+  # --- Grafana / observability links ----------------------------------------
+  # Nexus does NOT deploy or proxy Grafana. This block only (a) surfaces a
+  # link in the console and (b) optionally emits grafana-operator CRs for
+  # clusters that run it. Grafana being absent or down never affects the
+  # gateway request path.
+  #
+  # publicGrafanaUrl is the browser-reachable base of the CUSTOMER's own
+  # Grafana. Empty ⇒ GET /api/ui/observability returns {} and the console
+  # simply omits the "Open in Grafana" link.
+  publicGrafanaUrl: ""            # NEXUS_PUBLIC_GRAFANA_URL
+  grafana:
+    # Emit grafana-operator (grafana.integreatly.org/v1beta1) CRs so an
+    # operator-managed Grafana picks up the three bundled dashboards.
+    # Leave false unless your cluster actually runs grafana-operator;
+    # with plain Grafana, import files/grafana-dashboards/*.json by hand
+    # or point Grafana's sidecar at the rendered ConfigMaps.
+    enabled: false
+    dashboardsEnabled: true
+    folder: "Nexus"
+    # Prefix for generated CR/ConfigMap names. Keeps chart-managed
+    # dashboards from colliding with any hand-applied copies.
+    namePrefix: "chart-"
+    # Which Grafana instance the operator should reconcile into.
+    instanceSelector:
+      matchLabels: {}             # e.g. { dashboards: "grafana" }
+    # Alert rule group + contact point. Requires folderUID; both must be
+    # set or the alert objects are skipped.
+    alertsEnabled: false
+    folderUID: ""
+    alertsWebhook: ""             # REQUIRED when alertsEnabled: true
+    # Optional Basic-auth reverse proxy in front of a Grafana that has no
+    # SSO of its own. SECURITY: this injects a shared Grafana admin
+    # credential for everyone who can reach the proxy. Leave disabled
+    # unless you have read docs/customer-self-hosted-security.md.
+    authProxy:
+      enabled: false
+      host: ""                    # hostname for the proxy Ingress
+      upstreamService: ""         # e.g. grafana.monitoring.svc.cluster.local:3000
+      adminSecret: ""             # name of a Secret holding the Grafana admin password
+
+  # --- Go runtime tuning ----------------------------------------------------
+  # These map directly to the Go runtime env vars GOMEMLIMIT and GOGC. Set
+  # `gomemlimit` to roughly `0.85 * resources.limits.memory` to give the GC
+  # an advisory target; otherwise Go's default behaviour is unbounded.
+  # Leave empty to disable.
+  runtime:
+    gomemlimit: ""                # GOMEMLIMIT; e.g. 768MiB
+    gogc: ""                      # GOGC; e.g. 100
+
+  # NEXUS_MAX_CONCURRENT_PER_KEY caps in-flight requests per virtual key
+  # on a single replica. 0 = disabled (RPM-only enforcement). Recommended
+  # for production: 16–32 for shared pools, 4–8 for spotty model backends.
+  maxConcurrentPerKey: 0
 
 # Service-scoped metrics surface (V3 observability).
 # Toggling this on:
@@ -188,79 +397,47 @@ metrics:
     relabelings: []
     metricRelabelings: []
 
-
-  # --- V4 failover alert sinks --------------------------------------------
-  # Both URLs are independently opt-in; empty means "no goroutine, no DNS".
-  # The literal noop notifier (`internal/router/notifier.go`) is wired so
-  # the gateway stays metric-only when these are blank. Set BOTH (or one)
-  # in production so a primary going bad lights up the channel you actually
-  # read on a Saturday morning.
-  failoverWebhook: ""           # NEXUS_FAILOVER_WEBHOOK — generic JSON POST
-  failoverSlack: ""             # NEXUS_FAILOVER_SLACK_WEBHOOK
-  failoverAlertCooldown: 0s     # NEXUS_FAILOVER_ALERT_COOLDOWN; 0 = off
-
-  # --- SSO (Keycloak or any standard OIDC IdP, V5+) -------------------------
-  # Independent of any other knob. Empty issuer ⇒ SSOConfig.Enabled()=false
-  # ⇒ /api/auth/sso/* routes are not registered, the UI hides the button.
-  # Set issuer + clientId + redirectUrl here; put the client secret under
-  # secrets.ssoClientSecret below. Keycloak example:
-  #   issuer:      "https://keycloak.example/realms/cozy"
-  #   clientId:    "nexus-console"
-  #   redirectUrl: "https://console.example/api/auth/sso/callback"
-  # The redirectUrl MUST be registered in your IdP as a valid redirect URI;
-  # mismatches cause OIDC state-mismatch errors on /api/auth/sso/callback.
-  sso:
-    issuer: ""                  # NEXUS_SSO_ISSUER
-    clientId: ""                # NEXUS_SSO_CLIENT_ID
-    redirectUrl: ""             # NEXUS_SSO_REDIRECT_URL
-    label: ""                   # NEXUS_SSO_LABEL  (defaults to "SSO" in code)
-
-  # --- Metabase BI adapter (mirror of the V3 OTLP toggle) --------------------
-  # Empty url means the adapter is fully off — NewMetabaseBootstrapper returns
-  # nil, no goroutines, no DNS, no boot network calls. Set the URL to point at
-  # a Metabase instance (the `metabase` service in deploy/docker-compose.yml's
-  # `bi` profile fits; `http://metabase.observability.svc.cluster.local:3000`
-  # works in cluster). The bootstrap is one-shot and idempotent — credentials
-  # change by re-deploying Nexus, never a side-effect during request handling.
-  metabase:
-    url: ""                       # NEXUS_METABASE_URL
-    user: ""                      # NEXUS_METABASE_USER
-    password: ""                  # NEXUS_METABASE_PASSWORD
-    clickhouseUrl: ""             # NEXUS_METABASE_CLICKHOUSE_URL (http://host:8123?database=...)
-    postgresUrl: ""               # NEXUS_METABASE_POSTGRES_URL (postgres://...)
-    seedDir: ""                   # NEXUS_METABASE_SEED_DIR (optional).
-                                  # When non-empty AND seedFromExisting is false,
-                                  # a ConfigMap "nexus-metabase-seed" is rendered
-                                  # containing the 3 bundled reference JSONs
-                                  # (01-overview, 02-llm-spend, 03-eval-quality)
-                                  # and mount-bound into the pod. Defaults the
-                                  # operator off (empty string) so unset
-                                  # environments don't accidentally clobber a
-                                  # Metabase instance with our dashboards.
-    seedFromExisting: ""          # Optional: name of an existing ConfigMap to
-                                  # mount at seedDir instead of rendering our
-                                  # own. Useful when an operator wants to
-                                  # preload dashboards owned by their team.
-    extraSeeds: {}                # Map of  filename -> JSON body  for seeds to
-                                  # add to the rendered ConfigMap alongside
-                                  # the bundled three. The bootstrapper iterates
-                                  # every *.json in the mounted dir, so each
-                                  # entry here becomes another collection.
-    healthTimeout: "90s"          # NEXUS_METABASE_HEALTH_TIMEOUT
-    requestTimeout: "10s"         # NEXUS_METABASE_REQUEST_TIMEOUT
-
-# --- V5 high-concurrency tuning ---------------------------------------------
-  # These map directly to the Go runtime env vars GOMEMLIMIT and GOGC. Set
-  # `gomemlimit` to roughly `0.85 * container.limits.memory` to give the GC
-  # an advisory target; otherwise Go's default behaviour is unbounded.
-  # Leave empty to disable (zero-dep mode).
-  runtime:
-    gomemlimit: ""           # GOMEMLIMIT; e.g. 768MiB
-    gogc: ""                 # GOGC; e.g. 100
-  # NEXUS_MAX_CONCURRENT_PER_KEY caps in-flight requests per virtual key
-  # on a single replica. 0 = disabled (RPM-only enforcement). Recommended
-  # for production: 16–32 for shared pools, 4–8 for spotty model backends.
-  maxConcurrentPerKey: 0
+# --- Schema migrations -------------------------------------------------------
+# Migrations run as a Helm pre-install/pre-upgrade hook Job, using the SAME
+# image tag and the SAME ConfigMap/Secret as the Deployment. Helm waits for the
+# Job and ABORTS the release if it fails, so a bad migration is a failed
+# `helm upgrade` you can read the logs of, rather than a fleet of pods that
+# started against a schema they do not match.
+#
+# The application also verifies at boot: with NEXUS_AUTO_MIGRATE unset it checks
+# the schema_migrations ledger and reports NotReady on /readyz - listing the
+# outstanding migrations - instead of serving traffic.
+#
+# There are no down migrations. Schema changes are additive, so rolling the
+# application back does not require touching the schema. See
+# docs/customer-self-hosted-upgrade-rollback.md.
+migrations:
+  # Set false only if you advance the schema through your own pipeline (e.g. a
+  # DBA-gated change process). If you do, you must run `nexus migrate` before
+  # the rollout or every pod will stay NotReady.
+  enabled: true
+  # all | postgres | clickhouse
+  engine: "all"
+  # Overall deadline for the migrate command, including time spent waiting for
+  # the Postgres advisory lock.
+  timeout: "5m"
+  # 0 = do not retry. A migration failure is nearly always deterministic
+  # (bad SQL, missing permission), so retrying mostly obscures the real error.
+  # Raise to 1-2 if your database endpoint is prone to transient DNS failures.
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  # DANGER. Accepts an already-applied migration whose file content changed,
+  # which normally aborts because the recorded schema and the file no longer
+  # agree. Only enable after verifying the schema by hand, and turn it back off.
+  allowChecksumDrift: false
+  podAnnotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
 
 # --- Dependency wiring -------------------------------------------------------
 # This chart does NOT deploy databases; it connects to external/managed ones
@@ -296,6 +473,14 @@ secrets:
   masterKey: ""
   judgeApiKey: ""
   embeddingsApiKey: ""
+  # Resend API key for the outgoing invite email transport, used when
+  # config.email.provider is "resend" (or auto-detected). Must have
+  # `Sending access`. Empty disables the Resend transport without
+  # affecting the invite row + URL the admin copies manually.
+  resendApiKey: ""
+  # SMTP password / app-password, used when config.email.provider is
+  # "smtp". Pair with config.email.smtp.host / .username.
+  smtpPassword: ""
   # Bootstrap the first console admin (BYOK). Only used on first boot when the
   # org has no users yet; safe to leave set afterward. Provide both to enable.
   adminEmail: ""
@@ -348,6 +533,10 @@ securityContext:
     drop:
       - ALL
 
+# Liveness answers "is this process wedged, should the kubelet restart it".
+# It deliberately probes /healthz, which has NO dependency checks: restarting a
+# pod does not apply a migration or resurrect a database, so making liveness
+# depend on either turns a transient outage into a restart storm.
 livenessProbe:
   httpGet:
     path: /healthz
@@ -357,9 +546,17 @@ livenessProbe:
   timeoutSeconds: 2
   failureThreshold: 3
 
+# Readiness answers "should this pod receive traffic right now". /readyz reports
+# schema and required-dependency state, so a pod whose schema is behind the
+# binary is kept out of the Service instead of returning 500s to the customer's
+# applications. The JSON body names the failing condition, e.g.
+# "postgres_schema: 1 migration(s) outstanding (postgres/014_invite_tokens.sql)".
+#
+# failureThreshold is higher than liveness's on purpose: a pod that is merely
+# waiting for the migration Job should drop out of the Service, not be killed.
 readinessProbe:
   httpGet:
-    path: /healthz
+    path: /readyz
     port: gateway
   initialDelaySeconds: 3
   periodSeconds: 10
@@ -405,4 +602,27 @@ autoscaling:
 # PodDisruptionBudget for safer node drains (Talos rolling upgrades).
 podDisruptionBudget:
   enabled: false
+  # Set exactly one of minAvailable / maxUnavailable. Both are passed
+  # through verbatim; PodDisruptionBudget rejects having both.
   minAvailable: 1
+  maxUnavailable: null
+
+# --- EvalPlugin manifests -----------------------------------------------------
+# Declarative external-eval manifests rendered into ConfigMaps and mounted at
+# config.evalPluginDir (/etc/nexus/eval-plugins) for the gateway to load.
+# Credentials referenced by a manifest's spec.service.auth.secretRef must be
+# projected separately through `envFrom` (see the comment on envFrom below).
+#
+#   eval:
+#     plugins:
+#       configMaps:
+#         - name: nexus-eval-plugins
+#           files:
+#             - path: langfuse-judge.yaml
+#               content: |
+#                 apiVersion: nexus.ffx.ai/v1
+#                 kind: EvalPlugin
+#                 ...
+eval:
+  plugins:
+    configMaps: []

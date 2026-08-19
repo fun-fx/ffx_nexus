@@ -117,11 +117,11 @@ func (s *scheduleStub) SetScheduleEnabled(
 	return errors.New("not found")
 }
 
-func (s *scheduleStub) GetLatestSettledByModel(_ context.Context, _ string) (core.BenchmarkRun, error) {
+func (s *scheduleStub) GetLatestSettledByModel(_ context.Context, _, _ string) (core.BenchmarkRun, error) {
 	return core.BenchmarkRun{}, errors.New("not found")
 }
 
-func (s *scheduleStub) ListRecentSettledByModel(_ context.Context, _ string, _ int) ([]core.RecentBenchmarkRun, error) {
+func (s *scheduleStub) ListRecentSettledByModel(_ context.Context, _, _ string, _ int) ([]core.RecentBenchmarkRun, error) {
 	return nil, nil
 }
 

@@ -6,21 +6,41 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
 )
 
-// orgID resolves the tenant for a request. Multi-tenant auth (SSO/RBAC) is a
-// commercial feature; OSS defaults to a single "default" org.
+// orgID resolves the tenant for a request.
+//
+// The authenticated session decides. If a session is present, its org wins and
+// the X-Org-Id header is ignored entirely — a header cannot move a caller into
+// another org.
+//
+// This used to read the header first and fall back to "default". Any client
+// could therefore set `X-Org-Id: <other-team>` and have keys, credentials,
+// spend, audit rows and eval plugins resolved in that org. A single-customer
+// installation still divides teams and departments into orgs, so that was a
+// cross-team boundary failure inside the customer, and audit rows were written
+// with an org the caller chose for themselves.
+//
+// The header is honoured only when there is no session at all. Pre-login flows
+// genuinely need it: POST /api/auth/login and /api/auth/register have to know
+// which org to authenticate against before any session exists. Those paths do
+// not read tenant data — they are the ones creating the session that will pin it.
 func orgID(r *http.Request) string {
-	if v := r.Header.Get("X-Org-Id"); v != "" {
+	if u, ok := currentUser(r); ok && u.OrgID != "" {
+		return u.OrgID
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Org-Id")); v != "" {
 		return v
 	}
-	return "default"
+	return core.DefaultOrgID
 }
 
 // requireStore writes a 503 when the control-plane store is unavailable.
@@ -36,7 +56,7 @@ func (s *Server) requireStore(w http.ResponseWriter) bool {
 
 // --- Virtual keys ---
 
-func (s *Server) listKeys(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listKeys(w http.ResponseWriter, r *http.Request, _ core.User) {
 	if !s.requireStore(w) {
 		return
 	}
@@ -98,7 +118,7 @@ func (s *Server) revokeKey(w http.ResponseWriter, r *http.Request, u core.User) 
 
 // --- Provider credentials ---
 
-func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listCredentials(w http.ResponseWriter, r *http.Request, _ core.User) {
 	if !s.requireStore(w) {
 		return
 	}
@@ -225,7 +245,7 @@ func (s *Server) writeStoreErr(w http.ResponseWriter, err error, msg string) {
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request, _ core.User) {
 	opts, err := parseAuditListOptions(r.URL.Query())
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 		return
 	}
 	if !s.requireStore(w) {

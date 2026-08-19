@@ -57,7 +57,7 @@ func TestAuthConfigSSOFieldsDefaults(t *testing.T) {
 // scoped to /api/auth/sso so JS on the SPA cannot read or replay it.
 func TestSSOStateCookieRoundTrip(t *testing.T) {
 	w := httptest.NewRecorder()
-	setSSOStateCookie(w, "abc123")
+	newTestServer().setSSOStateCookie(w, "abc123")
 
 	// Parse the Set-Cookie header that the helper wrote.
 	var set string

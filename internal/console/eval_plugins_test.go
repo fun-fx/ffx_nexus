@@ -25,7 +25,7 @@ type stubTester struct {
 	err error
 }
 
-func (s *stubTester) Test(_ context.Context, _ string) (Result, error) {
+func (s *stubTester) Test(_ context.Context, _, _ string) (Result, error) {
 	return s.res, s.err
 }
 

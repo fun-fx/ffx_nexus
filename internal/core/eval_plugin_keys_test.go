@@ -54,7 +54,7 @@ func TestEvalPluginKeysRoundTrip(t *testing.T) {
 
 	want := map[string]string{
 		"public_key": "pk-lf-4bcc31ab-267b-48ed-81e5-d4b26c3ec487",
-		"secret_key": "sk-lf-4fd2431b-d959-414d-b47e-31d6172007cc",
+		"secret_key": "sk-lf-4fd2431b-d959-414d-b47e-31d6172007cc", // gitleaks:allow synthetic Langfuse-shaped value; round-trips the vault, never authenticates
 	}
 	if err := store.SaveEvalPluginKeys(ctx, "langfuse-judge", want); err != nil {
 		t.Fatalf("save: %v", err)

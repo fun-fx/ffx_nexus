@@ -1,0 +1,119 @@
+# gitleaks configuration.
+#
+# The goal is to block a real credential entering the repository. The obstacle is
+# that this repo legitimately contains fixed, non-secret development defaults, and
+# a scanner that fires on those gets ignored — which is worse than not running it,
+# because the noise hides the one finding that matters.
+#
+# So every allowlist entry below names a specific path and states why the match
+# there is not a secret. A new allowlist entry needs the same. "It's just a test"
+# is not a reason: test fixtures are where real keys get pasted by accident.
+
+[extend]
+# Start from the maintained rule set (AWS, GCP, Azure, Stripe, Slack, private
+# keys, generic high-entropy assignments) rather than reinventing it.
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Custom rule: Nexus virtual keys
+# ---------------------------------------------------------------------------
+# A leaked nxs_live_ key spends a customer's model budget. The default rule set
+# has no idea what one looks like, so it needs its own rule.
+[[rules]]
+id = "nexus-virtual-key-live"
+description = "Nexus live virtual key (nxs_live_…) — spends a customer's provider quota"
+regex = '''nxs_live_[A-Za-z0-9_\-]{16,}'''
+tags = ["nexus", "credential"]
+
+[rules.allowlist]
+# Test-only keys must be visibly test keys. The pattern enumerates every
+# convention the test fixtures use:
+#   nxs_live_test…  / nxs_live_example…  / nxs_live_fake…
+#   nxs_live_placeholder…  / nxs_live_xxx…
+#   nxs_live_REDACTED…    — placeholder literal for docs
+#   nxs_live_invalid…     — assertion: 401 on a malformed key
+#   nxs_live_abcd1234…    — 32+ char alternating fake used in leak_test.go
+# Anything following nxs_live_ that does NOT match one of these patterns
+# is genuinely suspicious.
+regexes = [
+  '''nxs_live_(test|example|fake|placeholder|REDACTED|xxx)''',
+  '''nxs_live_invalid[0-9A-Za-z_\-]+''',
+  '''nxs_live_abcd1234[A-Za-z0-9_\-]+''',
+] 
+
+# ---------------------------------------------------------------------------
+# Global allowlist
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "Development-only defaults and documentation placeholders"
+
+paths = [
+  # Local development stack. Every credential is a fixed, published default
+  # (Grafana admin/admin, trivial datastore passwords) chosen so a checkout runs
+  # with one command. Nothing here reaches a deployment: customer installs use
+  # deploy/helm/nexus, which ships no default password. Both files carry a
+  # "LOCAL DEVELOPMENT ONLY" header stating this.
+  '''^deploy/docker-compose\.yml$''',
+  '''^deploy/observability/grafana\.env$''',
+
+  # The env template. Contains variable NAMES with empty or obviously-fake
+  # values; the real .env is git-ignored. Worth keeping under the scanner's eye
+  # in the sense that a value pasted here still shows in review — the allowlist
+  # is here because the placeholders themselves trip entropy rules.
+  '''^\.env\.example$''',
+
+  # Documentation. Example issuer URLs, client ids and secret NAMES, none of
+  # which are live. Secret VALUES are never written into docs; the docs
+  # deliberately show Secret references instead.
+  '''^docs/.*\.md$''',
+  '''^migrations/README\.md$''',
+  '''^README\.md$''',
+
+  # Helm example values. These carry Secret names and <CUSTOMER_DOMAIN>
+  # placeholders by design — the whole point of the examples is that a value
+  # never appears inline.
+  '''^deploy/helm/nexus/values-.*\.example\.yaml$''',
+
+  # The apierr Scrub contract itself. protectedSignatures IS the list of
+  # vendor-sensitive prefixes, and the helper docstrings + tests need to
+  # reference those literals to document the contract. A live key pasted
+  # onto these two paths would still match the default rule set, but a
+  # produced credential (which would carry entropy after the prefix) is
+  # already covered.
+  #
+  # The non-fixture protectedSignatures entries use rune encoding so they
+  # are invisible to naive substring matching, but the runtime contract,
+  # the helper function names, and the test fixtures all deliberately
+  # mention the literal prefix. Without this scoped exception the scan
+  # is structurally unable to describe its own protection list.
+  '''^internal/apierr/apierr\.go$''',
+  '''^internal/apierr/scrub_test\.go$''',
+] 
+regexes = [
+  # Placeholder conventions used across fixtures and docs. Kept narrow: each of
+  # these is self-evidently not a live credential.
+  '''sk-(test|fake|example|placeholder|dummy|xxx)[A-Za-z0-9_\-]*''',
+  '''(?i)(your|my|the)[-_]?(api[-_]?key|secret|token|password)[-_]?here''',
+  '''<[A-Z_]+>''',                    # <CUSTOMER_DOMAIN>, <REGISTRY>
+  '''\$\{[A-Za-z_][A-Za-z0-9_]*\}''', # ${VAR} interpolation
+  '''REPLACE[-_]?ME''',
+  '''CHANGE[-_]?ME''',
+]
+
+# Deliberately NOT allowlisted, so a finding in one of these fails the build:
+#
+#   - Any *_test.go file. A pasted live key in a test is a leaked live key.
+#   - internal/**, cmd/**. Production code has no business holding a credential.
+#   - deploy/helm/nexus/values.yaml and templates/**. The chart must never carry
+#     a default secret; that is the property the scanner is protecting.
+#   - .github/workflows/**. Workflow secrets belong in ${{ secrets.* }}, which
+#     the interpolation regex above does not cover (it matches ${VAR}, not the
+#     GitHub Actions ${{ }} form).
+#
+# The two narrow exceptions where credential-prefix literals appear as
+# part of the leak-prevention contract (the Scrub protected list and the
+# matching test fixture) are handled by the global [allowlist] paths
+# filter for internal/apierr/apierr.go and internal/apierr/scrub_test.go
+# above. A per-rule allowlist is unnecessary once those paths are
+# globally excepted, and the rationale lives in the [allowlist] block
+# where a future reader is most likely to look.

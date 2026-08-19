@@ -64,12 +64,48 @@ type TraceSummary struct {
 	CredentialSource string `json:"credential_source"`
 }
 
-// RecentTraces returns the most recent traces, newest first. When userID is
-// non-empty, the result is scoped to that caller's traffic (BYOK dashboard).
+// orgScopeSQL is the tenant predicate every read in this file must carry.
+//
+// It is a plain equality on the indexed `org_id` column rather than a
+// normalising expression that folds the empty string onto the default org
+// inside the query, because such an expression cannot use the table's primary
+// key and turns every console page into a full scan. Rows written before the
+// column was populated hold the empty
+// string; they are reachable only through orgScopeArgs' default-org widening
+// below, so they surface to the installation's default org and to nobody else.
+const orgScopeSQL = `org_id = ?`
+
+// orgScopeArgs returns the bind values for orgScopeSQL, plus the extra
+// predicate needed to adopt pre-attribution rows.
+//
+// An empty orgID is NOT widened to "match everything": it matches no rows.
+// That is deliberate. A caller that forgets to thread the tenant through gets
+// an empty console panel — annoying, reported, and fixed — whereas the
+// permissive reading would hand one department another department's prompts
+// and nobody would ever file a bug.
+func orgScopeClause(orgID string) (string, []any) {
+	if orgID == defaultOrgID {
+		// The default org adopts rows recorded before org attribution
+		// existed. Any other org must not: widening for them would let a
+		// department read the pre-upgrade history of the whole installation.
+		return `(org_id = ? OR org_id = '')`, []any{orgID}
+	}
+	return orgScopeSQL, []any{orgID}
+}
+
+// defaultOrgID mirrors core.DefaultOrgID. It is duplicated rather than
+// imported because internal/observability sits below internal/core in the
+// dependency order and importing upward would create a cycle through the
+// recorder that core's store constructs.
+const defaultOrgID = "default"
+
+// RecentTraces returns the most recent traces, newest first. Results are always
+// scoped to orgID; when userID is non-empty they are narrowed further to that
+// caller's traffic (BYOK dashboard).
 //
 // Exists for backwards compatibility; new callers should prefer TracePage,
 // which exposes a sliding time-window and a cursor for "Load older".
-func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]TraceSummary, error) {
+func (r *Reader) RecentTraces(ctx context.Context, limit int, orgID, userID string) ([]TraceSummary, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
@@ -81,9 +117,10 @@ func (r *Reader) RecentTraces(ctx context.Context, limit int, userID string) ([]
 		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
 		       session_id, turn_id, user_id, credential_source
 		FROM gateway_traces`
-	args := []any{}
+	orgCond, args := orgScopeClause(orgID)
+	query += ` WHERE ` + orgCond
 	if userID != "" {
-		query += ` WHERE user_id = ?`
+		query += ` AND user_id = ?`
 		args = append(args, userID)
 	}
 	query += ` ORDER BY timestamp DESC LIMIT ?`
@@ -158,8 +195,14 @@ type TracePage struct {
 }
 
 // TracePage returns one cursor-paged, filter-narrowed slice of traces bounded
-// by the supplied time window. When `userID` is non-empty the result is
-// scoped to that caller's traffic, identical to RecentTraces.
+// by the supplied time window. Results are always scoped to `orgID`; when
+// `userID` is non-empty they are narrowed to that caller's traffic.
+//
+// The org scope is mandatory because this is the highest-value read in the
+// product: a trace row carries the model, the cost, the session and — when
+// content capture is enabled — the prompt itself. The admin console calls this
+// with an empty userID so an admin sees the whole team, which before the org
+// predicate existed meant the whole installation.
 //
 // `before` / `since` are RFC3339 timestamps (second or nano precision). A zero
 // value on either side collapses the bound to the underlying table TTL on
@@ -169,7 +212,7 @@ type TracePage struct {
 // can detect whether a next page exists without a second `COUNT(*)`. The
 // returned cursor's `before` is set to the timestamp of the last returned
 // row so the next call's `before=...` predicate continues from there.
-func (r *Reader) TracePage(ctx context.Context, before, since time.Time, limit int, userID string, filter TraceFilter) (TracePage, error) {
+func (r *Reader) TracePage(ctx context.Context, before, since time.Time, limit int, orgID, userID string, filter TraceFilter) (TracePage, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
@@ -177,7 +220,9 @@ func (r *Reader) TracePage(ctx context.Context, before, since time.Time, limit i
 	// We request limit+1 rows so we can detect "next page exists" without a
 	// `count()`. The last row is dropped below.
 	const probe = 1
-	rows, err := r.conn.Query(ctx, buildTracePageQuery(userID, before, since, limit+probe, filter), buildTracePageArgs(userID, before, since, limit+probe, filter)...)
+	rows, err := r.conn.Query(ctx,
+		buildTracePageQuery(orgID, userID, before, since, limit+probe, filter),
+		buildTracePageArgs(orgID, userID, before, since, limit+probe, filter)...)
 	if err != nil {
 		return TracePage{}, err
 	}
@@ -233,15 +278,16 @@ func cursorSince(since time.Time) string {
 // can pin the SQL shape without needing a real ClickHouse connection.
 //
 // Placeholder ordering (mirrored by buildTracePageArgs) is:
-//  1. user_id (if present)
-//  2. timestamp < (before)
-//  3. timestamp >= (since)
-//  4. provider_name (=)
-//  5. turn_id (=)
-//  6. status predicate (no args; uses inline literal `>= 400` or `< 400`)
-//  7. q ILIKE on four columns (the operator `%?%` repeats four times)
-//  8. LIMIT
-func buildTracePageQuery(userID string, before, since time.Time, limit int, filter TraceFilter) string {
+//  1. org_id (always present; first so the tenant bind can never drift)
+//  2. user_id (if present)
+//  3. timestamp < (before)
+//  4. timestamp >= (since)
+//  5. provider_name (=)
+//  6. turn_id (=)
+//  7. status predicate (no args; uses inline literal `>= 400` or `< 400`)
+//  8. q ILIKE on four columns (the operator `%?%` repeats four times)
+//  9. LIMIT
+func buildTracePageQuery(orgID, userID string, before, since time.Time, limit int, filter TraceFilter) string {
 	q := `
 		SELECT trace_id, timestamp, provider_name, request_model,
 		       response_model, input_tokens, output_tokens,
@@ -250,7 +296,8 @@ func buildTracePageQuery(userID string, before, since time.Time, limit int, filt
 		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
 		       session_id, turn_id, user_id, credential_source
 		FROM gateway_traces`
-	conds := []string{}
+	orgCond, _ := orgScopeClause(orgID)
+	conds := []string{orgCond}
 	if userID != "" {
 		conds = append(conds, "user_id = ?")
 	}
@@ -276,9 +323,7 @@ func buildTracePageQuery(userID string, before, since time.Time, limit int, filt
 		conds = append(conds,
 			"(request_model LIKE ? OR provider_name LIKE ? OR user_email LIKE ? OR guardrail_action LIKE ?)")
 	}
-	if len(conds) > 0 {
-		q += " WHERE " + strings.Join(conds, " AND ")
-	}
+	q += " WHERE " + strings.Join(conds, " AND ")
 	q += " ORDER BY timestamp DESC, trace_id DESC LIMIT ?"
 	return q
 }
@@ -287,8 +332,8 @@ func buildTracePageQuery(userID string, before, since time.Time, limit int, filt
 // caller MUST pass both to the driver in this exact order; ClickHouse binds
 // positionally. The `q` argument is wildcard-padded and percent/underscore
 // escaped here (NOT in the SQL string) so the SQL stays a single placeholder.
-func buildTracePageArgs(userID string, before, since time.Time, limit int, filter TraceFilter) []any {
-	args := []any{}
+func buildTracePageArgs(orgID, userID string, before, since time.Time, limit int, filter TraceFilter) []any {
+	_, args := orgScopeClause(orgID)
 	if userID != "" {
 		args = append(args, userID)
 	}
@@ -359,20 +404,20 @@ type TurnSummary struct {
 }
 
 // TurnPage returns the most recent agent turns in [since, before), newest
-// last-activity first. When userID is non-empty the result is scoped to
-// that caller's traffic.
+// last-activity first. Results are always scoped to orgID; when userID is
+// non-empty they are narrowed to that caller's traffic.
 //
 // A turn straddling the window edge is aggregated only over the calls
 // inside the window, so its counts can under-report at the boundary. That
 // is the same trade WindowStats makes and keeps the query a single
 // GROUP BY rather than a correlated lookup for each partially-matched key.
-func (r *Reader) TurnPage(ctx context.Context, before, since time.Time, limit int, userID string) ([]TurnSummary, error) {
+func (r *Reader) TurnPage(ctx context.Context, before, since time.Time, limit int, orgID, userID string) ([]TurnSummary, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
 	rows, err := r.conn.Query(ctx,
-		buildTurnPageQuery(userID, before, since),
-		buildTurnPageArgs(userID, before, since, limit)...)
+		buildTurnPageQuery(orgID, userID, before, since),
+		buildTurnPageArgs(orgID, userID, before, since, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -406,11 +451,12 @@ func (r *Reader) TurnPage(ctx context.Context, before, since time.Time, limit in
 // prefix keeps column and alias namespaces disjoint so that cannot happen.
 //
 // Placeholder ordering (mirrored by buildTurnPageArgs) is:
-//  1. user_id (if present)
-//  2. timestamp < (before)
-//  3. timestamp >= (since)
-//  4. LIMIT
-func buildTurnPageQuery(userID string, before, since time.Time) string {
+//  1. org_id (always present)
+//  2. user_id (if present)
+//  3. timestamp < (before)
+//  4. timestamp >= (since)
+//  5. LIMIT
+func buildTurnPageQuery(orgID, userID string, before, since time.Time) string {
 	q := `
 		SELECT if(turn_id = '', trace_id, turn_id) AS turn_group_key,
 		       min(timestamp) AS turn_first_at,
@@ -426,7 +472,8 @@ func buildTurnPageQuery(userID string, before, since time.Time) string {
 		       max(status_code) AS turn_status_code,
 		       any(user_id) AS turn_user_id
 		FROM gateway_traces`
-	conds := []string{}
+	orgCond, _ := orgScopeClause(orgID)
+	conds := []string{orgCond}
 	if userID != "" {
 		conds = append(conds, "user_id = ?")
 	}
@@ -436,16 +483,14 @@ func buildTurnPageQuery(userID string, before, since time.Time) string {
 	if !since.IsZero() {
 		conds = append(conds, "timestamp >= ?")
 	}
-	if len(conds) > 0 {
-		q += " WHERE " + strings.Join(conds, " AND ")
-	}
+	q += " WHERE " + strings.Join(conds, " AND ")
 	q += " GROUP BY turn_group_key ORDER BY turn_last_at DESC LIMIT ?"
 	return q
 }
 
 // buildTurnPageArgs mirrors buildTurnPageQuery's placeholder ordering.
-func buildTurnPageArgs(userID string, before, since time.Time, limit int) []any {
-	args := []any{}
+func buildTurnPageArgs(orgID, userID string, before, since time.Time, limit int) []any {
+	_, args := orgScopeClause(orgID)
 	if userID != "" {
 		args = append(args, userID)
 	}
@@ -478,9 +523,10 @@ type Stats struct {
 	GuardrailEvents   int64   `json:"guardrail_events"`
 }
 
-// WindowStats returns aggregate metrics over the trailing window. When userID
-// is non-empty, aggregates are scoped to that caller's traffic.
-func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID string) (Stats, error) {
+// WindowStats returns aggregate metrics over the trailing window, scoped to
+// orgID. When userID is non-empty, aggregates are narrowed further to that
+// caller's traffic.
+func (r *Reader) WindowStats(ctx context.Context, window time.Duration, orgID, userID string) (Stats, error) {
 	var s Stats
 	query := `
 		SELECT
@@ -497,6 +543,9 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, userID s
 		FROM gateway_traces
 		WHERE timestamp >= now() - INTERVAL ? SECOND`
 	args := []any{int64(window.Seconds())}
+	orgCond, orgArgs := orgScopeClause(orgID)
+	query += ` AND ` + orgCond
+	args = append(args, orgArgs...)
 	if userID != "" {
 		query += ` AND user_id = ?`
 		args = append(args, userID)
@@ -530,17 +579,17 @@ type ProviderStat struct {
 	CacheHits    int64   `json:"cache_hits"`
 }
 
-// ProviderStats returns per-provider aggregates over the trailing window.
-// Ordered by raw cost descending so the dashboard's "spend by provider"
-// widget can render the most expensive provider first. When userID is
-// non-empty, only the caller's traffic is counted.
+// ProviderStats returns per-provider aggregates over the trailing window for
+// one org. Ordered by raw cost descending so the dashboard's "spend by
+// provider" widget can render the most expensive provider first. When userID
+// is non-empty, only the caller's traffic is counted.
 //
 // Resource profile: one ClickHouse SELECT with a single GROUP BY. The
 // query has the same max_memory_usage budget as WindowStats() so the
 // response time lands in the same single-digit-ms range on the prod
 // gateway_traces table; callers that hit this endpoint more than once
 // per 30 s are expected to wrap it in in-memory cache at a higher layer.
-func (r *Reader) ProviderStats(ctx context.Context, window time.Duration, userID string, limit int) ([]ProviderStat, error) {
+func (r *Reader) ProviderStats(ctx context.Context, window time.Duration, orgID, userID string, limit int) ([]ProviderStat, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
@@ -556,6 +605,9 @@ func (r *Reader) ProviderStats(ctx context.Context, window time.Duration, userID
 		FROM gateway_traces
 		WHERE timestamp >= now() - INTERVAL ? SECOND`
 	args := []any{int64(window.Seconds())}
+	orgCond, orgArgs := orgScopeClause(orgID)
+	query += ` AND ` + orgCond
+	args = append(args, orgArgs...)
 	if userID != "" {
 		query += ` AND user_id = ?`
 		args = append(args, userID)
@@ -595,9 +647,20 @@ type EvalMetric struct {
 }
 
 // EvalSummary returns per-(evaluator, metric) aggregates from eval_scores over
-// the trailing window, ordered by sample count so the busiest metrics surface
-// first. Returns an empty slice when no scores exist.
-func (r *Reader) EvalSummary(ctx context.Context, window time.Duration) ([]EvalMetric, error) {
+// the trailing window for one org, ordered by sample count so the busiest
+// metrics surface first. Returns an empty slice when no scores exist.
+//
+// The org filter was absent, so quality and safety aggregates were
+// installation-wide: one team's admin saw pass rates computed over another
+// team's traffic. Historical rows written before org attribution existed read as
+// the default org (see migrations/postgres/015_eval_scores_org.sql).
+func (r *Reader) EvalSummary(ctx context.Context, window time.Duration, orgID string) ([]EvalMetric, error) {
+	// orgID is not normalised here, matching the spend queries in this file: the
+	// caller owns tenant resolution (console.orgID binds it to the session and
+	// never returns empty). An empty value therefore matches no rows, which
+	// fails closed — the wrong direction for a bug report, the right one for a
+	// boundary.
+	orgCond, orgArgs := orgScopeClause(orgID)
 	rows, err := r.conn.Query(ctx, `
 		SELECT evaluator, metric,
 		       avg(score) AS avg_score,
@@ -605,9 +668,10 @@ func (r *Reader) EvalSummary(ctx context.Context, window time.Duration) ([]EvalM
 		       toInt64(count()) AS samples
 		FROM eval_scores
 		WHERE timestamp >= now() - INTERVAL ? SECOND
+		  AND `+orgCond+`
 		GROUP BY evaluator, metric
 		ORDER BY samples DESC`,
-		int64(window.Seconds()))
+		append([]any{int64(window.Seconds())}, orgArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -639,25 +703,32 @@ type UserQuality struct {
 
 // UserQualitySummary returns per-user quality/safety aggregates joined with
 // per-user spend over the trailing window, ordered by sample count. Users with
-// no recorded user_id (legacy/org-level traffic) are excluded. When userID is
-// non-empty, the result is restricted to that single user (for the /me/quality
-// endpoint).
-func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, userID string) ([]UserQuality, error) {
+// no recorded user_id (legacy/org-level traffic) are excluded. Results are
+// always scoped to orgID; when userID is non-empty they are restricted to that
+// single user (for the /me/quality endpoint).
+//
+// The admin endpoint behind this (/api/users/quality) passes an empty userID to
+// mean "everyone", which without the org predicate meant every user in the
+// installation — an admin of one department ranking another department's staff
+// by quality score. The org bind closes that; the per-user leaderboard is now
+// per-tenant.
+func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, orgID, userID string) ([]UserQuality, error) {
 	secs := int64(window.Seconds())
-	// The user filter is appended to BOTH the eval_scores and gateway_traces
-	// CTEs, so the bind count depends on whether userID is set. SQL placeholders
+	orgCond, orgArgs := orgScopeClause(orgID)
+	// The org and user filters are appended to BOTH the eval_scores and
+	// gateway_traces CTEs, so the bind list repeats per CTE. SQL placeholders
 	// appear in textual order:
-	//   eval_scores:        INTERVAL ?  [user_id]
-	//   gateway_traces:     INTERVAL ?  [user_id]
-	// i.e. [secs, userID, secs, userID] when scoped, [secs, secs] otherwise.
-	var userFilter string
-	args := []any{secs, secs}
+	//   eval_scores:    INTERVAL ?  org_id  [user_id]
+	//   gateway_traces: INTERVAL ?  org_id  [user_id]
+	scopeFilter := ` AND ` + orgCond
+	perCTE := append([]any{secs}, orgArgs...)
 	if userID != "" {
-		userFilter = ` AND user_id = ?`
-		args = []any{secs, userID, secs, userID}
+		scopeFilter += ` AND user_id = ?`
+		perCTE = append(perCTE, userID)
 	} else {
-		userFilter = ` AND user_id != ''`
+		scopeFilter += ` AND user_id != ''`
 	}
+	args := append(append([]any{}, perCTE...), perCTE...)
 	rows, err := r.conn.Query(ctx, `
 		WITH
 		  q AS (
@@ -666,7 +737,7 @@ func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, u
 		           avg(passed) AS pass_rate,
 		           toInt64(count()) AS samples
 		    FROM eval_scores
-		    WHERE timestamp >= now() - INTERVAL ? SECOND`+userFilter+`
+		    WHERE timestamp >= now() - INTERVAL ? SECOND`+scopeFilter+`
 		    GROUP BY user_id
 		  ),
 		  t AS (
@@ -674,7 +745,7 @@ func (r *Reader) UserQualitySummary(ctx context.Context, window time.Duration, u
 		           sum(cost_usd) AS cost_usd,
 		           toInt64(count()) AS requests
 		    FROM gateway_traces
-		    WHERE timestamp >= now() - INTERVAL ? SECOND`+userFilter+`
+		    WHERE timestamp >= now() - INTERVAL ? SECOND`+scopeFilter+`
 		    GROUP BY user_id
 		  )
 		SELECT q.user_id,

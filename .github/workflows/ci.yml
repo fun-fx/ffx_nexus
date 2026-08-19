@@ -64,6 +64,191 @@ jobs:
           fi
           govulncheck ./...
 
+  migrations:
+    name: Schema migrations (real Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Migrations are the one subsystem where a fake is not good enough:
+        # `CREATE TABLE IF NOT EXISTS` racing in the system catalogue, advisory
+        # lock semantics, and transactional DDL only behave like Postgres on
+        # Postgres. These tests found a real concurrency bug that unit tests
+        # with a fake executor could not.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: migration integration tests
+        env:
+          NEXUS_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+        # Covers: fresh install creates every table (including the two that
+        # earlier defects left permanently absent), re-running applies nothing,
+        # five concurrent migrators apply each migration exactly once, adopting
+        # a pre-ledger database repairs it without data loss, checksum drift
+        # aborts, and a failed migration is not recorded as applied.
+        run: go test ./internal/migrate/ -race -count=1 -v
+
+      - name: schema contract — every SQL statement validates against the migrated schema
+        env:
+          NEXUS_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+        # The structural fix for a defect that has now happened three times: code
+        # queried something the migration set never created (invite_tokens, a
+        # benchmark_runs column, benchmark_schedules.last_run_id). Extracts every
+        # SQL statement from the Go source and hands each to Postgres as
+        # `PREPARE ... AS <statement>`, which validates every table, column and
+        # type without executing anything. A missing identifier fails here with the
+        # file, the line and the SQLSTATE.
+        run: go test ./internal/schemacontract/ -count=1 -v
+
+      - name: invite user end-to-end on a freshly migrated database
+        env:
+          NEXUS_TEST_POSTGRES_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+        # The acceptance criterion for the migration rework: invites used to 500
+        # on every fresh install because invite_tokens was never created. Runs
+        # the real day-one customer flow (migrate, bootstrap admin, invite,
+        # accept, log in as member) against a real server and database.
+        run: ./scripts/e2e_invite_flow.sh
+
+      - name: invite lifecycle and cross-org isolation integration tests
+        env:
+          NEXUS_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+        # Includes the cross-org IDOR regressions. These need real SQL: the
+        # defects were missing WHERE clauses in methods that accepted an orgID
+        # parameter and used it only for the audit row, so the Go signature reads
+        # as correct and only executing it against two orgs' rows shows the
+        # boundary is not enforced.
+        # The WHOLE package, not -run Integration. Restricting the selector is
+        # how a fresh-install defect stayed hidden: benchmark_schedules_test.go
+        # is not named *Integration, so CI never selected it, and the default
+        # `go test ./...` skips it for want of NEXUS_TEST_POSTGRES_URL. Reading a
+        # schedule back had been failing with "column last_run_id does not
+        # exist" on every database built from the migration set.
+        run: go test ./internal/core/ -count=1 -timeout 8m -v
+
+      - name: empty-install smoke — every console read answers on a fresh database
+        env:
+          NEXUS_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+        # Day one, as the customer experiences it. Walks chi's routing tree and
+        # calls every GET the console serves against an empty, freshly migrated
+        # database with a real admin session, asserting no 5xx. Schema defects
+        # surface on the FIRST read and nowhere earlier, so this is the cheapest
+        # check that covers the whole surface — and it covers new screens
+        # automatically, because the routes are discovered rather than listed.
+        #
+        # A 503 from an unwired subsystem fails unless a reason is recorded, for
+        # the same reason a -run filter does: a route that refuses before reaching
+        # SQL is invisible to a schema check while still looking like a pass.
+        run: go test ./internal/console/ -count=1 -v
+
+      - name: readiness withholds traffic until the schema is current
+        env:
+          NEXUS_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+        # The deployment contract behind the pre-upgrade migration Job: a pod
+        # whose schema is behind its binary answers 503 on /readyz, so a failed
+        # or skipped migration stops the rollout instead of serving customer
+        # traffic against missing tables. Also asserts the payload names the
+        # pending migrations without echoing the database URL.
+        # The whole package. See internal/citest/selection_test.go: a -run filter
+        # excludes tests without reporting what it left out, which is how the
+        # benchmark_schedules column defect survived. cmd/nexus's non-integration
+        # tests pass with a database present, so there is nothing to exclude.
+        run: go test ./cmd/nexus/ -count=1 -v
+
+      - name: migrate CLI against an empty database
+        env:
+          NEXUS_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/clitest?sslmode=disable
+        run: |
+          set -euo pipefail
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE clitest'
+          go build -o bin/nexus ./cmd/nexus
+
+          # --check on an empty database must report outstanding work (exit 2).
+          set +e; ./bin/nexus migrate --check; rc=$?; set -e
+          [[ "$rc" == "2" ]] || { echo "expected exit 2 on an unmigrated DB, got $rc"; exit 1; }
+
+          ./bin/nexus migrate
+
+          # Now it must be current (exit 0)...
+          ./bin/nexus migrate --check
+
+          # ...and re-running must apply nothing.
+          ./bin/nexus migrate 2>&1 | tee /tmp/second.log
+          grep -q 'applied=0' /tmp/second.log \
+            || { echo "re-run applied migrations again"; cat /tmp/second.log; exit 1; }
+
+          # The two tables earlier defects left missing must now exist.
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d clitest -tAc \
+            "SELECT to_regclass('invite_tokens') IS NOT NULL" | grep -qx t \
+            || { echo "invite_tokens missing"; exit 1; }
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d clitest -tAc \
+            "SELECT count(*) FROM information_schema.columns
+             WHERE table_name='benchmark_runs' AND column_name='schedule_id'" | grep -qx 1 \
+            || { echo "benchmark_runs.schedule_id missing"; exit 1; }
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: chart render regression suite
+        # Asserts on RENDERED output, not just lint. `helm lint` passed for
+        # months while config.sso / config.email / config.metabase were
+        # documented one indent level too deep to be read by any template, so
+        # an operator could configure their IdP, install cleanly, and get no
+        # SSO with zero diagnostics. This suite fails if a customer-facing
+        # setting stops reaching the ConfigMap, if the historical
+        # mis-indentation is ever accepted again, if a vendor domain shows up
+        # as a production default, or if a declared knob has no reader.
+        run: ./scripts/test_helm_render.sh
+
+      - name: kubeconform (manifest schema validation)
+        # Validates the rendered manifests against the upstream Kubernetes
+        # OpenAPI schemas, catching apiVersion/field mistakes that `helm
+        # template` happily renders. Prometheus Operator / grafana-operator
+        # CRs are skipped: their CRDs are not part of core Kubernetes.
+        run: |
+          KV=v0.6.7
+          curl -fsSL -o /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KV}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          for vf in values-staging.example.yaml values-production.example.yaml; do
+            echo "--- kubeconform: ${vf} ---"
+            helm template nexus-test deploy/helm/nexus \
+              -f "deploy/helm/nexus/${vf}" \
+            | /tmp/kubeconform \
+                -strict \
+                -summary \
+                -kubernetes-version 1.29.0 \
+                -skip ServiceMonitor,GrafanaDashboard,GrafanaContactPoint,GrafanaAlertRuleGroup \
+                -
+          done
+
   eval-regression:
     name: Eval regression gate
     runs-on: ubuntu-latest
@@ -89,6 +274,96 @@ jobs:
             -evaluator heuristic \
             -baseline datasets/regression_baseline.json \
             -tolerance 0.05
+
+  security:
+    name: Secret and image scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # gitleaks needs history to scan commits, not just the working tree. A
+          # secret that was committed and then removed in a later commit is still
+          # in the pack file and still compromised.
+          fetch-depth: 0
+
+      - name: gitleaks
+        # Blocks a credential entering the repository. The dev stack deliberately
+        # contains fixed non-secret defaults (admin/admin for the local Grafana,
+        # trivial datastore passwords in deploy/docker-compose.yml), so those
+        # paths are allowlisted in .gitleaks.toml with the reason recorded there.
+        # Everything else fails the build.
+        #
+        # Pin to zricethezav/gitleaks-action@v1: starting with the rename to
+        # gitleaks/gitleaks-action@v2 (June 2022) the action requires a
+        # commercial license for organization-owned repositories. v1 was the
+        # final MIT-licensed release and is sufficient: it scans the same
+        # gitleaks binary with the .gitleaks.toml allowlist. The license is a
+        # separate concern from the scan logic.
+        uses: zricethezav/gitleaks-action@v1
+        with:
+          # The config lives at the repo root (.gitleaks.toml) — not under
+          # .github/. The action's default config-path is
+          # .github/.gitleaks.toml, which is why an explicit override is
+          # required.
+          config-path: .gitleaks.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: build the image that would ship
+        # Scanning a locally built image rather than a published tag means a
+        # vulnerable base image or dependency is caught in the PR that introduces
+        # it, not after it has been pushed to a customer-facing registry.
+        run: docker build -t nexus:ci-scan .
+
+      - name: trivy image scan
+        uses: aquasecurity/trivy-action@v0.31.0
+        with:
+          image-ref: nexus:ci-scan
+          # Pin the scanner version. The action's default of v0.63.0 was
+          # retracted from the upstream release list, so setup-trivy fails
+          # before the scan runs. v0.74.0 is the current published tag and
+          # carries a working Alpine/glibc database.
+          version: v0.74.0
+          format: table
+          # HIGH and CRITICAL block. Lower severities are reported in the run log
+          # but do not fail: a self-hosted product cannot ship a release blocked
+          # on every LOW in a transitive OS package, and treating them all as
+          # blocking trains people to bypass the gate.
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+
+      - name: trivy config scan
+        # Catches insecure Kubernetes and Dockerfile patterns in the artefacts a
+        # customer actually applies: a container running as root, a missing
+        # readOnlyRootFilesystem, a privileged securityContext.
+        #
+        # The .devcontainer/Dockerfile intentionally runs as root because the
+        # dev container is the Docker-in-Docker host; trivy DS-0002 cannot be
+        # fixed there without breaking the dev workflow. eval-service/Dockerfile
+        # is now run-as-nobody in CI (see file). The skip list is therefore
+        # only the devcontainer image, not anything a customer ships.
+        uses: aquasecurity/trivy-action@v0.31.0
+        with:
+          scan-type: config
+          scan-ref: .
+          # Pin the scanner version. The action's default of v0.63.0 was
+          # retracted from the upstream release list, so setup-trivy fails
+          # before the scan runs. v0.74.0 is the current published tag and
+          # carries a working configuration-rule database.
+          version: v0.74.0
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          # The dev-container image is root-on-purpose (Docker-in-Docker).
+          # See .devcontainer/README.md for the rationale.
+          skip-files: .devcontainer/Dockerfile
 
   eval-service:
     name: Eval service (Python)

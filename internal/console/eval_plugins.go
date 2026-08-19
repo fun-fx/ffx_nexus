@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/evalplugin"
 )
@@ -50,8 +51,13 @@ type PluginWebhookReceiver interface {
 // Result.Message is the human-readable status the operator should
 // see next to the plugin row (e.g. "Auth accepted by Langfuse in
 // 124 ms" or the SDK error text on failure).
+// orgID is threaded through so resolution happens inside one tenant. The
+// {name} in the URL is client-supplied and plugin names are only unique per
+// org, so an org-blind lookup let an admin of one org probe another org's
+// plugin — using that org's stored vendor credentials, against that org's
+// quota, and reporting the vendor's reply back to the wrong tenant.
 type EvalPluginTester interface {
-	Test(ctx context.Context, ref string) (Result, error)
+	Test(ctx context.Context, orgID, ref string) (Result, error)
 }
 
 // Result is the typed outcome of a PluginTester.Test call. The HTTP
@@ -69,9 +75,15 @@ type Result struct {
 // scheduled-trigger plugin. The returned count tells the UI how many
 // buffered traces (if any) were flushed; for manual plugins the
 // buffer is normally empty because inline traces are not enqueued.
+//
+// orgID scopes the name resolution for the same reason as EvalPluginTester,
+// with a sharper consequence: firing drains the plugin's buffered traces and
+// dispatches them to its configured vendor. Resolving another org's plugin here
+// forwards traffic to that org's vendor account, so the tenant is part of the
+// call rather than something the implementation guesses.
 type PluginManualFirer interface {
-	FireManual(ctx context.Context, pluginName, trigger string) (int, error)
-	FireScheduled(ctx context.Context, pluginName, trigger string) (int, error)
+	FireManual(ctx context.Context, orgID, pluginName, trigger string) (int, error)
+	FireScheduled(ctx context.Context, orgID, pluginName, trigger string) (int, error)
 }
 
 // pluginFireBody is the JSON contract the console sends when it
@@ -114,7 +126,7 @@ func (s *Server) listEvalPlugins(w http.ResponseWriter, r *http.Request, _ core.
 	}
 	all, err := s.evalPlugins.List(r.Context(), orgID(r))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"plugins": all})
@@ -131,7 +143,7 @@ func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		return
 	}
 	if _, err := evalplugin.Decode([]byte(body.SpecYAML)); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 		return
 	}
 	rec := &evalplugin.PluginRecord{
@@ -148,11 +160,36 @@ func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		Enabled:  body.Enabled,
 	}
 	if err := s.evalPlugins.Save(r.Context(), rec); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.create", rec.ID, rec.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.create"), rec.ID, rec.Name)
 	writeJSON(w, http.StatusCreated, rec)
+}
+
+// pluginByIDForOrg is the {id} counterpart of lookupPluginForOrg: it fetches a
+// plugin record and refuses it if another org owns it.
+//
+// Get keys on the bare record id, so PATCH and DELETE were reachable across
+// orgs. That matters more here than for most records, because a plugin manifest
+// carries the vendor endpoint and the reference to the credential used to reach
+// it. Disabling another team's plugin silently stops their traces from being
+// scored, and there is no user-visible signal that scoring stopped.
+//
+// Returns ErrPluginNotFound for a foreign record, matching lookupPluginForOrg,
+// so neither route can be used to confirm that an id exists.
+func (s *Server) pluginByIDForOrg(ctx context.Context, orgID, id string) (*evalplugin.PluginRecord, error) {
+	rec, err := s.evalPlugins.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if rec == nil {
+		return nil, evalplugin.ErrPluginNotFound
+	}
+	if rec.OrgID != "" && evalplugin.NormalizeOrgID(rec.OrgID) != evalplugin.NormalizeOrgID(orgID) {
+		return nil, evalplugin.ErrPluginNotFound
+	}
+	return rec, nil
 }
 
 func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.User) {
@@ -161,13 +198,13 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 		return
 	}
 	id := chi.URLParam(r, "id")
-	existing, err := s.evalPlugins.Get(r.Context(), id)
+	existing, err := s.pluginByIDForOrg(r.Context(), orgID(r), id)
 	if err != nil {
 		if errors.Is(err, evalplugin.ErrPluginNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			s.fail(w, r, http.StatusNotFound, apierr.CodeNotFound, evalplugin.ErrPluginNotFound)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
 	var patch evalPluginPatch
@@ -178,7 +215,7 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 	if patch.SpecYAML != nil {
 		p, err := evalplugin.Decode([]byte(*patch.SpecYAML))
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 			return
 		}
 		existing.SpecYAML = *patch.SpecYAML
@@ -194,10 +231,10 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 		existing.Enabled = *patch.Enabled
 	}
 	if err := s.evalPlugins.Save(r.Context(), existing); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.update", existing.ID, existing.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.update"), existing.ID, existing.Name)
 	writeJSON(w, http.StatusOK, existing)
 }
 
@@ -207,16 +244,16 @@ func (s *Server) deleteEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		return
 	}
 	id := chi.URLParam(r, "id")
-	existing, err := s.evalPlugins.Get(r.Context(), id)
+	existing, err := s.pluginByIDForOrg(r.Context(), orgID(r), id)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusNotFound, apierr.CodeNotFound, err)
 		return
 	}
 	if err := s.evalPlugins.Delete(r.Context(), id); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.plugin.delete", id, existing.Name)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.delete"), id, existing.Name)
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": id})
 }
 
@@ -273,7 +310,13 @@ func (s *Server) pluginTest(w http.ResponseWriter, r *http.Request, _ core.User)
 		return
 	}
 	ref := chi.URLParam(r, "name")
-	res, err := s.pluginTester.Test(r.Context(), ref)
+	// The caller's org travels with the ref. Resolution happens inside the
+	// tester, which is also what makes the authenticated vendor call, so that
+	// is where the tenant boundary is enforced — one check at the place that
+	// does the dangerous thing, rather than a second copy here that would go
+	// stale. The console's job is to pass the session's org and never the
+	// client's claim about it.
+	res, err := s.pluginTester.Test(r.Context(), orgID(r), ref)
 	if err != nil {
 		// A failed probe is an application-level *result*, not a
 		// transport failure, so it must be reported with 200. When we
@@ -342,9 +385,9 @@ func (s *Server) pluginFireManual(w http.ResponseWriter, r *http.Request, user c
 	)
 	switch mode {
 	case "scheduled":
-		count, err = s.pluginManualFirer.FireScheduled(r.Context(), ref, trigger)
+		count, err = s.pluginManualFirer.FireScheduled(r.Context(), orgID(r), ref, trigger)
 	default:
-		count, err = s.pluginManualFirer.FireManual(r.Context(), ref, trigger)
+		count, err = s.pluginManualFirer.FireManual(r.Context(), orgID(r), ref, trigger)
 	}
 	// The two error paths diverge on purpose: a manual-mode error is
 	// a domain message the UI surfaces inline (the button stays in
@@ -398,8 +441,13 @@ func modeOrManual(mode string) string {
 // The split between "interface in console/" and "implementation
 // in cmd/nexus/langsmith_rules.go" mirrors EvalPluginTester so
 // tests can stub the seam with a deterministic response.
+//
+// orgID scopes name resolution: the implementation resolves the plugin's
+// manifest *and its stored vendor API key* from the name, so an org-blind
+// lookup let one tenant create rules in another tenant's LangSmith workspace
+// using that tenant's credentials.
 type LangSmithRuleCreator interface {
-	CreateAutomationRule(ctx context.Context, pluginName, sessionID string) (AutomationRuleResult, error)
+	CreateAutomationRule(ctx context.Context, orgID, pluginName, sessionID string) (AutomationRuleResult, error)
 }
 
 // AutomationRuleResult is what CreateAutomationRule returns. The
@@ -468,7 +516,7 @@ func (s *Server) pluginCreateAutomationRule(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
-	res, err := s.langsmithRuleCreator.CreateAutomationRule(r.Context(), pluginName, body.SessionID)
+	res, err := s.langsmithRuleCreator.CreateAutomationRule(r.Context(), orgID(r), pluginName, body.SessionID)
 	if err != nil {
 		// Already-Configured is a typed outcome (NOT a failure):
 		// the operator already made the rule by hand, PATCH path
@@ -496,6 +544,6 @@ func (s *Server) pluginCreateAutomationRule(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.langsmith.rule.create", res.RuleID, pluginName)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.langsmith.rule.create"), res.RuleID, pluginName)
 	writeJSON(w, http.StatusOK, res)
 }

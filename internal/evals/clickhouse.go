@@ -21,7 +21,14 @@ func (s *CHSink) WriteScores(ctx context.Context, scores []Score) error {
 	if len(scores) == 0 {
 		return nil
 	}
-	batch, err := s.conn.PrepareBatch(ctx, `INSERT INTO eval_scores`)
+	// Columns are named explicitly. A bare `INSERT INTO eval_scores` binds
+	// positionally against whatever column order the table happens to have, so
+	// adding org_id at the end of the table silently shifts every value if the
+	// binary and the schema disagree about the count — and a score row landing in
+	// the wrong org is exactly the failure this column exists to prevent.
+	batch, err := s.conn.PrepareBatch(ctx, `INSERT INTO eval_scores (
+		trace_id, timestamp, evaluator, metric, score, passed, rationale,
+		judge_model, user_id, org_id)`)
 	if err != nil {
 		return err
 	}
@@ -29,7 +36,7 @@ func (s *CHSink) WriteScores(ctx context.Context, scores []Score) error {
 		if err := batch.Append(
 			sc.TraceID, sc.Timestamp, sc.Evaluator, sc.Metric,
 			sc.Score, boolToUint8(sc.Passed), sc.Rationale, sc.JudgeModel,
-			sc.UserID,
+			sc.UserID, orgOrDefault(sc.OrgID),
 		); err != nil {
 			return err
 		}

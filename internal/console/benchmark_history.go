@@ -69,7 +69,7 @@ func (s *Server) benchmarkHistory(w http.ResponseWriter, r *http.Request, _ core
 		return
 	}
 	limit := benchmarkHistoryLimitDefault
-	rows, err := s.benchmarks.ListRecentSettledByModel(r.Context(), model, limit)
+	rows, err := s.benchmarks.ListRecentSettledByModel(r.Context(), orgID(r), model, limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": "history query failed: " + err.Error(),

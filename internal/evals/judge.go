@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/egress"
 	"github.com/ffxnexus/nexus/internal/observability"
 )
 
@@ -36,6 +37,14 @@ type JudgeConfig struct {
 
 // NewSLMJudge builds a judge. Returns nil if BaseURL or Model is empty (judge
 // disabled).
+//
+// The client comes from the egress guard as a Tenant destination, because
+// BaseURL usually comes from an eval profile an org admin created through the
+// API. This is the highest-consequence egress path in the product: it POSTs the
+// prompt and the completion to that URL and writes the reply into eval_scores as
+// the score rationale, which the console renders. Unguarded, an admin could set
+// it to the cloud metadata service and read the pod's IAM credentials out of the
+// evaluation UI. See internal/egress.
 func NewSLMJudge(cfg JudgeConfig) *SLMJudge {
 	if cfg.BaseURL == "" || cfg.Model == "" {
 		return nil
@@ -47,7 +56,7 @@ func NewSLMJudge(cfg JudgeConfig) *SLMJudge {
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		model:   cfg.Model,
 		apiKey:  cfg.APIKey,
-		hc:      &http.Client{Timeout: cfg.Timeout},
+		hc:      egress.Client(egress.Tenant, cfg.Timeout),
 	}
 }
 

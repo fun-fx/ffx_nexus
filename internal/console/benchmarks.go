@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/benchmark"
 	"github.com/ffxnexus/nexus/internal/core"
 )
@@ -55,8 +56,11 @@ type BenchmarkRunner interface {
 	// Used by the leaderboard to surface the full distribution
 	// alongside AvgScore so the operator can see "the average is
 	// X but the spread was wide" without opening the row detail.
-	GetLatestSettledByModel(ctx context.Context, model string) (core.BenchmarkRun, error)
-	ListRecentSettledByModel(ctx context.Context, model string, limit int) ([]core.RecentBenchmarkRun, error)
+	// Both take the caller's org: a benchmark score reflects the tenant's own
+	// spec, dataset and provider key, so it is their data rather than shared
+	// upstream health. See core.Store.ListRecentSettledByModel.
+	GetLatestSettledByModel(ctx context.Context, orgID, model string) (core.BenchmarkRun, error)
+	ListRecentSettledByModel(ctx context.Context, orgID, model string, limit int) ([]core.RecentBenchmarkRun, error)
 }
 
 // SetBenchmarks wires the runner. Left nil, the routes answer 503 so the
@@ -90,7 +94,7 @@ func (s *Server) listBenchmarks(w http.ResponseWriter, r *http.Request, _ core.U
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	runs, err := s.benchmarks.List(r.Context(), orgID(r), limit)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.failBenchmark(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -139,24 +143,62 @@ func (s *Server) launchBenchmark(w http.ResponseWriter, r *http.Request, u core.
 		// A launch the provider refused is still recorded, so return the
 		// row alongside the error and the console can show the failed
 		// run instead of only a toast that disappears.
-		payload := map[string]any{"error": err.Error()}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(benchmarkErrStatus(err))
+		payload := map[string]any{"ok": false}
 		if run.ID != "" {
 			payload["run"] = run
 		}
-		writeJSON(w, benchmarkErrStatus(err), payload)
+		// The cause is logged by s.fail; we render the body manually here
+		// because a partially-successful launch must include the run row.
+		_ = json.NewEncoder(w).Encode(payload)
+		s.log.Error("launch benchmark partial failure",
+			"err", err, "run_id", run.ID, "org", orgID(r), "model", body.Model)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.launch", run.ID, run.Model)
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.launch"), run.ID, run.Model)
 	writeJSON(w, http.StatusCreated, run)
+}
+
+// ownedBenchmark fetches the run named by {id} and confirms it belongs to the
+// caller's org, writing the response and returning ok=false when it does not.
+//
+// BenchmarkRunner.Get/Cancel/Delete/Logs all key on the bare run id, so every
+// per-run route was reachable across orgs: one team could read another team's
+// run — its model, dataset, environments and provider logs — and cancel or
+// delete it. Cancel and delete are the sharp end, since a benchmark costs money
+// at the provider and cancelling it wastes that spend.
+//
+// The org check lives here rather than in the runner because the runner is also
+// driven by the scheduler, which legitimately operates across orgs. The rule
+// being enforced is about a request, not about the data.
+func (s *Server) ownedBenchmark(w http.ResponseWriter, r *http.Request) (core.BenchmarkRun, bool) {
+	run, err := s.benchmarks.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		s.failBenchmark(w, r, err)
+		return core.BenchmarkRun{}, false
+	}
+	// A run recorded before org attribution existed has no org. Treat it as
+	// belonging to the default org rather than to everyone.
+	owner := run.OrgID
+	if owner == "" {
+		owner = core.DefaultOrgID
+	}
+	if owner != orgID(r) {
+		// 404, not 403: confirming the id exists would let a caller enumerate
+		// other teams' runs.
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "benchmark run not found"})
+		return core.BenchmarkRun{}, false
+	}
+	return run, true
 }
 
 func (s *Server) getBenchmark(w http.ResponseWriter, r *http.Request, _ core.User) {
 	if !s.benchmarksReady(w) {
 		return
 	}
-	run, err := s.benchmarks.Get(r.Context(), chi.URLParam(r, "id"))
-	if err != nil {
-		writeJSON(w, benchmarkErrStatus(err), map[string]string{"error": err.Error()})
+	run, ok := s.ownedBenchmark(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
@@ -166,12 +208,15 @@ func (s *Server) cancelBenchmark(w http.ResponseWriter, r *http.Request, u core.
 	if !s.benchmarksReady(w) {
 		return
 	}
-	id := chi.URLParam(r, "id")
-	if err := s.benchmarks.Cancel(r.Context(), id); err != nil {
-		writeJSON(w, benchmarkErrStatus(err), map[string]string{"error": err.Error()})
+	run, ok := s.ownedBenchmark(w, r)
+	if !ok {
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.cancel", id, "")
+	if err := s.benchmarks.Cancel(r.Context(), run.ID); err != nil {
+		s.failBenchmark(w, r, err)
+		return
+	}
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.cancel"), run.ID, "")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -179,12 +224,15 @@ func (s *Server) deleteBenchmark(w http.ResponseWriter, r *http.Request, u core.
 	if !s.benchmarksReady(w) {
 		return
 	}
-	id := chi.URLParam(r, "id")
-	if err := s.benchmarks.Delete(r.Context(), id); err != nil {
-		writeJSON(w, benchmarkErrStatus(err), map[string]string{"error": err.Error()})
+	run, ok := s.ownedBenchmark(w, r)
+	if !ok {
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.delete", id, "")
+	if err := s.benchmarks.Delete(r.Context(), run.ID); err != nil {
+		s.failBenchmark(w, r, err)
+		return
+	}
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.delete"), run.ID, "")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -192,9 +240,13 @@ func (s *Server) benchmarkLogs(w http.ResponseWriter, r *http.Request, _ core.Us
 	if !s.benchmarksReady(w) {
 		return
 	}
-	logs, err := s.benchmarks.Logs(r.Context(), chi.URLParam(r, "id"))
+	run, ok := s.ownedBenchmark(w, r)
+	if !ok {
+		return
+	}
+	logs, err := s.benchmarks.Logs(r.Context(), run.ID)
 	if err != nil {
-		writeJSON(w, benchmarkErrStatus(err), map[string]string{"error": err.Error()})
+		s.failBenchmark(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"logs": logs})
@@ -208,7 +260,7 @@ func (s *Server) benchmarkModels(w http.ResponseWriter, r *http.Request, _ core.
 	}
 	models, err := s.benchmarks.Models(r.Context())
 	if err != nil {
-		writeJSON(w, benchmarkErrStatus(err), map[string]string{"error": err.Error()})
+		s.failBenchmark(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
@@ -223,7 +275,7 @@ func (s *Server) refreshBenchmarks(w http.ResponseWriter, r *http.Request, _ cor
 	}
 	n, err := s.benchmarks.PollOnce(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.failBenchmark(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"updated": n})
@@ -308,10 +360,10 @@ func (s *Server) putBenchmarkCredential(w http.ResponseWriter, r *http.Request, 
 		// A write that only reached memory would work until the next
 		// deploy and then fail silently, which is the exact trap the
 		// plugin keys went through. Report it instead.
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.failBenchmark(w, r, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.credential.set", benchmark.ProviderPrime, "")
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.credential.set"), benchmark.ProviderPrime, "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"configured": true,
@@ -324,10 +376,10 @@ func (s *Server) deleteBenchmarkCredential(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := s.pluginKeys.Clear(benchmark.CredentialName); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		s.failBenchmark(w, r, err)
 		return
 	}
-	s.audit(r.Context(), u.ID, orgID(r), "eval.benchmark.credential.clear", benchmark.ProviderPrime, "")
+	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("benchmark.credential.clear"), benchmark.ProviderPrime, "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "configured": false})
 }
 
@@ -367,10 +419,13 @@ func (s *Server) dryRunBenchmark(w http.ResponseWriter, r *http.Request, _ core.
 		Model:          body.Model,
 		TimeoutMinutes: body.TimeoutMinutes,
 	}); err != nil {
-		writeJSON(w, benchmarkErrStatus(err), map[string]any{
-			"ok":    false,
-			"error": err.Error(),
-		})
+		// Dry-run failures still log so an operator can ask support using
+		// the request id; the body carries only the boolean failure flag
+		// and any warnings that don't expose the cause.
+		s.log.Error("benchmark dry-run failed", "err", err, "model", body.Model, "org", orgID(r))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(benchmarkErrStatus(err))
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false})
 		return
 	} else {
 		resp := map[string]any{"ok": true}
@@ -396,4 +451,109 @@ func benchmarkErrStatus(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// benchmarkErrCode maps the sentinel error to a public apierr.Code, matching
+// benchmarkErrStatus's status. The code is what the body returns; the status
+// is the HTTP envelope. Two functions on purpose: the same mapping rule for
+// both, but each is one line of switch.
+// stripWrappedLeaf walks the error chain and returns the operator-facing leaf:
+// the substring after the last sentinel colon, for an error wrapped via
+// fmt.Errorf("%w: <leaf>", ErrInvalidRequest).
+//
+// The string is safe to surface because the runner only wraps ErrInvalidRequest
+// with operator-readable leaves ("this run never started at the provider",
+// "schedule id is required", "model is required"). If a future wrap adds a
+// internal-looking leaf (a SQL error, a path), it would surface here, so
+// internal/benchmark/runner.go is a sibling concern: never wrap ErrInvalidRequest
+// with a string the operator should not see.
+func stripWrappedLeaf(err error) string {
+	for cur := err; cur != nil; cur = errors.Unwrap(cur) {
+		s := cur.Error()
+		if i := strings.LastIndex(s, ": "); i >= 0 {
+			cand := strings.TrimSpace(s[i+2:])
+			// Skip the sentinel identifier itself (its Error() is "benchmark: invalid
+			// request"); skip obvious sentinel/system wrappers; the leaf is the part
+			// after the colon that does not contain another colon-joined token.
+			if cand != "" {
+				// Take anything after the LAST ": ", e.g.
+				// "benchmark: invalid request: this run never started" -> "this run never started"
+				// which is the desired leaf.
+				return cand
+			}
+		}
+	}
+	return ""
+}
+
+func benchmarkErrCode(err error) apierr.Code {
+	switch {
+	case errors.Is(err, core.ErrNotFound):
+		return apierr.CodeNotFound
+	case errors.Is(err, benchmark.ErrConflict):
+		return apierr.CodeConflict
+	case errors.Is(err, benchmark.ErrNoToken), errors.Is(err, benchmark.ErrInvalidRequest):
+		return apierr.CodeInvalidRequest
+	}
+	return apierr.CodeInternalError
+}
+
+// failBenchmark converts the (status, code) the sentinel would pick into a
+// public response. When the sentinel carries an operator-facing message
+// (ErrInvalidRequest with a leaf, ErrNoToken, etc.), failBenchmark surfaces it
+// in the body so the operator can act without checking a log. When the
+// sentinel doesn't (a generic internal error), it goes through the standard
+// s.fail and the body shows only the generic message.
+func (s *Server) failBenchmark(w http.ResponseWriter, r *http.Request, err error) {
+	msg := benchmarkErrMessage(err)
+	status := benchmarkErrStatus(err)
+	code := benchmarkErrCode(err)
+	if msg != "" {
+		s.failWithMessage(w, r, status, code, msg, err)
+		return
+	}
+	s.fail(w, r, status, code, err)
+}
+
+// benchmarkErrMessage returns the public-safe caller-facing message for a
+// sentinel error. For sentinel-bounded errors, the operator wants to see the
+// reason in the body so they can fix the input without checking a log. The
+// calling code passes the message directly via s.failWithMessage.
+//
+// We deliberately do NOT use err.Error() here. The unwrap chain for the
+// sentinel-bounded cases here is operator-friendly: "benchmark: invalid
+// request: this run never started at the provider". The "benchmark:" /
+// "invalid request:" prefixes are derived from sentinel-wrap bookkeeping in
+// the runner; only the leaf string contains user-facing context. We drop the
+// wrapper text by rewrapping a clean tag around the leaf.
+//
+// If a future sentinel adds an internal-looking message here, replace this
+// with a hand-rolled string per case.
+func benchmarkErrMessage(err error) string {
+	if errors.Is(err, core.ErrNotFound) {
+		return "the requested benchmark run was not found"
+	}
+	if errors.Is(err, benchmark.ErrConflict) {
+		return "the benchmark run is already in a terminal state"
+	}
+	if errors.Is(err, benchmark.ErrNoToken) {
+		return "a benchmark provider credential is not configured"
+	}
+	if errors.Is(err, benchmark.ErrInvalidRequest) {
+		// The wrap chain for ErrInvalidRequest carries the leaf at the top:
+		// fmt.Errorf("%w: this run never started at the provider", ErrInvalidRequest)
+		// produces err.Error() = "benchmark: invalid request: this run never started at the provider"
+		// with err.Unwrap().Error() = "benchmark: invalid request". The leaf the
+		// operator needs is the substring after the LAST "wrapped-sentinel: " —- i.e.,
+		// strip everything up to and including the last ": " before the operator
+		// facing message. The current buyer's path uses ": this run never started
+		// at the provider" / ": schedule id is required" / ": model is required"
+		// — all non-protected substrings.
+		leaf := stripWrappedLeaf(err)
+		if leaf != "" {
+			return leaf
+		}
+		return "the benchmark input is invalid"
+	}
+	return ""
 }

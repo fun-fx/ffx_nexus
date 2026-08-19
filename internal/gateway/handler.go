@@ -15,9 +15,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/balancer"
 	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/observability"
+	"github.com/ffxnexus/nexus/internal/resp"
 	"github.com/ffxnexus/nexus/internal/router"
 	"github.com/ffxnexus/nexus/internal/semcache"
 )
@@ -234,6 +236,22 @@ func (h *Handler) SetGuard(g *guardrails.Guard) {
 	h.guard = g
 }
 
+// streamRequestID returns the request id the gateway's RequestID
+// middleware stamped on the context for SSE-scoped correlation. SSE
+// comments can carry the id so a downstream SDK error surfaces the same
+// Nexus request id the console error body does.
+func streamRequestID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if v := r.Context().Value(resp.RequestIDKey()); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // SetSelfCorrection enables structured-output self-correction on non-streaming
 // requests: when the schema guardrail rejects a JSON response, the gateway asks
 // the model to fix it (up to maxRetries times) before failing. 0 disables it.
@@ -417,7 +435,7 @@ func extractSessionID(rawBody []byte) string {
 func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "cannot read body: "+err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "cannot read body: "+err.Error())
 		return
 	}
 	// Restore body so any later middleware can re-read it.
@@ -427,18 +445,18 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if IsCursorHybridRequest(body) {
 		req, err = TransformCursorHybrid(body)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request_error", "hybrid decode: "+err.Error())
+			writeError(w, r, http.StatusBadRequest, "invalid_request_error", "hybrid decode: "+err.Error())
 			return
 		}
 	} else {
 		if err := json.Unmarshal(body, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
+			writeError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 			return
 		}
 	}
 
 	if req.Model == "" || len(req.Messages) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "model and messages are required")
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "model and messages are required")
 		return
 	}
 
@@ -468,7 +486,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// upstream call so no tokens are spent on blocked content.
 	if f := h.guard.CheckInput(promptText(req.Messages)); f.Blocked {
 		h.recordGuardrailBlock(r, req, f)
-		writeError(w, http.StatusForbidden, "guardrail_blocked", f.Reason)
+		writeError(w, r, http.StatusForbidden, "guardrail_blocked", f.Reason)
 		return
 	}
 
@@ -497,13 +515,13 @@ func (h *Handler) resolveChain(w http.ResponseWriter, r *http.Request, req ChatC
 		if candidates, isAlias := h.routeCandidates(req.Model); isAlias {
 			allowed := filterAllowed(r.Context(), candidates)
 			if len(allowed) == 0 {
-				writeError(w, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use any model in group "+req.Model)
+				writeError(w, r, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use any model in group "+req.Model)
 				return nil, false
 			}
 			minQuality, _ := r.Context().Value(ctxKeyMinQuality).(float64)
 			ranked := h.router.Rank(allowed, minQuality)
 			if len(ranked) == 0 {
-				writeError(w, http.StatusServiceUnavailable, "no_model_meets_quality",
+				writeError(w, r, http.StatusServiceUnavailable, "no_model_meets_quality",
 					"no allowed model currently meets the minimum quality score for this key")
 				return nil, false
 			}
@@ -516,11 +534,11 @@ func (h *Handler) resolveChain(w http.ResponseWriter, r *http.Request, req ChatC
 	}
 
 	if !modelAllowed(r.Context(), req.Model) {
-		writeError(w, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use model "+req.Model)
+		writeError(w, r, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use model "+req.Model)
 		return nil, false
 	}
 	if _, _, err := h.registry.Resolve(req.Model); err != nil {
-		writeError(w, http.StatusNotFound, "model_not_found", err.Error())
+		writeError(w, r, http.StatusNotFound, "model_not_found", err.Error())
 		return nil, false
 	}
 	return []string{req.Model}, true
@@ -775,7 +793,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					trace.CostUSD = ResolveCostUSD(resp.Usage.EstimatedCost, trace.RequestModel, trace.ResponseModel, &resp.Usage)
 					h.recorder.Record(trace)
 					h.recordSpend(r.Context(), trace.CostUSD)
-					writeError(w, http.StatusUnprocessableEntity, "schema_validation_failed", f.Reason)
+					writeError(w, r, http.StatusUnprocessableEntity, "schema_validation_failed", f.Reason)
 					return
 				}
 			}
@@ -807,13 +825,13 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 	if lastErr != nil {
 		msg = lastErr.Error()
 	}
-	writeError(w, http.StatusBadGateway, "upstream_error", msg)
+	writeError(w, r, http.StatusBadGateway, string(apierr.CodeUpstreamError), msg)
 }
 
 func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []string, req ChatCompletionRequest, start time.Time) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeError(w, http.StatusInternalServerError, "internal_error", "streaming unsupported")
+		writeError(w, r, http.StatusInternalServerError, "internal_error", "streaming unsupported")
 		return
 	}
 
@@ -871,7 +889,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 		if lastErr != nil {
 			msg = lastErr.Error()
 		}
-		writeError(w, http.StatusBadGateway, "upstream_error", msg)
+		writeError(w, r, http.StatusBadGateway, "upstream_error", msg)
 		return
 	}
 
@@ -905,9 +923,26 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 		switch {
 		case evt.Err != nil:
 			trace.ErrorType = "stream_error"
-			trace.ErrorMsg = evt.Err.Error()
-			// Surface the error as an SSE comment then stop.
-			_, _ = w.Write([]byte(": stream error\n\n"))
+			trace.ErrorMsg = apierr.Scrub(evt.Err.Error())
+			// Surface the error as an SSE comment then stop. The comment
+			// convention lets a downstream SSE parser skip the event without
+			// reading a data: payload — older SDKs treat lines starting with
+			// ":" as ignored. The X-Request-Id-equivalent is appended so a
+			// client (or support) can correlate the stream-end error to the
+			// server log line that explains it.
+			//
+			// The id here is the apierr redactedMarker-survivable form: an
+			// empty UUID field is the case where the gateway's RequestID
+			// middleware was not in front of this request, and an empty
+			// field is left in place rather than a placeholder ("nil") so
+			// a customer can't grep for it.
+			id := streamRequestID(r)
+			if id == "" {
+				_, _ = w.Write([]byte(": stream error\n\n"))
+			} else {
+				_, _ = w.Write([]byte(": stream error\n"))
+				_, _ = w.Write([]byte(": nexus-request-id=" + id + "\n\n"))
+			}
 			flusher.Flush()
 		case evt.Done:
 			// Only emit the gateway-minted [DONE] when the upstream has not
@@ -1215,12 +1250,63 @@ func filterAllowed(ctx context.Context, candidates []string) []string {
 	return out
 }
 
+// writeJSON renders a JSON body with the right Content-Type.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, status int, errType, msg string) {
+// writeError renders an OpenAI-compatible error body: a fixed shape
+//
+//	{ "error": { "message": "...", "type": "..." } }
+//
+// that stock OpenAI SDKs (Python `openai`, JS `openai-node`, etc.)
+// already parse. We MUST NOT change the shape; customer apps reading
+// `response.error.message` would silently break.
+//
+// The leak guard sits behind this single function: every err.Error()
+// in the codebase funnels through writeError, so Scrub runs once. The
+// X-Request-Id header is set on the response independently so Nexus
+// support can join an SDK error to its server log line by id, which
+// `apierr.Body` exposes through the console but not through this
+// gateway shape on purpose.
+//
+// Scrub is bespoke here (rather than going through resp.HTTP) because
+// the response body MUST NOT carry the apierr.Code on a stock OpenAI
+// SDK — the SDK reads `error.type`, not `error.code`. Mixing the two
+// shapes would corrupt every existing customer's parsing.
+//
+// `errType` becomes OpenAI's `error.type` value; the response carries
+// the same string the SDK can branch on.
+func writeError(w http.ResponseWriter, r *http.Request, status int, errType, msg string) {
+	msg = scrubGatewayMessage(msg)
+	// Stamp the request id on the X-Request-Id header so an OpenAI-
+	// compatible SDK can correlate an error response to its server log
+	// line, which is the same correlation the apierr body carries on
+	// the console surface. We reuse streamRequestID for the helper to
+	// keep one definition; a non-streaming request lands on the same
+	// context slot the streaming path reads from.
+	if r != nil {
+		if id := streamRequestID(r); id != "" {
+			w.Header().Set("X-Request-Id", id)
+		}
+	}
 	writeJSON(w, status, APIError{Error: APIErrorBody{Message: msg, Type: errType}})
+}
+
+// scrubGatewayMessage strips protected substrings from a gateway error
+// message before it reaches an OpenAI SDK consumer. The same Scrub
+// pass that protects apierr.Bodies protects this shape; the two
+// response bodies share the protected-signature set in
+// internal/apierr, which keeps an SMS alert like "my API suddenly
+// returns 502 about column X" from ever happening.
+//
+// The function lives in the gateway package, not in apierr, because
+// gateway-specific concerns (body shape, status code, type field) are
+// not part of the apierr contract. apierr is the contract inside the
+// Nexus surface (console + Nexus-first errors); the OpenAI surface
+// reuses Scrub but a different body shape.
+func scrubGatewayMessage(s string) string {
+	return apierr.Scrub(s)
 }

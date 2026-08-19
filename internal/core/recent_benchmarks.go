@@ -31,7 +31,19 @@ type RecentBenchmarkRun struct {
 // PGBenchProvider.BenchmarkSnapshot uses, but the watcher needs
 // more than one row per model (one to compare, one to set the
 // baseline).
-func (s *Store) ListRecentSettledByModel(ctx context.Context, model string, limit int) ([]RecentBenchmarkRun, error) {
+//
+// orgID scopes the result to one tenant. A benchmark score is not shared
+// operational health the way provider latency is: the run used the tenant's own
+// spec, dataset and provider key, so its average, its sample count and its run
+// id are that tenant's data. Filtering on model alone returned every org's runs
+// for any model name a caller could type, which also handed out run ids
+// belonging to other tenants.
+//
+// Empty orgID means no tenant filter, and is for installation-wide consumers —
+// the drift watcher and the router's quality snapshot, which make routing
+// decisions rather than answering a request. Request-serving callers must pass a
+// concrete org.
+func (s *Store) ListRecentSettledByModel(ctx context.Context, orgID, model string, limit int) ([]RecentBenchmarkRun, error) {
 	if s == nil || s.pool == nil {
 		return nil, errors.New("core: store not configured")
 	}
@@ -44,13 +56,18 @@ func (s *Store) ListRecentSettledByModel(ctx context.Context, model string, limi
 	if limit > 200 {
 		limit = 200
 	}
+	// A run recorded before org attribution existed has org_id ''. Treat it as
+	// the default org's rather than as everyone's — the same rule
+	// console.ownedBenchmark applies to a single run, so a row is not visible
+	// through the history endpoint that would be refused by the detail one.
+	const orgScope = ` AND ($3 = '' OR COALESCE(NULLIF(org_id, ''), 'default') = $3)`
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, model, avg_score, min_score, max_score, total_samples, completed_at
 		FROM benchmark_runs
 		WHERE model = $1 AND status = 'completed'
 		  AND avg_score IS NOT NULL
-		  AND completed_at IS NOT NULL
-		ORDER BY completed_at DESC LIMIT $2`, model, limit)
+		  AND completed_at IS NOT NULL`+orgScope+`
+		ORDER BY completed_at DESC LIMIT $2`, model, limit, orgID)
 	if err != nil {
 		return nil, err
 	}

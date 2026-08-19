@@ -23,6 +23,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/egress"
 	"github.com/ffxnexus/nexus/internal/evalplugin"
 	"github.com/ffxnexus/nexus/internal/evals"
 	"github.com/ffxnexus/nexus/internal/observability"
@@ -51,7 +52,9 @@ type Dispatcher struct {
 // adapters they'll use before calling Dispatch for the first time.
 func NewDispatcher(reg *evalplugin.Registry, httpClient *http.Client) *Dispatcher {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		// Tenant class: the destination is the plugin manifest's endpoint and the
+		// payload carries rendered trace content.
+		httpClient = egress.Client(egress.Tenant, 30*time.Second)
 	}
 	return &Dispatcher{
 		reg:      reg,

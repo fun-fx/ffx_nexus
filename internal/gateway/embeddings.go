@@ -16,15 +16,15 @@ import (
 func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	var req EmbeddingRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 		return
 	}
 	if req.Model == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "model is required")
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
 	}
 	if len(req.Input) == 0 || strings.TrimSpace(string(req.Input)) == "null" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "input is required")
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error", "input is required")
 		return
 	}
 
@@ -33,13 +33,13 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	// exact id match.
 	ep, ok := h.registry.ResolveEmbedding(req.Model)
 	if !ok {
-		writeError(w, http.StatusNotFound, "model_not_found",
+		writeError(w, r, http.StatusNotFound, "model_not_found",
 			"no embeddings provider registered for model "+req.Model)
 		return
 	}
 
 	if req.EncodingFormat != "" && req.EncodingFormat != "float" && req.EncodingFormat != "base64" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error",
+		writeError(w, r, http.StatusBadRequest, "invalid_request_error",
 			"encoding_format must be \"float\" or \"base64\"")
 		return
 	}
@@ -61,7 +61,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := ep.Embed(ctx, req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "upstream_error",
+		writeError(w, r, http.StatusBadGateway, "upstream_error",
 			"embeddings upstream error: "+err.Error())
 		return
 	}

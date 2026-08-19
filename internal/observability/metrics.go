@@ -53,6 +53,13 @@ type MetricsRecorder struct {
 	otlpExportSuccess uint64
 	// otlpExportBytes: total payload bytes successfully POSTed.
 	otlpExportBytes uint64
+	// auditWriteFailures: action_category x reason → count.
+	// action_category is a coarse classification of audit_log.action ("auth",
+	// "user", "key", "credential", "routing", "eval", "benchmark", "integration",
+	// "policy", "security", "audit", "other") so cardinality stays bounded;
+	// reason is short ("missing_column", "timeout", "constraint", "other").
+	// org_id / actor_id are deliberately NOT labels — c0.5 enforces that.
+	auditWriteFailures map[labelsKey]uint64
 
 	logger *slog.Logger
 	srv    *http.Server
@@ -87,6 +94,7 @@ func NewMetricsRecorder(addr string, logger *slog.Logger) *MetricsRecorder {
 		qualityScoreSum:    map[string]float64{},
 		qualityScoreCount:  map[string]uint64{},
 		otlpExportFailures: map[string]uint64{},
+		auditWriteFailures: map[labelsKey]uint64{},
 		logger:             logger,
 		addr:               addr,
 	}
@@ -230,6 +238,27 @@ func (r *MetricsRecorder) RecordOTLPExportSuccess(bytes int) {
 	if bytes > 0 {
 		r.otlpExportBytes += uint64(bytes)
 	}
+	r.mu.Unlock()
+}
+
+// AuditWriteFailed is called by the audit store when an INSERT into audit_log
+// failed. action is the raw action constant from the audit row;
+// auditActionCategory resolves it to a bounded category label and
+// auditErrorReason bounds the error label, keeping cardinality low.
+//
+// The renderer in handleMetrics emits nexus_audit_write_failed_total{category,
+// reason}. action itself is NOT used as a label because c0.5 limits us to
+// reason + action_category, and unbounded action strings would re-create
+// the tail-of-org_id cardinality bug Prometheus users got burned on.
+func (r *MetricsRecorder) AuditWriteFailed(action string, err error) {
+	if r == nil {
+		return
+	}
+	category := auditActionCategory(action)
+	reason := auditErrorReason(err)
+	rk := labelsKey{L1: category, L2: reason}
+	r.mu.Lock()
+	r.auditWriteFailures[rk]++
 	r.mu.Unlock()
 }
 
@@ -388,7 +417,97 @@ func (r *MetricsRecorder) handleMetrics(w http.ResponseWriter, _ *http.Request) 
 	fmt.Fprintf(&b, "# TYPE nexus_otlp_export_bytes_total counter\n")
 	fmt.Fprintf(&b, "nexus_otlp_export_bytes_total %d\n", r.otlpExportBytes)
 
+	// nexus_audit_write_failed_total{category, reason}: counter — incremented
+	// by Store.Audit on every audit INSERT failure. Category is enum-like
+	// (closed set below); reason maps the Postgres / network error to a
+	// short stable label.
+	//
+	// This series is the operational tripwire for c0.5: a non-zero rate here
+	// means at least one audit row that should have been written wasn't.
+	// Operator dashboards graph rate(action_category=...) over time so a
+	// category-specific outage (e.g. only "key." actions failing) shows up
+	// even when "audit" globally has not gone dark.
+	fmt.Fprintf(&b, "# HELP nexus_audit_write_failed_total Audit INSERT failures by action category and reason.\n")
+	fmt.Fprintf(&b, "# TYPE nexus_audit_write_failed_total counter\n")
+	akeys := make([]labelsKey, 0, len(r.auditWriteFailures))
+	for k := range r.auditWriteFailures {
+		akeys = append(akeys, k)
+	}
+	sort.Slice(akeys, func(i, j int) bool { return labelKeyCmp(akeys[i], akeys[j]) < 0 })
+	for _, k := range akeys {
+		fmt.Fprintf(&b, "nexus_audit_write_failed_total{category=%q,reason=%q} %d\n",
+			k.L1, k.L2, r.auditWriteFailures[k])
+	}
+
 	_, _ = w.Write([]byte(b.String()))
+}
+
+// auditActionCategory collapses every AuditAction constant into one of
+// a small fixed set of categories. The list mirrors the action-category
+// registry in core/audit.go and is the source of truth for the Prometheus
+// label set.
+//
+// An action that does not match any prefix falls back to "other" rather
+// than exploding the label cardinality. The renderer emits exactly these
+// strings — adding a new category here without the inventory test
+// (c0.8) would be a silent drift; the rule is "category list changes need
+// a test update."
+func auditActionCategory(action string) string {
+	switch {
+	case strings.HasPrefix(action, "auth."):
+		return "auth"
+	case strings.HasPrefix(action, "user."):
+		return "user"
+	case strings.HasPrefix(action, "invite."):
+		return "invite"
+	case strings.HasPrefix(action, "key."):
+		return "key"
+	case strings.HasPrefix(action, "credential."):
+		return "credential"
+	case strings.HasPrefix(action, "routing."):
+		return "routing"
+	case strings.HasPrefix(action, "eval."):
+		return "eval"
+	case strings.HasPrefix(action, "benchmark."):
+		return "benchmark"
+	case strings.HasPrefix(action, "integration."):
+		return "integration"
+	case strings.HasPrefix(action, "policy."):
+		return "policy"
+	case strings.HasPrefix(action, "audit."):
+		return "audit"
+	case strings.HasPrefix(action, "security."):
+		return "security"
+	case action == "":
+		return "unknown"
+	}
+	return "other"
+}
+
+// auditErrorReason maps a Store.Audit INSERT failure error to a short
+// stable label. The string-sniffing here is light: we look for the SQLSTATE
+// or well-known pgx error class. Anything that doesn't match falls back to
+// "other" so a malformed label value cannot land in the time-series.
+func auditErrorReason(err error) string {
+	if err == nil {
+		return "none"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "timeout"):
+		return "timeout"
+	case strings.Contains(msg, "connection"):
+		return "network"
+	case strings.Contains(msg, "23505"): // unique_violation
+		return "unique_violation"
+	case strings.Contains(msg, "23503"): // foreign_key_violation
+		return "fk_violation"
+	case strings.Contains(msg, "column"):
+		return "missing_column"
+	case strings.Contains(msg, "syntax"):
+		return "syntax"
+	}
+	return "other"
 }
 
 func labelKeyCmp(a, b labelsKey) int {
