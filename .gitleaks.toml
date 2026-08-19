@@ -85,3 +85,12 @@ regexes = [
 #   - .github/workflows/**. Workflow secrets belong in ${{ secrets.* }}, which
 #     the interpolation regex above does not cover (it matches ${VAR}, not the
 #     GitHub Actions ${{ }} form).
+#
+# Two narrow exceptions where a credential-prefix literal IS the test
+# fixture itself, not a leaked secret:
+[[rules.allowlists]]
+description = "scrub_test.go enumerates a known-secret prefix to assert Scrub redacts it"
+targetRules = ["slack-bot-token", "github-pat"]
+# Lines are short by design; this allowlist is path-scoped to one file only.
+regexes = ['''["']xoxb-["'],["']ghp_["']''']
+paths = ['''^internal/apierr/scrub_test\.go$'''] 
