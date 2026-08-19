@@ -487,10 +487,10 @@ credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 
 		// Strict-mode warnings (spec.flags: [strict]) route here.
 		// Each suspect top-level spec key is logged once at boot
 		// (ConfigMap plugins) and at every admin Save/Patch.
-		evalplugin.StrictFieldSink = func(plugin, field string) {
+		evalplugin.SetStrictFieldSink(func(plugin, field string) {
 			log.Warn("strict plugin spec has unknown field",
 				"plugin", plugin, "field", "spec."+field)
-		}
+		})
 		if dir := cfg.PluginDir; dir != "" {
 			if err := pluginReg.LoadFromDir(dir); err != nil {
 				log.Warn("load plugin configmaps failed", "dir", dir, "err", err)

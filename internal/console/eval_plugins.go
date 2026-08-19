@@ -132,6 +132,21 @@ func (s *Server) listEvalPlugins(w http.ResponseWriter, r *http.Request, _ core.
 	writeJSON(w, http.StatusOK, map[string]any{"plugins": all})
 }
 
+// StrictFieldSink captures strict-mode warnings and surfaces them
+// in the JSON response. The hook is set at boot by main.go; the
+// Reset/Capture pair here scopes warnings to one save and the
+// response carries only what this save produced.
+func (s *Server) saveEvalPluginStrictWarnings(ctx context.Context, id string) {
+	ws := evalplugin.CapturePendingStrict()
+	if len(ws) == 0 {
+		return
+	}
+	for _, w := range ws {
+		s.log.WarnContext(ctx, "strict plugin spec has unknown field",
+			"id", id, "field", "spec."+w.Field)
+	}
+}
+
 func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.evalPlugins == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "eval plugins disabled"})
@@ -142,6 +157,7 @@ func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
+	evalplugin.ResetPendingStrict()
 	if _, err := evalplugin.Decode([]byte(body.SpecYAML)); err != nil {
 		s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 		return
@@ -163,6 +179,7 @@ func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
+	s.saveEvalPluginStrictWarnings(r.Context(), rec.ID)
 	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.create"), rec.ID, rec.Name)
 	writeJSON(w, http.StatusCreated, rec)
 }
@@ -213,6 +230,7 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 		return
 	}
 	if patch.SpecYAML != nil {
+		evalplugin.ResetPendingStrict()
 		p, err := evalplugin.Decode([]byte(*patch.SpecYAML))
 		if err != nil {
 			s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
@@ -234,6 +252,7 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
+	s.saveEvalPluginStrictWarnings(r.Context(), existing.ID)
 	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.update"), existing.ID, existing.Name)
 	writeJSON(w, http.StatusOK, existing)
 }

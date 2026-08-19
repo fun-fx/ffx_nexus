@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // pluginKindExpected is a fixed string so mistyped "Kind" values in a
@@ -106,6 +107,16 @@ var knownAPIVersions = map[string]struct{}{
 // checks last. We do not parse mapping expressions here — adapters
 // decode them lazily — to avoid pulling an extra dependency
 // into the hot path.
+//
+// c0.z #5 close-out: the gate also re-runs strict-mode unknown-
+// field capture at save-time. The strict flag was previously a
+// boot-time path only; a manifest loaded from /etc via the Helm
+// ConfigMap set the flag, but a manifest saved through /api/
+// admin/eval/plugins did not. That made the typing-error class
+// of bug (e.g. `trigger: onTraces` capital T) silent on
+// admin save and loud on next boot. Save now calls the same
+// reportUnknownSpecFields hook so the operator gets the
+// uncovers the typo in the same screen that produced it.
 func Validate(p *Plugin) error {
 	if p == nil {
 		return errors.New("plugin is nil")
@@ -123,20 +134,31 @@ func Validate(p *Plugin) error {
 	if strings.TrimSpace(p.Metadata.Name) == "" {
 		return errors.New("metadata.name is required")
 	}
+	if !validPluginName.MatchString(p.Metadata.Name) {
+		return fmt.Errorf("metadata.name %q does not match %s",
+			p.Metadata.Name, validPluginName.String())
+	}
 	if _, reserved := reservedPluginNames[p.Metadata.Name]; reserved {
 		return fmt.Errorf("metadata.name %q is reserved", p.Metadata.Name)
-	}
-	if !validPluginName.MatchString(p.Metadata.Name) {
-		return fmt.Errorf("metadata.name %q does not match %s", p.Metadata.Name, validPluginName)
 	}
 
 	// strict flag (v1alpha2 only). Calls a package-level warning
 	// hook that operators can route to whatever logger suits them
 	// (klog in compose, slog in CLI). The default no-op keeps
 	// Validate pure so unit tests don't need to thread a logger.
-	if hasFlag(p.Spec.Flags, flagStrict) {
-		reportUnknownSpecFields(p.Metadata.Name, p.Spec)
-	}
+	// c0.z #5 close-out: the gate also re-runs strict-mode unknown-
+// field capture at save-time on every manifest, not only when
+// the operator set spec.flags: [strict]. The strict flag was
+// previously a boot-time path only — a manifest loaded from
+// /etc via the Helm ConfigMap set the flag and produced a
+// warning, but a manifest saved through /api/admin/eval/plugins
+// did not. That made the typing-error class of bug (e.g.
+// `trigger: onTraces` capital T) silent on admin save and
+// loud on next boot. Save now calls reportUnknownSpecFields
+// unconditionally so a customer that sets `trigger: onTraces`
+// sees the warning immediately, in the same HTTP response
+// that produced the row.
+reportUnknownSpecFields(p.Metadata.Name, p.Spec)
 
 	if _, ok := validServiceType[p.Spec.Service.Type]; !ok {
 		return fmt.Errorf("spec.service.type %q is not a supported type", p.Spec.Service.Type)
@@ -282,9 +304,77 @@ func hasFlag(flags []string, flag string) bool {
 // callers from needing to thread a logger. main.go overrides it
 // during boot with a slog-backed adapter that prefixes entries
 // with the plugin name for grep-friendliness.
+//
+// The hook is also active on save-time admin paths. The strict
+// mode previously only fired when an operator loaded manifests
+// from /etc via the Helm ConfigMap; saving through the admin
+// API never went through strict because spec.flags wasn't set.
+// Save time now calls reportUnknownSpecFields unconditionally,
+// so a typo like `trigger: onTraces` is loud at the HTTP
+// response that produced it, not silent until next boot.
 var StrictFieldSink = func(plugin, field string) {
 	// default: silent. main.go installs a logger-backed funtion at
 	// boot; tests can override locally with `StrictFieldSink = ...`.
+}
+
+// PendingStrictWarnings is a thread-safe collector for warnings
+// emitted during the current Validate call. The Console Save
+// handler reads from this list to surface warnings back to the
+// caller in the JSON response, so a save that produced a typo
+// warning is observable in the same screen as the save itself.
+//
+// The collector is package-global because Validate is called
+// at many sites (admin save, registry reconcile, evalplugin
+// loader) and threading context through all of them was not
+// worth the surface.
+type strictWarning struct {
+	Plugin string
+	Field  string
+}
+
+var pendingStrictMu sync.Mutex
+var pendingStrict []strictWarning
+
+// CaptureStrictWarnings collects strict warnings emitted during
+// Validate. Tests swap out StrictFieldSink to read what
+// Validate wrote, then call this helper to capture the slice.
+// Console Save wraps each handler invocation in a
+// ResetPending/CapturePending pair so the response carries
+// only warnings produced by the request that just succeeded.
+func ResetPendingStrict() {
+	pendingStrictMu.Lock()
+	pendingStrict = nil
+	pendingStrictMu.Unlock()
+}
+
+func CapturePendingStrict() []strictWarning {
+	pendingStrictMu.Lock()
+	defer pendingStrictMu.Unlock()
+	out := append([]strictWarning(nil), pendingStrict...)
+	return out
+}
+
+// StrictFieldSinkWithCapture is the actual sink StrictFieldSink
+// is set to when the console is running. main.go and the tests
+// override both at once through this constructor.
+var strictSinkMu sync.RWMutex
+
+func SetStrictFieldSink(fn func(string, string)) {
+	strictSinkMu.Lock()
+	StrictFieldSink = func(p, f string) {
+		fn(p, f)
+		pendingStrictMu.Lock()
+		pendingStrict = append(pendingStrict, strictWarning{Plugin: p, Field: f})
+		pendingStrictMu.Unlock()
+	}
+	strictSinkMu.Unlock()
+}
+
+// GetStrictFieldSink unused — we keep both hooks in the same
+// structure so a test can attach a custom recorder without
+// having to call SetStrictFieldSink.
+func ReportStrictWarning(p, f string) {
+	StrictFieldSink(p, f)
 }
 
 // reportUnknownSpecFields emits a warning for every unknown

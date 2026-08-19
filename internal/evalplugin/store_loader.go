@@ -3,6 +3,8 @@ package evalplugin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"reflect"
 )
 
@@ -15,7 +17,13 @@ import (
 // Errors from individual Decodes are returned via the discarded
 // slice so the caller can surface them in admin UI/stderr. We do
 // NOT abort on the first malformed row — partial load should be
-// preferred to "every plugin goes dark".
+// preferred to "every plugin goes dark". Before c0.z #5 every
+// failing decode was a `continue` with no log; a row with an
+// unparseable YAML would otherwise sit in the database until a
+// human noticed, indistinguishable from a row that just isn't
+// loaded yet because the cluster hasn't restarted. The fix is
+// to log every decode failure AND every Merge discard through
+// the same slog channel, with the row id so admin can correlate.
 func (r *Registry) LoadFromStore(ctx context.Context, store PluginStore, orgID string) error {
 	if store == nil {
 		return errors.New("plugin store is nil")
@@ -28,6 +36,8 @@ func (r *Registry) LoadFromStore(ctx context.Context, store PluginStore, orgID s
 	for _, rec := range records {
 		p, err := Decode([]byte(rec.SpecYAML))
 		if err != nil {
+			slog.Warn("eval plugin row failed to decode at load-time; the row exists in the database but will not be activated until fixed",
+				"id", rec.ID, "name", rec.Name, "org", rec.OrgID, "err", err)
 			continue
 		}
 		in = append(in, Record{
@@ -40,7 +50,12 @@ func (r *Registry) LoadFromStore(ctx context.Context, store PluginStore, orgID s
 			OrgID: NormalizeOrgID(rec.OrgID),
 		})
 	}
-	_ = r.Merge(in) // discarded records are logged at the caller layer
+	discarded := r.Merge(in)
+	for _, d := range discarded {
+		slog.Warn("eval plugin row not merged into registry",
+			"id", d.Source.Ref, "name", d.Plugin.Metadata.Name,
+			"reason", fmt.Sprintf("conflicts with the same-name %s plugin already registered", d.Source.Kind))
+	}
 	return nil
 }
 
