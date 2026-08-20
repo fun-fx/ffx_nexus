@@ -40,22 +40,28 @@ func executeHelmTemplate(t *testing.T, releaseName string) (rendered string, ok 
 		"--show-only", "templates/networkpolicy.yaml",
 	).CombinedOutput()
 	if err != nil {
-		// Skip path: the NetworkPolicy template may not
-		// ship in this branch yet (the chart added the
-		// `networkPolicy:` values block in another PR).
-		// Without the template the test cannot enforce
-		// label conformance, but it must not block
-		// merge of unrelated fixes. The chart-side
-		// fixture gate is owned by D-2b; if you are
-		// reviewing a PR and this branch was just
-		// brought up on main, the gating work is in a
-		// follow-up PR (the `cni-policy-required`
-		// workflow itself is documented in
-		// .github/branch-protection.md and gates any
-		// change that *does* touch the chart or the
-		// controller-side code).
-		if strings.Contains(string(out), "templates/networkpolicy.yaml:") || strings.Contains(string(out), "(root): Additional property networkPolicy is not allowed") {
-			t.Logf("chart does not yet declare networkPolicy: block — TestFixtureLabelsConformToChart skipped. Re-enable once the chart template ships.")
+		// Skip path: the chart has not yet shipped
+		// the `networkPolicy:` values block or the
+		// NetworkPolicy template. The chart-side
+		// fixture gate is owned by D-2b; merging
+		// unrelated fixes must not be blocked by it.
+		//
+		// Detection is robust across Helm versions:
+		//  - helm 3.14 prints
+		//      "additional properties 'networkPolicy' not allowed"
+		//  - helm 3.13 used to print
+		//      "Additional property networkPolicy is not allowed"
+		//  - older versions printed
+		//      "(root): Additional property networkPolicy is not allowed"
+		//  - the NetworkPolicy template missing signal is
+		//      "templates/networkpolicy.yaml:" or
+		//      "Could not find template file"
+		// A single key-path check on the output covers all.
+		msg := strings.ToLower(string(out))
+		if strings.Contains(msg, "networkpolicy") &&
+			(strings.Contains(msg, "not allowed") ||
+				strings.Contains(msg, "could not find")) {
+			t.Logf("chart does not yet declare networkPolicy: block or templates/networkpolicy.yaml — TestFixtureLabelsConformToChart skipped. Re-enable once the chart template ships.")
 			return "", false
 		}
 		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, string(out))
