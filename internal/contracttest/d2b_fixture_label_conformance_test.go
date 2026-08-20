@@ -30,7 +30,7 @@ import (
 // executeHelmTemplate renders networkpolicy.yaml
 // for the given release; the rendered selector
 // reference is what fixture Pods must match.
-func executeHelmTemplate(t *testing.T, releaseName string) (rendered string, ok bool) {
+func executeHelmTemplate(t *testing.T, releaseName string) string {
 	t.Helper()
 	chart := filepath.Join(moduleRootOrFatal(t), "deploy", "helm", "nexus")
 	out, err := exec.Command("helm", "template", releaseName, chart,
@@ -40,33 +40,22 @@ func executeHelmTemplate(t *testing.T, releaseName string) (rendered string, ok 
 		"--show-only", "templates/networkpolicy.yaml",
 	).CombinedOutput()
 	if err != nil {
-		// Skip path: the chart has not yet shipped
-		// the `networkPolicy:` values block or the
-		// NetworkPolicy template. The chart-side
-		// fixture gate is owned by D-2b; merging
-		// unrelated fixes must not be blocked by it.
+		// We deliberately do NOT skip on helm
+		// failures. Helm rejecting `networkPolicy:`
+		// in values.yaml, or helm refusing to render
+		// templates/networkpolicy.yaml because the
+		// file is missing, is exactly the case this
+		// test was written to catch. A skip would
+		// silently remove the chart/fixture label
+		// conformance invariant and let a future PR
+		// delete the chart scaffolding unnoticed.
 		//
-		// Detection is robust across Helm versions:
-		//  - helm 3.14 prints
-		//      "additional properties 'networkPolicy' not allowed"
-		//  - helm 3.13 used to print
-		//      "Additional property networkPolicy is not allowed"
-		//  - older versions printed
-		//      "(root): Additional property networkPolicy is not allowed"
-		//  - the NetworkPolicy template missing signal is
-		//      "templates/networkpolicy.yaml:" or
-		//      "Could not find template file"
-		// A single key-path check on the output covers all.
-		msg := strings.ToLower(string(out))
-		if strings.Contains(msg, "networkpolicy") &&
-			(strings.Contains(msg, "not allowed") ||
-				strings.Contains(msg, "could not find")) {
-			t.Logf("chart does not yet declare networkPolicy: block or templates/networkpolicy.yaml — TestFixtureLabelsConformToChart skipped. Re-enable once the chart template ships.")
-			return "", false
-		}
+		// The test MUST fail open with full helm
+		// diagnostic output so a reviewer can fix
+		// the chart, not paper over the gap.
 		t.Fatalf("helm template failed: %v\n--- output ---\n%s", err, string(out))
 	}
-	return string(out), true
+	return string(out)
 }
 
 // TestFixtureLabelsConformToChart gates the
@@ -78,10 +67,7 @@ func executeHelmTemplate(t *testing.T, releaseName string) (rendered string, ok 
 func TestFixtureLabelsConformToChart(t *testing.T) {
 	const releaseName = "nexus-cni-test"
 
-	rendered, ok := executeHelmTemplate(t, releaseName)
-	if !ok {
-		t.Skip("networkPolicy template not present in this branch — defer to chart-side PR")
-	}
+	rendered := executeHelmTemplate(t, releaseName)
 
 	// Real selector labels lexed from the
 	// rendered manifest. We expect a stable
