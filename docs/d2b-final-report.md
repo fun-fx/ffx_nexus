@@ -1,5 +1,33 @@
 # Phase D-2b enforcement verification — FINAL REPORT
 
+> **STATUS — INVALIDATED on 2026-08-21**
+>
+> This report is SUPERSEDED by
+> `fix/d2b-real-chart-and-enforcement`. See the
+> INVALIDATED banner in `docs/phase-d2b-report.md`
+> and `docs/phase-d2b-enforcement-pending.md` for
+> the diagnostic. Concretely:
+>
+>   * The chart that produced the alleged 3-회 green
+>     was untracked. It never landed on main or any
+>     branch contributor could pull from.
+>   * The skip path in PR #263's modified
+>     `TestFixtureLabelsConformToChart` and
+>     `TestMigrationJobLabelMatchesNetworkPolicy`
+>     silently turned the static layer green without
+>     exercising the rendered chart, so even as a
+>     static-validity story the claims were false.
+>   * No SHA in this repository's history reproduces
+>     the renders that the "evidence + exec logs"
+>     sections below refer to.
+>
+> Recovery PR run records will be appended below
+> in a new section under
+> `## Recovery run record`. Until that section
+> exists the rest of this document is preserved
+> for forensic comparison only and is NOT a valid
+> D-2b completion claim.
+
 ## TL;DR
 
 D-2b ALLOW 게이트는 **3회 연속 green**으로 닫혔습니다. 결과는 evidence + exec logs에

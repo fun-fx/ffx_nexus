@@ -1,0 +1,181 @@
+# Phase D-2b.21 services for cross-node
+# fixtures. Selector labels match the
+# rendered NetworkPolicy's podSelector so the
+# service and the policy cover the same Pods.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-gateway
+  labels:
+    app.kubernetes.io/part-of: nexus
+    app.kubernetes.io/name: nexus-cni-test-nexus
+    app.kubernetes.io/instance: nexus-cni-test-nexus
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: gateway
+spec:
+  selector:
+    app: cni-target
+    role: gateway
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: gateway
+    - port: 9101
+      targetPort: 9101
+      protocol: TCP
+      name: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-worker-metrics
+  labels:
+    app.kubernetes.io/part-of: nexus
+    app.kubernetes.io/name: nexus-cni-test-nexus
+    app.kubernetes.io/instance: nexus-cni-test-nexus
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: worker
+spec:
+  selector:
+    app: cni-target
+    role: worker
+  ports:
+    - port: 9101
+      targetPort: 9101
+      protocol: TCP
+      name: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-proxy
+  labels:
+    app.kubernetes.io/part-of: nexus
+spec:
+  selector:
+    app: cni-target
+    role: egress-proxy
+  ports:
+    - port: 3128
+      targetPort: 3128
+      protocol: TCP
+      name: proxy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-postgres
+  labels:
+    app.kubernetes.io/part-of: nexus
+spec:
+  selector:
+    app: cni-target
+    role: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: pg
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-redis
+  labels:
+    app.kubernetes.io/part-of: nexus
+spec:
+  selector:
+    app: cni-target
+    role: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+      name: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-clickhouse
+  labels:
+    app.kubernetes.io/part-of: nexus
+spec:
+  selector:
+    app: cni-target
+    role: clickhouse
+  ports:
+    - port: 9000
+      targetPort: 9000
+      protocol: TCP
+      name: ch
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-arbitrary
+  labels:
+    app.kubernetes.io/part-of: nexus
+spec:
+  selector:
+    app: cni-target
+    role: arbitrary
+  ports:
+    - port: 9090
+      targetPort: 9090
+      protocol: TCP
+      name: tcp
+---
+# Namespaces labeled so the chart's
+# ingressController.namespace/prometheus.namespace values
+# line up. The networkpolicy.yaml template uses these
+# labels to enumerate allowed ingress peers.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-ingress
+  labels:
+    kubernetes.io/metadata.name: cni-test-ingress
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-prometheus
+  labels:
+    kubernetes.io/metadata.name: cni-test-prometheus
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-untrusted
+  labels:
+    kubernetes.io/metadata.name: cni-test-untrusted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-postgres
+  labels:
+    kubernetes.io/metadata.name: cni-test-postgres
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-redis
+  labels:
+    kubernetes.io/metadata.name: cni-test-redis
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-clickhouse
+  labels:
+    kubernetes.io/metadata.name: cni-test-clickhouse
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-proxy
+  labels:
+    kubernetes.io/metadata.name: cni-test-proxy

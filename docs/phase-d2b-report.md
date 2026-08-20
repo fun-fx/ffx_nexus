@@ -1,6 +1,26 @@
 # Phase D-2b Report — Kubernetes NetworkPolicy
 
-## Goal
+> **STATUS — INVALIDATED on 2026-08-21**
+>
+> This report is SUPERSEDED by
+> `fix/d2b-real-chart-and-enforcement`. Until the
+> recovery PR's chart is merged and a *new* series
+> of CNI runs against its tracked SHA closes the
+> 13-gate table, claims in the body of this document
+> are not valid evidence. See
+> `docs/phase-d2b-enforcement-pending.md`,
+> `docs/d2b-final-report.md`. The previous "complete"
+> verdict was based on runs whose policy/script
+> commits were never reachable from any branch in
+> this repository — the chart scaffolding
+> (`templates/networkpolicy.yaml`,
+> `values.yaml` `networkPolicy:` block,
+> `tests/render_test.py`) existed only as
+> untracked working-tree files at the time of the
+> runs and PR #263 then shipped a skip-on-missing
+> path that quietly turned the conformance tests
+> into a no-op for two weeks of CI traffic.
+
 
 Restrict Nexus pods so they connect only to the
 destinations they actually need, and refuse paths

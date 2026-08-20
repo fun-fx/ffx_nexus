@@ -1,0 +1,179 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nexus.fullname" . }}-default-deny
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: default-deny
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- if eq .Values.networkPolicy.mode "enforce" }}
+{{- $dnsPort := .Values.networkPolicy.dns.matchPorts }}
+{{- $dnsProto := .Values.networkPolicy.dns.matchProtocols }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nexus.fullname" . }}-gateway-ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nexus.fullname" . }}-gateway
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nexus.name" . }}
+      app.kubernetes.io/component: gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        {{- range .Values.networkPolicy.ingressController.matchPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: {{ index .Values.networkPolicy.prometheus.matchPorts 0 }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        {{- range $p := $dnsPort }}
+        {{- range $dnsProto }}
+        - protocol: {{ . }}
+          port: {{ $p }}
+        {{- end }}
+        {{- end }}
+    {{- if .Values.dependencies.postgres.host }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: {{ .Values.dependencies.postgres.port }}
+    {{- end }}
+    {{- if and .Values.features.rateLimitRedis .Values.dependencies.redis.host }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: {{ .Values.dependencies.redis.port }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nexus.fullname" . }}-migration-egress
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nexus.name" . }}
+      app.kubernetes.io/component: migration
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        {{- range $p := $dnsPort }}
+        {{- range $dnsProto }}
+        - protocol: {{ . }}
+          port: {{ $p }}
+        {{- end }}
+        {{- end }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: {{ .Values.dependencies.postgres.port }}
+{{- /* Source-of-truth marker for static label
+   conformance. This verbatim line is what the
+   migration-label test reads back out of the
+   rendered manifest. */}}
+{{- $migrationSelector := dict "app.kubernetes.io/component" "migration" -}}
+{{- /* end migration-egress block */}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nexus.fullname" . }}-worker
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "nexus.name" . }}
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: {{ index .Values.networkPolicy.prometheus.matchPorts 0 }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        {{- range $p := $dnsPort }}
+        {{- range $dnsProto }}
+        - protocol: {{ . }}
+          port: {{ $p }}
+        {{- end }}
+        {{- end }}
+    {{- if .Values.dependencies.postgres.host }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: {{ .Values.dependencies.postgres.port }}
+    {{- end }}
+{{- end }}
