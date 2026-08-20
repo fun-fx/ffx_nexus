@@ -27,14 +27,14 @@ func TestMigrationJobLabelMatchesNetworkPolicy(t *testing.T) {
 	mjPath := filepath.Join(root, "deploy", "helm", "nexus", "templates", "migration-job.yaml")
 	npBytes, err := os.ReadFile(npPath)
 	if err != nil {
-		// Skip path: the NetworkPolicy template and
-		// the values.yaml `networkPolicy:` block are
-		// not yet on the base branch. Same semantics
-		// as TestFixtureLabelsConformToChart's skip:
-		// make the chart-dependent test SKIP cleanly
-		// so unrelated PRs do not get blocked.
+		// Skip path: the NetworkPolicy template may not
+		// ship in this branch yet. The chart-side fixture
+		// gate is owned by D-2b; this test cannot run
+		// without the template, but it must not block
+		// merge of unrelated fixes. See the matching
+		// skip-note in TestFixtureLabelsConformToChart.
 		if os.IsNotExist(err) {
-			t.Skip("networkpolicy.yaml template absent on disk — defer to D-2b chart-side PR")
+			t.Skip("networkpolicy.yaml template absent in this branch — defer to D-2b chart-side PR")
 		}
 		t.Fatalf("read networkpolicy.yaml: %v", err)
 	}
