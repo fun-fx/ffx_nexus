@@ -258,8 +258,8 @@ func moduleRootOrFatal(t *testing.T) string {
 // `$GOCACHE` paths and `exec` does not restore
 // cwd. The previous implementation used
 //
-//   wd := "."
-//   wd = filepath.Dir(filepath.Dir(wd))
+//	wd := "."
+//	wd = filepath.Dir(filepath.Dir(wd))
 //
 // which is broken when `wd == "."` (filepath.Dir
 // returns ".", the loop never advances, we
@@ -276,7 +276,7 @@ func moduleRootOrFatal(t *testing.T) string {
 //   - the original `moduleRoot()` factory
 //     (kept in d2b_migration_label_test.go
 //     before this fix) used
-//        wd = filepath.Dir(filepath.Dir(wd))
+//     wd = filepath.Dir(filepath.Dir(wd))
 //     and that returns "." when wd == ".",
 //     so the loop never advanced off ".";
 //     every test that called moduleRoot was
