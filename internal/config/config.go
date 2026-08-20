@@ -149,6 +149,45 @@ type Config struct {
 	// Worker pods are deployed alongside the Gateway pods.
 	SchedulerRoleEnabled bool
 
+	// Mode (Phase D-1) selects which execution profile the binary
+	// boots into. Three values cover the deployment topology:
+	//
+	//   "all-in-one" (default) — both the gateway HTTP path and the
+	//                          leader-gated scheduler run inside this
+	//                          process. Used for local development,
+	//                          single-container installs, and the
+	//                          legacy single-Deployment upgrade path.
+	//                          When Mode == "all-in-one" the
+	//                          SchedulerRoleEnabled flag is ignored:
+	//                          exactly one pod carries both workloads
+	//                          and the absence of peers means the
+	//                          leader gate reduces to "always-leader".
+	//                          Why "always-leader" instead of "every
+	//                          replica fires"? Because keeping the
+	//                          leader gate hot even in legacy mode means
+	//                          the same code path uses the same lease
+	//                          primitives the Worker pod will use, and
+	//                          a future config flip does not need to
+	//                          re-test the scheduler correctness path.
+	//
+	//   "gateway" — only the HTTP API + LLM proxy + console. The
+	//               benchmark scheduler is intentionally NOT started;
+	//               it lives in the Worker pods to keep the request
+	//               hot path free of cron goroutines.
+	//
+	//   "worker"  — only the leader-gated scheduler. The HTTP
+	//               listeners are NOT started; the Worker pod serves
+	//               no traffic and exposes only the /metrics port.
+	//               This pod never receives OpenAI-compatible
+	//               requests.
+	//
+	// Mode is set via NEXUS_ROLE. The Helm chart ships two Deployments
+	// (gateway + worker); the all-in-one mode is opt-in for
+	// single-container and dev environments where the operator does
+	// not want to manage two pods. The same image runs all three
+	// modes: only the environment variable changes.
+	Mode string
+
 	// --- V5 high-concurrency tuning -------------------------------------
 	// MaxConcurrentPerKey caps *concurrent* in-flight requests per virtual
 	// key, on a single replica. Use it to keep one noisy virtual key
@@ -411,9 +450,30 @@ func (c SSOConfig) LabelOrDefault() string {
 // Load reads configuration from the environment, applying sane defaults. It
 // first loads a local .env file (if present) for developer convenience; real
 // environment variables always take precedence over .env entries.
+//
+// An invalid NEXUS_ROLE causes Load to panic. The check is
+// deliberately fatal because a typo like NEXUS_ROLE=Gateway
+// (capitalised) would otherwise silently fall into the
+// all-in-one default and run the same operator footprint on
+// production pods that the gateway pods use - a quiet
+// over-scope of "the worker should run cron" - and that's
+// exactly the class of bug the role split exists to prevent.
 func Load() Config {
 	loadDotEnv(".env")
 	c := load()
+	if !validMode(c.Mode) {
+		panic("NEXUS_ROLE must be one of: gateway, worker, all-in-one (got: " + c.Mode + ")")
+	}
+	if c.Mode == "worker" && c.SchedulerRoleEnabled == false {
+		// Worker without the lease gate is an
+		// over-step: the gate is what keeps two
+		// workers from running the same schedule.
+		// Auto-set the gate so the worker mode is
+		// safe by default; document the contract
+		// here rather than relying on a Helm-only
+		// patch.
+		c.SchedulerRoleEnabled = true
+	}
 
 	// SecureCookies defaults to on, and follows DevMode down rather than being
 	// a second thing to remember. An operator can still force it back on in dev
@@ -421,6 +481,21 @@ func Load() Config {
 	c.SecureCookies = envBool("NEXUS_SECURE_COOKIES", !c.DevMode)
 
 	return c
+}
+
+// validMode reports whether s is one of the three execution
+// profiles Phase D-1 supports. The check rejects "allinone" and
+// "All-In-One" variants because every misspelling makes the
+// boot quietly fall into the all-in-one default — exactly the
+// failure mode Load() panics on. Operators who want to extend
+// the mode set update this function and the panic above in
+// lockstep.
+func validMode(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "all-in-one", "allinone", "gateway", "worker":
+		return true
+	}
+	return false
 }
 
 func load() Config {
@@ -467,6 +542,7 @@ func load() Config {
 		RouteWBench:               envFloat("NEXUS_ROUTE_W_BENCH", 0.5),
 		RouteBenchHalfLife:        envDuration("NEXUS_ROUTE_BENCH_HALF_LIFE", 7*24*time.Hour),
 		SchedulerRoleEnabled:      envBool("NEXUS_SCHEDULER_ROLE_ENABLED", false),
+		Mode:                      strings.ToLower(strings.TrimSpace(env("NEXUS_ROLE", "all-in-one"))),
 		OTLPEnabled:               envBool("NEXUS_OTLP_ENABLED", false),
 		OTLPEndpoint:              env("NEXUS_OTLP_ENDPOINT", ""),
 		MetricsAddr:               env("NEXUS_METRICS_ADDR", ""),

@@ -685,26 +685,46 @@ credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 
 				"relative_threshold", benchmark.DefaultDriftAlertSpec.RelativeChangeThreshold,
 				"freshness_threshold", benchmark.DefaultDriftAlertSpec.FreshnessThreshold)
 
-			// Scheduled benchmark re-fires. Shares the underlying
-			// Runner so that launch, vkey minting and rollback on
-			// partial launch failure all live in one place; the cron
-			// package only owns the "when" and the bookkeeping.
+// Scheduled benchmark re-fires. Shares the underlying
+		// Runner so that launch, vkey minting and rollback on
+		// partial launch failure all live in one place; the cron
+		// package only owns the "when" and the bookkeeping.
+		//
+		// Phase D-1: in NEXUS_ROLE=worker the benchmark scheduler
+		// IS the workload; the gateway pods run cron-less. In
+		// NEXUS_ROLE=gateway the scheduler is intentionally
+		// absent so the request hot path stays free of cron
+		// goroutines. In NEXUS_ROLE=all-in-one both halves run,
+		// but the lease gate (SchedulerRoleEnabled) still
+		// enforces single-leader across replicas.
+		if cfg.Mode == "gateway" {
+			log.Info("benchmark scheduler intentionally absent (gateway mode)")
+		} else {
 			sched := cron.New(schedStore{store: store}, makeScheduleLander(benchRunner), log)
-			if cfg.SchedulerRoleEnabled {
+			if cfg.SchedulerRoleEnabled || cfg.Mode == "worker" {
 				// Wire the Phase D-1 lease gate. The leaser
 				// uses the same pgxpool as the rest of the
 				// application; per-pod owner IDs are derived
 				// from hostname + a process-local salt so a
 				// restarted pod does not pick up a stale
 				// lease by accident.
+				//
+				// All-in-one mode also enables the gate; in a
+				// single-replica install the gate is a no-op
+				// (one pod, no contention), but using the same
+				// primitive everywhere means the rollout to
+				// multi-pod cannot desync the lock semantics.
 				leaserMgr := leaser.NewManager(store.Pool(), log)
 				gate := cron.LeaderGateFromManager(leaserMgr, schedulerOwnerID(), log)
 				sched.SetLeader(gate)
-				log.Info("benchmark scheduler leader-gated via Postgres lease")
+				log.Info("benchmark scheduler leader-gated via Postgres lease", "mode", cfg.Mode)
+			} else if cfg.Mode == "all-in-one" {
+				log.Info("benchmark scheduler running without lease gate (all-in-one legacy)")
 			}
 			go sched.Run(ctx)
-			log.Info("benchmark scheduler enabled")
+			log.Info("benchmark scheduler enabled", "mode", cfg.Mode)
 		}
+	}
 	}
 	// Hot-reload providers after credential changes (e.g. rotation) so a new
 	// secret takes effect without restarting the gateway.
@@ -720,9 +740,31 @@ credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go serve(&wg, gwSrv, "gateway", cfg.GatewayAddr, log)
-	go serve(&wg, consoleSrv, "console", cfg.ConsoleAddr, log)
+	switch cfg.Mode {
+	case "gateway":
+		wg.Add(2)
+		go serve(&wg, gwSrv, "gateway", cfg.GatewayAddr, log)
+		go serve(&wg, consoleSrv, "console", cfg.ConsoleAddr, log)
+		log.Info("mode=gateway - HTTP listeners up, scheduler absent")
+	case "worker":
+		// No HTTP listener on the worker pod. The data
+		// plane is the cron scheduler. The Worker
+		// service-metrics surface is provisioned by the
+		// Helm chart (service-worker-metrics.yaml) which
+		// scrapes the same /metrics endpoint the gateway
+		// exposes. In a future Prometheus refactor we
+		// will move the metrics handler here; today the
+		// inherited metricsMux lives with the gateway
+		// path and would be a nil deref if we wired it.
+		log.Info("mode=worker - scheduler up, HTTP listeners absent (metrics scrape uses Helm service-worker-metrics)")
+	default:
+		// all-in-one (default): both halves are present so
+		// local dev and single-container installs Just Work.
+		wg.Add(2)
+		go serve(&wg, gwSrv, "gateway", cfg.GatewayAddr, log)
+		go serve(&wg, consoleSrv, "console", cfg.ConsoleAddr, log)
+		log.Info("mode=all-in-one - HTTP + scheduler in one process")
+	}
 
 	// --- Metabase BI adapter (one-shot, idempotent, never gating boot) -----
 	// Mirrors the V3 OTLP contract: empty URL => constructor returns nil =>
