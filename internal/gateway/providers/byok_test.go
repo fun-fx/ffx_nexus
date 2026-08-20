@@ -14,8 +14,7 @@ import (
 // TestOpenAIBYOKInjection verifies the OpenAI adapter uses a per-request
 // credential override from the context (Authorization header + base URL) instead
 // of its process-wide configured key.
-func TestOpenAIBYOKInjection(t *testing.T) {
-	var gotAuth string
+func TestOpenAIBYOKInjection(t *testing.T) {	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		_ = json.NewEncoder(w).Encode(gateway.ChatCompletionResponse{
@@ -70,5 +69,41 @@ func TestOpenAISharedKeyDefault(t *testing.T) {
 	}
 	if gotAuth != "Bearer sk-shared" {
 		t.Fatalf("expected shared key, got %q", gotAuth)
+	}
+}
+
+// TestOpenAIEmptyCallerBaseURLUsesConstructor pins the
+// "missing override → use process-wide env baseURL" contract.
+// When a CallerCredential supplies a Secret but leaves BaseURL
+// empty (the canonical "use shared env keys" shape), the
+// adapter must dial its constructor baseURL. This rules out a
+// subtle bug where a future change makes empty BaseURL turn into
+// the literal string "/" or panics, which would replace "shared
+// key" with "request fails immediately" for every org that
+// doesn't override.
+func TestOpenAIEmptyCallerBaseURLUsesConstructor(t *testing.T) {
+	gotURL := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.Path
+		_ = json.NewEncoder(w).Encode(gateway.ChatCompletionResponse{
+			ID: "x", Model: "gpt-4o-mini",
+			Choices: []gateway.Choice{{Message: gateway.Message{Role: "assistant", Content: "ok"}}},
+		})
+	}))
+	defer srv.Close()
+
+	o := NewOpenAI("sk-shared", srv.URL, 5*time.Second)
+	ctx := gateway.WithCallerCredential(context.Background(), gateway.CallerCredential{
+		Secret: "sk-shared",
+		// BaseURL intentionally empty — use constructor.
+	})
+	if _, err := o.ChatCompletion(ctx, gateway.ChatCompletionRequest{
+		Model:    "gpt-4o-mini",
+		Messages: []gateway.Message{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("ChatCompletion: %v", err)
+	}
+	if gotURL != "/chat/completions" {
+		t.Fatalf("expected chat completions path, got %q", gotURL)
 	}
 }

@@ -132,6 +132,44 @@ func (s *Server) listEvalPlugins(w http.ResponseWriter, r *http.Request, _ core.
 	writeJSON(w, http.StatusOK, map[string]any{"plugins": all})
 }
 
+// evalPluginResponse is the typed JSON envelope the Save / Patch
+// routes emit when a record was persisted AND there is nothing
+// the caller needs to be alerted to. The optional
+// `strict_warnings` field is appended when the strict-mode
+// decoder captured unknown spec.<key> tokens during this
+// request: the operator sees the warning in the same screen as
+// the save, instead of having to read slog to learn that a
+// manifest had a typo.
+//
+// Warnings carry the YAML field name verbatim. The field name
+// is a public schema token the operator wrote themselves in the
+// editor; the alternative is surfacing internal Go struct
+// paths, which would leak implementation. The strict warnings
+// layer never carries tenant ids, credentials, request ids, or
+// upstream vendor bodies — see the contract in
+// internal/apierr/apierr.go.
+type evalPluginResponse struct {
+	*evalplugin.PluginRecord
+	StrictWarnings []string `json:"strict_warnings,omitempty"`
+}
+
+// pluginWarningFieldName is the public schema token the YAML
+// editor displayed; we re-emit exactly that so the operator
+// can grep their own draft. Keeping the re-emission symmetric
+// with what they typed protects the contract: a Go field path
+// like "PluginSpec.UnknownFields" never escapes this envelope.
+func pluginWarningFieldName(field string) string {
+	// DecodeStrict already prefixes unknown keys with "spec."
+	// in some code paths and leaves them bare in others — we
+	// normalise here so the response is consistent regardless
+	// of which path produced the warning.
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return ""
+	}
+	return field
+}
+
 // StrictFieldSink captures strict-mode warnings and surfaces them
 // in the JSON response. The hook is set at boot by main.go; the
 // Reset/Capture pair here scopes warnings to one save and the
@@ -147,6 +185,53 @@ func (s *Server) saveEvalPluginStrictWarnings(ctx context.Context, id string) {
 	}
 }
 
+// strictWarningsForResponse turns the package-level captures into
+// the slice the JSON envelope carries. The function is the
+// single boundary that decides what the operator can see, so a
+// future change that wants to suppress vendor-side fields goes
+// here instead of being threaded through the handler logic.
+//
+// Empty input returns nil so the optional struct field is omitted
+// by `omitempty`. A non-nil but empty slice is never returned; we
+// preserve the "warnings produced = warnings surfaced" invariant.
+func strictWarningsForResponse() []string {
+	ws := evalplugin.CapturePendingStrict()
+	if len(ws) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ws))
+	seen := make(map[string]bool, len(ws))
+	for _, w := range ws {
+		f := pluginWarningFieldName(w.Field)
+		if f == "" {
+			continue
+		}
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// writeEvalPluginResponse serializes the typed envelope. The
+// response body never carries a record id on its own — the
+// `*PluginRecord` field is embedded so a `{ id, name,
+// strict_warnings }` JSON object reaches the frontend without a
+// separate marshalling step. We refuse to leak protected
+// signatures from the record itself; the contract is that the
+// caller scrubbed the field map before passing us a record.
+func writeEvalPluginResponse(w http.ResponseWriter, status int, rec *evalplugin.PluginRecord, warnings []string) {
+	payload := evalPluginResponse{PluginRecord: rec, StrictWarnings: warnings}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
 func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.evalPlugins == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "eval plugins disabled"})
@@ -158,7 +243,7 @@ func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 		return
 	}
 	evalplugin.ResetPendingStrict()
-	if _, err := evalplugin.Decode([]byte(body.SpecYAML)); err != nil {
+	if _, err := evalplugin.DecodeStrict([]byte(body.SpecYAML)); err != nil {
 		s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 		return
 	}
@@ -181,7 +266,11 @@ func (s *Server) createEvalPlugin(w http.ResponseWriter, r *http.Request, u core
 	}
 	s.saveEvalPluginStrictWarnings(r.Context(), rec.ID)
 	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.create"), rec.ID, rec.Name)
-	writeJSON(w, http.StatusCreated, rec)
+	// Capture AFTER Save + audit: the strict hook had a chance
+	// to record warnings for the request that just succeeded.
+	// Save's successful path does not run reportUnknownSpecFields
+	// itself; Validate's strict capture is the source.
+	writeEvalPluginResponse(w, http.StatusCreated, rec, strictWarningsForResponse())
 }
 
 // pluginByIDForOrg is the {id} counterpart of lookupPluginForOrg: it fetches a
@@ -231,7 +320,7 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 	}
 	if patch.SpecYAML != nil {
 		evalplugin.ResetPendingStrict()
-		p, err := evalplugin.Decode([]byte(*patch.SpecYAML))
+		p, err := evalplugin.DecodeStrict([]byte(*patch.SpecYAML))
 		if err != nil {
 			s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 			return
@@ -254,7 +343,7 @@ func (s *Server) patchEvalPlugin(w http.ResponseWriter, r *http.Request, u core.
 	}
 	s.saveEvalPluginStrictWarnings(r.Context(), existing.ID)
 	s.audit(r.Context(), u.ID, orgID(r), core.AuditAction("eval.plugin.update"), existing.ID, existing.Name)
-	writeJSON(w, http.StatusOK, existing)
+	writeEvalPluginResponse(w, http.StatusOK, existing, strictWarningsForResponse())
 }
 
 func (s *Server) deleteEvalPlugin(w http.ResponseWriter, r *http.Request, u core.User) {

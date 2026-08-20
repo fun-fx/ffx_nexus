@@ -57,9 +57,7 @@ func DecodeStrict(raw []byte) (*Plugin, error) {
 	// Re-run Validate so the strict-flag hook fires with the
 	// freshly-decoded UnknownFields. This is idempotent — the
 	// validation rules have already been checked once.
-	if hasFlag(p.Spec.Flags, flagStrict) {
-		reportUnknownSpecFields(p.Metadata.Name, p.Spec)
-	}
+	reportUnknownSpecFields(p.Metadata.Name, p.Spec)
 	return p, nil
 }
 
