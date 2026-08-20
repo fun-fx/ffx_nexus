@@ -85,6 +85,44 @@ func WaitForLeadership(ctx context.Context, gate LeaderGate, role string) (conte
 	}
 }
 
+// ScheduleGate decides whether the calling replica is the
+// leader for a specific schedule. Per-schedule gating is what
+// Phase D-1 specifies: each schedule has its own advisory lock
+// key so two long-running schedules do not serialise on a
+// global mutex.
+//
+// Production wires this through internal/leaser.Manager.AcquireSchedule.
+type ScheduleGate interface {
+	AcquireSchedule(ctx context.Context, scheduleID string) (leaseCtx context.Context, err error)
+	ReleaseSchedule(ctx context.Context, scheduleID string) error
+}
+
+// ScheduleGateFromManager returns a ScheduleGate wrapping the
+// manager with the same OwnerID as the role-based gate.
+func ScheduleGateFromManager(mgr *leaser.Manager, ownerID string) ScheduleGate {
+	return &managerScheduleGate{Mgr: mgr, OwnerID: ownerID}
+}
+
+type managerScheduleGate struct {
+	Mgr     *leaser.Manager
+	OwnerID string
+}
+
+func (g *managerScheduleGate) AcquireSchedule(ctx context.Context, scheduleID string) (context.Context, error) {
+	_, err := g.Mgr.AcquireSchedule(ctx, scheduleID, g.OwnerID)
+	if err != nil {
+		if errors.Is(err, leaser.ErrAlreadyHeld) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return ctx, nil
+}
+
+func (g *managerScheduleGate) ReleaseSchedule(ctx context.Context, scheduleID string) error {
+	return g.Mgr.Release(ctx, scheduleID)
+}
+
 // ManagerGate adapts a *leaser.Manager to the LeaderGate interface
 // for cron.Runner.
 type ManagerGate struct {

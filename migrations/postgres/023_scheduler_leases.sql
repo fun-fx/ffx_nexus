@@ -1,14 +1,17 @@
 -- 023_scheduler_leases.sql
 --
--- Durable scheduler lock for Phase D-1. Each role ("benchmark_scheduler")
--- designates a single leader across worker pods; the leader picks up
--- due benchmark schedules. The leases table is the visible plane;
--- pg_try_advisory_lock(hash(role)) is the in-process fast path that
--- avoids polling Postgres on every iteration. Either layer alone is
--- insufficient: advisory locks vanish with the connection, which
--- means a failing pgxpool connection can silently drop leadership
--- while still selecting due runs. The lease heartbeat lets a new
--- pod take over even if the old leader's connection leaked.
+-- Durable scheduler lock for Phase D-1. Each role is identified
+-- by either a global role name ("benchmark_scheduler") or a
+-- per-schedule id. The leases table is the visible/audit plane;
+-- pg_try_advisory_lock(int4, int4, role) is the actual mutual
+-- exclusion that holds for the lock lifetime, and is anchored
+-- on a pgxpool.Conn that the Manager pins until Release().
+--
+-- Either layer alone is insufficient: advisory locks vanish
+-- with the connection, which means a failing pgxpool connection
+-- can silently drop leadership while still selecting due runs.
+-- The lease heartbeat lets a new pod take over even if the
+-- old leader's connection leaked.
 --
 -- The TTL is short (15s) so crashed workers lose the lease quickly;
 -- the renew interval is half of TTL (7s) so a single missed renew
@@ -20,7 +23,7 @@ CREATE TABLE IF NOT EXISTS benchmark_scheduler_leases (
     acquired_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     heartbeat_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at     TIMESTAMPTZ NOT NULL,
-    lock_token     BIGINT      NOT NULL,
+    lock_token     TEXT        NOT NULL,
     CONSTRAINT benchmark_scheduler_leases_ttl CHECK (
         expires_at > heartbeat_at AND expires_at <= heartbeat_at + INTERVAL '60 seconds'
     )

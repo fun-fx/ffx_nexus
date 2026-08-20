@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS benchmark_scheduler_leases (
     acquired_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     heartbeat_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at     TIMESTAMPTZ NOT NULL,
-    lock_token     BIGINT      NOT NULL
+    lock_token     TEXT        NOT NULL
 );
 CREATE INDEX IF NOT EXISTS benchmark_scheduler_leases_expires_idx
     ON benchmark_scheduler_leases (role, expires_at);
@@ -196,6 +196,199 @@ func TestTakeoverAfterExplicitRelease(t *testing.T) {
 	mgrA.Shutdown(ctx)
 	mgrB.Shutdown(ctx)
 	_ = released.Load()
+}
+
+// 5 verification scenarios from the Phase D-1 spec. Each lives
+// next to its inverse so a regression that breaks the
+// "single-holder" guarantee or inter-organisation isolation is
+// loud.
+//
+// The tests below skip without NEXUS_TEST_POSTGRES_URL.
+// Operators who run the cluster's own CI lane set the URL; the
+// hermetic lane in CI does not, so the gates stay green.
+
+// TestScenarioDuplicateThreeWorkersOneSchedule covers the
+// "exactly one runs" guarantee. Three Manager instances
+// contend on the same role and the same schedule id. After
+// the dust settles, exactly one roster has the lock; the
+// other two report ErrAlreadyHeld. A duplicate-fire bug would
+// report three leases in the row.
+func TestScenarioDuplicateThreeWorkersOneSchedule(t *testing.T) {
+	pool := testPoolGet(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	role := uniqueRole(t)
+	mgrs := []*leaser.Manager{
+		leaser.NewManager(pool, slog.New(slog.DiscardHandler)),
+		leaser.NewManager(pool, slog.New(slog.DiscardHandler)),
+		leaser.NewManager(pool, slog.New(slog.DiscardHandler)),
+	}
+	type lresult struct {
+		lease leaser.Lease
+		err   error
+	}
+	leases := make([]lresult, len(mgrs))
+	var wg sync.WaitGroup
+	for i := range mgrs {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			leases[i].lease, leases[i].err = mgrs[i].Acquire(ctx, role, fmt.Sprintf("owner-%d-%d", i, time.Now().UnixNano()))
+		}()
+	}
+	wg.Wait()
+	defer func() {
+		for i, l := range leases {
+			if l.err == nil {
+				_ = mgrs[i].Release(ctx, role)
+			}
+		}
+		for _, m := range mgrs {
+			m.Shutdown(ctx)
+		}
+	}()
+	var winners int
+	for _, l := range leases {
+		if l.err == nil {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Errorf("expected exactly 1 acquired lease; got %d", winners)
+	}
+	if !leasesContainErrAlreadyHeld(leases) {
+		t.Errorf("expected other two to report ErrAlreadyHeld; leases=%+v", leases)
+	}
+}
+
+func leasesContainErrAlreadyHeld(leases []struct {
+	lease leaser.Lease
+	err   error
+}) bool {
+	for _, l := range leases {
+		if l.err == leaser.ErrAlreadyHeld {
+			return true
+		}
+	}
+	return false
+}
+
+// TestScenarioTakeoverAfterExplicitShutdown covers the
+// takeover path: original holder Releases, second pod takes
+// over without waiting for TTL.
+func TestScenarioTakeoverAfterExplicitShutdown(t *testing.T) {
+	pool := testPoolGet(t)
+	role := uniqueRole(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	mgrA := leaser.NewManager(pool, slog.New(slog.DiscardHandler))
+	_, err := mgrA.Acquire(ctx, role, "owner-A")
+	if err != nil {
+		t.Fatalf("acquire A: %v", err)
+	}
+	if err := mgrA.Release(ctx, role); err != nil {
+		t.Fatalf("release A: %v", err)
+	}
+	mgrA.Shutdown(ctx)
+
+	mgrB := leaser.NewManager(pool, slog.New(slog.DiscardHandler))
+	_, err = mgrB.Acquire(ctx, role, "owner-B")
+	if err != nil {
+		t.Fatalf("takeover by B should succeed on the first call after release: %v", err)
+	}
+	mgrB.Release(ctx, role)
+	mgrB.Shutdown(ctx)
+}
+
+// TestScenarioZombieLeaseCannotStealHeartbeat covers the
+// "advisory lock wins" rule. We simulate a zombie by writing
+// a stale row directly and forcing our manager's heartbeat
+// against the wrong token. The manager must report
+// ErrAlreadyHeld rather than bump a row it does not own.
+func TestScenarioZombieLeaseCannotStealHeartbeat(t *testing.T) {
+	pool := testPoolGet(t)
+	role := uniqueRole(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := pool.Exec(ctx, `
+INSERT INTO benchmark_scheduler_leases (role, owner_id, acquired_at, heartbeat_at, expires_at, lock_token)
+VALUES ($1, 'zombie', NOW(), NOW(), NOW() + INTERVAL '60 seconds', 'zombie-token')
+ON CONFLICT (role) DO UPDATE SET owner_id = 'zombie', lock_token = 'zombie-token',
+                                  acquired_at = NOW(), heartbeat_at = NOW(),
+                                  expires_at = NOW() + INTERVAL '60 seconds'`, role)
+	if err != nil {
+		t.Fatalf("seed zombie: %v", err)
+	}
+	mgr := leaser.NewManager(pool, slog.New(slog.DiscardHandler))
+	_, err = mgr.Acquire(ctx, role, "owner-real")
+	if err == nil {
+		t.Fatal("acquire against a live zombie row should fail; Acquire must respect the row's lease until expiry")
+	}
+	if err != leaser.ErrAlreadyHeld {
+		t.Fatalf("expected ErrAlreadyHeld on live zombie row; got %v", err)
+	}
+	mgr.Shutdown(ctx)
+}
+
+// TestScenarioConnectionLeaseFreesAfterRelease covers the
+// "dedicated connection is pinned and returned" rule. After
+// Release, the connection must return to the pool. If we
+// pin without Release, MaxConns leaks here.
+func TestScenarioConnectionLeaseFreesAfterRelease(t *testing.T) {
+	pool := testPoolGet(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cfg, err := pgxpool.ParseConfig(os.Getenv("NEXUS_TEST_POSTGRES_URL"))
+	if err != nil {
+		t.Fatalf("parse pool cfg: %v", err)
+	}
+	cfg.MaxConns = 2
+	cfg.MinConns = 0
+	smallPool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("small pool: %v", err)
+	}
+	defer smallPool.Close()
+	mgr := leaser.NewManager(smallPool, slog.New(slog.DiscardHandler))
+	// Sequential acquire/release of N>MaxConns distinct
+	// roles: every round must succeed even though we
+	// momentarily hold the only conn.
+	roles := []string{
+		uniqueRole(t) + "_a",
+		uniqueRole(t) + "_b",
+		uniqueRole(t) + "_c",
+	}
+	for _, r := range roles {
+		_, err := mgr.Acquire(ctx, r, "owner-"+r)
+		if err != nil {
+			t.Fatalf("acquire %s: %v", r, err)
+		}
+		if err := mgr.Release(ctx, r); err != nil {
+			t.Fatalf("release %s: %v", r, err)
+		}
+	}
+}
+
+// TestScenarioOrgBoundaryAcrossRoles ensures that two
+// managers with different schedule ids do not block each
+// other. A global single-key lock would serialise two
+// schedules that share no data, which we explicitly reject.
+func TestScenarioOrgBoundaryAcrossRoles(t *testing.T) {
+	pool := testPoolGet(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	mgr := leaser.NewManager(pool, slog.New(slog.DiscardHandler))
+	roleA := uniqueRole(t) + "_org_A_schedule_alpha"
+	roleB := uniqueRole(t) + "_org_B_schedule_beta"
+	if _, err := mgr.Acquire(ctx, roleA, "owner-A"); err != nil {
+		t.Fatalf("acquire A: %v", err)
+	}
+	defer mgr.Release(ctx, roleA)
+	if _, err := mgr.Acquire(ctx, roleB, "owner-B"); err != nil {
+		t.Fatalf("acquire B (different role) should not block on A's advisory lock: %v", err)
+	}
+	defer mgr.Release(ctx, roleB)
 }
 
 // TestRenewSurvivesAcrossAcquireGaps makes sure that even if a

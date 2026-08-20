@@ -717,7 +717,15 @@ credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 
 				leaserMgr := leaser.NewManager(store.Pool(), log)
 				gate := cron.LeaderGateFromManager(leaserMgr, schedulerOwnerID(), log)
 				sched.SetLeader(gate)
-				log.Info("benchmark scheduler leader-gated via Postgres lease", "mode", cfg.Mode)
+				// Per-schedule gate: even with the role-level
+				// gate, defensively guard each fire() so the
+				// handover window cannot race a schedule row
+				// write. Schedule key takes two int32 hashes of
+				// the schedule id (leaser.KeyForSchedule) so
+				// unrelated schedules do not serialise on a
+				// global mutex.
+				sched.SetScheduleGate(cron.ScheduleGateFromManager(leaserMgr, schedulerOwnerID()))
+				log.Info("benchmark scheduler leader-gated and per-schedule locked via Postgres lease", "mode", cfg.Mode)
 			} else if cfg.Mode == "all-in-one" {
 				log.Info("benchmark scheduler running without lease gate (all-in-one legacy)")
 			}

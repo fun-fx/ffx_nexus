@@ -93,6 +93,15 @@ type Runner struct {
 	// defaults to "benchmark_scheduler" so production wires
 	// keep a stable token even if they forget to set it.
 	leaderRole string
+	// scheduleGate, when non-nil, applies the per-schedule
+	// advisory lock around fire(). The lock is the second plane
+	// of correctness: the role-level gate keeps an entire
+	// replica out of the tick loop, the schedule-level gate
+	// keeps two replicas from racing on a single row even when
+	// they share a topology edge case (e.g. takeover window,
+	// advisory lock released but row not yet updated). nil ->
+	// legacy "every replica fires" semantics.
+	scheduleGate ScheduleGate
 
 	mu         sync.Mutex
 	lastErrors map[string]string // schedule_id → last error string
@@ -132,6 +141,16 @@ func (r *Runner) SetLeaderRole(role string) {
 	}
 	r.mu.Lock()
 	r.leaderRole = role
+	r.mu.Unlock()
+}
+
+// SetScheduleGate wires a per-schedule advisory lock into the
+// runner. Pass nil to revert to the legacy "every replica
+// fires" semantics — for back-compat with callers that did
+// not migrate the runner's launch path yet.
+func (r *Runner) SetScheduleGate(gate ScheduleGate) {
+	r.mu.Lock()
+	r.scheduleGate = gate
 	r.mu.Unlock()
 }
 
@@ -315,6 +334,61 @@ func (r *Runner) tick(ctx context.Context) {
 }
 
 func (r *Runner) fire(ctx context.Context, s Spec, now time.Time) {
+	// Phase D-1 per-schedule lock: even when a global leader
+	// gate is in place ("only one replica ticks") we still
+	// pin the per-schedule advisory lock so the second-replica
+	// window after a takeover but before tick-cancellation
+	// cannot double-fire. The lock's lifetime is this fire()
+	// only — short, scoped to a single schedule.
+	leaseCtx, err := r.acquireScheduleLock(ctx, s.ID)
+	if err != nil {
+		// Infrastructure error from the lease layer. Treat
+		// the same as a follower skip so we still re-stamp
+		// and we do not crash the tick loop on a transient
+		// Postgres outage. The acquire returned (nil, err)
+		// in this branch (gate wired); the follower-or-held
+		// case returns (nil, nil) — we are inside the err
+		// branch only when there's a real error.
+		r.mu.Lock()
+		r.lastErrors[s.ID] = "schedule lock acquire error: " + err.Error()
+		r.mu.Unlock()
+		return
+	}
+	if leaseCtx == nil {
+		// Another replica is mid-fire on the same schedule.
+		// Skip; we will see the row's updated next_launch_at
+		// on the next tick.
+		r.mu.Lock()
+		r.lastErrors[s.ID] = "skipped: schedule lock held by peer"
+		r.mu.Unlock()
+		return
+	}
+	defer func() {
+		if r.scheduleGate != nil {
+			_ = r.scheduleGate.ReleaseSchedule(context.Background(), s.ID)
+		}
+	}()
+	r.runOne(ctx, s, now)
+}
+
+// acquireScheduleLock returns (ctx, nil) when this replica
+// holds the per-schedule lock, (nil, ErrAlreadyHeld) when
+// another replica is mid-fire on the same schedule, and
+// (nil, err) on infrastructure failure. The deferred
+// ReleaseSchedule is the canonical cleanup; absence of a
+// gate degrades to the legacy "everyone fires" semantics
+// for that half (matching SetLeader(nil)).
+func (r *Runner) acquireScheduleLock(ctx context.Context, scheduleID string) (context.Context, error) {
+	if r.scheduleGate == nil {
+		return ctx, nil
+	}
+	return r.scheduleGate.AcquireSchedule(ctx, scheduleID)
+}
+
+// runOne is fire() body without the per-schedule advisory-lock
+// wrapper. Used either by fire() (after the lock) or by tests
+// that drive a single firing in isolation.
+func (r *Runner) runOne(ctx context.Context, s Spec, now time.Time) {
 	runID, err := r.lander.RunSchedule(ctx, s)
 	if err != nil {
 		r.log.Warn("cron: schedule fire failed",

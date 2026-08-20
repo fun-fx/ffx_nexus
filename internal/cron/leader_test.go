@@ -66,3 +66,91 @@ func TestNoopLeaderDoesNotBlock(t *testing.T) {
 		t.Fatal("noop gate returned nil ctx")
 	}
 }
+
+// immediateLeaderScheduleGate / immediateFollowerScheduleGate
+// are stub ScheduleGate implementations that mirror the role
+// fixtures above. They let us assert the per-schedule lock
+// path without bringing up Postgres.
+
+type immediateLeaderScheduleGate struct{}
+
+func (immediateLeaderScheduleGate) AcquireSchedule(ctx context.Context, _ string) (context.Context, error) {
+	return ctx, nil
+}
+func (immediateLeaderScheduleGate) ReleaseSchedule(_ context.Context, _ string) error {
+	return nil
+}
+
+type immediateFollowerScheduleGate struct{}
+
+func (immediateFollowerScheduleGate) AcquireSchedule(_ context.Context, _ string) (context.Context, error) {
+	return nil, nil
+}
+func (immediateFollowerScheduleGate) ReleaseSchedule(_ context.Context, _ string) error {
+	return nil
+}
+
+// TestFireAcquiresPerScheduleLock pins that the runner
+// attempts the per-schedule advisory lock around fire():
+// when the gate reports "follower" the runner must not call
+// the underlying Lander.
+//
+// The contract is exposed through a recording Lander so the
+// test can count invocations.
+func TestFireAcquiresPerScheduleLock(t *testing.T) {
+	lander := &recordingLander{}
+	r := New(stubStore{next: []Spec{{ID: "sch-x", Model: "m", Cadence: time.Minute}}},
+		lander,
+		nil)
+	r.SetScheduleGate(immediateFollowerScheduleGate{})
+
+	r.tick(context.Background())
+
+	if len(lander.calls) != 0 {
+		t.Errorf("follower schedule gate must not invoke lander; got %d calls", len(lander.calls))
+	}
+	if r.lastErrors["sch-x"] == "" {
+		t.Errorf("follower path should leave a lastErrors trace so operators can grep")
+	}
+}
+
+// TestFireLeaderRunsLanderOnce is the reverse-pass: under a
+// leader schedule gauge the runner must invoke the lander
+// exactly once per Spec, regardless of how many Specs the
+// store returned.
+func TestFireLeaderRunsLanderOnce(t *testing.T) {
+	lander := &recordingLander{}
+	r := New(stubStore{next: []Spec{
+		{ID: "sch-a", Model: "m", Cadence: time.Minute},
+		{ID: "sch-b", Model: "m", Cadence: time.Minute},
+	}}, lander, nil)
+	r.SetScheduleGate(immediateLeaderScheduleGate{})
+
+	r.tick(context.Background())
+
+	if len(lander.calls) != 2 {
+		t.Errorf("expected exactly 2 lander invocations (one per schedule); got %d", len(lander.calls))
+	}
+}
+
+type stubStore struct {
+	next []Spec
+}
+
+func (s stubStore) ListDueSchedules(_ context.Context, _ time.Time, _ int) ([]Spec, error) {
+	return s.next, nil
+}
+func (s stubStore) UpdateNextLaunchAt(_ context.Context, _ string, _ time.Time) error { return nil }
+func (s stubStore) MarkLaunched(_ context.Context, _, _ string, _ time.Time) error   { return nil }
+func (s stubStore) GetScheduleByID(_ context.Context, _ string) (Spec, error) {
+	return Spec{}, nil
+}
+
+type recordingLander struct {
+	calls []string
+}
+
+func (r *recordingLander) RunSchedule(_ context.Context, s Spec) (string, error) {
+	r.calls = append(r.calls, s.ID)
+	return "run-" + s.ID, nil
+}

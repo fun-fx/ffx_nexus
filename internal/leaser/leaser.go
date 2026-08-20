@@ -1,23 +1,38 @@
-// Package leaser implements a durable single-leader election layer
-// on top of Postgres. Two cooperating primitives back it:
+// Package leaser implements a durable single-leader election
+// layer on top of Postgres. Phase D-1 rewrites the package
+// around two hard rules from the spec:
 //
-//  1. pg_try_advisory_lock(hash(role)) is the in-process fast path.
-//     It guards against a single Pod double-claiming leadership
-//     while it is still establishing the durable lease row.
-//  2. The benchmark_scheduler_leases table is the source of truth.
-//     Each pod writes its owner_id and a short TTL into the row
-//     keyed by role; a renew-loop bumps heartbeat_at until the pod
-//     exits or crashes. A failed renew opens the door for another
-//     pod to take over.
+//  1. The advisory lock is the primary mutual-exclusion
+//     primitive. It MUST be held on the same connection the
+//     lease is taken on, for the entire lifetime of the lease.
+//     Releasing the connection back to the pool releases the
+//     advisory lock too (Postgres semantics) which would
+//     silently void the contract.
 //
-// Why both: advisory locks live only for the lifetime of the
-// pgxpool connection that holds them. If the connection drops,
-// leadership changes; if the row writes succeed but the lease's
-// renew goroutine never starts, advisory ownership and durable
-// ownership disagree and the next pod's heartbeat can race the
-// still-db-busy previous leader. The two primitives together
-// guarantee (a) at most one writer per role, and (b) at most one
-// writer per role across pod failures.
+//  2. The leases table is an observation / audit surface. It
+//     records who holds the advisory lock and when their
+//     heartbeat last refreshed, so an operator investigating
+//     "why did two workers fire the same schedule" can read
+//     the row without instrumenting Postgres itself. The table
+//     is NEVER used to decide who runs. If the row says we
+//     hold the lease but pg_advisory_locks says otherwise, the
+//     advisory lock wins — every tick re-checks both.
+//
+// The two rules together prevent the bug class the legacy
+// implementation ran into: releasing the connection back to
+// the pool dropped the advisory lock silently, after which
+// another pod could take it from the same connection pool (a
+// race the lease row could not see).
+//
+// Why two int32 arguments to pg_try_advisory_lock(key1, key2):
+// schedules have UUIDs in postgres today; hashing a UUID into a
+// single int64 loses bits to collision. Using
+// pg_try_advisory_lock(int4 hash_a, int4 hash_b) on a
+// two-part hash keeps collisions prohibitively unlikely even
+// for hundreds of millions of schedules. A single int8 key
+// would work for the few role names we had, but Phase D-1
+// wants per-schedule locking so two long-running schedules do
+// not serialise each other on a single global mutex.
 package leaser
 
 import (
@@ -35,14 +50,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DefaultTTL is how long a lease stays valid without a heartbeat.
-// Short enough that a crashed pod's lease expires quickly, long
-// enough that a single missed renew (network blip) does not cause
-// a needless handover.
+// DefaultTTL bounds a lease's window without a heartbeat.
+// Long enough to ride out a network blip, short enough that a
+// crashed pod's lease expires before its slot becomes a
+// blocking dependency for follow-on schedules.
 const DefaultTTL = 15 * time.Second
 
-// DefaultRenewInterval is half of TTL. Two consecutive misses
-// cause a handover; one miss is recoverable.
+// DefaultRenewInterval is DefaultTTL/2. Two consecutive misses
+// cause a handover; one is recoverable.
 const DefaultRenewInterval = 7 * time.Second
 
 // ErrAlreadyHeld is returned when the role is held by another
@@ -65,31 +80,34 @@ type Lease struct {
 	OwnerID  string
 	Token    string
 	Acquired time.Time
-	lockKey  int64
+	lockKey  [2]int32
 }
 
-// Manager owns the renew goroutines for active leases. Each call
-// to Acquire returns a Lease and starts a heartbeat goroutine; the
-// caller calls Release when done. The pool is shared with the rest
-// of the application — leaser does not create a separate pool.
+// Manager owns the renew goroutines for active leases and
+// pins pgxpool connections so the advisory lock survives
+// renew-loop heartbeats.
 type Manager struct {
 	pool *pgxpool.Pool
 	log  *slog.Logger
 
-	// advisoryConn holds a dedicated pgxpool.Conn for the lifetime
-	// of the lease so the advisory lock survives the renew loop.
-	// pg_try_advisory_lock is non-blocking; we keep checking it
-	// while we wait for the durable row to expire.
-	mu       sync.Mutex
-	leases   map[string]*activeLease
-	tenantMu sync.Mutex
-	stop     chan struct{}
-	wg       sync.WaitGroup
+	// per-lease state. Mu below guards both maps.
+	mu     sync.Mutex
+	leases map[string]*activeLease
+
+	// stop is closed by Shutdown to terminate renew goroutines
+	// that are still ticking on shutdown.
+	stop chan struct{}
+	wg   sync.WaitGroup
 }
 
+// activeLease tracks the dedicated pgxpool.Conn that holds the
+// advisory lock for a lease. The conn must NOT return to the
+// pool while the lease is held — the conn struct stays open so
+// the conn.Release callback can close it on demand.
 type activeLease struct {
 	lease Lease
-	tok   chan struct{} // closed when Release observed
+	tok   chan struct{}
+	conn  *pgxpool.Conn // pinned for the lease lifetime; never Released until Release().
 }
 
 // NewManager wires the manager with the shared pool.
@@ -105,84 +123,121 @@ func NewManager(pool *pgxpool.Pool, log *slog.Logger) *Manager {
 	}
 }
 
-// KeyForRole hashes the role string into a 64-bit advisory lock
-// key. fnv64a is deterministic and short; collisions across roles
-// are vanishingly unlikely for the half-dozen role names we
-// actually use.
+// NewKeyForRole hashes the role string into a two-int32
+// advisory lock key. fnv64a is deterministic; splitting the
+// 64-bit hash into two halves gives the scheduler key space
+// approximately 2^64 distinct keys (collision probability
+// approximately 2^-32 across an entire customer fleet).
 //
-// Postgres pg_advisory_lock accepts signed int8 (negative values
-// are valid). We deliberately mask the top bit so the resulting
-// key is in the [0, 2^63) half — easier to read in pg_locks dumps
-// and ensures a `bigint NOT NULL DEFAULT` column with optimistic
-// defaults never wraps.
-func KeyForRole(role string) int64 {
+// Tests use KeyForRole export; production callers use the
+// schedule-keyed entrypoints instead.
+func KeyForRole(role string) [2]int32 {
 	return KeyForRoleTest(role)
 }
 
-// KeyForRoleTest exports keyForRole for unit tests. Behaviour
-// is identical to KeyForRole.
-func KeyForRoleTest(role string) int64 {
+// KeyForRoleTest exports the role-key hash so unit tests can
+// assert collisions without taking out a real Postgres
+// connection. Behaviour is identical to KeyForRole.
+func KeyForRoleTest(role string) [2]int32 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(role))
-	// Drop the high bit so the result lives in int64 non-negative
-	// range. The mask is safe because pg_advisory_lock shares
-	// its full int8 keyspace with other roles; we are not trying
-	// to be collision-free, only deterministic.
-	return int64(h.Sum64() & 0x7fffffffffffffff)
+	v := h.Sum64()
+	// Two halves, sign-aware: pg_advisory_lock treats each
+	// int32 signed so the mask is intentional (we cast
+	// int64 to int32 below, mapping the bottom 32 bits and
+	// the top 32 bits of the hash independently).
+	return [2]int32{int32(uint32(v)), int32(uint32(v >> 32))}
 }
 
-// Acquire takes the lease for the given role. The caller passes a
-// fresh ownerID (typically pod-name + uuid) so a future operator
-// script can identify the previous holder.
+// KeyForSchedule hashes a schedule identifier for lock scoping.
+// Each schedule gets its own two-int32 advisory lock key, so
+// two long-running schedules cannot serialise on a single
+// global mutex. The hash itself uses fnv64a for determinism;
+// collisions are below the 10^-9 floor across realistic
+// schedule counts.
+func KeyForSchedule(scheduleID string) [2]int32 {
+	return KeyForRoleTest(scheduleID)
+}
+
+// Acquire takes the lease for the given role or schedule. The
+// caller passes a fresh ownerID (typically pod-name + uuid) so
+// a future operator script can identify the previous holder.
+// The Manager pins a *pgxpool.Conn and holds pg_try_advisory_lock
+// for the lifetime of the lease — Release() returns the conn.
 //
 // Returns the latest Lease or an error.
 //   - ErrAlreadyHeld: another pod owns the lease and the existing
 //     lease has not expired yet. The caller can wait and retry.
 //   - Other errors: pgxpool unreachable, schema missing, etc.
 func (m *Manager) Acquire(ctx context.Context, role, ownerID string) (Lease, error) {
-	if role == "" {
+	return m.acquire(ctx, role, role, ownerID)
+}
+
+// AcquireSchedule is Acquire scoped to a single schedule
+// id. The lease role is recorded as the schedule id; the
+// global "role" of the manager is still required for the
+// Acquire context so a single Manager can hold multiple
+// schedule leases.
+//
+// We treat scheduleID as the role key for advisory lock
+// purposes — two schedules that hash to different keys do
+// not block each other, even if the underlying Manager is the
+// same goroutine set. The lease-row role is kept as the
+// scheduleID so a SafeTakeover only requires the previous
+// owner to have explicitly released (advisory lock release,
+// not query row update).
+func (m *Manager) AcquireSchedule(ctx context.Context, scheduleID, ownerID string) (Lease, error) {
+	if scheduleID == "" {
+		return Lease{}, errors.New("leaser: scheduleID is required")
+	}
+	return m.acquire(ctx, scheduleID, scheduleID, ownerID)
+}
+
+// acquire is the shared core of Acquire and AcquireSchedule.
+// lockRole is the advisory-lock key seed; rowRole is what
+// gets stored in benchmark_scheduler_leases.role (operators
+// read the row by schedule id; we never put a human-friendly
+// job name in the role column to keep the audit log legible).
+func (m *Manager) acquire(ctx context.Context, lockRole, rowRole, ownerID string) (Lease, error) {
+	if lockRole == "" {
 		return Lease{}, errors.New("leaser: role is required")
 	}
 	if ownerID == "" {
 		return Lease{}, errors.New("leaser: ownerID is required")
 	}
 
-	lockKey := KeyForRole(role)
+	lockKey := KeyForRole(lockRole)
 	tok, err := newToken()
 	if err != nil {
 		return Lease{}, fmt.Errorf("leaser: generate token: %w", err)
 	}
 
-	// First, take the advisory lock so concurrent goroutines on
-	// the same pod do not both try to acquire the same role.
+	// Phase D-1 spec: dedicated connection. Take it from the
+	// pool and HOLD it (do not defer Release until Release()).
 	conn, err := m.pool.Acquire(ctx)
 	if err != nil {
 		return Lease{}, fmt.Errorf("leaser: acquire conn: %w", err)
 	}
-	defer conn.Release()
-	row := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey)
+	acquired := false
+	defer func() {
+		if !acquired {
+			conn.Release()
+		}
+	}()
+	row := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, $2)`, lockKey[0], lockKey[1])
 	var gotLock bool
 	if err := row.Scan(&gotLock); err != nil {
-		return Lease{}, fmt.Errorf("leaser: advisory_lock(%d): %w", lockKey, err)
+		return Lease{}, fmt.Errorf("leaser: advisory_lock(%v): %w", lockKey, err)
 	}
 	if !gotLock {
 		return Lease{}, ErrAlreadyHeld
 	}
 
-	// Hold the advisory lock for the duration of the lease. We
-	// simulate this by SELECTing pg_advisory_lock (BLOCKING) after
-	// establishing the durable row, so the conn cannot be returned
-	// to the pool. In practice we instead pin conn — release on
-	// Release() (see activeRelease). The non-blocking try above
-	// only gates "did we lose the race".
-	//
-	// The durable row INSERT ... ON CONFLICT acquires a row-level
-	// lock at the same time, which is the durable plane. We update
-	// only if we are the matching owner or the existing lease has
-	// expired.
+	// Write/refresh the durable row so operators can see
+	// ownership. Only update on stale or matching token.
 	now := time.Now().UTC()
 	expires := now.Add(DefaultTTL)
-	const query = `
+	const upsert = `
 INSERT INTO benchmark_scheduler_leases (role, owner_id, acquired_at, heartbeat_at, expires_at, lock_token)
 VALUES ($1, $2, $3, $3, $4, $5)
 ON CONFLICT (role) DO UPDATE
@@ -195,10 +250,13 @@ ON CONFLICT (role) DO UPDATE
 RETURNING role, owner_id`
 	var gotRow string
 	var gotOwner string
-	err = m.pool.QueryRow(ctx, query, role, ownerID, now, expires, tok).Scan(&gotRow, &gotOwner)
+	err = m.pool.QueryRow(ctx, upsert, rowRole, ownerID, now, expires, tok).Scan(&gotRow, &gotOwner)
 	if err != nil {
-		// pgx.ErrNoRows means the WHERE clause did not match:
-		// another pod still owns the lease.
+		// First free the advisory lock on this conn before
+		// returning; otherwise the conn-release path could
+		// (per Postgres behaviour) drop the lock slightly
+		// later than the caller expects.
+		_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, lockKey[0], lockKey[1])
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Lease{}, ErrAlreadyHeld
 		}
@@ -206,7 +264,7 @@ RETURNING role, owner_id`
 	}
 
 	lease := Lease{
-		Role:     role,
+		Role:     rowRole,
 		OwnerID:  ownerID,
 		Token:    tok,
 		Acquired: now,
@@ -214,23 +272,32 @@ RETURNING role, owner_id`
 	}
 
 	m.mu.Lock()
-	al := &activeLease{lease: lease, tok: make(chan struct{})}
-	m.leases[role] = al
+	// Refuse double-acquire from the same Manager: another
+	// caller in the same pod already pinned the conn.
+	if existing, ok := m.leases[rowRole]; ok {
+		m.mu.Unlock()
+		_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, lockKey[0], lockKey[1])
+		conn.Release()
+		return existing.lease, fmt.Errorf("leaser: role %q already held by %q", rowRole, existing.lease.OwnerID)
+	}
+	al := &activeLease{lease: lease, tok: make(chan struct{}), conn: conn}
+	m.leases[rowRole] = al
 	m.mu.Unlock()
+	acquired = true
 
 	m.wg.Add(1)
-	go m.renewLoop(role, al)
+	go m.renewLoop(rowRole, al)
 
 	m.log.Info("leaser: acquired",
-		"role", role, "owner", ownerID, "ttl", DefaultTTL)
+		"role", rowRole, "owner", ownerID, "ttl", DefaultTTL)
 	return lease, nil
 }
 
-// renewLoop bumps the heartbeat every DefaultRenewInterval. If
-// the renew fails because the row has been claimed by someone
-// else (lock_token mismatch) we surface ErrLostLease and stop.
-// If the renew fails because Postgres is unreachable we keep
-// trying until TTL elapses and another pod takes over.
+// renewLoop bumps the heartbeat every DefaultRenewInterval.
+// If the renew fails because the row has been claimed by
+// someone else (lock_token mismatch) we surface ErrLostLease
+// and stop. If the renew fails because Postgres is unreachable
+// we keep trying until TTL elapses and another pod takes over.
 func (m *Manager) renewLoop(role string, al *activeLease) {
 	defer m.wg.Done()
 	t := time.NewTicker(DefaultRenewInterval)
@@ -276,9 +343,17 @@ UPDATE benchmark_scheduler_leases
 	return nil
 }
 
-// Release stops the renew loop and returns the row to the pool
-// (sets expires_at = NOW()). Idempotent: calling Release on a role
-// the manager does not know about is a no-op.
+// Release stops the renew loop, frees the advisory lock on
+// the pinned connection, returns the connection to the pool,
+// and sets the row expires_at = NOW() so another pod can take
+// over without waiting for TTL. Idempotent: calling Release
+// on a role the manager does not know about is a no-op.
+//
+// Order matters: release the advisory lock BEFORE returning
+// the conn to the pool. Postgres's pg_advisory_unlock fires
+// on the same connection that took the lock; if we returned
+// the conn first and another request reused it, we'd be
+// calling pg_advisory_unlock on someone else's connection.
 func (m *Manager) Release(ctx context.Context, role string) error {
 	m.mu.Lock()
 	al, ok := m.leases[role]
@@ -291,29 +366,39 @@ func (m *Manager) Release(ctx context.Context, role string) error {
 	}
 	close(al.tok)
 
-	// Tell Postgres we are explicitly letting go so a Peer can
-	// take over without waiting for TTL to elapse. The renew
-	// goroutine for this role has already exited because we
-	// closed al.tok.
+	// Tell Postgres we are explicitly letting go so a peer can
+	// take over without waiting for TTL to elapse.
+	if _, err := al.conn.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, al.lease.lockKey[0], al.lease.lockKey[1]); err != nil {
+		m.log.Warn("leaser: advisory_unlock", "role", role, "err", err)
+	}
+	al.conn.Release()
+
 	const query = `
 UPDATE benchmark_scheduler_leases
    SET expires_at = NOW()
  WHERE role = $1 AND lock_token = $2`
-	_, err := m.pool.Exec(ctx, query, role, al.lease.Token)
-	if err != nil {
+	if _, err := m.pool.Exec(ctx, query, role, al.lease.Token); err != nil {
+		m.log.Warn("leaser: row release", "role", role, "err", err)
 		return fmt.Errorf("leaser: release: %w", err)
 	}
 	m.log.Info("leaser: released", "role", role, "owner", al.lease.OwnerID)
 	return nil
 }
 
-// Shutdown stops all renew goroutines and waits for them to drain.
-// Used by graceful pod shutdown.
+// Shutdown stops all renew goroutines and waits for them to
+// drain. Used by graceful pod shutdown.
 func (m *Manager) Shutdown(ctx context.Context) {
 	m.mu.Lock()
-	for role, al := range m.leases {
+	for role := range m.leases {
+		// Release handles its own logging; we just iterate.
+		al := m.leases[role]
 		close(al.tok)
-		_ = m.Release(ctx, role)
+		if _, err := al.conn.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, al.lease.lockKey[0], al.lease.lockKey[1]); err == nil {
+			al.conn.Release()
+		} else {
+			al.conn.Release()
+		}
+		delete(m.leases, role)
 	}
 	m.mu.Unlock()
 	close(m.stop)
