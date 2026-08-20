@@ -1,3 +1,4 @@
+{{- if eq .Values.networkPolicy.mode "enforce" }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -11,9 +12,36 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-{{- if eq .Values.networkPolicy.mode "enforce" }}
+{{- if eq .Values.networkPolicy.profile "enterprise" }}
+{{- if not .Values.networkPolicy.enforcementAcknowledged }}
+{{- fail "D-2b networkPolicy: enterprise profile requires networkPolicy.enforcementAcknowledged=true. The chart explicitly requires the operator to acknowledge that NetworkPolicy enforcement can break cluster ingress if peer lists are misconfigured." }}
+{{- end }}
+{{- $sel := .Values.networkPolicy.postgres.selector.enabled }}
+{{- $cidr := .Values.networkPolicy.postgres.cidr.enabled }}
+{{- if and (not $sel) (not $cidr) }}
+{{- fail "D-2b networkPolicy.postgres: enterprise profile requires either networkPolicy.postgres.selector.enabled=true (in-cluster operator Postgres) OR networkPolicy.postgres.cidr.enabled=true (managed/external Postgres CIDR+port). Both false is fail-closed." }}
+{{- end }}
+{{- if and $sel $cidr }}
+{{- fail "D-2b networkPolicy.postgres: enterprise profile allows only one Postgres target mode. Set networkPolicy.postgres.selector.enabled=true OR networkPolicy.postgres.cidr.enabled=true, not both." }}
+{{- end }}
+{{- end }}
+{{- if eq .Values.networkPolicy.profile "enterprise" }}
+{{- if .Values.networkPolicy.postgres.selector.enabled }}
+{{- if not .Values.networkPolicy.postgres.selector.namespace }}
+{{- fail "D-2b networkPolicy.postgres.selector: profile=enterprise selector mode requires networkPolicy.postgres.selector.namespace (the namespace where the Postgres Service lives). Empty would silently allow cluster-wide egress to the matched podSelector." }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $metricsPort := .Values.metrics.port }}
 {{- $dnsPort := .Values.networkPolicy.dns.matchPorts }}
 {{- $dnsProto := .Values.networkPolicy.dns.matchProtocols }}
+{{- /*
+  dnsPeers: list of {namespaceSelector, podSelector} pairs
+  derived from the chart-side networkPolicy.dns.nameservers.
+  Nameservers are cluster CoreDNS ClusterIPs and resolve
+  in any namespace, so we filter on podSelector=k8s-app=kube-dns
+  within the kube-system namespace.
+*/}}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -36,23 +64,28 @@ spec:
     - Ingress
     - Egress
   ingress:
+    {{- range $ns := .Values.networkPolicy.ingressController.namespaces }}
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
+              kubernetes.io/metadata.name: {{ $ns }}
       ports:
-        {{- range .Values.networkPolicy.ingressController.matchPorts }}
+        {{- range $p := $.Values.networkPolicy.ingressController.matchPorts }}
         - protocol: TCP
-          port: {{ . }}
+          port: {{ $p }}
         {{- end }}
+    {{- end }}
+    {{- range $ns := .Values.networkPolicy.prometheus.namespaces }}
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: monitoring
+              kubernetes.io/metadata.name: {{ $ns }}
       ports:
         - protocol: TCP
-          port: {{ index .Values.networkPolicy.prometheus.matchPorts 0 }}
+          port: {{ $metricsPort }}
+    {{- end }}
   egress:
+    # DNS — kubelet/CoreDNS inside kube-system
     - to:
         - namespaceSelector:
             matchLabels:
@@ -67,23 +100,71 @@ spec:
           port: {{ $p }}
         {{- end }}
         {{- end }}
-    {{- if .Values.dependencies.postgres.host }}
+    {{- if and .Values.dependencies.postgres.host .Values.networkPolicy.postgres.selector.enabled }}
+    # Postgres egress — selector mode (in-cluster operator Postgres)
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.postgres.selector.namespace }}
+        - podSelector:
+            matchLabels:
+              {{- range $k, $v := .Values.networkPolicy.postgres.selector.matchLabels }}
+              {{ $k }}: {{ $v }}
+              {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.dependencies.postgres.port }}
     {{- end }}
-    {{- if and .Values.features.rateLimitRedis .Values.dependencies.redis.host }}
+    {{- if and .Values.dependencies.postgres.host .Values.networkPolicy.postgres.cidr.enabled }}
+    # Postgres egress — CIDR mode (managed/external Postgres)
+    - to:
+        {{- range $c := .Values.networkPolicy.postgres.cidr.cidrs }}
+        - ipBlock:
+            cidr: {{ $c }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.postgres.cidr.port }}
+    {{- end }}
+    {{- /* Redis egress — feature-gated (rate-limit-redis). The chart sets
+       the same selector/CIDR dual-mode pattern as Postgres: in-cluster
+       operator OR managed/external ipBlock. The selector approach
+       reads `dependencies.redis.selector.{matchLabels, namespace}`;
+       the CIDR approach reads `dependencies.redis.cidr.{cidrs, port}`. */}}
+    {{- if .Values.features.rateLimitRedis }}
+      {{- if and .Values.dependencies.redis.host .Values.dependencies.redis.namespace }}
+    # Redis egress — selector mode (in-cluster operator Redis).
+    # Uses the SAME selector pattern as Postgres but
+    # keyed off `dependencies.redis.namespace` for
+    # backwards-compatible values. A future schema major
+    # version may migrate this to `redis.selector.*`
+    # like Postgres has.
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: {{ .Values.dependencies.redis.namespace }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
       ports:
         - protocol: TCP
           port: {{ .Values.dependencies.redis.port }}
+      {{- end }}
+    {{- end }}
+    {{- if .Values.networkPolicy.egress.proxy.enabled }}
+    # Egress proxy
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.egress.proxy.namespace }}
+        - podSelector:
+            {{- range $k, $v := .Values.networkPolicy.egress.proxy.podSelector }}
+            matchLabels:
+              {{ $k }}: {{ $v }}
+            {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.egress.proxy.port }}
     {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -101,6 +182,7 @@ spec:
   policyTypes:
     - Egress
   egress:
+    # DNS — resolved against the same chart-side peer as Gateway/Worker
     - to:
         - namespaceSelector:
             matchLabels:
@@ -115,13 +197,34 @@ spec:
           port: {{ $p }}
         {{- end }}
         {{- end }}
+    {{- if and .Values.dependencies.postgres.host .Values.networkPolicy.postgres.selector.enabled }}
+    # Postgres egress — selector mode (in-cluster operator Postgres)
+    # Migration reaches the same target as Gateway/Worker; the
+    # peer never falls back to kube-system.
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.postgres.selector.namespace }}
+        - podSelector:
+            matchLabels:
+              {{- range $k, $v := .Values.networkPolicy.postgres.selector.matchLabels }}
+              {{ $k }}: {{ $v }}
+              {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.dependencies.postgres.port }}
+    {{- end }}
+    {{- if and .Values.dependencies.postgres.host .Values.networkPolicy.postgres.cidr.enabled }}
+    # Postgres egress — CIDR mode (managed/external Postgres)
+    - to:
+        {{- range $c := .Values.networkPolicy.postgres.cidr.cidrs }}
+        - ipBlock:
+            cidr: {{ $c }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.postgres.cidr.port }}
+    {{- end }}
 {{- /* Source-of-truth marker for static label
    conformance. This verbatim line is what the
    migration-label test reads back out of the
@@ -145,13 +248,15 @@ spec:
     - Ingress
     - Egress
   ingress:
+    {{- range $ns := .Values.networkPolicy.prometheus.namespaces }}
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: monitoring
+              kubernetes.io/metadata.name: {{ $ns }}
       ports:
         - protocol: TCP
-          port: {{ index .Values.networkPolicy.prometheus.matchPorts 0 }}
+          port: {{ $metricsPort }}
+    {{- end }}
   egress:
     - to:
         - namespaceSelector:
@@ -167,13 +272,28 @@ spec:
           port: {{ $p }}
         {{- end }}
         {{- end }}
-    {{- if .Values.dependencies.postgres.host }}
+    {{- if and .Values.dependencies.postgres.host .Values.networkPolicy.postgres.selector.enabled }}
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.postgres.selector.namespace }}
+        - podSelector:
+            matchLabels:
+              {{- range $k, $v := .Values.networkPolicy.postgres.selector.matchLabels }}
+              {{ $k }}: {{ $v }}
+              {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.dependencies.postgres.port }}
+    {{- end }}
+    {{- if and .Values.dependencies.postgres.host .Values.networkPolicy.postgres.cidr.enabled }}
+    - to:
+        {{- range $c := .Values.networkPolicy.postgres.cidr.cidrs }}
+        - ipBlock:
+            cidr: {{ $c }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.postgres.cidr.port }}
     {{- end }}
 {{- end }}

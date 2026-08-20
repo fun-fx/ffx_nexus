@@ -4,7 +4,15 @@
      checked, so every cluster with metrics on got a ServiceMonitor whether or
      not it ran the Prometheus Operator - on a cluster without the CRD that
      fails the whole release with "no matches for kind ServiceMonitor", and
-     the documented serviceMonitor.enabled flag did nothing. */}}
+     the documented serviceMonitor.enabled flag did nothing.
+
+     `metrics.serviceMonitor.componentLabel` (`""` | "gateway" | "worker")
+     optionally constrains the selector to a single component. Render
+     tests (deploy/helm/nexus/tests/mutation_test.py and the Go inventory
+     in internal/contracttest) assert the rendered selector exactly equals
+     the Service selector + optional component — so a divergence from the
+     Service spec becomes a chart-test failure, not a silent Prometheus
+     dead-rule. */}}
 {{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled -}}
 {{- $fullName := include "nexus.fullname" . -}}
 apiVersion: monitoring.coreos.com/v1
@@ -23,8 +31,11 @@ spec:
   selector:
     matchLabels:
       {{- include "nexus.selectorLabels" . | nindent 6 }}
+      {{- if .Values.metrics.serviceMonitor.componentLabel }}
+      app.kubernetes.io/component: {{ .Values.metrics.serviceMonitor.componentLabel }}
+      {{- end }}
   endpoints:
-    - port: metrics
+    - port: {{ .Values.metrics.serviceMonitor.endpointPort | default "metrics" }}
       path: {{ .Values.metrics.path | default "/metrics" }}
       interval: {{ .Values.metrics.serviceMonitor.interval | default "30s" }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | default "10s" }}

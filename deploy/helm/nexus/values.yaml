@@ -23,6 +23,12 @@ serviceAccount:
 # Ports the nexus binary listens on. These must match config.gatewayAddr /
 # config.consoleAddr below (the chart keeps them in sync via the ConfigMap).
 ports:
+  # Single source-of-truth for ports rendered in container, Service,
+  # ServiceMonitor endpoint, and NetworkPolicy peer ingress rules.
+  # `gateway` MUST equal `networkPolicy.ingressController.matchPorts[0]`
+  # so ingress-nginx → Gateway API/console is matched. `console`
+  # is currently not exposed via NetworkPolicy (console is reached
+  # through `gateway` via the console reverse-proxy path).
   gateway: 8080
   console: 8081
 
@@ -383,12 +389,26 @@ config:
 metrics:
   enabled: false
   host: ""
-  port: 9101
+  # Prometheus scrape port. MUST equal
+  # `networkPolicy.prometheus.matchPorts[0]` so the network
+  # allow actually points at the running scrape server.
+  port: 9100
   path: "/metrics"
   serviceMonitor:
     enabled: false
     interval: 30s
     scrapeTimeout: 10s
+    # When the operator runs the chart in split mode and has
+    # separate Gateway / Worker pods, set this to one of:
+    #   "gateway" — select only Gateway pods
+    #   "worker"  — select only Worker pods
+    # Empty string (default) keeps the chart-wide selector and
+    # matches both Layer-7 and Layer-8 pods. A render test asserts
+    # that the ServiceMonitor selector exactly equals the Service
+    # selector (+ optional component), so changing `selectorLabels`
+    # style in the future breaks at chart-test time, not on a
+    # silent Prometheus rule.
+    componentLabel: ""
     # Additional labels match the cluster's monitoring selector — e.g.
     # `release: kube-prometheus-stack` for kube-prometheus-stack's built-in
     # `Prometheus` CR's serviceMonitorSelector, or omit if using vmagent
@@ -445,12 +465,24 @@ migrations:
 # Set `enabled: true` and provide a connection URL. URLs contain credentials,
 # so they are stored in the chart Secret (or your existingSecret).
 dependencies:
+  # --- Connection detail. The chart guarantees that the SAME host/port/namespace
+  # tuple drives the runtime DATABASE_URL on the Deployment AND the NetworkPolicy
+  # egress peer for the Gateway/Worker/migration Job. They cannot drift unless the
+  # operator explicitly diverges them at install-time.
   postgres:
     enabled: false
     url: "" # postgres://user:pass@host:5432/nexus?sslmode=require
+    host: ""                # Service host for in-cluster Postgres operator
+    port: 5432              # TCP port
+    namespace: ""           # Service namespace (must equal networkPolicy.postgres.selector.namespace in selector mode)
   clickhouse:
     enabled: false
     url: "" # clickhouse://user:pass@host:9000/nexus
+  redis:
+    enabled: false
+    host: ""
+    port: 6379
+    namespace: ""
   redis:
     enabled: false
     url: "" # redis://:pass@host:6379/0
@@ -743,6 +775,32 @@ networkPolicy:
   profile: enterprise          # enterprise | development
   mode: enforce                # enforce | disabled
   enforcementAcknowledged: false
+  # Postgres egress target. Either selector mode (in-cluster
+  # Postgres operator) OR CIDR mode (managed/external RDS-style
+  # Postgres reachable only via the cluster's egress path).
+  # Setting BOTH or NEITHER is a fail-closed chart error:
+  # an enterprise operator with no Postgres target cannot run
+  # the gateway; one with both is a misconfigured policy that
+  # would silently fall back to whichever rendered last.
+  postgres:
+    selector:
+      matchLabels:
+        # e.g. app.kubernetes.io/name: postgres
+        app.kubernetes.io/name: postgres
+      # Operator-namespaced guarantee: the Postgres Service
+      # must live in this namespace. Default is `database`,
+      # the namespace the bundled postgres operator creates.
+      # Override at install-time to match your cluster layout.
+      namespace: "database"
+      enabled: true              # selector mode on/off
+    cidr:
+      enabled: false
+      cidrs:
+        # e.g. "10.44.0.0/16,10.45.1.7" — managed/external
+        # Postgres reachable only as an outbound IP range.
+        # Pure IP+port; does NOT depend on cluster DNS.
+        - ""
+      port: 5432
   dns:
     nameservers:
       - 10.96.0.10             # cluster CoreDNS ClusterIP
@@ -754,13 +812,17 @@ networkPolicy:
   ingressController:
     namespaces:
       - ingress-nginx
+    # matchPorts[0] MUST equal `.Values.ports.gateway` (8080) so the
+    # ingress-nginx → Gateway API/console NetworkPolicy actually
+    # allows the published port.
     matchPorts:
-      - 8080                  # Gateway API + Console port
+      - 8080
   prometheus:
     namespaces:
       - monitoring
-    matchPorts:
-      - 9100                  # metrics port
+    # matchPorts no longer needed: the NetworkPolicy reads
+    # `.Values.metrics.port` directly. The two locations of the
+    # scrape port have been unified to a single source.
   egress:
     proxy:
       enabled: false
