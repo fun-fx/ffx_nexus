@@ -47,6 +47,26 @@ func (NoopLeader) Release(ctx context.Context, role string) error { return nil }
 // on it without importing internal/leaser directly.
 var ErrLeaderAlreadyHeld = leaser.ErrAlreadyHeld
 
+// benchmarkSchedulerRole is the canonical role name used for
+// the leader gate. It is exported as a constant so future
+// release tests can assert on it without grepping the codebase.
+//
+// IMPORTANT: do not rename without reading
+// internal/leaser/ROLES.md. The role string is the primary
+// key in benchmark_scheduler_leases AND the seed of the
+// [2]int32 advisory-lock tuple; renaming without the
+// migration destroys single-leader correctness during a
+// rolling upgrade from all-in-one to gateway+worker.
+const benchmarkSchedulerRole = "benchmark_scheduler"
+
+// BenchmarkSchedulerRole is the public accessor for the role
+// name. Production code that needs to talk to the leader gate
+// must use this accessor, not the untyped literal, so the
+// stability detector in
+// internal/cron/upgrade_path_role_stability_test.go fires on
+// any future rename.
+func BenchmarkSchedulerRole() string { return benchmarkSchedulerRole }
+
 // WaitForLeadership loops Acquire until it succeeds, treating
 // ErrAlreadyHeld as "another replica is the leader, retry
 // shortly". The loop terminates if ctx is cancelled. When the

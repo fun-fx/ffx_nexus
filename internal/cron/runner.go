@@ -118,7 +118,11 @@ func New(store Store, lander Lander, log *slog.Logger) *Runner {
 		store:      store,
 		lander:     lander,
 		log:        log,
-		leaderRole: "benchmark_scheduler",
+		// benchmarkSchedulerRole is the canonical role
+		// string; do not inline. See the doc above and
+		// internal/leaser/ROLES.md for the migration
+		// contract.
+		leaderRole: benchmarkSchedulerRole,
 		lastErrors: map[string]string{},
 	}
 }

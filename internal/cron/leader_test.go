@@ -14,7 +14,7 @@ func TestWaitForLeadershipFollowerKeepsRetrying(t *testing.T) {
 	gate := &immediateFollowerGate{}
 	ctx, cancelFn := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancelFn()
-	leaseCtx, err := WaitForLeadership(ctx, gate, "benchmark_scheduler")
+	leaseCtx, err := WaitForLeadership(ctx, gate, benchmarkSchedulerRole)
 	if err == nil {
 		t.Fatalf("expected timeout/ctx error, got nil (leaseCtx=%v)", leaseCtx)
 	}
@@ -29,7 +29,7 @@ func TestWaitForLeadershipLeaderReturnsContext(t *testing.T) {
 	gate := &immediateLeaderGate{}
 	ctx, cancelFn := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancelFn()
-	leaseCtx, err := WaitForLeadership(ctx, gate, "benchmark_scheduler")
+	leaseCtx, err := WaitForLeadership(ctx, gate, benchmarkSchedulerRole)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +58,7 @@ func (immediateFollowerGate) Release(ctx context.Context, role string) error { r
 func TestNoopLeaderDoesNotBlock(t *testing.T) {
 	ctx, cancelFn := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancelFn()
-	leaseCtx, err := WaitForLeadership(ctx, NoopLeader{}, "benchmark_scheduler")
+	leaseCtx, err := WaitForLeadership(ctx, NoopLeader{}, benchmarkSchedulerRole)
 	if err != nil {
 		t.Fatalf("noop gate errored: %v", err)
 	}
