@@ -18,16 +18,16 @@
 -- does not cause drift but two consecutive misses do.
 
 CREATE TABLE IF NOT EXISTS benchmark_scheduler_leases (
-    role           TEXT        PRIMARY KEY,
-    owner_id       TEXT        NOT NULL,
-    acquired_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    heartbeat_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at     TIMESTAMPTZ NOT NULL,
-    lock_token     TEXT        NOT NULL,
-    CONSTRAINT benchmark_scheduler_leases_ttl CHECK (
-        expires_at > heartbeat_at AND expires_at <= heartbeat_at + INTERVAL '60 seconds'
-    )
-);
+            role           TEXT        PRIMARY KEY,
+            owner_id       TEXT        NOT NULL,
+            acquired_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            heartbeat_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            expires_at     TIMESTAMPTZ NOT NULL,
+            lock_token     BIGINT      NOT NULL,
+            CONSTRAINT benchmark_scheduler_leases_ttl CHECK (
+                expires_at > heartbeat_at AND expires_at <= heartbeat_at + INTERVAL '60 seconds'
+            )
+        );
 
 -- Index used by the take-over query: when picking up an expired
 -- lease, the worker does

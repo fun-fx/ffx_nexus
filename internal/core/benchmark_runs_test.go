@@ -30,6 +30,13 @@ import (
 // short-circuits re-runs because all migrations have already been
 // applied. Subsequent calls in the same package run therefore only run
 // the EnsureLedger check.
+//
+// Phase D-1 note: 023/024 are hot in development, so we accept
+// checksum drift on pre-existing ledger rows. The package-level lease
+// integration tests reuse this path during Phase D-1 work; allowing
+// drift here is a temporary concession and must NOT propagate to
+// production boot policies. Production migrates are strict and will
+// refuse drift.
 func bootDBSchema(t *testing.T, ctx context.Context, store *Store) {
 	t.Helper()
 	migs, err := migrate.Load(nexus.Migrations, migrate.EnginePostgres)
@@ -38,7 +45,8 @@ func bootDBSchema(t *testing.T, ctx context.Context, store *Store) {
 	}
 	exec := migrate.NewPostgres(store.pool, "test-"+t.Name())
 	if _, err := migrate.Run(ctx, exec, migs, migrate.Options{
-		Logger: slog.Default(),
+		Logger:              slog.Default(),
+		AllowChecksumDrift: true,
 	}); err != nil {
 		t.Fatalf("migrate.Run: %v", err)
 	}

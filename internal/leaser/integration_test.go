@@ -207,6 +207,14 @@ func TestTakeoverAfterExplicitRelease(t *testing.T) {
 // Operators who run the cluster's own CI lane set the URL; the
 // hermetic lane in CI does not, so the gates stay green.
 
+// type lresult is the tuple shape used by tests that put
+// multiple Manager.Acquire calls under the same lock. Hoisted
+// out of the function so helper signatures can name it.
+type lresult struct {
+	lease leaser.Lease
+	err   error
+}
+
 // TestScenarioDuplicateThreeWorkersOneSchedule covers the
 // "exactly one runs" guarantee. Three Manager instances
 // contend on the same role and the same schedule id. After
@@ -222,10 +230,6 @@ func TestScenarioDuplicateThreeWorkersOneSchedule(t *testing.T) {
 		leaser.NewManager(pool, slog.New(slog.DiscardHandler)),
 		leaser.NewManager(pool, slog.New(slog.DiscardHandler)),
 		leaser.NewManager(pool, slog.New(slog.DiscardHandler)),
-	}
-	type lresult struct {
-		lease leaser.Lease
-		err   error
 	}
 	leases := make([]lresult, len(mgrs))
 	var wg sync.WaitGroup
@@ -262,10 +266,7 @@ func TestScenarioDuplicateThreeWorkersOneSchedule(t *testing.T) {
 	}
 }
 
-func leasesContainErrAlreadyHeld(leases []struct {
-	lease leaser.Lease
-	err   error
-}) bool {
+func leasesContainErrAlreadyHeld(leases []lresult) bool {
 	for _, l := range leases {
 		if l.err == leaser.ErrAlreadyHeld {
 			return true
@@ -336,7 +337,7 @@ ON CONFLICT (role) DO UPDATE SET owner_id = 'zombie', lock_token = 'zombie-token
 // Release, the connection must return to the pool. If we
 // pin without Release, MaxConns leaks here.
 func TestScenarioConnectionLeaseFreesAfterRelease(t *testing.T) {
-	pool := testPoolGet(t)
+	_ = testPoolGet(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cfg, err := pgxpool.ParseConfig(os.Getenv("NEXUS_TEST_POSTGRES_URL"))

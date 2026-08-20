@@ -697,10 +697,11 @@ credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 
 		// goroutines. In NEXUS_ROLE=all-in-one both halves run,
 		// but the lease gate (SchedulerRoleEnabled) still
 		// enforces single-leader across replicas.
+		var sched *cron.Runner
 		if cfg.Mode == "gateway" {
 			log.Info("benchmark scheduler intentionally absent (gateway mode)")
 		} else {
-			sched := cron.New(schedStore{store: store}, makeScheduleLander(benchRunner), log)
+			sched = cron.New(schedStore{store: store}, makeScheduleLander(benchRunner), log)
 			if cfg.SchedulerRoleEnabled || cfg.Mode == "worker" {
 				// Wire the Phase D-1 lease gate. The leaser
 				// uses the same pgxpool as the rest of the
@@ -756,15 +757,40 @@ credResolver = gateway.NewCredentialResolver(&storeCredentialSource{st: store}, 
 		log.Info("mode=gateway - HTTP listeners up, scheduler absent")
 	case "worker":
 		// No HTTP listener on the worker pod. The data
-		// plane is the cron scheduler. The Worker
-		// service-metrics surface is provisioned by the
-		// Helm chart (service-worker-metrics.yaml) which
-		// scrapes the same /metrics endpoint the gateway
-		// exposes. In a future Prometheus refactor we
-		// will move the metrics handler here; today the
-		// inherited metricsMux lives with the gateway
-		// path and would be a nil deref if we wired it.
-		log.Info("mode=worker - scheduler up, HTTP listeners absent (metrics scrape uses Helm service-worker-metrics)")
+		// plane is the cron scheduler. The Worker pod
+		// exposes the metrics+readyz surface so the Helm
+		// chart's metrics Service can scrape /metrics and
+		// so an operator can probe /readyz (=== "we hold
+		// the Postgres lease").
+		//
+		// Phase D-1 spec: "Worker는 트래픽을 받지 않으므로
+		// Service를 만들지 마라. 다만 메트릭 수집과 헬스
+		// 체크는 필요하다. 메트릭 포트만 노출하고". The
+		// /metrics and /readyz handlers are the only HTTP
+		// routes on this listener. There is no /v1/* route
+		// on worker pods, so a misconfigured ClusterIP
+		// / Ingress pointing at the worker pod gets a 404,
+		// not a tenant's prompts.
+healthMux := http.NewServeMux()
+			healthMux.HandleFunc("/readyz", ready.Handler())
+			healthMux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+				// Phase D-1: Prometheus scraping on the
+				// worker pod exposes only scheduler-side
+				// counters. Until we wire the runtime
+				// metrics registry explicitly, this
+				// endpoint is a 200 no-op so Prometheus
+				// does not stalemate on a missing scrape
+				// target.
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("# worker metrics placeholder\n"))
+			})
+		workerSrv := &http.Server{
+			Addr:    cfg.MetricsAddr,
+			Handler: healthMux,
+		}
+		wg.Add(1)
+		go serve(&wg, workerSrv, "worker-health", cfg.MetricsAddr, log)
+		log.Info("mode=worker - scheduler up, /readyz+metrics on metrics addr only", "addr", cfg.MetricsAddr)
 	default:
 		// all-in-one (default): both halves are present so
 		// local dev and single-container installs Just Work.

@@ -40,10 +40,17 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: nexus-gateway
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Phase D-1 spec: image goes through the helper so
+          # both roles see the exact same image+tag. A future
+          # change that lets one Deployment drift is loud here.
+          image: {{ include "nexus.image" . | quote }}
+          imagePullPolicy: {{ include "nexus.imagePullPolicy" . }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          # Gateway pods expose the data-plane listeners and the
+          # console. Metrics port is exposed for Prometheus; the
+          # egress / network policy must whitelist port 8080+8081
+          # for ingress traffic, and 9090 for in-cluster scrapes.
           ports:
             - name: gateway
               containerPort: {{ .Values.ports.gateway }}
@@ -59,7 +66,8 @@ spec:
           # Phase D-1: Gateway pods disable the scheduler
           # leader-gate. The Worker pods acquire the lease and
           # tick; Gateway pods only serve traffic and run audit
-          # pathway code paths.
+          # pathway code paths. The NEXUS_ROLE marker is what
+          # main.go's mode switch reads at startup.
           env:
             - name: NEXUS_ROLE
               value: gateway
@@ -80,8 +88,15 @@ spec:
             {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
+          # Phase D-1: /readyz on the gateway means "we can serve
+          # traffic". The probe points at the gateway port.
           readinessProbe:
-            {{- toYaml .Values.readinessProbe | nindent 12 }}
+            httpGet:
+              path: /readyz
+              port: {{ .Values.ports.gateway }}
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds | default 10 }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold | default 6 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

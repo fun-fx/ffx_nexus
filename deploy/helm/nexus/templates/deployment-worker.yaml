@@ -40,14 +40,23 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: nexus-worker
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Phase D-1 spec: image identical to the gateway side.
+          # The helper guarantees the same image string is
+          # rendered in both Deployments; the render test fails
+          # on drift.
+          image: {{ include "nexus.image" . | quote }}
+          imagePullPolicy: {{ include "nexus.imagePullPolicy" . }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           # The Worker pod exposes only the metrics port. The
           # OpenAI gateway and the console API are served only by
           # the Gateway Deployment; the Worker pod is internal
           # to the cluster and reachable only via ClusterIP.
+          # Phase D-1 spec: "Worker는 트래픽을 받지 않으므로
+          # Service를 만들지 마라. 다만 메트릭 수집과 헬스
+          # 체크는 필요하다. 메트릭 포트만 노출하고 [delete] 메트릭
+          # 보호를 적용하라." — the metrics port is the only
+          # surface a worker pod exposes.
           ports:
             {{- if .Values.metrics.enabled }}
             - name: metrics
@@ -76,8 +85,19 @@ spec:
                 name: {{ include "nexus.secretName" . }}
           livenessProbe:
             {{- toYaml .Values.worker.livenessProbe | nindent 12 }}
+          # Phase D-1: /readyz on the worker means "we hold the
+          # Postgres lease" — it is intentionally NOT the data
+          # plane listener. The probe points at the metrics
+          # port because that is the only HTTP port a worker
+          # pod exposes; the handler in main.go answers /readyz
+          # based on whether the lease has been acquired yet.
           readinessProbe:
-            {{- toYaml .Values.worker.readinessProbe | nindent 12 }}
+            httpGet:
+              path: /readyz
+              port: {{ .Values.metrics.port }}
+            initialDelaySeconds: {{ .Values.worker.readinessProbe.initialDelaySeconds | default 15 }}
+            periodSeconds: {{ .Values.worker.readinessProbe.periodSeconds | default 10 }}
+            failureThreshold: {{ .Values.worker.readinessProbe.failureThreshold | default 6 }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
           volumeMounts:
