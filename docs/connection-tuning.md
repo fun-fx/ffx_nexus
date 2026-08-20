@@ -45,6 +45,38 @@ will expose `dependencies.postgres.workerMaxConns` and
 instead of the unified value. Until Phase D-1 ships, both share
 `NEXUS_POSTGRES_MAX_CONNS`.
 
+## Phase D-1 sizing profiles
+
+Phase D-1 sizes Gateway and Worker pools separately because the two
+roles scale on different axes. The pre-install validation Job
+(`pre-install-validation.yaml`) sums Gateway and Worker pools plus a
+fixed allowance for migrations, CLI, BI readers, and `(WANT *
+repCount) + (WWANT * wRepCount) + 1(migration) + 4(CLI) + 3(superuser
+reserved) + 8(BI) + 12(safety headroom)` and rejects values above 200.
+
+| Profile         | Gateway replicas | Gateway maxConns | Worker replicas | Worker maxConns | SUM (with overhead) | Intended for |
+|-----------------|------------------|------------------|-----------------|------------------|---------------------|--------------|
+| Small / single  | 1                | 8                | 1               | 8                | 36                  | local dev / single-container install / on-call verification cluster |
+| Medium / 3-replica | 3              | 8                | 3               | 8                | 76                  | pilot customers / one team, 1 production region |
+| Large / HA cluster | 5             | 16               | 3               | 8                | 142                 | production multi-region / 100+ tenants |
+| Maximum / ceiling | 5               | 24               | 3               | 16               | 178                 | the documented ceiling; reach this profile only after instrumenting pg_stat_activity to confirm no client is starved |
+
+Notes:
+
+- The SUM column assumes Postgres `max_connections=200`. Operators with
+  `max_connections=300` and the documented safety ratio of `0.7`
+  (-ish) can push Gateway replicas to 8 or Worker maxConns to 16 in
+  the same profile. The 200 ceiling is a fixed product spec, not a
+  tuning surface; raising it requires an explicit Postgres
+  `ALTER SYSTEM SET max_connections = 300;` plus a server restart.
+- The Worker pool's *minimum* of 8 is not arbitrary: lease
+  acquisition grabs a connection off the same pool that the cron
+  runner uses, and the lease-pinned connection (the one that holds
+  the role's advisory lock for the lifetime of the pod) does not
+  return until the pod terminates. Below 8, a concurrent heartbeat
+  + tick + cron write would starve. See `internal/leaser/leaser.go`
+  and the connection-leak invariant test in `integration_test.go`.
+
 ## Operator overrides via `extraEnv`
 
 `NEXUS_POSTGRES_MAX_CONNS` is set through the Secret template if the
