@@ -145,10 +145,10 @@ func detectBypass(t *testing.T, namespace, podName string) nsenterDetectionResul
 	}
 	var spec struct {
 		Spec struct {
-			HostNetwork    bool          `json:"hostNetwork"`
-			HostPID        bool          `json:"hostPID"`
-			HostIPC        bool          `json:"hostIPC"`
-			Containers     []containerSP `json:"containers"`
+			HostNetwork bool          `json:"hostNetwork"`
+			HostPID     bool          `json:"hostPID"`
+			HostIPC     bool          `json:"hostIPC"`
+			Containers  []containerSP `json:"containers"`
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal([]byte(out), &spec); err != nil {

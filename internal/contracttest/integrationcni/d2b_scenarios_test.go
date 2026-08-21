@@ -334,6 +334,7 @@ func TestScenario9(t *testing.T) {
 // sequence:
 //   - proxy endpoint MUST succeed (allowed)
 //   - direct external IP MUST be denied
+//
 // Both probes run via the same kubectl
 // exec against the same Pod. If the source
 // is mislabeled or has a permissive egress
