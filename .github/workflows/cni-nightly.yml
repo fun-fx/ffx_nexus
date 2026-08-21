@@ -270,13 +270,13 @@ jobs:
 
           # --- kind v0.22.0 --------------------------------------
           # Source: https://github.com/kubernetes-sigs/kind/releases/download/v0.22.0/kind-linux-amd64.sha256sum
-          "${curl_common[@]}" -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+          curl "${curl_common[@]}" -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
           echo 'e4264d7ee07ca642fe52818d7c0ed188b193c214889dd055c929dbcb968d1f62  /tmp/kind' | sha256sum -c --status - || { echo 'FAIL: kind v0.22.0 sha256 mismatch'; exit 1; }
           sudo install -m 0755 /tmp/kind /usr/local/bin/kind
 
           # --- kubectl v1.29.0 -----------------------------------
           # Source: https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl.sha256
-          "${curl_common[@]}" -o /tmp/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
+          curl "${curl_common[@]}" -o /tmp/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
           echo '0e03ab096163f61ab610b33f37f55709d3af8e16e4dcc1eb682882ef80f96fd5  /tmp/kubectl' | sha256sum -c --status - || { echo 'FAIL: kubectl v1.29.0 sha256 mismatch'; exit 1; }
           sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
 
@@ -286,7 +286,7 @@ jobs:
           # first (no pipe) so a gzip truncation surfaces as
           # a real tar/exit code instead of being silently
           # absorbed by the | tar pipe.
-          "${curl_common[@]}" -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
+          curl "${curl_common[@]}" -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
           echo 'a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259  /tmp/helm.tar.gz' | sha256sum -c --status - || { echo 'FAIL: helm v3.14.4 sha256 mismatch'; exit 1; }
           tar -C /tmp -xzf /tmp/helm.tar.gz linux-amd64/helm
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
@@ -294,7 +294,7 @@ jobs:
 
           # --- cilium CLI v0.15.20 -------------------------------
           # Source: https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz.sha256sum
-          "${curl_common[@]}" -o /tmp/cilium.tar.gz https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz
+          curl "${curl_common[@]}" -o /tmp/cilium.tar.gz https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz
           echo 'a1a09f3f0176e118b1b00be4fcd7f9f32f27c9587c64b5579d2747d751e72e23  /tmp/cilium.tar.gz' | sha256sum -c --status - || { echo 'FAIL: cilium v0.15.20 sha256 mismatch'; exit 1; }
           tar -C /tmp -xzf /tmp/cilium.tar.gz
           sudo install -m 0755 /tmp/cilium /usr/local/bin/cilium
