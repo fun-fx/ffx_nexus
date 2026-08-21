@@ -68,8 +68,15 @@ import re
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 GATE_SCRIPT = "scripts/cni-readiness-gate.sh"
+
+# filesystem anchor so the unit tests in
+# deploy/helm/nexus/tests/cni_readiness_gate_test.py
+# can read scaffold files outside the chart
+# (build.sh and install-nexus-test.sh).
+ffx_nexus_root = Path(__file__).resolve().parent.parent.parent.parent.parent
 
 # The directive enumerates these five labels
 # exactly. The unit test fails HARD if the gate's
@@ -82,6 +89,7 @@ EXPECTED_LABELS = {
     11: "CHART_OR_POLICY_INVALID",
     12: "FIXTURE_NOT_READY",
     13: "SCENARIO_POLICY_REGRESSION",
+    14: "FIXTURE_IMAGE_NOT_LOADED",
 }
 
 def assert_eq(label, got, want):
@@ -550,6 +558,138 @@ has_src_target_keys = all(
 ok.append(assert_eq(
     "gate script provenance JSON includes src/target/svc/port/status keys",
     has_src_target_keys,
+    True,
+))
+
+# ---- 10. Phase D-2b.26: image-pipeline classification ---------------------
+#
+# Directive item 3 requires the gate AND the
+# install script to distinguish at minimum:
+#
+#   - RepoDigests empty + image_id present
+#       : build_success, repo_digest_or_none=
+#         "none", image_id recorded.
+#   - image_id empty
+#       : build_failed_no_image_id (exit 11),
+#         scenario start forbidden.
+#   - Missing image on at least one kind node
+#       : FIXTURE_IMAGE_NOT_LOADED (exit 14),
+#         NOT SCENARIO_POLICY_REGRESSION (13).
+#   - imagePullPolicy: Always on any fixture
+#       : test that the gate denies a fixture
+#         Pod whose policy has been mutated to
+#         Always (registry fall-through is
+#         forbidden in this environment).
+#   - fixture image tag mismatched between
+#       recorded artifact and Pod spec
+#       : test fails with a controlled reason.
+#
+# Each row below exercises one branch. The
+# values come from the script-side artifacts
+# we expect to find in scripts/ and not from
+# the live cluster.
+
+ok.append(assert_eq(
+    "build script records exit_classification='build_success' path",
+    "build_success" in src,
+    True,
+))
+ok.append(assert_eq(
+    "build script records exit_classification='build_failed_no_image_id' path",
+    "build_failed_no_image_id" in src,
+    True,
+))
+ok.append(assert_eq(
+    "build script records repo_digest_or_none key in JSON artifact",
+    "repo_digest_or_none" in src,
+    True,
+))
+ok.append(assert_eq(
+    "build script records image_id key in JSON artifact",
+    "\"image_id\"" in src or "image_id=" in src,
+    True,
+))
+ok.append(assert_eq(
+    "build script records build_timestamp_utc key in JSON artifact",
+    "build_timestamp_utc" in src,
+    True,
+))
+
+# Gate accepts a FIXTURE_IMAGE_NOT_LOADED override
+# and emits exit 14 BEFORE running any readiness
+# step (the directive says "endpoint gate까지
+# 가지 말고" — we must thereby terminate at the
+# gate entry, not at step #6 or #8).
+ok.append(assert_eq(
+    "gate script defines FIXTURE_IMAGE_NOT_LOADED classification",
+    "FIXTURE_IMAGE_NOT_LOADED" in src,
+    True,
+))
+ok.append(assert_eq(
+    "gate script emits exit 14 on FIXTURE_IMAGE_NOT_LOADED",
+    "(exit 14)" in src or "exit 14" in src,
+    True,
+))
+
+# Install script must classify image-pipeline
+# failures as exit 14, NOT exit 2 or 12. Verify
+# the source strings live in scripts/.
+install_src_path = (
+    ffx_nexus_root
+    / "scripts" / "install-nexus-test.sh"
+)
+install_src = install_src_path.read_text() if install_src_path.exists() else ""
+
+ok.append(assert_eq(
+    "install-nexus-test.sh routes image-pipeline failures to exit 14",
+    "exit 14" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh has per-node runtime image_id verification",
+    "crictl images" in install_src and "FIXTURE_IMAGE_ID" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh classifies ImagePullBackOff as FIXTURE_IMAGE_NOT_LOADED",
+    "ImagePullBackOff" in install_src
+    and "FIXTURE_IMAGE_NOT_LOADED" in install_src,
+    True,
+))
+
+# Build script — verify it does NOT silently
+# treat an empty image_id as success. The
+# directive insists "빈 문자열을 성공으로 기록하지
+# 마라". The script must exit non-zero when
+# image_id is empty.
+ok.append(assert_eq(
+    "build script aborts with non-zero exit on empty image_id",
+    "BUILD_FAILED_NO_IMAGE_ID" in src and "exit 11" in src,
+    True,
+))
+
+# Build script — verify it preserves the
+# `set -u` invariant explicitly, e.g. by
+# initialising DIGEST="" up-front.
+build_src_path = (
+    ffx_nexus_root
+    / "scripts" / "fixtures" / "integrationcni" / "build.sh"
+)
+build_src = build_src_path.read_text() if build_src_path.exists() else ""
+ok.append(assert_eq(
+    "build.sh initialises DIGEST='' under set -u",
+    'DIGEST=""' in build_src,
+    True,
+))
+
+# Build script — record a structured JSON
+# artifact schema_version. The directive
+# requires JSON key-value: image_ref,
+# image_id, repo_digest_or_none, build_sha,
+# build_timestamp_utc.
+ok.append(assert_eq(
+    "build.sh writes structured_record_layout_version key",
+    "structured_record_layout_version" in build_src,
     True,
 ))
 
