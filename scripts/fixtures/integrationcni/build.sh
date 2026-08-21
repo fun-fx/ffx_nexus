@@ -44,6 +44,17 @@
 #
 set -euo pipefail
 
+# Initialise digests up-front so the
+# `set -u` strict-mode does not emit
+# "unbound variable" when DIGEST_RAW is
+# empty (some toolchains refuse to record a
+# RepoDigests entry because the image was
+# only just-built and not pushed to a
+# registry). The `-u` guard then catches
+# references to unset names elsewhere.
+DIGEST=""
+DIGEST_RAW=""
+
 IMAGE_REF="${IMAGE_REF:-cni-listener:local}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
