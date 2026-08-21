@@ -328,7 +328,35 @@ ok.append(assert_eq(
     len(parsed), 9,
 ))
 
-# ---- 7. Regression: drop node-ready wait — gate must still classify -------
+# ---- 7. Regression: phase split keeps fixture-related gates post-only ----
+# Directive item 4 expects that dropping the
+# node-ready wait OR the endpoint-readiness
+# aggregation surfaces its own classification.
+# This is the script-level invariant the unit
+# test pins. The split of phases (pre #1..#6,
+# post #7..#9) means a missing fixture namespace
+# cannot be classified as CLUSTER_OR_CNI_NOT_READY
+# while still in pre-fixture; it is classified
+# FIXTURE_NOT_READY (12) after the fixture apply.
+synth_phase_split = """\
+[step 01] 01-pinned-versions : ok
+          detail: pins match directive
+[step 02] 02-node-image-pull : ok
+          detail: kindest/node:v1.29.0 present
+[step 03] 03-node-ready : ok
+          detail: all 3 nodes Ready=True
+[step 04] 04-system-pods-ready : ok
+          detail: CoreDNS healthy
+[step 05] 05-cilium-agents-ready : ok
+          detail: cilium Ready=3 / 3
+[step 06] 06-cilium-enforcement-active : ok
+          detail: policyEnforcement=default, connectivity=ok
+"""
+parsed_pre = list(gate_re.finditer(synth_phase_split))
+ok.append(assert_eq(
+    "pre-fixture phase yields exactly 6 step records",
+    len(parsed_pre), 6,
+))
 # Directive item 4 asks for unit-level evidence
 # that "node wait를 제거하거나 endpoint readiness를
 # 제거했을 때 ... 잘못 분류되는 회귀를 테스트가
