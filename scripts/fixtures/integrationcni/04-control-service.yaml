@@ -1,0 +1,147 @@
+# scripts/fixtures/integrationcni/04-control-service.yaml
+#
+# Phase D-2b.25: control-plane fixture for
+# the fixture-service-control gate (step #9).
+#
+# Why this file exists as a SEPARATE fixture
+# (not folded into 03-control-pod.yaml):
+#
+#   Step #9's verdict must prove that the
+#   cluster's Service+EndpointSlice+DNS path
+#   actually carries a packet, without
+#   confusing a chart-side product NetworkPolicy
+#   ALLOW/DENY with a control-side probe
+#   failure.
+#
+#   The chart product NetworkPolicy renders
+#   ingress rules for cni-test-ingress /
+#   cni-test-prometheus and excludes cni-control.
+#   To prove that a probe path is independent
+#   of that product policy, the control fixture
+#   uses a separate, dedicated namespace and
+#   label set, and a separate NetworkPolicy
+#   (file 05-control-policy.yaml) that allows
+#   only the ports and sources the control
+#   path requires.
+#
+# What it deploys:
+#
+#   namespace cni-control (separate from chart-
+#   rendered namespaces; chart's product
+#   NetworkPolicy is never expected to select
+#   this namespace)
+#
+#   service/cni-control-control-svc:
+#     ClusterIP for the control probe.
+#     Selector on app=cni-control, role=probe.
+#     Ports: control 8080/TCP only.
+#
+#   service/cni-control-egress-svc:
+#     ClusterIP for the *external* egress
+#     target the gate will probe: an httpecho
+#     fixture pod of role=external, listening
+#     on port 18080 (chosen NOT to conflict with
+#     8080/9101/5432/6379 chart ports so the
+#     control NetworkPolicy and the chart
+#     product NetworkPolicy cannot be confused
+#     by accident).
+#
+# Why port 18080:
+#
+#   It is well outside the chart's product
+#   port range. If a control probe that uses
+#   18080 ever succeeds while a probe that uses
+#   8080 fails, the failure is unambiguously
+#   about port-specific allow rules rather
+#   than about the cluster plumbing. This
+#   port is also safe against pre-existing
+#   target listeners on the gateway mock.
+#
+# Why two services:
+#
+#   The control SOURCE (cni-control-probe) and
+#   the control TARGET (cni-control-target)
+#   live on the same namespace. Step #9 must
+#   verify: source→target path is opened
+#   by the control NetworkPolicy 05 only,
+#   not by the chart NetworkPolicy. Two
+#   services make this materially
+#   distinguishable in logs.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-control
+  labels:
+    kubernetes.io/metadata.name: cni-control
+    app.kubernetes.io/part-of: cni-control
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-control-probe-svc
+  namespace: cni-control
+  labels:
+    app: cni-control
+    role: probe
+spec:
+  selector:
+    app: cni-control
+    role: probe
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: control
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-control-target
+  namespace: cni-control
+  labels:
+    app: cni-control
+    role: probe-target
+spec:
+  containers:
+    - name: target
+      image: cni-listener:local
+      imagePullPolicy: Never
+      command: ["/cni-listener"]
+      args: ["-ports=18080", "-role=external", "-target=cni-control-target"]
+      ports:
+        - containerPort: 18080
+          name: probe
+          protocol: TCP
+      readinessProbe:
+        exec:
+          command: ["/cni-listener", "-probe=18080"]
+        initialDelaySeconds: 1
+        periodSeconds: 3
+      env:
+        - name: POD_NAME
+          value: cni-control-target
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-control-target-svc
+  namespace: cni-control
+  labels:
+    app: cni-control
+    role: probe-target
+spec:
+  selector:
+    app: cni-control
+    role: probe-target
+  ports:
+    - port: 18080
+      targetPort: 18080
+      protocol: TCP
+      name: probe
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cni-control
+  namespace: cni-control

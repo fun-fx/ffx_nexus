@@ -66,10 +66,38 @@ kubectl apply -f "$RENDER" 2>&1 | tee -a "$ARTIFACTS/install.log"
 # sources/ingress/prometheus/untrusted live
 # in dedicated namespaces created by
 # 00-prereq-namespaces.yaml.
+#
+# Pre-step: build the deterministic cni-listener
+# fixture image used by every fixture Pod and
+# push it into kind. Without this build the
+# Pods remain in ImagePullBackOff forever
+# because imagePullPolicy: Never on each Pod
+# refuses to fall back to any remote registry.
+# The build script is the SINGLE source of
+# digest and the digest pin is recorded in
+#   $ARTIFACTS/fixture-image-digest.txt
+# for downstream verifiers.
+SCRIPT_DIR_FLAG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "[install] build cni-listener fixture image" | tee -a "$ARTIFACTS/install.log"
+FIXTURE_DIGEST=$(bash "$SCRIPT_DIR_FLAG/fixtures/integrationcni/build.sh" 2>>"$ARTIFACTS/install.log")
+FIXTURE_RC=$?
+if (( FIXTURE_RC != 0 )) || [[ -z "$FIXTURE_DIGEST" ]]; then
+  echo "[install] ERROR: cni-listener fixture build failed (rc=$FIXTURE_RC)" | tee -a "$ARTIFACTS/install.log"
+  exit 12
+fi
+printf 'fixture_image_digest=%s\nimage_ref=cni-listener:local\n' \
+  "$FIXTURE_DIGEST" > "$ARTIFACTS/fixture-image-digest.txt"
+echo "[install] fixture image digest: $FIXTURE_DIGEST" | tee -a "$ARTIFACTS/install.log"
+echo "[install] kind load docker-image cni-listener:local" | tee -a "$ARTIFACTS/install.log"
+kind load docker-image --name "${CLUSTER_NAME}" cni-listener:local \
+  2>&1 | tee -a "$ARTIFACTS/install.log"
+
 kubectl apply -f scripts/fixtures/integrationcni/00-prereq-namespaces.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
 kubectl apply -f scripts/fixtures/integrationcni/01-test-pods.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
 kubectl apply -f scripts/fixtures/integrationcni/02-stub-deps.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
 kubectl apply -f scripts/fixtures/integrationcni/03-control-pod.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
+kubectl apply -f scripts/fixtures/integrationcni/04-control-service.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
+kubectl apply -f scripts/fixtures/integrationcni/05-control-policy.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
 
 # Polled wait for fixture Pods to be Ready
 # before we count cilium endpoints. A Pod that
