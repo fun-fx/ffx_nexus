@@ -242,23 +242,69 @@ jobs:
             exit 1
           fi
 
-      - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15
+      - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15 (verified)
         run: |
           set -euo pipefail
-          curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+          # CNI gate rationale: the previous pin step piped
+          # `curl -fsSL ... | tar -xz` and silently dropped the
+          # HTTP body at the gzip stage when Azure westus3
+          # cranelift stale-streamed; tar exited 2 with
+          # "gzip: stdin: unexpected end of file" and the run
+          # was marked failure even though the code under
+          # test was correct. The gate had no digest to
+          # compare against, so the operator couldn't tell a
+          # flake from a real corruption.
+          #
+          # The new step:
+          #   1) Downloads each binary into a local file
+          #      (no pipe), with curl retry on transient
+          #      connectivity errors;
+          #   2) Verifies the published SHA256 against the
+          #      file — mismatch is fail-closed and
+          #      invalidates the run;
+          #   3) Extracts / installs / records to the
+          #      artifact folder.
+          #
+          # Sources of truth (captured on 2026-08-21):
+          curl_common=(--retry 3 --retry-connrefused --retry-delay 5 --connect-timeout 30 --max-time 600 -fsSL)
+
+          # --- kind v0.22.0 --------------------------------------
+          # Source: https://github.com/kubernetes-sigs/kind/releases/download/v0.22.0/kind-linux-amd64.sha256sum
+          "${curl_common[@]}" -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+          echo 'e4264d7ee07ca642fe52818d7c0ed188b193c214889dd055c929dbcb968d1f62  /tmp/kind' | sha256sum -c --status - || { echo 'FAIL: kind v0.22.0 sha256 mismatch'; exit 1; }
           sudo install -m 0755 /tmp/kind /usr/local/bin/kind
-          curl -Lo /tmp/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
+
+          # --- kubectl v1.29.0 -----------------------------------
+          # Source: https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl.sha256
+          "${curl_common[@]}" -o /tmp/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
+          echo '0e03ab096163f61ab610b33f37f55709d3af8e16e4dcc1eb682882ef80f96fd5  /tmp/kubectl' | sha256sum -c --status - || { echo 'FAIL: kubectl v1.29.0 sha256 mismatch'; exit 1; }
           sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          curl -fsSL https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz | tar -C /tmp -xz linux-amd64/helm
+
+          # --- helm v3.14.4 --------------------------------------
+          # Source: https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz.sha256sum
+          # NOTE: the archive is downloaded intact to a file
+          # first (no pipe) so a gzip truncation surfaces as
+          # a real tar/exit code instead of being silently
+          # absorbed by the | tar pipe.
+          "${curl_common[@]}" -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
+          echo 'a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259  /tmp/helm.tar.gz' | sha256sum -c --status - || { echo 'FAIL: helm v3.14.4 sha256 mismatch'; exit 1; }
+          tar -C /tmp -xzf /tmp/helm.tar.gz linux-amd64/helm
           sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
-          curl -L -o /tmp/cilium.tar.gz https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz
-          tar -C /tmp -xz /tmp/cilium.tar.gz
+          rm -f /tmp/helm.tar.gz /tmp/linux-amd64/helm
+
+          # --- cilium CLI v0.15.20 -------------------------------
+          # Source: https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz.sha256sum
+          "${curl_common[@]}" -o /tmp/cilium.tar.gz https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz
+          echo 'a1a09f3f0176e118b1b00be4fcd7f9f32f27c9587c64b5579d2747d751e72e23  /tmp/cilium.tar.gz' | sha256sum -c --status - || { echo 'FAIL: cilium v0.15.20 sha256 mismatch'; exit 1; }
+          tar -C /tmp -xzf /tmp/cilium.tar.gz
           sudo install -m 0755 /tmp/cilium /usr/local/bin/cilium
+          rm -f /tmp/cilium.tar.gz /tmp/cilium
+
           kind version
           kubectl version --client
           helm version
           cilium version
-          echo "Pinned: kind v0.22.0 | kubectl v1.29.0 | helm v3.14.4 | cilium v0.15.20"
+          echo "Pinned: kind v0.22.0 | kubectl v1.29.0 | helm v3.14.4 | cilium v0.15.20 (sha256-verified, retry=3)"
           # Record the pinned versions into the
           # artifact folder so a downstream
           # verifier can match expectations.
@@ -271,6 +317,7 @@ jobs:
             echo "k8s node image: kindest/node:v1.29.0  (script default)"
             echo "sha:  $(git rev-parse HEAD)"
             echo "run:  ${{ github.event.inputs.run_index }}"
+            echo "pin-policy: curl retry=3 + sha256 verify of upstream-published sums"
           } > artifacts/integrationcni/pinned-versions.txt
 
       - name: Bring up multi-node kind + Cilium cluster
