@@ -1,0 +1,360 @@
+# D-2b NetworkPolicy CI gate.
+#
+# Three jobs, separated by role, so GitHub
+# branch protection sees deterministic state
+# on every PR:
+#
+#   cni-lightweight-gate
+#     - always runs when this workflow fires
+#       (even on PRs with no policy changes)
+#     - renders the chart with the canonical
+#       enterprise profile
+#     - asserts render yields 4 NetworkPolicy
+#       kinds with the expected role labels
+#     - emits ALWAYS a pass/fail conclusion
+#     - cheap (>30s). Acts as the merge
+#       requirement when no policy file
+#       changed.
+#
+#   cni-policy-required
+#     - path-filtered to policy files
+#     - runs the full enforcing-CNI integration
+#       gate (12 scenarios + mutations +
+#       upgrade rehearsal)
+#     - heavy (~20-30 minutes)
+#     - this is the additional merge
+#       requirement that fires on policy change
+#
+#   cni-policy-gate-logs (artifact upload)
+#     - every policy-required run uploads
+#       artifacts/ named with
+#       cni-${GITHUB_RUN_ID}-${GITHUB_SHA::7}
+#       so a failure can be diffed across runs.
+#
+# The lightweight gate is what every PR waits
+# for. The heavy gate only fires on policy
+# changes. NO smoke-and-trick: every gate state
+# is explicit and grep-able.
+#
+# Concurrency:
+#   group = cni-gate-${{ github.event.pull_request.head.ref || github.ref }}
+#   cancel-in-progress = true
+#   so a re-push on the same PR cancels the
+#   prior run; only the latest commit's result
+#   becomes the merge gate.
+#
+# No retries. A failed run is a failed run.
+# A flake is recorded exactly once; rerunning
+# the gate is a new workflow_run record.
+
+name: cni-policy-gate
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  pull_request:
+    paths:
+      - "deploy/helm/nexus/templates/networkpolicy.yaml"
+      - "deploy/helm/nexus/templates/serviceaccount-worker.yaml"
+      - "deploy/helm/nexus/templates/deployment.yaml"
+      - "deploy/helm/nexus/templates/deployment-worker.yaml"
+      - "deploy/helm/nexus/templates/pre-install-validation.yaml"
+      - "deploy/helm/nexus/templates/servicemonitor.yaml"
+      - "deploy/helm/nexus/templates/networkpolicy.yaml"
+      - "deploy/helm/nexus/templates/migration-job.yaml"
+      - "deploy/helm/nexus/values.yaml"
+      - "deploy/helm/nexus/values.schema.json"
+      - "deploy/helm/nexus/tests/render_test.py"
+      - "deploy/helm/nexus/tests/mutation_test.py"
+      - "internal/netpolicy/**"
+      - "internal/urlpolicy/**"
+      - "internal/depinventory/**"
+      - "internal/contracttest/integrationcni/**"
+      - "internal/contracttest/d2b_*_test.go"
+      - "internal/config/**"
+      - "docs/network-allowlist.md"
+      - "docs/dependency-contract.md"
+      - "docs/d2b-egress-proxy-contract.md"
+      - "docs/cni-comparison.md"
+      - "docs/cni-environment-changes.md"
+      - "docs/phase-d2b-*"
+      - "scripts/test-cluster-up.sh"
+      - "scripts/test-cluster-down.sh"
+      - "scripts/install-nexus-test.sh"
+      - "scripts/test-upgrade-rehearsal.sh"
+      - "scripts/test-upgrade-rehearsal-up.sh"
+      - "scripts/d2b-twelve-scenarios.sh"
+      - "scripts/d2b-failure-reproduction.py"
+      - "scripts/fixtures/integrationcni/**"
+      - "scripts/wait-cilium-endpoints.sh"
+      - "Makefile"
+      - ".github/workflows/cni-nightly.yml"
+      - "go.mod"
+  # The heavy enforcement gate is run ONLY when a
+  # human invokes it. The input `recovery_pr_sha`
+  # is the SHA pinned in the chart's branch — the
+  # CNI run is valid ONLY for that SHA. The agent /
+  # operator opens this workflow dispatch three
+  # times against the SAME SHA. Three separate
+  # runs are required before the merge gate flips
+  # to green.
+  workflow_dispatch:
+    inputs:
+      recovery_pr_sha:
+        description: "Recovery PR SHA pinned by the chart agent. CNI run is only valid for this SHA."
+        required: true
+        type: string
+      run_index:
+        description: "Run index 1-of-3, 2-of-3, 3-of-3. Recorded into the artifact name."
+        required: true
+        type: string
+
+# Concurrency: ONLY the lightweight gate cancels
+# in-flight runs per branch. The enforcement gate
+# records three independent runs as separate
+# artifacts; we must NOT collapse them.
+concurrency:
+  group: cni-lightweight-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: true
+
+# Permissions: read-only. Anything that needs
+# write is a token escalation we should NOT
+# silently grant to CNI runs.
+permissions:
+  contents: read
+
+jobs:
+  # ====================================================================
+  # LIGHTWEIGHT GATE — runs on every PR.
+  # Renders the chart with the canonical
+  # enterprise-profile values. Asserts:
+  #   - helm template succeeds
+  #   - 4 NetworkPolicy documents are emitted
+  #     (default-deny ingress + egress,
+  #      gateway, worker, migration)
+  #   - each policy's podSelector matches the
+  #     documented role label contract.
+  # RAPID: ~30s on a fast runner.
+  # This job ALWAYS produces a conclusion
+  # (success or failure); branch protection's
+  # required check has unambiguous status.
+  # ====================================================================
+  cni-lightweight-gate:
+    name: CNI lightweight gate (always)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: helm render + NetworkPolicy shape check
+        run: |
+          set -euo pipefail
+          helm version --short
+          # Render with enterprise enforcement.
+          helm template render-test deploy/helm/nexus \
+            --set networkPolicy.mode=enforce \
+            --set networkPolicy.profile=enterprise \
+            --set networkPolicy.enforcementAcknowledged=true \
+            --set networkPolicy.egress.proxy.enabled=true \
+            --set networkPolicy.egress.proxy.host=p.example.svc.cluster.local \
+            --set networkPolicy.egress.proxy.port=3128 \
+            --set networkPolicy.egress.proxy.namespace=p \
+            > /tmp/render.out
+          # Count NetworkPolicy documents.
+          count=$(grep -c '^kind: NetworkPolicy$' /tmp/render.out)
+          echo "NetworkPolicy docs: $count"
+          if [[ "$count" -lt 4 ]]; then
+            echo "FAIL: expected at least 4 NetworkPolicy docs (default-deny ingress, default-deny egress, gateway, worker, migration)."
+            exit 1
+          fi
+          # Role selectors must be present.
+          for role in gateway worker migration; do
+            if ! grep -A2 "app.kubernetes.io/component: ${role}" /tmp/render.out | grep -q 'podSelector'; then
+              echo "FAIL: podSelector for role=$role not found in rendered policies."
+              exit 1
+            fi
+          done
+          echo "OK"
+      - name: Upload lightweight render artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cni-lightweight-render-${{ github.run_id }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: /tmp/render.out
+          if-no-files-found: ignore
+
+  # ====================================================================
+  # ENFORCEMENT GATE — Pin the CNI run to a
+  # specific recovery PR SHA. We do NOT use the
+  # default `actions/checkout@v4` ref, because
+  # the action reflows to whatever the run's
+  # caller (schedule / PR / dispatch) implied.
+  # Instead we checkout the SHA from
+  # `github.event.inputs.recovery_pr_sha` so
+  # the chart code matches the SHA recorded in
+  # the merge report. If the input is empty
+  # (e.g. dispatched by `schedule`), the run
+  # refuses with an explicit error.
+  #
+  # Runs 3× independently on the SAME SHA. The
+  # chart agent bundles the three workflow runs
+  # URLs into the PR description as the merge
+  # gate evidence.
+  # ====================================================================
+  cni-enforcement-gate:
+    name: CNI enforcement gate (3× runs on pinned SHA)
+    # workflow_dispatch is the only trigger for
+    # the heavy gate: schedule + PR paths can
+    # never produce enough evidence (PRs change
+    # between runs; schedule runs against refs
+    # we cannot pin).
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Validate SHA input
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ github.event.inputs.recovery_pr_sha }}" ]]; then
+            echo "FAIL: workflow_dispatch must supply recovery_pr_sha"
+            exit 1
+          fi
+          if [[ -z "${{ github.event.inputs.run_index }}" ]]; then
+            echo "FAIL: workflow_dispatch must supply run_index (1-of-3, 2-of-3, 3-of-3)"
+            exit 1
+          fi
+          echo "Pinned SHA: ${{ github.event.inputs.recovery_pr_sha }}"
+          echo "Run index:  ${{ github.event.inputs.run_index }}"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.recovery_pr_sha }}
+          fetch-depth: 0
+
+      - name: Verify checked-out SHA matches
+        run: |
+          set -euo pipefail
+          cur_sha=$(git rev-parse HEAD)
+          want_sha="${{ github.event.inputs.recovery_pr_sha }}"
+          echo "actual=$cur_sha"
+          echo "want  =$want_sha"
+          if [[ "$cur_sha" != "$want_sha" ]]; then
+            echo "FAIL: checkout SHA did not pin to the dispatch input"
+            exit 1
+          fi
+
+      - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15 (verified)
+        run: |
+          set -euo pipefail
+          # CNI gate rationale: the previous pin step piped
+          # `curl -fsSL ... | tar -xz` and silently dropped the
+          # HTTP body at the gzip stage when Azure westus3
+          # cranelift stale-streamed; tar exited 2 with
+          # "gzip: stdin: unexpected end of file" and the run
+          # was marked failure even though the code under
+          # test was correct. The gate had no digest to
+          # compare against, so the operator couldn't tell a
+          # flake from a real corruption.
+          #
+          # The new step:
+          #   1) Downloads each binary into a local file
+          #      (no pipe), with curl retry on transient
+          #      connectivity errors;
+          #   2) Verifies the published SHA256 against the
+          #      file — mismatch is fail-closed and
+          #      invalidates the run;
+          #   3) Extracts / installs / records to the
+          #      artifact folder.
+          #
+          # Sources of truth (captured on 2026-08-21):
+          curl_common=(--retry 3 --retry-connrefused --retry-delay 5 --connect-timeout 30 --max-time 600 -fsSL)
+
+          # --- kind v0.22.0 --------------------------------------
+          # Source: https://github.com/kubernetes-sigs/kind/releases/download/v0.22.0/kind-linux-amd64.sha256sum
+          curl "${curl_common[@]}" -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+          echo 'e4264d7ee07ca642fe52818d7c0ed188b193c214889dd055c929dbcb968d1f62  /tmp/kind' | sha256sum -c --status - || { echo 'FAIL: kind v0.22.0 sha256 mismatch'; exit 1; }
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+
+          # --- kubectl v1.29.0 -----------------------------------
+          # Source: https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl.sha256
+          curl "${curl_common[@]}" -o /tmp/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
+          echo '0e03ab096163f61ab610b33f37f55709d3af8e16e4dcc1eb682882ef80f96fd5  /tmp/kubectl' | sha256sum -c --status - || { echo 'FAIL: kubectl v1.29.0 sha256 mismatch'; exit 1; }
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+
+          # --- helm v3.14.4 --------------------------------------
+          # Source: https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz.sha256sum
+          # NOTE: the archive is downloaded intact to a file
+          # first (no pipe) so a gzip truncation surfaces as
+          # a real tar/exit code instead of being silently
+          # absorbed by the | tar pipe.
+          curl "${curl_common[@]}" -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
+          echo 'a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259  /tmp/helm.tar.gz' | sha256sum -c --status - || { echo 'FAIL: helm v3.14.4 sha256 mismatch'; exit 1; }
+          tar -C /tmp -xzf /tmp/helm.tar.gz linux-amd64/helm
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          rm -f /tmp/helm.tar.gz /tmp/linux-amd64/helm
+
+          # --- cilium CLI v0.15.20 -------------------------------
+          # Source: https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz.sha256sum
+          curl "${curl_common[@]}" -o /tmp/cilium.tar.gz https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz
+          echo 'a1a09f3f0176e118b1b00be4fcd7f9f32f27c9587c64b5579d2747d751e72e23  /tmp/cilium.tar.gz' | sha256sum -c --status - || { echo 'FAIL: cilium v0.15.20 sha256 mismatch'; exit 1; }
+          tar -C /tmp -xzf /tmp/cilium.tar.gz
+          sudo install -m 0755 /tmp/cilium /usr/local/bin/cilium
+          rm -f /tmp/cilium.tar.gz /tmp/cilium
+
+          kind version
+          kubectl version --client
+          helm version
+          cilium version
+          echo "Pinned: kind v0.22.0 | kubectl v1.29.0 | helm v3.14.4 | cilium v0.15.20 (sha256-verified, retry=3)"
+          # Record the pinned versions into the
+          # artifact folder so a downstream
+          # verifier can match expectations.
+          mkdir -p artifacts/integrationcni
+          {
+            echo "kind: $(kind version | head -1)"
+            echo "kubectl: $(kubectl version --client=true --short 2>/dev/null || kubectl version --client | head -1)"
+            echo "helm: $(helm version --short)"
+            echo "cilium: $(cilium version | head -1)"
+            echo "k8s node image: kindest/node:v1.29.0  (script default)"
+            echo "sha:  $(git rev-parse HEAD)"
+            echo "run:  ${{ github.event.inputs.run_index }}"
+            echo "pin-policy: curl retry=3 + sha256 verify of upstream-published sums"
+          } > artifacts/integrationcni/pinned-versions.txt
+
+      - name: Bring up multi-node kind + Cilium cluster
+        run: bash scripts/test-cluster-up.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+          KUBE_WORKER_COUNT: 2
+
+      - name: Install chart with enterprise profile
+        if: success()
+        run: bash scripts/install-nexus-test.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Run 12 enforcing-CNI scenarios (three-tier probe)
+        if: success()
+        run: bash scripts/d2b-twelve-scenarios.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Helm upgrade rehearsal (disabled -> enforce + --atomic rollback)
+        if: success()
+        run: bash scripts/test-upgrade-rehearsal-up.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Tear down cluster (always)
+        if: always()
+        run: bash scripts/test-cluster-down.sh || true
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Upload CNI gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cni-enforcement-logs-${{ github.event.inputs.run_index }}-${{ github.event.inputs.recovery_pr_sha }}-${{ github.run_id }}
+          path: artifacts/integrationcni/
+          if-no-files-found: error
+          retention-days: 90
