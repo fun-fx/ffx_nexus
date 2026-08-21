@@ -347,6 +347,28 @@ ok.append(assert_eq(
     "PRESENT=" in install_src and "MISSING=" in install_src,
     True,
 ))
+ok.append(assert_eq(
+    "install-nexus-test.sh routes pre-flight fixture dry-run to exit 15",
+    "exit 15" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh routes pre-flight dry-run via FIXTURE_INVALID env",
+    "FIXTURE_INVALID=1" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh declares fixture-dryrun.log artifact path",
+    "fixture-dryrun.log" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "cni-readiness-gate.sh routes FIXTURE_INVALID=1 env to exit 15",
+    "FIXTURE_INVALID=1" in open(
+        REPO / "scripts" / "cni-readiness-gate.sh"
+    ).read(),
+    True,
+))
 
 print()
 if all(ok):

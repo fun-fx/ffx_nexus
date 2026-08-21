@@ -64,6 +64,16 @@
 #                                  not converge within the bounded window
 #   13 SCENARIO_POLICY_REGRESSION - (reserved for caller: scenario probes
 #                                  returned unexpected allow/deny verdicts)
+#   14 FIXTURE_IMAGE_NOT_LOADED - fixture image pipeline failed (build,
+#                                  kind load per-node, imagePullBackOff
+#                                  despite kind-load rc=0). Distinct from
+#                                  FIXTURE_NOT_READY because the failure
+#                                  is NOT convergence-time; it is a
+#                                  precondition.
+#   15 FIXTURE_INVALID        - pre-flight `kubectl apply
+#                                  --dry-run=server --validate=strict`
+#                                  rejected at least one fixture yaml.
+#                                  structural, not runtime.
 #
 # The script does NOT change chart-side code, scripts
 # under deploy/helm/nexus/**, or any
@@ -116,6 +126,28 @@ if [[ "${FIXTURE_IMAGE_NOT_LOADED:-0}" == "1" ]]; then
   } | tee -a "$READINESS_LOG" 2>/dev/null || true
   printf 'FIXTURE_IMAGE_NOT_LOADED\n' > "$READINESS_SUMMARY"
   exit 14
+fi
+
+# Phase D-2b.27: pre-flight fixture dry-run gate.
+#
+# install-nexus-test.sh aborts into the gate
+# with FIXTURE_INVALID=1 if `kubectl apply
+# --dry-run=server --validate=strict` rejected
+# one or more fixture yamls. This is a
+# STRUCTURAL failure (indent drift,
+# unknown fields) on a fixture the chart
+# cannot influence. It must NEVER be
+# classified as SCENARIO_POLICY_REGRESSION
+# (13) or CHART_OR_POLICY_INVALID (11).
+if [[ "${FIXTURE_INVALID:-0}" == "1" ]]; then
+  REASON="${FIXTURE_INVALID_FAILURE_DETAIL:-unspecified}"
+  {
+    printf 'classification=FIXTURE_INVALID (exit 15)\n'
+    printf 'first_failed_step=00-fixture-yaml-preflight\n'
+    printf 'failure_reason=%s\n' "$REASON"
+  } | tee -a "$READINESS_LOG" 2>/dev/null || true
+  printf 'FIXTURE_INVALID\n' > "$READINESS_SUMMARY"
+  exit 15
 fi
 
 case "$GATE_PHASE" in
