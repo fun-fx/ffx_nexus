@@ -1,0 +1,56 @@
+# Phase D-2b.21 control Pod. This Pod is
+# placed in a namespace NOT selected by any
+# rendered NetworkPolicy. It is used to
+# confirm that cluster DNS + Service routing +
+# cilium datapath are working without policy
+# effects, separating "policy denied" from
+# "cluster plumbing broken" when ALLOW/DENY
+# verdicts are inconclusive. The label-set is
+# deliberately identical to a fixture role so
+# the kubelet/cilium lifecycle is the same.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-control
+  labels:
+    kubernetes.io/metadata.name: cni-control
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cni-control-probe
+  namespace: cni-control
+  labels:
+    app: cni-control
+    role: probe
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cni-control
+      role: probe
+  template:
+    metadata:
+      labels:
+        app: cni-control
+        role: probe
+    spec:
+      nodeName: nexus-cni-test-worker2
+      containers:
+        - name: probe
+          image: cni-listener:local
+          imagePullPolicy: Never
+          command: ["/cni-listener"]
+          args: ["-ports=8080", "-role=control", "-target=cni-control-probe"]
+          ports:
+            - containerPort: 8080
+              name: control
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command: ["/cni-listener", "-probe=8080"]
+            initialDelaySeconds: 1
+            periodSeconds: 3
+          env:
+            - name: POD_NAME
+              value: cni-control-probe
