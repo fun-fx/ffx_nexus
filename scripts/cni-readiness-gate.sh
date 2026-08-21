@@ -267,6 +267,9 @@ run_step() {
 # NetPol semantics.
 # -----------------------------------------------------------------
 step_name="01-pinned-versions"
+step_no=1
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 {
   printf -- '--- kind version ---\n'
   kind version 2>&1 | tee -a "$READINESS_LOG"
@@ -297,6 +300,7 @@ else
   record_step 1 "failed" "pins disagree with directive"
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
+fi
 
 # -----------------------------------------------------------------
 # Gate 2: Image pull readiness (cold cache only)
@@ -306,6 +310,9 @@ fi
 # `timeout --foreground` wrapper.
 # -----------------------------------------------------------------
 step_name="02-node-image-pull"
+step_no=2
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 
 if ! command -v docker >/dev/null 2>&1; then
   record_step 2 "skipped" "docker not on PATH (kind-only cluster); ensure node image inside kind create"
@@ -319,6 +326,7 @@ else
     classify failed 10 CLUSTER_OR_CNI_NOT_READY
   fi
 fi
+fi
 
 # -----------------------------------------------------------------
 # Gate 3: Every node is Ready=True (after kind
@@ -329,7 +337,9 @@ fi
 # can return 0 with NotReady nodes).
 # -----------------------------------------------------------------
 step_name="03-node-ready"
-
+step_no=3
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 if ! bounded_kubectl_wait "wait" "$KUBECTL_TIMEOUT" \
    "--for=condition=Ready node --all --timeout=${KUBECTL_TIMEOUT}"; then
   record_step 3 "failed" "one or more nodes NotReady after $KUBECTL_TIMEOUT"
@@ -342,6 +352,7 @@ if (( NODES_READY < EXPECTED_NODE_COUNT )); then
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
 record_step 3 "ok" "all $NODES_READY nodes Ready=True"
+fi
 
 # -----------------------------------------------------------------
 # Gate 4: kube-system system pods are Ready.
@@ -352,13 +363,16 @@ record_step 3 "ok" "all $NODES_READY nodes Ready=True"
 # scenario tests.
 # -----------------------------------------------------------------
 step_name="04-system-pods-ready"
-
+step_no=4
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 if ! bounded_kubectl_wait "wait" "$KUBECTL_TIMEOUT" \
    "--for=condition=Ready pod -l k8s-app=kube-dns -n kube-system --timeout=${KUBECTL_TIMEOUT}"; then
   record_step 4 "failed" "CoreDNS pods not Ready after $KUBECTL_TIMEOUT"
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
 record_step 4 "ok" "CoreDNS healthy"
+fi
 
 # -----------------------------------------------------------------
 # Gate 5: cilium-agent DaemonSet pods are Ready
@@ -369,7 +383,9 @@ record_step 4 "ok" "CoreDNS healthy"
 # an agent on every node).
 # -----------------------------------------------------------------
 step_name="05-cilium-agents-ready"
-
+step_no=5
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 if ! bounded_kubectl_wait "wait" "$KUBECTL_TIMEOUT" \
    "--for=condition=Ready pod -l k8s-app=cilium -n kube-system --all --timeout=${KUBECTL_TIMEOUT}"; then
   record_step 5 "failed" "cilium-agent pods not Ready after $KUBECTL_TIMEOUT"
@@ -382,6 +398,7 @@ if (( CILIUM_READY < EXPECTED_NODE_COUNT )); then
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
 record_step 5 "ok" "cilium Ready=$CILIUM_READY / $EXPECTED_NODE_COUNT"
+fi
 
 # -----------------------------------------------------------------
 # Gate 6: cilium enforcement state. The chart's
@@ -392,7 +409,9 @@ record_step 5 "ok" "cilium Ready=$CILIUM_READY / $EXPECTED_NODE_COUNT"
 # wrong reason - no enforcement at all).
 # -----------------------------------------------------------------
 step_name="06-cilium-enforcement-active"
-
+step_no=6
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 CILIUM_STATUS_OK=true
 CILIUM_AGENT_JSON=$(kubectl -n kube-system exec ds/cilium -- \
   cilium status --output json 2>>"$READINESS_LOG" || echo '{}')
@@ -412,6 +431,7 @@ if ! $CILIUM_STATUS_OK; then
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
 record_step 6 "ok" "policyEnforcement=default, connectivity=ok"
+fi
 
 # -----------------------------------------------------------------
 # Gate 7: Namespaces + service accounts are
@@ -424,6 +444,9 @@ record_step 6 "ok" "policyEnforcement=default, connectivity=ok"
 # namespaces and require every one of them.
 # -----------------------------------------------------------------
 step_name="07-namespaces-prepared"
+step_no=7
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 
 EXPECTED_NS=(
   cni-test-ingress
@@ -446,6 +469,7 @@ if (( ${#MISSING_NS[@]} > 0 )); then
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
 record_step 7 "ok" "all ${#EXPECTED_NS[@]} expected namespaces exist"
+fi
 
 # -----------------------------------------------------------------
 # Gate 8: cilium endpoints/identity have caught
@@ -458,6 +482,9 @@ record_step 7 "ok" "all ${#EXPECTED_NS[@]} expected namespaces exist"
 # what scenario probes actually consult.
 # -----------------------------------------------------------------
 step_name="08-fixture-endpoint-registered"
+step_no=8
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 
 EXPECTED_FIXTURE_LABEL_RE='cni-(target|source|mock|control)'
 DEADLINE=$(( $(date +%s) + 360 ))
@@ -500,6 +527,7 @@ if (( LAST == 0 )); then
   record_step 8 "failed" "cilium agents reported zero resolve-labels-default/cni-* endpoints"
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
+fi
 
 # -----------------------------------------------------------------
 # Gate 9: Control probe. Before we hand off to
@@ -511,6 +539,9 @@ fi
 # publish) and not a chart policy problem.
 # -----------------------------------------------------------------
 step_name="09-control-probe"
+step_no=9
+run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
+if run_in_phase; then
 
 # Use a one-shot control-pod like the install
 # script applies (cni-control-probe). If it
@@ -535,6 +566,7 @@ else
   PROBE_RESULT="no-probe-pod-deployed-yet"
 fi
 record_step 9 "ok" "$PROBE_RESULT"
+fi
 
 # -----------------------------------------------------------------
 # All nine gates passed. Stamp a clean SUCCESS
