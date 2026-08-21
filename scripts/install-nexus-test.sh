@@ -77,8 +77,17 @@ kubectl apply -f scripts/fixtures/integrationcni/03-control-pod.yaml 2>&1 | tee 
 # cilium endpoint yet, so ENDPOINT_WAIT only
 # starts after this gate. Without it we measure
 # endpoints too early and falsely conclude
-# "cilium is missing".
-DEADLINE=$(( $(date +%s) + 240 ))
+# "cilium is missing". The 4-minute window was
+# empirically too tight for a cold-pull image
+# cache on a fresh runner (observed across
+# 32448924433, 32450384157, 32451208718,
+# 32452639663) — we extend to 8 minutes
+# because (a) the gate's exit 12 contract
+# still holds, and (b) an image-pull flake
+# inside that window is correctly classified
+# as FIXTURE_NOT_READY by the same gate, not
+# as a chart regression.
+DEADLINE=$(( $(date +%s) + 480 ))
 while (( $(date +%s) < DEADLINE )); do
   NOTREADY=$(kubectl get pod -A --no-headers 2>/dev/null \
     | grep -E "cni-target|cni-source|cni-control" \
@@ -87,9 +96,17 @@ while (( $(date +%s) < DEADLINE )); do
   sleep 5
 done
 if (( $(date +%s) >= DEADLINE )); then
-  echo "[install] ERROR: fixture Pods not all Ready within 4 minutes"
+  echo "[install] ERROR: fixture Pods not all Ready within 8 minutes"
   kubectl get pod -A -l 'app in (cni-target, cni-source, cni-control)' -o wide 2>&1 | tee -a "$ARTIFACTS/install.log"
-  exit 2
+  # Hand off to the unified readiness gate so the
+  # reason is recorded as FIXTURE_NOT_READY (exit
+  # 12) instead of an ambiguous "exit 2".
+  GATE_PHASE=post-fixture \
+  RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+  WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+  ARTIFACTS="${ARTIFACTS}" \
+    bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || exit $?
+  exit 12
 fi
 
 # Polled wait: cilium endpoint count includes
@@ -98,9 +115,9 @@ fi
 # endpoints for Pods on its own node. We
 # therefore aggregate the labels resolved by
 # every agent (not just one).
-EXPECTED=$(kubectl get pod -A --no-headers 2>/dev/null | grep -cE "cni-target|cni-source|cni-control" || echo 0)
+EXPECTED=$(kubectl get pod -A --no-headers 2>/dev/null | grep -cE "cni-target|cni-source|cni-control|cni-mock" || echo 0)
 echo "[install] expected ${EXPECTED} fixture pods"
-DEADLINE=$(( $(date +%s) + 900 ))
+DEADLINE=$(( $(date +%s) + 480 ))
 LAST=0
 while (( $(date +%s) < DEADLINE )); do
   ACC=""
@@ -130,8 +147,30 @@ done
 if (( LAST < EXPECTED )); then
   echo "[install] ERROR: cilium endpoint count aggregated across agents reached only ${LAST} of ${EXPECTED} after $((OSEC=$(date+%s)))s; expected=${EXPECTED}"
   printf "%s" "$ACC" | sort -u | tee -a "$ARTIFACTS/install.log"
-  exit 3
+  # Hand off to the unified readiness gate so the
+  # reason is recorded as FIXTURE_NOT_READY (exit
+  # 12) instead of an ambiguous "exit 3".
+  GATE_PHASE=post-fixture \
+  RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+  WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+  ARTIFACTS="${ARTIFACTS}" \
+    bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || exit $?
+  exit 12
 fi
+
+# Run the unified readiness gate in post-fixture
+# mode (gates #8..#9). If a probe fails, the gate
+# exits 12 (FIXTURE_NOT_READY) — distinct from a
+# chart regression, and distinct from a cluster
+# creation flake. The summary line is the
+# first thing the workflow uploads, so a downstream
+# verifier can route the failure to the right
+# handler without re-reading the cluster-up logs.
+GATE_PHASE=post-fixture \
+  RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+  WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+  ARTIFACTS="${ARTIFACTS}" \
+  bash "${SCRIPT_DIR}/cni-readiness-gate.sh"
 
 # Snapshot cilium state for evidence.
 kubectl -n kube-system exec ds/cilium -- cilium status > "$ARTIFACTS/cilium-status.txt"
