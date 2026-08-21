@@ -242,6 +242,64 @@ jobs:
             exit 1
           fi
 
+      # ----------------------------------------------------------------
+      # Phase D-2b.28 — checkout identity capture.
+      #
+      # The CNI run must be reproducible from
+      # the artifacts uploaded at the end. We
+      # therefore record AT WORKFLOW ENTRY
+      # (before any fixture apply):
+      #
+      #   1. git rev-parse HEAD (already done
+      #      by the verify-sha step above).
+      #   2. git status --porcelain (must be
+      #      empty; dirty tree = checkout
+      #      drift).
+      #   3. git diff --exit-code against HEAD
+      #      (must be silent).
+      #
+      # The install-nexus-test.sh script
+      # also captures per-fixture SHA-256
+      # identities (fixture-manifest-identities.json)
+      # in its step A; together the two
+      # layers provide redundancy so an
+      # undercover checkout-dirty state
+      # cannot pass.
+      #
+      # If any of (2) or (3) fails, the run
+      # is fail-closed at workflow step (A)
+      # and we DO NOT proceed to cluster /
+      # fixtures / chart.
+      # ----------------------------------------------------------------
+      - name: Step A — checkout identity + clean tree assertion
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/integrationcni
+          ID="artifacts/integrationcni/checkout-identity.txt"
+          {
+            echo "head_sha:    $(git rev-parse HEAD)"
+            echo "short_sha:   $(git rev-parse --short HEAD)"
+            echo "branch:      $(git rev-parse --abbrev-ref HEAD || echo detached)"
+            echo "clean_tree_required: yes"
+            echo "porcelain_clean:"
+            git status --porcelain || true
+            echo "porcelain_end"
+          } > "$ID"
+          dirt=$(git status --porcelain | wc -l | tr -d ' ')
+          if [[ "$dirt" != "0" ]]; then
+            echo "FAIL: working tree has $dirt dirty entries (clean tree required)"
+            exit 10
+          fi
+          # diff --exit-code returns 1 if there
+          # are differences from HEAD; with
+          # `set -e` and `|| true`, we capture
+          # the rc without aborting.
+          if ! git diff --exit-code HEAD > /dev/null 2>&1; then
+            echo "FAIL: working tree diverges from HEAD on at least one file"
+            exit 10
+          fi
+          echo "OK: step A — checkout identity captured, working tree matches HEAD"
+
       - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15 (verified)
         run: |
           set -euo pipefail

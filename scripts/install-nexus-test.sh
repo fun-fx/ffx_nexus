@@ -1,357 +1,447 @@
 #!/usr/bin/env bash
 # scripts/install-nexus-test.sh
 #
+# Phase D-2b.28: authoritative fixture
+# admission. The script is structured as a
+# strict A→G sequence so a malformed
+# fixture yaml is NEVER allowed to hit
+# `kubectl apply` before the structural and
+# semantic gates have accepted it.
+#
 # Phase D-2b.21: install ONLY the chart's
-# NetworkPolicy onto the multi-node enforcing-CNI
-# test cluster created by test-cluster-up.sh.
+# NetworkPolicy onto the multi-node
+# enforcing-CNI test cluster created by
+# test-cluster-up.sh.
 #
 # Why this script does NOT call
 # `helm install deploy/helm/nexus` end to end:
-# the chart's Deployment images require an image
-# registry the test environment may not have.
-# The CNI gate is exclusively about the chart's
-# rendered NetworkPolicy enforcement, so we
-# render with `helm template` (--show-only
-# templates/networkpolicy.yaml), then `kubectl
-# apply -f -`. The Deployment targets are
-# substituted by the fixture Deployments in
+# the chart's Deployment images require an
+# image registry the test environment may
+# not have. The CNI gate is exclusively about
+# the chart's rendered NetworkPolicy
+# enforcement, so we render with
+# `helm template` (--show-only
+# templates/networkpolicy.yaml). The
+# Deployment targets are substituted by the
+# fixture Deployments in
 # scripts/fixtures/integrationcni/.
 #
-# Inputs:
-#   CLUSTER_NAME  (default nexus-cni-test)
-#   ARTIFACTS     (default $PWD/artifacts/integrationcni)
-#   CHART_PATH    (default $PWD/deploy/helm/nexus)
+# Sequenced gates (A..G):
+#
+#   A. candidate checkout identity
+#      - git rev-parse HEAD
+#      - git status --porcelain (must be clean)
+#      - per-fixture file SHA-256
+#      - recorded to checkout-identity.txt
+#        so a verifier can correlate the
+#        SHAs the run actually used.
+#   B. namespace manifest strict dry-run
+#      - kubectl apply --dry-run=server
+#        --validate=strict on
+#        00-prereq-namespaces.yaml ONLY
+#   C. namespaces only — real apply
+#      - the namespace objects must exist
+#        before namespaced fixture resources
+#        can be dry-run / applied
+#   D. namespaced fixtures + rendered
+#      NetworkPolicy strict dry-run
+#      - kubectl apply --dry-run=server
+#        --validate=strict on each of
+#        01..05 + the rendered NetworkPolicy
+#      - any failure here = FIXTURE_INVALID (15)
+#   E. offline semantic admission
+#      - python3 fixture_semantic_admission.py
+#        walks every Service/Pod/NetworkPolicy
+#        and asserts that:
+#          * Service selector matches at least
+#            one Pod in the same namespace
+#          * Service targetPort matches a
+#            declared containerPort or named
+#            port on the matched Pod
+#          * Each fixture role lives in the
+#            canonical inventory and no role
+#            string was hand-edited in YAML
+#          * Control namespace/pod labels do
+#            NOT match any product NetPol
+#            podSelector
+#        failure -> FIXTURE_INVALID (15)
+#   F. real apply order:
+#        F1. rendered NetworkPolicy
+#        F2. 00..05 fixture manifests
+#        (both guarded by manifest identity
+#         hashes; an apply failure records
+#         which file's SHA is in flight)
+#   G. fixture readiness / EndpointSlice /
+#      control HTTP gate
+#      - delegate to cni-readiness-gate.sh in
+#        post-fixture phase (exits 12 on
+#        convergence flake, 14 on image
+#        pipeline miss, 0 on success)
+#
+# Inputs (env):
+#   CLUSTER_NAME  default nexus-cni-test
+#   ARTIFACTS     default $PWD/artifacts/integrationcni
+#   CHART_PATH    default $PWD/deploy/helm/nexus
+#   RECOVERY_PR_SHA / WORKFLOW_RUN_ID
+#                  propagated to gate env so
+#                  THE SAME candidate SHA is
+#                  recorded in every artifact.
 set -euo pipefail
+
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 VALUES_EXTRA="${VALUES_EXTRA:-$SCRIPT_DIR/fixtures/integrationcni/values-extra-cni.yaml}"
 CLUSTER_NAME="${CLUSTER_NAME:-nexus-cni-test}"
 ARTIFACTS="${ARTIFACTS:-${PWD}/artifacts/integrationcni}"
 CHART_PATH="${CHART_PATH:-${PWD}/deploy/helm/nexus}"
-
+SCRIPT_DIR_FLAG="$SCRIPT_DIR"
 mkdir -p "$ARTIFACTS"
-if [[ ! -f "${ARTIFACTS}/cluster-up.txt" ]]; then
-  echo "[install] ERROR: cluster not up; run test-cluster-up.sh first"
-  exit 2
-fi
+: > "$ARTIFACTS/install.log"
 
-# Render NetworkPolicy from the chart with
-# enterprise profile + multi-worker values that
-# match the fixture Pod selectors exactly.
-RENDER="$ARTIFACTS/rendered-networkpolicy.yaml"
-helm template "${CLUSTER_NAME}" "${CHART_PATH}" \
-  --values "${VALUES_EXTRA}" \
-  --set fullnameOverride="${CLUSTER_NAME}" \
-  --set image.repository=busybox \
-  --set image.tag=1.36 \
-  --set metrics.enabled=true \
-  --set metrics.port=9101 \
-  --set networkPolicy.mode=enforce \
-  --set networkPolicy.profile=enterprise \
-  --set networkPolicy.enforcementAcknowledged=true \
-  --show-only templates/networkpolicy.yaml \
-  > "$RENDER" 2> "$ARTIFACTS/render-errors.log"
-
-NETPOL_COUNT=$(grep -c "^kind: NetworkPolicy$" "$RENDER" || true)
-if (( NETPOL_COUNT < 4 )); then
-  echo "[install] ERROR: rendered chart produced $NETPOL_COUNT NetworkPolicy docs; expected ≥4"
-  cat "$ARTIFACTS/render-errors.log" || true
-  exit 2
-fi
-
-# Apply the rendered NetworkPolicy.
-kubectl apply -f "$RENDER" 2>&1 | tee -a "$ARTIFACTS/install.log"
-
-# Apply fixtures (Namespaces first, then
-# Deployments + Services). Order matters:
-# sources/ingress/prometheus/untrusted live
-# in dedicated namespaces created by
-# 00-prereq-namespaces.yaml.
-#
-# Pre-step: build the deterministic cni-listener
-# fixture image used by every fixture Pod and
-# push it into kind. Without this build the
-# Pods remain in ImagePullBackOff forever
-# because imagePullPolicy: Never on each Pod
-# refuses to fall back to any remote registry.
-# The build script is the SINGLE source of
-# digest and the digest pin is recorded in
-#   $ARTIFACTS/fixture-image-digest.json
-# (structured, see Phase D-2b.26).
-SCRIPT_DIR_FLAG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-echo "[install] build cni-listener fixture image" | tee -a "$ARTIFACTS/install.log"
-FIXTURE_BUILD_OUT=$(ARTIFACTS="$ARTIFACTS" \
-                    bash "$SCRIPT_DIR_FLAG/fixtures/integrationcni/build.sh" 2>>"$ARTIFACTS/install.log")
-FIXTURE_RC=$?
-# Record the build pipeline outputs into the
-# artifact folder so a verifier can correlate
-# per-image build / inspect / kind load with
-# the final Pod readiness. These paths are
-# referenced by deploy/helm/nexus/tests/
-# image_pipeline_mutation_test.py so the
-# names must remain stable.
-ARTIFACTS_DIR_ABS="$(cd "$ARTIFACTS" && pwd -P)"
-echo "[install] fixture build: build.log=${ARTIFACTS_DIR_ABS}/fixture-image-build.log inspect.log=${ARTIFACTS_DIR_ABS}/fixture-image-inspect.json" \
-  | tee -a "$ARTIFACTS/install.log"
-if (( FIXTURE_RC != 0 )) || [[ -z "$FIXTURE_BUILD_OUT" ]]; then
-  echo "[install] ERROR: cni-listener fixture build failed (rc=$FIXTURE_RC)" | tee -a "$ARTIFACTS/install.log"
-  FIXTURE_IMAGE_NOT_LOADED=1
-  # We DO NOT continue into fixture apply;
-  # hand off to the unified readiness gate
-  # so the run is classified FIXTURE_IMAGE_NOT_LOADED
-  # (exit 14) — distinct from CHART_OR_POLICY_INVALID (11),
-  # FIXTURE_NOT_READY (12), and
-  # CLUSTER_OR_CNI_NOT_READY (10).
+# Helper: route a failure into the unified
+# readiness gate so a downstream verifier
+# sees a classification, not a raw exit code.
+abort_as() {
+  local label="$1"; local detail="$2"; local code="$3"
+  local env_var
+  case "$label" in
+    CLUSTER_OR_CNI_NOT_READY)    env_var="CLUSTER_OR_CNI_NOT_READY" ;;
+    CHART_OR_POLICY_INVALID)     env_var="CHART_OR_POLICY_INVALID"  ;;
+    FIXTURE_NOT_READY)           env_var="FIXTURE_NOT_READY"        ;;
+    FIXTURE_IMAGE_NOT_LOADED)    env_var="FIXTURE_IMAGE_NOT_LOADED" ;;
+    FIXTURE_INVALID)             env_var="FIXTURE_INVALID"          ;;
+    *)                           env_var="CLUSTER_OR_CNI_NOT_READY"; code=10 ;;
+  esac
+  echo "[install] ABORT $label detail=$detail" | tee -a "$ARTIFACTS/install.log"
   GATE_PHASE=post-fixture \
     RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
     WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
     ARTIFACTS="${ARTIFACTS}" \
-    FIXTURE_IMAGE_NOT_LOADED=1 \
-    FIXTURE_IMAGE_LOAD_FAILURE_DETAIL="docker build returned rc=$FIXTURE_RC with no stdout json line" \
-    bash "${SCRIPT_DIR_FLAG}/cni-readiness-gate.sh" || exit $?
-  exit 14
-fi
-# Parse the JSON line from stdout (the build
-# script's structured "did the build succeed"
-# signal). Anything else is a contract drift.
-FIXTURE_BUILD_JSON="$FIXTURE_BUILD_OUT"
-echo "[install] build produced JSON: $FIXTURE_BUILD_JSON" | tee -a "$ARTIFACTS/install.log"
-FIXTURE_IMAGE_ID=$(echo "$FIXTURE_BUILD_JSON" | python3 -c "
-import json,sys
-try:
-    d=json.loads(sys.stdin.read())
-except Exception:
-    sys.exit(1)
-print(d.get('image_id',''))")
-FIXTURE_IMAGE_REF=$(echo "$FIXTURE_BUILD_JSON" | python3 -c "
-import json,sys
-d=json.loads(sys.stdin.read())
-print(d.get('image_ref',''))")
-if [[ -z "$FIXTURE_IMAGE_ID" ]]; then
-  echo "[install] ERROR: build artifact missing image_id" | tee -a "$ARTIFACTS/install.log"
-  cat "$ARTIFACTS/fixture-image-digest.json" 2>/dev/null | tee -a "$ARTIFACTS/install.log" || true
-  exit 14
-fi
+    "${env_var}=1" \
+    "${env_var}_FAILURE_DETAIL=$detail" \
+    bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || true
+  exit "$code"
+}
 
-# kind load docker-image. The exit-code zero
-# alone is NOT a sufficient success signal;
-# we follow it with per-node crictl images to
-# confirm the image made it onto every node.
-KIND_LOAD_LOG="$ARTIFACTS/fixture-image-kind-load.log"
-{
-  echo "kind load docker-image --name ${CLUSTER_NAME} ${FIXTURE_IMAGE_REF}" >>"$KIND_LOAD_LOG"
-  kind load docker-image --name "${CLUSTER_NAME}" "${FIXTURE_IMAGE_REF}"
-} >>"$KIND_LOAD_LOG" 2>&1
-KIND_LOAD_RC=$?
-echo "[install] kind load rc=$KIND_LOAD_RC; verifying per-node runtime" | tee -a "$ARTIFACTS/install.log"
-if (( KIND_LOAD_RC != 0 )); then
-  echo "[install] ERROR: kind load returned non-zero (rc=$KIND_LOAD_RC)" | tee -a "$KIND_LOAD_LOG"
-  cat "$KIND_LOAD_LOG" | tee -a "$ARTIFACTS/install.log"
-  GATE_PHASE=post-fixture \
-    RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
-    WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
-    ARTIFACTS="${ARTIFACTS}" \
-    FIXTURE_IMAGE_NOT_LOADED=1 \
-    FIXTURE_IMAGE_LOAD_FAILURE_DETAIL="kind load returned rc=$KIND_LOAD_RC" \
-    bash "${SCRIPT_DIR_FLAG}/cni-readiness-gate.sh" || exit $?
-  exit 14
-fi
+# ---- step A: candidate checkout identity -------------------------------
 
-# Per-node runtime verification: query every
-# kubelet container runtime via `crictl images`
-# (kind uses containerd by default) and confirm
-# the image is present on every node. Empty
-# intersection across nodes is FIXTURE_IMAGE_NOT_LOADED.
-NODE_RUNTIME_LOG="$ARTIFACTS/fixture-image-node-runtime.log"
-{
-  echo "=== per-node runtime image inventory ==="
-  for n in $(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null); do
-    echo "--- node: $n ---"
-    docker exec "${n}" crictl images 2>&1 \
-      | grep -E "$(echo "$FIXTURE_IMAGE_REF" | sed 's,:,\\\\\\\\\\\,:g')|${FIXTURE_IMAGE_ID:0:12}" \
-      || echo "(no match in node $n)"
-  done
-} >>"$NODE_RUNTIME_LOG" 2>&1 || true
-MISSING=$(grep -c "^--- node:" "$NODE_RUNTIME_LOG" || echo 0)
-PRESENT=$(grep -c "${FIXTURE_IMAGE_ID:0:12}" "$NODE_RUNTIME_LOG" || echo 0)
-echo "[install] per-node runtime: ${PRESENT}/${MISSING} nodes have the fixture image_id" \
-  | tee -a "$ARTIFACTS/install.log"
-if (( PRESENT < MISSING )); then
-  cat "$NODE_RUNTIME_LOG" | tee -a "$ARTIFACTS/install.log" || true
-  echo "[install] ERROR: fixture image missing on one or more kind nodes" \
-    | tee -a "$ARTIFACTS/install.log"
-  GATE_PHASE=post-fixture \
-    RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
-    WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
-    ARTIFACTS="${ARTIFACTS}" \
-    FIXTURE_IMAGE_NOT_LOADED=1 \
-    FIXTURE_IMAGE_LOAD_FAILURE_DETAIL="image_id=${FIXTURE_IMAGE_ID} missing on at least one kind node: ${PRESENT}/${MISSING} present" \
-    bash "${SCRIPT_DIR_FLAG}/cni-readiness-gate.sh" || exit $?
-  exit 14
-fi
-
-kubectl apply -f scripts/fixtures/integrationcni/00-prereq-namespaces.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
-kubectl apply -f scripts/fixtures/integrationcni/01-test-pods.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
-kubectl apply -f scripts/fixtures/integrationcni/02-stub-deps.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
-kubectl apply -f scripts/fixtures/integrationcni/03-control-pod.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
-kubectl apply -f scripts/fixtures/integrationcni/04-control-service.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
-kubectl apply -f scripts/fixtures/integrationcni/05-control-policy.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
-
-# Phase D-2b.27: pre-flight dry-run gate.
-#
-# Every fixture yaml is `kubectl apply`-
-# --dry-run=server --validate=strict on a
-# kind control plane before any of them is
-# applied for real. A failure here means the
-# fixture yaml is structurally unsound and
-# is independent of:
-#   - the cluster / CNI / cilium policy
-#   - the chart's Helm render or NetworkPolicy
-# so the unified gate MUST classify it as
-# FIXTURE_INVALID (exit 15) and never as
-# CLUSTER_OR_CNI_NOT_READY (10),
-# CHART_OR_POLICY_INVALID (11),
-# FIXTURE_NOT_READY (12),
-# FIXTURE_IMAGE_NOT_LOADED (14), or
-# SCENARIO_POLICY_REGRESSION (13).
-# Without this pre-flight, run-id 32470841379
-# applied a Pod whose `containers:` key was a
-# sibling of `spec:`, the server rejected it
-# with strict-decode error, and the run
-# looked like a green image pipeline plus a
-# red scenario verdict — both readings were wrong.
-DRYRUN_LOG="$ARTIFACTS/fixture-dryrun.log"
-: > "$DRYRUN_LOG"
-DRYRUN_OK=1
-for fy in \
-  scripts/fixtures/integrationcni/00-prereq-namespaces.yaml \
-  scripts/fixtures/integrationcni/01-test-pods.yaml \
-  scripts/fixtures/integrationcni/02-stub-deps.yaml \
-  scripts/fixtures/integrationcni/03-control-pod.yaml \
-  scripts/fixtures/integrationcni/04-control-service.yaml \
-  scripts/fixtures/integrationcni/05-control-policy.yaml \
-; do
-    echo "--- kubectl apply --dry-run=server --validate=strict -f $fy ---" | tee -a "$DRYRUN_LOG"
-    if ! kubectl apply --dry-run=server --validate=strict -f "$fy" 2>&1 \
-        | tee -a "$DRYRUN_LOG"; then
-      echo "[install] dry-run FAILED on $fy" | tee -a "$DRYRUN_LOG"
-      DRYRUN_OK=0
-    fi
-done
-if (( DRYRUN_OK != 1 )); then
-    echo "[install] ERROR: pre-flight fixture dry-run failed" \
-      | tee -a "$ARTIFACTS/install.log"
-    cat "$DRYRUN_LOG" | tee -a "$ARTIFACTS/install.log" || true
-    FIXTURE_INVALID=1
-    FIXTURE_INVALID_FAILURE_DETAIL="pre-flight kubectl apply --dry-run=server --validate=strict FAILED on one or more fixture yamls (see $DRYRUN_LOG)"
-    GATE_PHASE=post-fixture \
-      RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
-      WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
-      ARTIFACTS="${ARTIFACTS}" \
-      FIXTURE_INVALID=1 \
-      FIXTURE_INVALID_FAILURE_DETAIL="$FIXTURE_INVALID_FAILURE_DETAIL" \
-      bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || exit $?
-    exit 15
-fi
-echo "[install] pre-flight fixture dry-run OK" | tee -a "$ARTIFACTS/install.log"
-
-# Polled wait for fixture Pods to be Ready
-# before we count cilium endpoints. A Pod that
-# is still being scheduled does NOT have a
-# cilium endpoint yet, so ENDPOINT_WAIT only
-# starts after this gate. Without it we measure
-# endpoints too early and falsely conclude
-# "cilium is missing". The 4-minute window was
-# empirically too tight for a cold-pull image
-# cache on a fresh runner (observed across
-# 32448924433, 32450384157, 32451208718,
-# 32452639663) — we extend to 8 minutes
-# because (a) the gate's exit 12 contract
-# still holds, and (b) an image-pull flake
-# inside that window is correctly classified
-# as FIXTURE_NOT_READY by the same gate, not
-# as a chart regression.
-DEADLINE=$(( $(date +%s) + 480 ))
-while (( $(date +%s) < DEADLINE )); do
-  # Drain any image-pull failures into a dedicated
-  # counter so we can say "ImagePullBackOff on one
-  # or more fixture Pods" instead of just
-  # "fixture Pods not Ready within 8 minutes".
-  # An image-pull failure while
-  # imagePullPolicy: Never is the literal
-  # definition of FIXTURE_IMAGE_NOT_LOADED (exit 14):
-  # the image never made it onto this node's
-  # containerd despite kind load reporting rc=0.
-  IMAGE_PULL_FAIL_LOG="$ARTIFACTS/fixture-pod-imagepull.log"
+step_A_identity() {
+  echo "[install] ====== step A: candidate checkout identity ======"
+  local id_file="$ARTIFACTS/checkout-identity.txt"
+  : > "$id_file"
   {
+    echo "head_sha: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "short_sha: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
+    echo "clean_tree_required: yes"
+    echo "porcelain_clean:"
+    git status --porcelain 2>/dev/null || true
+    echo "porcelain_end"
+  } | tee -a "$id_file"
+  # Fail-closed: dirty tree means a checkout step
+  # applied patches after identity capture.
+  local dirt
+  dirt=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$dirt" != "0" ]]; then
+    abort_as CLUSTER_OR_CNI_NOT_READY \
+      "step A failed: working tree has $dirt dirty entries" 10
+  fi
+  # Record the SHA-256 of every fixture file at
+  # HEAD. The verifier MUST compare this to the
+  # SHA-256 the workflow `git show HEAD:<path>`
+  # resolves to; a mismatch is CHECKOUT_OR_WORKTREE_DRIFT.
+  local mj="$ARTIFACTS/fixture-manifest-identities.json"
+  python3 - "$id_file" "$mj" <<'PY'
+import hashlib, json, sys, subprocess
+from pathlib import Path
+root = Path("scripts/fixtures/integrationcni")
+files = sorted(root.rglob("*.yaml"))
+ident = {}
+for fp in files:
+    content = fp.read_bytes()
+    sha = hashlib.sha256(content).hexdigest()
+    # git show HEAD:<path> — same bytes
+    head_content = subprocess.run(
+        ["git","show",f"HEAD:{fp.as_posix()}"],
+        capture_output=True, check=True
+    ).stdout
+    head_sha = hashlib.sha256(head_content).hexdigest()
+    drift = "none" if sha == head_sha else "DRIFT"
+    rel = fp.as_posix()
+    ident[rel] = {
+        "working_tree_sha256": sha,
+        "head_tree_sha256":   head_sha,
+        "drift":              drift,
+        "size_bytes":         len(content),
+    }
+out = {
+    "schema_version": "d2b.28",
+    "head_sha": subprocess.run(["git","rev-parse","HEAD"], capture_output=True, text=True).stdout.strip(),
+    "fixtures": ident,
+}
+out_path = sys.argv[2]
+with open(out_path, "w") as fh:
+    json.dump(out, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+PY
+  # A drift means a checkout script rewrote a
+  # manifest AFTER the workflow checked it out.
+  python3 - "$ARTIFACTS/fixture-manifest-identities.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+failing = [k for k,v in d["fixtures"].items() if v["drift"] != "none"]
+if failing:
+    print(f"[install] step A FAIL: drift on {failing}", file=sys.stderr)
+    sys.exit(20)
+PY
+  echo "[install] step A ok ($(git rev-parse HEAD))"
+}
+
+# ---- step B: namespace manifest strict dry-run --------------------------
+
+step_B_dryrun_namespaces() {
+  echo "[install] ====== step B: namespace manifest strict dry-run ======"
+  local dryrun="$ARTIFACTS/fixture-dryrun-namespaces.log"
+  : > "$dryrun"
+  if ! kubectl apply --dry-run=server --validate=strict \
+        -f scripts/fixtures/integrationcni/00-prereq-namespaces.yaml \
+        2>&1 | tee -a "$dryrun"; then
+    cat "$dryrun" | tee -a "$ARTIFACTS/install.log"
+    abort_as FIXTURE_INVALID \
+      "step B failed: namespace manifest strict dry-run rejected" 15
+  fi
+  echo "[install] step B ok"
+}
+
+# ---- step C: namespaces only real apply --------------------------------
+
+step_C_apply_namespaces() {
+  echo "[install] ====== step C: namespaces only real apply ======"
+  local log="$ARTIFACTS/fixture-apply-namespaces.log"
+  : > "$log"
+  kubectl apply -f scripts/fixtures/integrationcni/00-prereq-namespaces.yaml \
+    2>&1 | tee -a "$log"
+  echo "[install] step C ok"
+}
+
+# ---- step D: namespaced fixtures + rendered NetworkPolicy strict dry-run
+
+step_D_dryrun_namespaced() {
+  echo "[install] ====== step D: namespaced strict dry-run ======"
+  local dryrun="$ARTIFACTS/fixture-dryrun.log"
+  : > "$dryrun"
+  local ok=1
+  # Render chart-side NetworkPolicy first.
+  if [[ ! -s "$ARTIFACTS/rendered-networkpolicy.yaml" ]]; then
+    helm template "${CLUSTER_NAME}" "${CHART_PATH}" \
+      --values "${VALUES_EXTRA}" \
+      --set fullnameOverride="${CLUSTER_NAME}" \
+      --set image.repository=busybox \
+      --set image.tag=1.36 \
+      --set metrics.enabled=true \
+      --set metrics.port=9101 \
+      --set networkPolicy.mode=enforce \
+      --set networkPolicy.profile=enterprise \
+      --set networkPolicy.enforcementAcknowledged=true \
+      --show-only templates/networkpolicy.yaml \
+      > "$ARTIFACTS/rendered-networkpolicy.yaml" \
+        2> "$ARTIFACTS/render-errors.log"
+  fi
+  local count
+  count=$(grep -c '^kind: NetworkPolicy$' \
+    "$ARTIFACTS/rendered-networkpolicy.yaml" || true)
+  if (( count < 4 )); then
+    cat "$ARTIFACTS/render-errors.log" | tee -a "$ARTIFACTS/install.log"
+    abort_as CHART_OR_POLICY_INVALID \
+      "step D failed: chart rendered only $count NetworkPolicy docs" 11
+  fi
+  DRYRUN_LIST=(
+    scripts/fixtures/integrationcni/01-test-pods.yaml
+    scripts/fixtures/integrationcni/02-stub-deps.yaml
+    scripts/fixtures/integrationcni/03-control-pod.yaml
+    scripts/fixtures/integrationcni/04-control-service.yaml
+    scripts/fixtures/integrationcni/05-control-policy.yaml
+    "$ARTIFACTS/rendered-networkpolicy.yaml"
+  )
+  for fy in "${DRYRUN_LIST[@]}"; do
+    echo "--- kubectl apply --dry-run=server --validate=strict -f $fy ---" \
+      | tee -a "$dryrun"
+    if ! kubectl apply --dry-run=server --validate=strict \
+          -f "$fy" 2>&1 | tee -a "$dryrun"; then
+      echo "[install] step D dry-run FAILED on $fy" | tee -a "$dryrun"
+      ok=0
+    fi
+  done
+  if (( ok != 1 )); then
+    cat "$dryrun" | tee -a "$ARTIFACTS/install.log"
+    abort_as FIXTURE_INVALID \
+      "step D failed: one or more namespaced fixtures or rendered NetworkPolicy rejected by strict dry-run" 15
+  fi
+  echo "[install] step D ok"
+}
+
+# ---- step E: offline semantic admission --------------------------------
+
+step_E_semantic_admission() {
+  echo "[install] ====== step E: offline semantic admission ======"
+  local log="$ARTIFACTS/semantic-admission.log"
+  : > "$log"
+  if ! python3 \
+      scripts/fixtures/integrationcni/fixture_semantic_admission.py \
+      --rendered-networkpolicy="$ARTIFACTS/rendered-networkpolicy.yaml" \
+      2>&1 | tee -a "$log"; then
+    cat "$log" | tee -a "$ARTIFACTS/install.log"
+    abort_as FIXTURE_INVALID \
+      "step E failed: offline semantic admission rejected one or more fixture / chart relationships" 15
+  fi
+  echo "[install] step E ok"
+}
+
+# ---- step F: real apply order -----------------------------------------
+
+step_F_real_apply() {
+  echo "[install] ====== step F: real chart NetworkPolicy + fixture apply ======"
+  # F1. chart-rendered NetworkPolicy
+  echo "--- F1: kubectl apply -f rendered-networkpolicy ---" \
+    | tee -a "$ARTIFACTS/install.log"
+  if ! kubectl apply -f "$ARTIFACTS/rendered-networkpolicy.yaml" \
+      2>&1 | tee -a "$ARTIFACTS/apply-rendered-networkpolicy.log" \
+      | tee -a "$ARTIFACTS/install.log"; then
+    abort_as CHART_OR_POLICY_INVALID \
+      "step F1 failed: rendered NetworkPolicy apply rejected" 11
+  fi
+  # F2. fixture manifests — record per-file SHA
+  # just before apply so the failure-row evidence
+  # is unambiguous.
+  APPLY_LIST=(
+    scripts/fixtures/integrationcni/01-test-pods.yaml
+    scripts/fixtures/integrationcni/02-stub-deps.yaml
+    scripts/fixtures/integrationcni/03-control-pod.yaml
+    scripts/fixtures/integrationcni/04-control-service.yaml
+    scripts/fixtures/integrationcni/05-control-policy.yaml
+  )
+  for fy in "${APPLY_LIST[@]}"; do
+    local_sha=$(sha256sum "$fy" | cut -d' ' -f1)
+    echo "--- F2: apply $fy (sha256=$local_sha) ---" \
+      | tee -a "$ARTIFACTS/install.log"
+    if ! kubectl apply -f "$fy" 2>&1 \
+        | tee -a "$ARTIFACTS/apply-fixtures.log" \
+        | tee -a "$ARTIFACTS/install.log"; then
+      cat "$ARTIFACTS/apply-fixtures.log" >> "$ARTIFACTS/install.log" || true
+      abort_as FIXTURE_INVALID \
+        "step F2 failed: $fy rejected by kubernetes API server (sha256=$local_sha)" 15
+    fi
+  done
+  echo "[install] step F ok"
+}
+
+# ---- image pipeline (build + per-node load) ----------------------------
+# Kept here because it is a precondition of
+# step G (readiness); a failure here is
+# FIXTURE_IMAGE_NOT_LOADED (14) regardless
+# of whether step F succeeded.
+
+step_image_pipeline() {
+  echo "[install] ====== image pipeline ======"
+  local build_out
+  build_out=$(ARTIFACTS="$ARTIFACTS" \
+              bash "$SCRIPT_DIR_FLAG/fixtures/integrationcni/build.sh" \
+              2>>"$ARTIFACTS/install.log")
+  local rc=$?
+  if (( rc != 0 )) || [[ -z "$build_out" ]]; then
+    abort_as FIXTURE_IMAGE_NOT_LOADED \
+      "fixture image build failed rc=$rc" 14
+  fi
+  FIXTURE_BUILD_JSON="$build_out"
+  FIXTURE_IMAGE_ID=$(echo "$FIXTURE_BUILD_JSON" | python3 -c "
+import json,sys
+print(json.loads(sys.stdin.read()).get('image_id',''))")
+  FIXTURE_IMAGE_REF=$(echo "$FIXTURE_BUILD_JSON" | python3 -c "
+import json,sys
+print(json.loads(sys.stdin.read()).get('image_ref',''))")
+  if [[ -z "$FIXTURE_IMAGE_ID" ]]; then
+    abort_as FIXTURE_IMAGE_NOT_LOADED \
+      "build artifact missing image_id" 14
+  fi
+  echo "[install] image build: id=$FIXTURE_IMAGE_ID ref=$FIXTURE_IMAGE_REF" \
+    | tee -a "$ARTIFACTS/install.log"
+  # kind load then per-node crictl verify.
+  local load_log="$ARTIFACTS/fixture-image-kind-load.log"
+  {
+    echo "kind load docker-image --name ${CLUSTER_NAME} ${FIXTURE_IMAGE_REF}"
+    kind load docker-image --name "${CLUSTER_NAME}" "${FIXTURE_IMAGE_REF}"
+  } >"$load_log" 2>&1 || true
+  if (( $? != 0 )); then
+    abort_as FIXTURE_IMAGE_NOT_LOADED \
+      "kind load docker-image returned non-zero (see $load_log)" 14
+  fi
+  # Per-node runtime image presence.
+  local node_log="$ARTIFACTS/fixture-image-node-runtime.log"
+  : > "$node_log"
+  for n in $(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null); do
+    echo "--- node: $n ---" >>"$node_log"
+    docker exec "${n}" crictl images 2>/dev/null \
+      | grep -E "${FIXTURE_IMAGE_ID:0:12}" \
+      || echo "(missing image_id ${FIXTURE_IMAGE_ID:0:12})" >>"$node_log"
+  done
+  local missing
+  missing=$(grep -c "(missing image_id" "$node_log" || echo 0)
+  if (( missing > 0 )); then
+    cat "$node_log" | tee -a "$ARTIFACTS/install.log"
+    abort_as FIXTURE_IMAGE_NOT_LOADED \
+      "image_id=$FIXTURE_IMAGE_ID missing on ${missing} kind node(s)" 14
+  fi
+  echo "[install] image pipeline ok" | tee -a "$ARTIFACTS/install.log"
+}
+
+# ---- step G: readiness / EndpointSlice / control service probe ---------
+
+step_G_readiness() {
+  echo "[install] ====== step G: readiness / control probe ======"
+  # Image pipeline predicate must hold
+  # BEFORE this step observes fixture endpoints.
+  # We poll fixture Pod readiness while draining
+  # ImagePullBackOff into FIXTURE_IMAGE_NOT_LOADED.
+  local deadline=$(( $(date +%s) + 480 ))
+  while (( $(date +%s) < deadline )); do
+    local pull_log="$ARTIFACTS/fixture-pod-imagepull.log"
+    : > "$pull_log"
     kubectl get pod -A --no-headers 2>/dev/null \
       | grep -E "cni-target|cni-source|cni-control" \
-      | while read -r ns nm rest; do
-          kubectl get pod "$nm" -n "$ns" -o json 2>/dev/null \
-            | python3 -c "
-import json,sys
-try:
-  d=json.loads(sys.stdin.read())
-except Exception:
-  d={}
-cs=[c.get('state',{}) for c in d.get('status',{}).get('containerStatuses') or []]
-print(d.get('metadata',{}).get('namespace',''), d.get('metadata',{}).get('name',''),
-      [c.get('state',{}).get('waiting',{}).get('reason','') for c in cs if c])"
-      done
-  } >"$IMAGE_PULL_FAIL_LOG" 2>&1 || true
-  PULL_REASONS=$(
-    awk '$3!="" {print $3}' "$IMAGE_PULL_FAIL_LOG" \
-      | tr -d '[]"\047' \
-      | grep -E "^(ImagePullBackOff|ErrImageNeverPull|ErrImagePull|CrashLoopBackOff)$" \
-      | sort -u | tr '\n' ',' | sed 's/,$//'
-  )
-  if [[ -n "$PULL_REASONS" ]]; then
-    echo "[install] ERROR: fixture Pod image-pull failure reasons: $PULL_REASONS" \
-      | tee -a "$ARTIFACTS/install.log"
-    cat "$IMAGE_PULL_FAIL_LOG" | tee -a "$ARTIFACTS/install.log" || true
-    GATE_PHASE=post-fixture \
-      RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
-      WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
-      ARTIFACTS="${ARTIFACTS}" \
-      FIXTURE_IMAGE_NOT_LOADED=1 \
-      FIXTURE_IMAGE_LOAD_FAILURE_DETAIL="fixture Pod entered ImagePullBackOff/ErrImagePull/CrashLoopBackOff despite kind load rc=0: $PULL_REASONS; image_id=${FIXTURE_IMAGE_ID}" \
-      bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || exit $?
-    exit 14
+      >"$pull_log" || true
+    local pull_reasons
+    pull_reasons=$(
+      awk '{print $1,$2,$3}' "$pull_log" \
+        | grep -E "ImagePullBackOff|ErrImagePull|ErrImageNeverPull|CrashLoopBackOff" \
+        | sort -u || true)
+    if [[ -n "$pull_reasons" ]]; then
+      cat "$pull_log" | tee -a "$ARTIFACTS/install.log"
+      abort_as FIXTURE_IMAGE_NOT_LOADED \
+        "fixture Pod entered image-pull-failure: $pull_reasons" 14
+    fi
+    local notready
+    notready=$(kubectl get pod -A --no-headers 2>/dev/null \
+      | grep -E "cni-target|cni-source|cni-control" \
+      | awk '$3 != "Running" || $4 != "1/1" {n++}; END {print n+0}')
+    if (( notready == 0 )); then break; fi
+    sleep 5
+  done
+  if (( $(date +%s) >= deadline )); then
+    abort_as FIXTURE_NOT_READY \
+      "fixture Pods not all Ready within 8 minutes (deadline)" 12
   fi
-  NOTREADY=$(kubectl get pod -A --no-headers 2>/dev/null \
-    | grep -E "cni-target|cni-source|cni-control" \
-    | awk '$3 != "Running" || $4 != "1/1" {n++}; END {print n+0}')
-  if (( NOTREADY == 0 )); then break; fi
-  sleep 5
-done
-if (( $(date +%s) >= DEADLINE )); then
-  echo "[install] ERROR: fixture Pods not all Ready within 8 minutes"
-  kubectl get pod -A -l 'app in (cni-target, cni-source, cni-control)' -o wide 2>&1 | tee -a "$ARTIFACTS/install.log"
-  # Hand off to the unified readiness gate so the
-  # reason is recorded as FIXTURE_NOT_READY (exit
-  # 12) instead of an ambiguous "exit 2".
-  GATE_PHASE=post-fixture \
-  RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
-  WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
-  ARTIFACTS="${ARTIFACTS}" \
-    bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || exit $?
-  exit 12
-fi
-
-# Polled wait: cilium endpoint count includes
-# every fixture target. We observe the condition,
-# not a sleep. Each cilium agent exposes only
-# endpoints for Pods on its own node. We
-# therefore aggregate the labels resolved by
-# every agent (not just one).
-EXPECTED=$(kubectl get pod -A --no-headers 2>/dev/null | grep -cE "cni-target|cni-source|cni-control|cni-mock" || echo 0)
-echo "[install] expected ${EXPECTED} fixture pods"
-DEADLINE=$(( $(date +%s) + 480 ))
-LAST=0
-while (( $(date +%s) < DEADLINE )); do
-  ACC=""
-  for p in $(kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}'); do
-    OUT=$(kubectl -n kube-system exec "$p" -- bash -c 'cilium endpoint list -o json' 2>/dev/null \
-      | python3 -c "
+  # cilium endpoint aggregation across nodes.
+  local expected
+  expected=$(kubectl get pod -A --no-headers 2>/dev/null \
+    | grep -cE "cni-target|cni-source|cni-control|cni-mock" || echo 0)
+  deadline=$(( $(date +%s) + 480 ))
+  local last=0
+  while (( $(date +%s) < deadline )); do
+    local acc=""
+    for p in $(kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}'); do
+      local out
+      out=$(kubectl -n kube-system exec "$p" -- \
+        bash -c 'cilium endpoint list -o json' 2>/dev/null \
+        | python3 -c "
 import json,sys
 data=json.loads(sys.stdin.read())
 endpoints=data if isinstance(data,list) else (data.get('endpoint') or [])
@@ -362,48 +452,46 @@ for e in endpoints:
         if nm.startswith('resolve-labels-default/cni-'):
             items.append(nm)
 for x in set(items): print(x)
-" 2>/dev/null)
-    ACC+=$(printf "\n%s" "$OUT")
+" 2>/dev/null) || true
+      acc+=$(printf "\n%s" "$out")
+    done
+    last=$(printf "%s" "$acc" | grep -c "^resolve-labels-default/cni-" || echo 0)
+    if (( last >= expected )); then break; fi
+    sleep 5
   done
-  LAST=$(printf "%s" "$ACC" | grep -c "^resolve-labels-default/cni-" || echo 0)
-  if (( LAST >= EXPECTED )); then
-    echo "[install] cilium reports ${LAST} fixture endpoints (expected ${EXPECTED})"
-    break
+  if (( last < expected )); then
+    abort_as FIXTURE_NOT_READY \
+      "cilium endpoint count ${last} < expected ${expected}" 12
   fi
-  sleep 5
-done
-if (( LAST < EXPECTED )); then
-  echo "[install] ERROR: cilium endpoint count aggregated across agents reached only ${LAST} of ${EXPECTED} after $((OSEC=$(date+%s)))s; expected=${EXPECTED}"
-  printf "%s" "$ACC" | sort -u | tee -a "$ARTIFACTS/install.log"
-  # Hand off to the unified readiness gate so the
-  # reason is recorded as FIXTURE_NOT_READY (exit
-  # 12) instead of an ambiguous "exit 3".
+  # Hand off to the readiness gate for the
+  # remaining convergence assertions (steps
+  # #8..#9). The gate is the single
+  # classification source.
   GATE_PHASE=post-fixture \
-  RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
-  WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
-  ARTIFACTS="${ARTIFACTS}" \
-    bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || exit $?
-  exit 12
-fi
+    RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+    WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+    ARTIFACTS="${ARTIFACTS}" \
+    bash "${SCRIPT_DIR}/cni-readiness-gate.sh"
+  echo "[install] step G ok"
+}
 
-# Run the unified readiness gate in post-fixture
-# mode (gates #8..#9). If a probe fails, the gate
-# exits 12 (FIXTURE_NOT_READY) — distinct from a
-# chart regression, and distinct from a cluster
-# creation flake. The summary line is the
-# first thing the workflow uploads, so a downstream
-# verifier can route the failure to the right
-# handler without re-reading the cluster-up logs.
-GATE_PHASE=post-fixture \
-  RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
-  WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
-  ARTIFACTS="${ARTIFACTS}" \
-  bash "${SCRIPT_DIR}/cni-readiness-gate.sh"
+# ---- main --------------------------------------------------------------
 
-# Snapshot cilium state for evidence.
-kubectl -n kube-system exec ds/cilium -- cilium status > "$ARTIFACTS/cilium-status.txt"
-kubectl -n kube-system exec ds/cilium -- cilium endpoint list -o json > "$ARTIFACTS/cilium-endpoints.json"
-kubectl -n kube-system exec ds/cilium -- cilium policy get > "$ARTIFACTS/cilium-policy.txt"
+main() {
+  if [[ ! -f "${ARTIFACTS}/cluster-up.txt" ]]; then
+    echo "[install] ERROR: cluster not up; run test-cluster-up.sh first" \
+      | tee -a "$ARTIFACTS/install.log"
+    exit 2
+  fi
+  step_A_identity
+  step_B_dryrun_namespaces
+  step_C_apply_namespaces
+  step_D_dryrun_namespaced
+  step_E_semantic_admission
+  step_image_pipeline
+  step_F_real_apply
+  step_G_readiness
+  echo "[install] all A..G gates passed"
+}
 
-echo "ready" > "$ARTIFACTS/install-ready.txt"
-echo "[install] chart NetworkPolicy installed and cilium endpoints bound"
+main "$@"

@@ -167,3 +167,28 @@ spec:
           command: ["/cni-listener", "-probe=8081"]
         initialDelaySeconds: 1
         periodSeconds: 3
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-nexus-migration
+  namespace: default
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: migration
+    app.kubernetes.io/instance: nexus-cni-test
+spec:
+  containers:
+    - name: migration
+      image: cni-listener:local
+      imagePullPolicy: Never
+      args: ["-ports=8082", "-role=migration", "-target=cni-mock-nexus-migration"]
+      ports:
+        - containerPort: 8082
+          name: http
+          protocol: TCP
+      readinessProbe:
+        exec:
+          command: ["/cni-listener", "-probe=8082"]
+        initialDelaySeconds: 1
+        periodSeconds: 3
