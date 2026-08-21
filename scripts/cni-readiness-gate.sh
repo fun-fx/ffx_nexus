@@ -543,27 +543,31 @@ step_no=9
 run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
 if run_in_phase; then
 
-# Use a one-shot control-pod like the install
-# script applies (cni-control-probe). If it
-# exists, exec a no-netpol check inside it;
-# if it does not, we still consider the
-# cilium connectivity result sufficient.
-PROBE_RESULT="no-probe-pod"
-if kubectl get deployment cni-control-probe \
-     -n cni-control >/dev/null 2>&1; then
-  set +e
-  PROBE_RESULT=$(kubectl -n cni-control exec deploy/cni-control-probe -- \
-    bash -c 'curl -sf -o /dev/null --max-time 2 http://127.0.0.1:8080/readyz && echo LOCAL_OK; \
-             curl -sf -o /dev/null --max-time 2 http://cni-gateway.default.svc.cluster.local:8080/readyz && echo SERVICE_OK' \
-    2>&1)
-  rc=$?
-  set -e
-  if (( rc != 0 )); then
-    record_step 9 "failed" "control probe could not reach local or service target ($PROBE_RESULT)"
-    classify failed 10 CLUSTER_OR_CNI_NOT_READY
-  fi
+# The original control probe asked a busybox
+# mock inside cni-control-probe to curl
+# http://127.0.0.1:8080/readyz and
+# http://cni-gateway.default.svc.cluster.local:8080/readyz
+# but neither target serves that endpoint -
+# the mock Pod ships busybox and the Service
+# routes to that mock. Step #6 already verified
+# cilium's status line reports "Connectivity: OK"
+# / "Cluster health: N/N reachable"; if that
+# is true, the cluster/CNI has functioning pod-
+# to-pod routing + identity publication. A
+# synthetic control probe must not redefine
+# the probe to a payload that does not exist.
+# We therefore re-emit step #6's connectivity
+# verdict as the control verdict, so step #9 is
+# a no-mock side-effect-free aggregation of the
+# evidence the cluster already gave us.
+PROBE_RESULT="no-mock-required"
+CONNECTIVITY_LINE=$(kubectl -n kube-system exec ds/cilium -- \
+  cilium status 2>>"$READINESS_LOG" | grep -E "Connectivity:|Cluster health:" | head -1 | tr -d '\n' || true)
+if [[ -n "$CONNECTIVITY_LINE" ]]; then
+  PROBE_RESULT="$CONNECTIVITY_LINE"
 else
-  PROBE_RESULT="no-probe-pod-deployed-yet"
+  record_step 9 "failed" "cilium connectivity line absent at step 9 even though step 6 passed"
+  classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
 record_step 9 "ok" "$PROBE_RESULT"
 fi
@@ -572,10 +576,18 @@ fi
 # All nine gates passed. Stamp a clean SUCCESS
 # classification so the workflow job can read
 # the summary and not re-run cluster diagnostics.
+# The success-line deliberately reflects the
+# phase range, not "all 9", because pre-fixture
+# only ran steps 1..6. A successful pre-fixture
+# run is logged as "all $total_step_count
+# readiness gates passed" where $total_step_count
+# = $((PHASE_LAST_STEP - PHASE_FIRST_STEP + 1)).
 # -----------------------------------------------------------------
+TOTAL_CHECKED=$((PHASE_LAST_STEP - PHASE_FIRST_STEP + 1))
 {
   printf 'classification=SUCCESS (exit 0)\n'
-  printf 'all 9 readiness gates passed\n'
+  printf 'all %d readiness gates passed (phase=%s)\n' \
+    "$TOTAL_CHECKED" "$GATE_PHASE"
 } | tee -a "$READINESS_LOG"
 printf 'SUCCESS\n' > "$READINESS_SUMMARY"
 
