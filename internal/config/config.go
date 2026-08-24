@@ -5,11 +5,20 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/mail"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// emailFromAddrVarNames is the canonical order for resolving the From
+// address. New names come first so an operator who sets both wins on the
+// new var. Kept package-level so a test in this package can drive the
+// resolution directly with os.Setenv calls.
+var emailFromAddrVarNames = []string{"NEXUS_EMAIL_FROM_ADDRESS", "NEXUS_RESEND_FROM_ADDRESS"}
 
 // Config holds all runtime configuration for the Nexus gateway.
 type Config struct {
@@ -224,24 +233,42 @@ type Config struct {
 	MetabaseHealthTimeout  time.Duration
 	MetabaseRequestTimeout time.Duration
 
-	// Invitation email transport (Resend, V5+).
+	// Invitation email transport.
 	//
-	// Empty ResendAPIKey disables the transport: invites are still
-	// persisted to the invite_tokens table, the admin can still
-	// copy the URL out of the console, and the gating API call
-	// short-circuits to the same response shape so the front-end
-	// has one happy-path. Operators flip this on when they have a
-	// verified domain (e.g. ffx.ai) on Resend and want the
-	// invitee to land in their inbox with the link instead of
-	// pasting it from the admin's clipboard.
+	// Invites are persisted to invite_tokens in all modes — the admin can
+	// always copy the URL out of the console. This block just decides whether
+	// a transactional envelope is also sent, and through which transport.
 	//
-	// ResendFromAddress is the From header value (RFC 5322 -
-	// "Name <addr@domain>"). Defaults to "Nexus <noreply@ffx.ai>"
-	// in the bootstrap helper since FFX's Resend account already
-	// owns that domain.
+	// The transport is the customer's own mail infrastructure. A self-hosted
+	// install must send from a domain the customer controls and has SPF/DKIM
+	// signed for; Nexus does not ship a vendor mail account, and there is no
+	// default `From` so a half-configured install cannot accidentally issue
+	// mail from a domain the customer cannot authenticate.
+	//
+	// Provider resolution (when NEXUS_EMAIL_PROVIDER is empty):
+	//   - NEXUS_RESEND_API_KEY  set → resend
+	//   - NEXUS_SMTP_HOST       set → smtp
+	//   - neither               → disabled (copyable URL only, no fault)
+	// With NEXUS_EMAIL_PROVIDER set explicitly, the value must be one of
+	// "resend", "smtp" or "noop" — and "noop" is only valid under
+	// NEXUS_DEV_MODE, which the chart deliberately does not expose, so a
+	// customer install cannot select it.
+	//
+	// Legacy NEXUS_RESEND_FROM_ADDRESS / NEXUS_RESEND_REQUEST_TIMEOUT
+	// remain readable as aliases so a user who already deployed Resend
+	// changes nothing but the `From` value; the engine logs a warn line
+	// when an alias supplies the address, so the migration is visible in
+	// pod logs.
+	EmailProvider        string
+	EmailFromAddress     string
+	EmailRequestTimeout  time.Duration
 	ResendAPIKey         string
-	ResendFromAddress    string
-	ResendRequestTimeout time.Duration
+	ResendAPIBaseURL     string
+	SMTPHost             string
+	SMTPPort             int
+	SMTPUsername         string
+	SMTPPassword         string
+	SMTPEncryption       string
 	// EmailPublicBaseURL overrides the invite URL embedded in the
 	// outgoing email when the operator wants a different host on the
 	// envelope than the console URL the invitee clicks through.
@@ -375,22 +402,85 @@ func (c SSOConfig) Enabled() bool {
 	return c.Issuer != "" && c.ClientID != "" && c.ClientSecret != "" && c.RedirectURL != ""
 }
 
-// EmailEnabled reports whether the Resend-backed invite transport
-// is configured. Returning false here means Inviteflow still
-// persists invites — admin can still copy the URL out of the
-// console — but no envelope email is sent.
-func (c Config) EmailEnabled() bool {
-	return c.ResendAPIKey != "" && strings.TrimSpace(c.ResendFromAddress) != ""
+// EmailMode constants. The closed enumerate maps to the closed set of
+// transport implementations in console.Mailer. Boot prefers an explicit
+// NEXUS_EMAIL_PROVIDER; an empty value auto-picks based on which
+// transport field is populated.
+const (
+	EmailModeSMTP   = "smtp"
+	EmailModeResend = "resend"
+	// EmailModeNoop is the in-process discard transport. Boot refuses
+	// to pick it unless DevMode is true; otherwise an unconfigured cluster
+	// boots and silently drops invites.
+	EmailModeNoop = "noop"
+)
+
+// EmailMode reports the resolved transport and the address that should appear
+// in the From: header. Operators pick at install time; the binary refuses to
+// boot when a transport is named but no address is provided — sending from a
+// domain the customer cannot authenticate for is worse than not sending.
+//
+// The set of named providers is closed. An empty mode means "no transport";
+// invites still flow through the copyable URL path, so the absence is a
+// feature, not a fault.
+//
+// Validate returns ErrEmailMisconfigured when the operator named a provider
+// but left the From unset (or unparseable, or a CRLF carrier); ErrEmailUnknown
+// when the named provider is not one of the three. devOnly == true is set
+// when the resolved mode is "noop" so the boot path can refuse it without
+// NEXUS_DEV_MODE.
+func (c Config) EmailMode() (mode, from string, devOnly bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(c.EmailProvider)) {
+	case EmailModeResend:
+		mode = EmailModeResend
+		if c.ResendAPIKey == "" {
+			return "", "", false, errors.New("config: provider=resend requires NEXUS_RESEND_API_KEY")
+		}
+	case EmailModeSMTP:
+		mode = EmailModeSMTP
+		if strings.TrimSpace(c.SMTPHost) == "" {
+			return "", "", false, errors.New("config: provider=smtp requires NEXUS_SMTP_HOST")
+		}
+	case EmailModeNoop:
+		return EmailModeNoop, "", true, nil
+	case "":
+		// Auto-detect. Resend wins on key presence; SMTP wins on host
+		// presence; otherwise no transport.
+		switch {
+		case strings.TrimSpace(c.ResendAPIKey) != "":
+			mode = EmailModeResend
+		case strings.TrimSpace(c.SMTPHost) != "":
+			mode = EmailModeSMTP
+		default:
+			return "", "", false, nil
+		}
+	default:
+		return "", "", false, fmt.Errorf("config: unknown NEXUS_EMAIL_PROVIDER %q (want resend, smtp, noop)", c.EmailProvider)
+	}
+	from = strings.TrimSpace(c.EmailFromAddress)
+	if from == "" {
+		return "", "", false, errors.New("config: a transport is configured but NEXUS_EMAIL_FROM_ADDRESS is empty; refusing to send mail from an unauthenticated domain")
+	}
+	if _, perr := mail.ParseAddress(from); perr != nil {
+		return "", "", false, fmt.Errorf("config: NEXUS_EMAIL_FROM_ADDRESS %q is not a valid RFC 5322 address: %w", c.EmailFromAddress, perr)
+	}
+	return mode, from, false, nil
 }
 
-// EmailEnvelope returns the From header Resend should display on
-// outgoing envelopes, defaulted to a FFX-friendly address when
-// the operator didn't override.
-func (c Config) EmailEnvelope() string {
-	if c.ResendFromAddress == "" {
-		return "Nexus <noreply@ffx.ai>"
+// EmailEnabled is the splash-of-true probe used by handlers that speak
+// console-side ("is there a Mailer wired?"). Returns false when no transport
+// is configured, when DevMode-only noop is selected and DevMode is off, and
+// when From is missing — boot will have already terminated the last two, but
+// the handler still needs to answer politely so a Send call does not nil-out.
+func (c Config) EmailEnabled() bool {
+	mode, from, devOnly, err := c.EmailMode()
+	if err != nil || from == "" {
+		return false
 	}
-	return c.ResendFromAddress
+	if devOnly {
+		return c.DevMode
+	}
+	return mode != ""
 }
 
 // LabelOrDefault returns the configured label, or "SSO" if unset.
@@ -417,6 +507,14 @@ func Load() Config {
 }
 
 func load() Config {
+	emailFromAddress := firstNonEmpty(
+		env("NEXUS_EMAIL_FROM_ADDRESS", ""),
+		env("NEXUS_RESEND_FROM_ADDRESS", ""),
+	)
+	emailTimeout := firstDurNonZero(
+		envDuration("NEXUS_EMAIL_REQUEST_TIMEOUT", 10*time.Second),
+		envDuration("NEXUS_RESEND_REQUEST_TIMEOUT", 0),
+	)
 	return Config{
 		GatewayAddr:      env("NEXUS_GATEWAY_ADDR", ":8080"),
 		ConsoleAddr:      env("NEXUS_CONSOLE_ADDR", ":8081"),
@@ -474,19 +572,35 @@ func load() Config {
 		MetabaseHealthTimeout:     envDuration("NEXUS_METABASE_HEALTH_TIMEOUT", 90*time.Second),
 		MetabaseRequestTimeout:    envDuration("NEXUS_METABASE_REQUEST_TIMEOUT", 10*time.Second),
 
-		ResendAPIKey:         env("NEXUS_RESEND_API_KEY", ""),
-		ResendFromAddress:    env("NEXUS_RESEND_FROM_ADDRESS", "Nexus <noreply@ffx.ai>"),
-		ResendRequestTimeout: envDuration("NEXUS_RESEND_REQUEST_TIMEOUT", 10*time.Second),
-		EmailPublicBaseURL:   env("NEXUS_EMAIL_PUBLIC_BASE_URL", ""),
-		AutoMigrate:          envBool("NEXUS_AUTO_MIGRATE", false),
-		UpstreamTimeout:      envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
-		KeyMode:              env("NEXUS_KEY_MODE", "strict_byok"),
-		AllowSharedKeys:      envBool("NEXUS_ALLOW_SHARED_KEYS", false),
-		AdminEmail:           env("NEXUS_ADMIN_EMAIL", ""),
-		AdminPassword:        env("NEXUS_ADMIN_PASSWORD", ""),
-		AllowSignup:          envBool("NEXUS_ALLOW_SIGNUP", false),
-		PublicDocs:           envBool("NEXUS_PUBLIC_DOCS", false),
-		DevMode:              envBool("NEXUS_DEV_MODE", false),
+		// EmailProvider is the resolved value above (new or alias);
+		// the timeout uses the resolved value above; the request timeout
+		// stays tied to EmailRequestTimeout for symmetry with the prior
+		// ResendRequestTimeout, since either transport should honour it.
+		EmailProvider:       env("NEXUS_EMAIL_PROVIDER", ""),
+		EmailFromAddress:    emailFromAddress,
+		EmailRequestTimeout: emailTimeout,
+		// Resend-specific. The base URL exists so an air-gapped install
+		// can point at an internal relay that mimics the Resend contract.
+		ResendAPIKey:     env("NEXUS_RESEND_API_KEY", ""),
+		ResendAPIBaseURL: env("NEXUS_RESEND_API_BASE_URL", ""),
+		// SMTP-specific. Password goes in NEXUS_SMTP_PASSWORD, rendered
+		// into the Secret by the chart.
+		SMTPHost:       env("NEXUS_SMTP_HOST", ""),
+		SMTPPort:       envInt("NEXUS_SMTP_PORT", 587),
+		SMTPUsername:   env("NEXUS_SMTP_USERNAME", ""),
+		SMTPPassword:   env("NEXUS_SMTP_PASSWORD", ""),
+		SMTPEncryption: env("NEXUS_SMTP_ENCRYPTION", "starttls"),
+
+		EmailPublicBaseURL: env("NEXUS_EMAIL_PUBLIC_BASE_URL", ""),
+		AutoMigrate:        envBool("NEXUS_AUTO_MIGRATE", false),
+		UpstreamTimeout:    envDuration("NEXUS_UPSTREAM_TIMEOUT", 120*time.Second),
+		KeyMode:            env("NEXUS_KEY_MODE", "strict_byok"),
+		AllowSharedKeys:    envBool("NEXUS_ALLOW_SHARED_KEYS", false),
+		AdminEmail:         env("NEXUS_ADMIN_EMAIL", ""),
+		AdminPassword:      env("NEXUS_ADMIN_PASSWORD", ""),
+		AllowSignup:        envBool("NEXUS_ALLOW_SIGNUP", false),
+		PublicDocs:         envBool("NEXUS_PUBLIC_DOCS", false),
+		DevMode:            envBool("NEXUS_DEV_MODE", false),
 
 		SSO: SSOConfig{
 			Issuer:       env("NEXUS_SSO_ISSUER", ""),
@@ -619,6 +733,31 @@ func envDuration(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// firstNonEmpty returns the first string that, after trim, is non-empty.
+// Used to read the new email env var first and fall back to a deprecated
+// alias without duplicating the env-reading call millions of times.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// firstDurNonZero returns the first non-zero duration. A zero duration here
+// means "unset" rather than "we want zero-timeouts"; callers asking the env
+// for NEXUS_RESEND_REQUEST_TIMEOUT and getting back a Go zero are reading
+// the deprecated alias path.
+func firstDurNonZero(values ...time.Duration) time.Duration {
+	for _, v := range values {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 // defaultReplicaID builds a stable id for this process. Operators can pin it

@@ -105,7 +105,8 @@ type Server struct {
 	publicBaseURL        string                                            // optional public console base; used to compose invite URLs
 	publicGrafanaURL     string                                            // optional operator Grafana base; link-only, see observability_ui.go
 	ready                ReadinessReporter                                 // optional /readyz source; nil degrades to a plain "ok"
-	resend               *ResendClient                                     // optional outgoing email transport for invites
+	resend               *ResendClient                                     // deprecated; kept for backwards-compatible wiring during rollout; unused after SetMailer
+	mailer               Mailer                                            // active outgoing email transport for invites: Resend, SMTP, or noop
 	log                  *slog.Logger
 	up                   websocket.Upgrader
 }
@@ -151,12 +152,22 @@ func (s *Server) SetPublicBaseURL(raw string) {
 	s.publicBaseURL = strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
-// SetResendClient wires the Resend email transport used by the
-// invite flow. A nil client disables outbound envelopes: every
-// issued invite still gets a copyable URL in the admin console,
-// but no email is sent. POST /api/invites still returns the
-// success shape, so the front-end has one happy-path.
-func (s *Server) SetResendClient(c *ResendClient) { s.resend = c }
+// SetResendClient wires the Resend email transport used by the invite
+// flow. RETAINED for backwards-compatible wiring during rollout: any
+// caller still passing a *ResendClient is preserved. Callers should
+// migrate to SetMailer (which is what the invite handler now consults);
+// the boot helper does that wiring directly so this helper exists
+// primarily for tests.
+func (s *Server) SetResendClient(c *ResendClient) {
+	s.resend = c
+	s.mailer = c
+}
+
+// SetMailer wires the active Mailer (SMTP, Resend, or noop). nil disables
+// outbound envelopes: every issued invite still gets a copyable URL in
+// the admin console, but no email is sent. POST /api/invites still
+// returns the success shape, so the front-end has one happy-path.
+func (s *Server) SetMailer(m Mailer) { s.mailer = m }
 
 // SetSSO configures the OIDC client used by /api/auth/sso/*. A nil or
 // disabled config is a no-op; the field stays nil and the SSO routes

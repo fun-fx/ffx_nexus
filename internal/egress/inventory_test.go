@@ -34,6 +34,16 @@ type clientSite struct {
 	Why string
 }
 
+// dialerSite is one place a raw *net.Dialer (TCP or otherwise) comes into
+// existence. The same problem applies: a dialer built without the egress
+// Control hook is a connect-time policy bypass. The audit_inventory also
+// catches the symmetry: a security review that looks only for http.Client
+// literals misses every SMTP / gRPC / raw TCP caller.
+type dialerSite struct {
+	Guarded bool
+	Why     string
+}
+
 // declaredSites lists every file that still constructs an http.Client itself,
 // keyed by repo-relative path.
 //
@@ -77,6 +87,31 @@ var declaredSites = map[string]clientSite{
 	"cmd/nexus-evalbatch/main.go": {Guarded: false,
 		Why: "a developer CLI that takes its gateway and service URLs from flags. " +
 			"Not part of the server; runs with the operator's own privileges."},
+}
+
+// declaredDialers follows the same shape as declaredSites but for raw
+// *net.Dialer constructions. The vendored net.Dialer is what an SMTP
+// transport, a gRPC client, and a raw TCP probe build on; bypassing it
+// means the connect-time address check the egress guard runs is never
+// reached, so a relay hostname that resolves to a private address can
+// be reached without refusal.
+var declaredDialers = map[string]dialerSite{
+	// The guard is the only blessed site for direct *net.Dialer
+	// construction; every other caller obtains one through egress.Dialer.
+	"internal/egress/egress.go": {Guarded: true,
+		Why: "constructs the guarded *net.Dialer returned by Guard.Dialer " +
+			"to non-HTTP callers (SMTP, gRPC, raw TCP). The Control hook " +
+			"is the load-bearing piece."},
+
+	// The LLM upstream pool builds its own dialer. See the symmetric
+	// rationale on declaredSites — the upstream IS the product and the
+	// destinations are checked at credential-save time. Routing the
+	// hot path through Control would cost a syscall per chat request.
+	"internal/gateway/providers/pool.go": {Guarded: false,
+		Why: "shared pooled dialer for LLM upstream calls. The destinations " +
+			"are operator-set credential base URLs and were vetted at " +
+			"credential-save time; the per-chat Control hook would add a " +
+			"syscall to a destination we already authorised."},
 }
 
 // httpClientPackages are the import paths whose files this test walks. Adding a
@@ -147,19 +182,111 @@ tenant-controlled.`,
 	}
 }
 
-// Every exemption must carry a justification. A blank Why is how an exemption
-// list becomes a place to make problems disappear.
-func TestEveryExemptionExplainsItself(t *testing.T) {
-	for rel, site := range declaredSites {
+// Every raw *net.Dialer construction must go through the guard. The
+// SMTP and gRPC paths are caught by the same idea as TestEveryHTTPClientConstructionIsDeclared
+// but on a different AST shape; running one without the other would
+// let a new TCP caller through drift until a security review catches it.
+func TestEveryDialerConstructionIsDeclared(t *testing.T) {
+	root := repoRoot(t)
+	found := map[string][]int{}
+
+	for _, dir := range scannedDirs {
+		walkGoFiles(t, filepath.Join(root, dir), func(rel string, fset *token.FileSet, f *ast.File) {
+			for _, line := range dialerLines(fset, f) {
+				found[rel] = append(found[rel], line)
+			}
+		})
+	}
+
+	var undeclared []string
+	for rel, lines := range found {
+		if _, ok := declaredDialers[rel]; !ok {
+			undeclared = append(undeclared, formatSite(rel, lines))
+		}
+	}
+	sort.Strings(undeclared)
+
+	if len(undeclared) > 0 {
+		t.Fatalf(`%d file(s) construct a *net.Dialer without a declaration in
+internal/egress/inventory_test.go:
+
+|%s
+
+|A raw *net.Dialer lets a path dial an address without the egress guard's
+Control hook, defeating the connect-time address check. The SMTP transport
+and any future non-HTTP transport (gRPC, raw TCP probe) MUST obtain a dialer
+through egress.Dialer, which applies the operator/tenant class policy at
+connect time.`,
+			len(undeclared), strings.Join(undeclared, "\n"))
+	}
+
+	// Symmetry: a declared site that no longer constructs a dialer is a
+	// description of code that has moved and must move out of the table.
+	for rel := range declaredDialers {
+		if _, ok := found[rel]; ok {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Errorf("declaredDialers lists %s, which does not exist", rel)
+			continue
+		}
+		t.Errorf("declaredDialers lists %s, but it no longer constructs a "+
+			"*net.Dialer. Remove the entry so the inventory keeps matching the code.", rel)
+	}
+}
+
+// Every exemption must carry a justification.
+func TestEveryDialerExemptionExplainsItself(t *testing.T) {
+	for rel, site := range declaredDialers {
 		if site.Guarded {
 			continue
 		}
 		if len(strings.TrimSpace(site.Why)) < 40 {
-			t.Errorf("%s is exempt from the egress guard with no substantive "+
+			t.Errorf("%s is exempt from the egress dialer guard with no substantive "+
 				"justification (Why=%q). State why the destination cannot be "+
 				"configured by an operator or an API caller.", rel, site.Why)
 		}
 	}
+}
+
+// dialerLines reports the lines in f that bring a *net.Dialer into
+// existence. The detector matches all four shapes:
+//
+//   - &net.Dialer{...}                (composite literal)
+//   - net.Dialer{...}                 (value, no address taken — same shape syntactically)
+//   - &net.Dialer{}                   (zero-valued shorthand)
+//
+// Anything more elaborate (a struct literal with a Control field that
+// IS an egress hook) is on the author to satisfy; the detector's job is
+// to refuse to be silent about new dialers, not to be perfect about
+// "did this dialer honor the policy".
+func dialerLines(fset *token.FileSet, f *ast.File) []int {
+	var lines []int
+	add := func(pos token.Pos) { lines = append(lines, fset.Position(pos).Line) }
+
+	ast.Inspect(f, func(n ast.Node) bool {
+		cl, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		if isNetSelector(cl.Type, "Dialer") {
+			add(cl.Pos())
+		}
+		return true
+	})
+
+	sort.Ints(lines)
+	return lines
+}
+
+func isNetSelector(expr ast.Expr, name string) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	return ok && isNetIdent(sel.X) && sel.Sel.Name == name
+}
+
+func isNetIdent(expr ast.Expr) bool {
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == "net"
 }
 
 // The inventory is only worth having if it actually detects a new site. This

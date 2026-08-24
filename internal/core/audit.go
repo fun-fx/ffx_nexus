@@ -151,6 +151,10 @@ const (
 	AuditActionUserLoginSucceeded    AuditAction = "user.login.succeeded"
 	AuditActionUserLoginDenied       AuditAction = "user.login.denied"
 	AuditActionInviteIssued          AuditAction = "invite.issued"
+	AuditActionInviteIssuedEmailStarted   AuditAction = "invite.email.started"
+	AuditActionInviteIssuedEmailSent      AuditAction = "invite.email.sent"
+	AuditActionInviteIssuedEmailFailed    AuditAction = "invite.email.failed"
+	AuditActionInviteIssuedEmailTemplate  AuditAction = "invite.email.template_failed"
 	AuditActionInviteAccepted        AuditAction = "invite.accepted"
 	AuditActionInviteRejectedInvalid AuditAction = "invite.rejected.invalid"
 	AuditActionInviteRejectedExpired AuditAction = "invite.rejected.expired"
@@ -251,6 +255,10 @@ var knownActions = []AuditAction{
 	AuditActionUserLoginSucceeded,
 	AuditActionUserLoginDenied,
 	AuditActionInviteIssued,
+	AuditActionInviteIssuedEmailStarted,
+	AuditActionInviteIssuedEmailSent,
+	AuditActionInviteIssuedEmailFailed,
+	AuditActionInviteIssuedEmailTemplate,
 	AuditActionInviteAccepted,
 	AuditActionInviteRejectedInvalid,
 	AuditActionInviteRejectedExpired,
@@ -363,6 +371,10 @@ var auditFailureClass = map[AuditAction]AuditFailureClass{
 
 	// --- Invites ---
 	AuditActionInviteIssued:          FailStopClass,
+	AuditActionInviteIssuedEmailStarted:  BestEffortClass,
+	AuditActionInviteIssuedEmailSent:     BestEffortClass,
+	AuditActionInviteIssuedEmailFailed:   BestEffortClass,
+	AuditActionInviteIssuedEmailTemplate: BestEffortClass,
 	AuditActionInviteAccepted:        FailStopClass,
 	AuditActionInviteRejectedInvalid: BestEffortClass,
 	AuditActionInviteRejectedExpired: BestEffortClass,

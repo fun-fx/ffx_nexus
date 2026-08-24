@@ -14,62 +14,80 @@ import (
 
 // ResendClient is a thin caller around the Resend REST API.
 //
-// We do not import resend-go to keep the dependency surface
-// tight: the only endpoint we exercise today is
-// https://api.resend.com/emails (POST), and its contract is small
-// enough (Authorization: Bearer, JSON body, 200 + { "id" })
-// that a stdlib net/http call is the whole integration.
+// # Why not resend-go
 //
-// Idempotency: every send attaches an `Idempotency-Key` header
-// derived from the invite id. Resend deduplicates within 24
-// hours so the retry path on transient failures is safe.
+// We deliberately avoid the third-party SDK so the dependency surface
+// stays tight: the only endpoint Nexus exercises is POST /emails, and
+// its contract — Authorization: Bearer, JSON body, 200 + {"id"} — is
+// small enough that a stdlib http.Client call is the whole integration.
+// Keeping SDK churn out of release notes is the bonus.
 //
-// Failure modes:
-//   - 5xx upstream → return a wrapped sentinel; the caller
-//     decides whether to retry, surface a 502 to the admin, or
-//     quietly fall back to "URL-only delivery".
-//   - 4xx upstream (validation, auth) → bubbles up so the admin
-//     sees a real reason instead of a silent drop.
-//   - network / DNS → wrapped net.OpError style error.
+// # Termination behaviour
 //
-// The client is safe for concurrent use — *http.Client is.
+// The HTTP client is an egress.Operator dialer so a self-hosted install
+// pointing at an internal relay (NEXUS_RESEND_API_BASE_URL) gets the
+// same connect-time IP policy as any other outbound request. The bare
+// `https://api.resend.com` default is the operator's chosen SaaS.
+//
+// # Idempotency
+//
+// Every send attaches an `Idempotency-Key` header derived from the
+// invite id. Resend deduplicates within 24 hours, so the retry path on
+// transient failures stays clean.
+//
+// # Failure modes
+//
+//   - 5xx upstream → wrapped sentinel; caller decides retry behaviour.
+//   - 4xx upstream → bubbles up so the admin sees the real reason.
+//   - network / DNS → net.OpError-style wrapped error.
+//
+// # Concurrency
+//
+// *http.Client is safe for concurrent use.
 type ResendClient struct {
 	APIKey   string
-	From     string // e.g. "Nexus <noreply@ffx.ai>"
-	Endpoint string // overridable so tests can stub localhost
+	From     string                  // e.g. "Nexus <noreply@yourcompany.example>"
+	Endpoint string                  // overridable for test stubs and internal relays
+	BaseURL  string                  // base for /emails resolution; defaults to https://api.resend.com
 	Timeout  time.Duration
 
 	hc *http.Client
 }
 
-// NewResendClient returns a client with sensible defaults. The
-// caller MUST verify APIKey is non-empty (Config.ResendEnabled)
-// before calling Send — an empty key returns a *ErrConfig error
-// immediately rather than posting unauthenticated requests to
-// Resend.
-func NewResendClient(apiKey, fromAddr string, timeout time.Duration) *ResendClient {
+// NewResendClient returns a client with sane defaults. baseURL may be
+// empty — it falls back to https://api.resend.com, which is the right
+// choice when the operator has not told us otherwise.
+//
+// The caller MUST verify APIKey is non-empty before calling Send; an
+// empty key returns ErrConfig immediately rather than posting
+// unauthenticated requests to Resend.
+func NewResendClient(apiKey, fromAddr, baseURL string, timeout time.Duration) *ResendClient {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &ResendClient{
+	if baseURL == "" {
+		baseURL = "https://api.resend.com"
+	}
+	c := &ResendClient{
 		APIKey:   apiKey,
 		From:     fromAddr,
-		Endpoint: "https://api.resend.com/emails",
+		BaseURL:  baseURL,
+		Endpoint: baseURL + "/emails",
 		Timeout:  timeout,
-		// Operator class: api.resend.com, or an internal relay the operator
-		// points at deliberately for an air-gapped install.
+		// Operator class: api.resend.com or an internal relay the
+		// operator points at deliberately for an air-gapped install.
 		hc: egress.Client(egress.Operator, timeout),
 	}
+	return c
 }
 
 // ErrConfig is returned when the Resend client is called without
-// an API key. This is the "feature disabled" sentinel.
+// an API key. The honours "feature disabled" sentinel.
 var ErrConfig = errors.New("resend: not configured (set NEXUS_RESEND_API_KEY)")
 
 // resendSendRequest mirrors the POST /emails body documented at
-// https://resend.com/docs/api-reference/emails/send-email. We
-// keep only the fields we currently send: from, to, subject,
-// html + idempotency-key.
+// https://resend.com/docs/api-reference/emails/send-email. Only the
+// fields we currently send are modelled.
 type resendSendRequest struct {
 	From    string   `json:"from"`
 	To      []string `json:"to"`
@@ -77,28 +95,26 @@ type resendSendRequest struct {
 	HTML    string   `json:"html"`
 }
 
-// resendSendResponse carries the message id Resend returns on a
-// successful send. We don't act on it today, but we surface it
-// to the audit trail so an operator can correlate "we sent
-// invite X" → Resend message id → Resend dashboard / API logs.
+// resendSendResponse carries Resend's message id; the audit trail
+// records it so an operator can correlate "we sent invite X" to the
+// Resend dashboard.
 type resendSendResponse struct {
 	ID string `json:"id"`
 }
 
-// resendErrorBody is what Resend renders for non-2xx responses.
-// Their docs don't promise a stable shape across all error
-// categories, so we decode opportunistically and fall back to
-// the raw text when the field is absent.
+// resendErrorBody is what Resend returns for non-2xx responses. Their
+// docs do not promise a stable shape across all error categories, so
+// decoding is opportunistic and we fall back to the raw status text
+// when the field is absent.
 type resendErrorBody struct {
 	StatusCode int    `json:"-"`
 	Message    string `json:"message"`
 	Name       string `json:"name"`
 }
 
-// Send delivers a single transactional email. idempotencyKey is
-// required so the retry path on transient failures does not
-// produce duplicates. The key is preserved verbatim on the
-// Resend side for 24 hours.
+// Send delivers a single transactional email. idempotencyKey is required
+// so the retry path on transient failures does not produce duplicates;
+// Resend preserves the key verbatim for 24 hours.
 func (c *ResendClient) Send(ctx context.Context, to, subject, html, idempotencyKey string) (string, error) {
 	if c == nil || c.APIKey == "" {
 		return "", ErrConfig
@@ -143,51 +159,4 @@ func (c *ResendClient) Send(ctx context.Context, to, subject, html, idempotencyK
 		}
 		return "", fmt.Errorf("resend: %d %s: %s", resp.StatusCode, resp.Status, e.Message)
 	}
-}
-
-// renderInviteHTML is a deliberately small html/template string.
-// React-Email + the resend-go SDK ship richer primitives, but
-// Nexus's invite payload is one paragraph + two buttons
-// (primary CTA, plain-text fallback). Inlining that keeps a
-// dependency in the binary off the table for what is essentially
-// a constrained marketing email.
-func renderInviteHTML(inviteURL, inviterEmail, role string) string {
-	// Inline-template without text/template to avoid a runtime
-	// dependency on filesystem templates. Users in this flow
-	// expect a "Welcome to Nexus" surface — anything fancier
-	// belongs in a React-Email port landed in a follow-up.
-	const tmpl = `<!doctype html>
-<html>
-  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color:#0e0e10; background:#f6f6f9; padding:24px;">
-    <div style="max-width:560px; margin:0 auto; background:#ffffff; border:1px solid #e6e6ee; border-radius:12px; padding:28px 32px;">
-      <h1 style="margin:0 0 16px; font-size:20px;">You're invited to Nexus</h1>
-      <p style="margin:0 0 16px; line-height:1.5;">
-        %s has invited you to join their Nexus workspace. Click the button below
-        to accept the invite and set your password. This link is personal —
-        please don't share it.
-      </p>
-      <p style="margin:24px 0;">
-        <a href="%s"
-           style="display:inline-block; background:linear-gradient(135deg,#5a4cff,#8a4cff); color:#ffffff; text-decoration:none; font-weight:600; padding:12px 20px; border-radius:8px;">
-          Accept invite
-        </a>
-      </p>
-      <p style="margin:24px 0 8px; font-size:12px; color:#6b6b78;">
-        Or paste this URL into your browser:
-      </p>
-      <p style="margin:0 0 24px; font-size:12px; color:#1f1f24; word-break:break-all; background:#f6f6f9; padding:10px 12px; border-radius:6px;">
-        %s
-      </p>
-      <hr style="border:none; border-top:1px solid #e6e6ee; margin:24px 0;"/>
-      <p style="margin:0; font-size:11px; color:#a0a0ac; line-height:1.5;">
-        Role on accept: <strong>%s</strong>.<br/>
-        If you weren't expecting this email you can safely ignore it — the
-        invite will expire automatically.
-      </p>
-    </div>
-  </body>
-</html>`
-	// %s on the link does double duty — caller's responsibility
-	// to pass a URL that is already validated for the recipient.
-	return fmt.Sprintf(tmpl, inviterEmail, inviteURL, inviteURL, role)
 }
