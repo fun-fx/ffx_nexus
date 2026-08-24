@@ -80,11 +80,13 @@ func main() {
 		switch os.Args[1] {
 		case "migrate":
 			os.Exit(runMigrateCommand(os.Args[2:]))
+		case "mailtest":
+			os.Exit(runMailtestCommand(os.Args[2:]))
 		case "serve":
 			// Explicit spelling of the default, so a Kubernetes manifest can
 			// state its intent rather than relying on an empty args list.
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command %q; known commands: serve, migrate\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown command %q; known commands: serve, migrate, mailtest\n", os.Args[1])
 			os.Exit(2)
 		}
 	}
@@ -402,10 +404,7 @@ func main() {
 	// the operator-facing console host (e.g. nexus.ffx.ai
 	// console vs api.ffx.ai accept endpoint).
 	consoleSrvHandler.SetPublicBaseURL(publicBaseForInvites(cfg))
-	if cfg.EmailEnabled() {
-		consoleSrvHandler.SetResendClient(
-			console.NewResendClient(cfg.ResendAPIKey, cfg.EmailEnvelope(), cfg.ResendRequestTimeout))
-	}
+	consoleSrvHandler.SetMailer(installEmailTransport(cfg, log))
 	// OIDC SSO: discovery runs against cfg.SSO.Issuer at boot. Failures
 	// here only log a warning; the console still serves password login
 	// and the SSO routes simply return 404.

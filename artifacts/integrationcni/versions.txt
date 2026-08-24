@@ -1,0 +1,13 @@
+# host
+os: Darwin 24.1.0 arm64
+started_at: 20260821T161943Z
+# tooling
+kind: kind v0.22.0 go1.20.13 darwin/amd64
+kubectl: NOT-INSTALLED
+helm: v3.17.3+ge4da497
+cilium-cli: cilium-cli: v0.15.20 compiled with go1.21.6 on darwin/amd64
+NOT-INSTALLED
+# intended cluster versions
+k8s_version: 1.29.0
+cilium_version: 1.15.3
+kube_worker_count: 1

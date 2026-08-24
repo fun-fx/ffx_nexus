@@ -298,6 +298,51 @@ Tests: `internal/egress/egress_test.go`, `internal/evals/egress_tenancy_test.go`
 `internal/egress/inventory_test.go`, which fails the build when a new one appears
 without a decision.
 
+### 5.5 Mail relay is operator-class and policy-checked
+
+The Invite User feature's outbound mail transport is constructed through
+the same egress guard as the HTTP clients: SMTP uses `egress.Dialer(class=Operator)`,
+Resend uses `egress.Client(class=Operator)`. The connect-time address
+check refuses the SMTP path if the relay hostname resolves to a private
+address that the operator did not pre-declare, and refuses the Resend path
+the same way.
+
+Two redirects-to-private address scenarios are explicitly handled:
+
+- An SMTP relay that 302s on the SMTP greeting is not a thing (SMTP does
+  not have redirects), so the redirect handler's `checkRedirect` does not
+  fire; the dial-time check is the full policy.
+- A Resend-base-URL whose DNS rebinds to a private address is run through
+  the same connect-time `Control` hook the HTTP client uses; the dial
+  itself is refused before the POST.
+
+A relay that does not advertise STARTTLS is refused when SMTP credentials
+are present — sending credentials in cleartext is the case that the
+guardrail is load-bearing for. A relay that allows IP allowlisting and
+not username/password auth is supported: leave `NEXUS_SMTP_USERNAME`
+empty and the SMTP transport skips AUTH entirely.
+
+Inventory: `internal/egress/inventory_test.go` now also flags any raw
+`*net.Dialer` build outside the guard, since bypassing the guard from
+a new SMTP or gRPC transport would defeat the connect-time check this
+section specifies.
+
+### 5.6 What the operator chooses to trust
+
+Nexus does not pick the customer's mail transport. The operator picks
+SMTP or Resend at install time, with the matching credentials, and the
+boot helper fail-fasts on any half-configured combination (e.g.,
+`smtp` named with no host). The defaults are no transport — silently
+dropping invites is worse than a loud boot abort, and the boot path
+treats the failure as the softer of two harms.
+
+If you want a third-party mail SaaS that we do not wrap today, file an
+issue; the closed set in `internal/console/mailer.go` is closed for the
+opposite reason than the eval plugin set — bandwidth to ship and audit a
+third wrapper is finite — but it is extensible through the same `Mailer`
+interface any transport that follows the existing security properties
+will satisfy.
+
 ---
 
 ## 6. Documentation of controls Nexus does not provide

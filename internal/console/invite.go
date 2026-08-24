@@ -1,11 +1,13 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/mail"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -91,31 +93,31 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request, caller cor
 	// top. We tag the message id onto an audit row so an
 	// operator can correlate "we sent invite X" → Resend
 	// dashboard / send API logs.
-	if s.resend != nil && inv.URL != "" {
-		html := renderInviteHTML(inv.URL, caller.Email, role)
-		idem := "nexus-invite-" + inv.ID
-		msgID, sendErr := s.resend.Send(r.Context(), email, "You're invited to Nexus", html, idem)
-		if sendErr != nil {
-			s.log.Warn("invite email send failed",
-				"err", sendErr,
+	if s.mailer != nil && inv.URL != "" {
+		body, tmplErr := renderInviteHTML(inv.URL, caller.Email, role)
+		if tmplErr != nil {
+			s.log.Warn("invite template render failed",
+				"err", tmplErr,
 				"invite", inv.ID,
 				"email", email,
 				"actor", caller.ID)
 			s.store.Audit(r.Context(), core.AuditEvent{
 				ActorID:  caller.ID,
 				OrgID:    orgID(r),
-				Action:   core.AuditAction("invite.email.failed"),
+				Action:   core.AuditActionInviteIssuedEmailTemplate,
 				TargetID: inv.ID,
-				Detail:   sendErr.Error(),
+				Detail:   tmplErr.Error(),
 			})
+			// Fall through to return the OK response: the row is
+			// committed and the URL works; the only casualty is
+			// the envelope, matching the fall-back behaviour below.
 		} else {
-			s.store.Audit(r.Context(), core.AuditEvent{
-				ActorID:  caller.ID,
-				OrgID:    orgID(r),
-				Action:   core.AuditAction("invite.email.sent"),
-				TargetID: inv.ID,
-				Detail:   msgID,
-			})
+			idem := "nexus-invite-" + inv.ID
+			// Detach from the request context: a slow / hard-failing
+			// SMTP relay or Resend call must not unwind an admin's
+			// already-issued invite status. The transport owns its
+			// own deadline (EmailRequestTimeout) and audit row.
+			go s.deliverInvite(r.Context(), email, "You're invited to Nexus", body, idem, inv.ID, caller.ID, orgID(r))
 		}
 	}
 	writeJSON(w, http.StatusCreated, inv)
@@ -215,6 +217,60 @@ func (s *Server) lookupInvite(w http.ResponseWriter, r *http.Request) {
 // emitted-but-broken unwind.
 type inviteAcceptShape struct {
 	Password string `json:"password"`
+}
+
+// deliverInvite runs the actual transport call after createInvite has
+// committed the row. It is detached from the request context so a slow
+// SMTP relay or Resend hand-off cannot unwind an admin's already-issued
+// invite status; the transport owns its own deadline (EmailRequestTimeout)
+// and its own audit row.
+//
+// The Detail field carries "transport=<name>; msg=<id>" — previously it
+// embedded the raw Resend error string, which leaked base URLs and
+// inboxes into the audit_log when a misconfigured relay returned a long
+// diagnostic. Sanitising the failure detail to {subject + reason code}
+// is the safer form for SIEM rules that key on the action.
+//
+// The function is safe to invoke concurrently because Server.mailer is a
+// single Mailer whose underlying transports are themselves concurrency-
+// safe (http.Client, smtp.Client-per-call). The slog logger handles the
+// per-invite card, and the audit row includes the invite id so an
+// operator can correlate "invite.email.failed" → "go away retry" by
+// filtering the audit log.
+func (s *Server) deliverInvite(_ context.Context, recipient, subject, body, idempotencyKey, inviteID, actorID, orgID string) {
+	if s.mailer == nil {
+		return
+	}
+	// Detached: 30s ceiling is the operator-configured EmailRequestTimeout
+	// ceiling via the per-transport Timeout. We give it a small extra
+	// headroom so a perfectly-reliable SMTP transport that's also the
+	// audit-write bottleneck does not get cut by the goroutine limit.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	msgID, err := s.mailer.Send(ctx, recipient, subject, body, idempotencyKey)
+	if err != nil {
+		s.log.Warn("invite email send failed",
+			"err", err,
+			"invite", inviteID,
+			"email", recipient,
+			"actor", actorID)
+		s.store.Audit(ctx, core.AuditEvent{
+			ActorID:  actorID,
+			OrgID:    orgID,
+			Action:   core.AuditActionInviteIssuedEmailFailed,
+			TargetID: inviteID,
+			Detail:   "subject=" + subject + "; err=" + err.Error(),
+		})
+		return
+	}
+	s.store.Audit(ctx, core.AuditEvent{
+		ActorID:  actorID,
+		OrgID:    orgID,
+		Action:   core.AuditActionInviteIssuedEmailSent,
+		TargetID: inviteID,
+		Detail:   "subject=" + subject + "; msg=" + msgID,
+	})
 }
 
 func (s *Server) acceptInvite(w http.ResponseWriter, r *http.Request) {

@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -54,6 +55,15 @@ func Default() *Guard {
 // egress path should use.
 func Client(class Class, timeout time.Duration) *http.Client {
 	return Default().Client(class, timeout)
+}
+
+// Dialer returns a guarded *net.Dialer for non-HTTP callers (SMTP, raw TCP).
+// The connect-time address check is identical to the one Client uses; the
+// only thing missing is the http.Transport plumbing around it. Connect
+// itself is capped at dialTimeout (10 s); longer overall send budgets are
+// the caller's job via net.Conn deadlines.
+func Dialer(class Class) *net.Dialer {
+	return Default().Dialer(class)
 }
 
 // CheckURL validates a destination against the process guard. Use it where a URL

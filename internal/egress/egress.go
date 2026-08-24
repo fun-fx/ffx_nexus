@@ -341,8 +341,30 @@ func parseDestination(rawURL string) (*url.URL, error) {
 	return u, nil
 }
 
-// Client returns an http.Client that enforces the policy for class.
+// Dialer returns a *net.Dialer that enforces the policy for class, so a
+// non-HTTP caller (SMTP, raw TCP, gRPC) gets the same connect-time address
+// check an http.Client gets. Connect itself caps at dialTimeout (10 s);
+// callers needing a longer overall send budget wrap the resulting net.Conn
+// in SetDeadline rather than widening the connect timeout, so the policy
+// path remains unconditionally bounded.
 //
+// The IP policy runs at connect time against the literal address the
+// socket is about to dial, so a hostname that resolves to a public address
+// when validated and a private one when fetched still gets refused.
+func (g *Guard) Dialer(class Class) *net.Dialer {
+	return &net.Dialer{
+		Timeout:   dialTimeout,
+		KeepAlive: 30 * time.Second,
+		// Re-stated from Client so the rationale survives a copy: the
+		// control hook fires at connect time, not at config check time,
+		// so a rebinding DNS cannot smuggle a private address into a
+		// permit-against-public validation.
+		Control: func(_, address string, _ syscall.RawConn) error {
+			return g.checkDialAddress(class, address)
+		},
+	}
+}
+
 // timeout is the whole-request budget. A non-positive value gets
 // Policy.DefaultTimeout rather than Go's zero-means-forever, because an
 // unbounded outbound request is how a single unreachable vendor turns into a
@@ -351,18 +373,7 @@ func (g *Guard) Client(class Class, timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = g.policy.DefaultTimeout
 	}
-	dialer := &net.Dialer{
-		Timeout:   dialTimeout,
-		KeepAlive: 30 * time.Second,
-		// Control runs after DNS resolution with the concrete address the socket
-		// is about to connect to. That placement is the whole point: a check on
-		// the URL's hostname can be defeated by a record that resolves to a
-		// public address when validated and a private one when fetched. Here
-		// there is no window — this IS the connection.
-		Control: func(_, address string, _ syscall.RawConn) error {
-			return g.checkDialAddress(class, address)
-		},
-	}
+	dialer := g.Dialer(class)
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
