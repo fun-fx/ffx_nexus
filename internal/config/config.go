@@ -259,16 +259,16 @@ type Config struct {
 	// changes nothing but the `From` value; the engine logs a warn line
 	// when an alias supplies the address, so the migration is visible in
 	// pod logs.
-	EmailProvider        string
-	EmailFromAddress     string
-	EmailRequestTimeout  time.Duration
-	ResendAPIKey         string
-	ResendAPIBaseURL     string
-	SMTPHost             string
-	SMTPPort             int
-	SMTPUsername         string
-	SMTPPassword         string
-	SMTPEncryption       string
+	EmailProvider       string
+	EmailFromAddress    string
+	EmailRequestTimeout time.Duration
+	ResendAPIKey        string
+	ResendAPIBaseURL    string
+	SMTPHost            string
+	SMTPPort            int
+	SMTPUsername        string
+	SMTPPassword        string
+	SMTPEncryption      string
 	// EmailPublicBaseURL overrides the invite URL embedded in the
 	// outgoing email when the operator wants a different host on the
 	// envelope than the console URL the invitee clicks through.

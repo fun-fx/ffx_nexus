@@ -145,20 +145,20 @@ const (
 	AuditActionCredentialBaseURLSaved AuditAction = "credential.base_url.saved"
 
 	// --- Users & invites ---
-	AuditActionUserCreated           AuditAction = "user.create"
-	AuditActionUserUpdated           AuditAction = "user.update"
-	AuditActionUserDeleted           AuditAction = "user.delete"
-	AuditActionUserLoginSucceeded    AuditAction = "user.login.succeeded"
-	AuditActionUserLoginDenied       AuditAction = "user.login.denied"
-	AuditActionInviteIssued          AuditAction = "invite.issued"
-	AuditActionInviteIssuedEmailStarted   AuditAction = "invite.email.started"
-	AuditActionInviteIssuedEmailSent      AuditAction = "invite.email.sent"
-	AuditActionInviteIssuedEmailFailed    AuditAction = "invite.email.failed"
-	AuditActionInviteIssuedEmailTemplate  AuditAction = "invite.email.template_failed"
-	AuditActionInviteAccepted        AuditAction = "invite.accepted"
-	AuditActionInviteRejectedInvalid AuditAction = "invite.rejected.invalid"
-	AuditActionInviteRejectedExpired AuditAction = "invite.rejected.expired"
-	AuditActionInviteReplayRejected  AuditAction = "invite.rejected.replay"
+	AuditActionUserCreated               AuditAction = "user.create"
+	AuditActionUserUpdated               AuditAction = "user.update"
+	AuditActionUserDeleted               AuditAction = "user.delete"
+	AuditActionUserLoginSucceeded        AuditAction = "user.login.succeeded"
+	AuditActionUserLoginDenied           AuditAction = "user.login.denied"
+	AuditActionInviteIssued              AuditAction = "invite.issued"
+	AuditActionInviteIssuedEmailStarted  AuditAction = "invite.email.started"
+	AuditActionInviteIssuedEmailSent     AuditAction = "invite.email.sent"
+	AuditActionInviteIssuedEmailFailed   AuditAction = "invite.email.failed"
+	AuditActionInviteIssuedEmailTemplate AuditAction = "invite.email.template_failed"
+	AuditActionInviteAccepted            AuditAction = "invite.accepted"
+	AuditActionInviteRejectedInvalid     AuditAction = "invite.rejected.invalid"
+	AuditActionInviteRejectedExpired     AuditAction = "invite.rejected.expired"
+	AuditActionInviteReplayRejected      AuditAction = "invite.rejected.replay"
 
 	// --- Routing / quality-aware failover ---
 	AuditActionRoutingDecision AuditAction = "routing.decision"
@@ -370,15 +370,15 @@ var auditFailureClass = map[AuditAction]AuditFailureClass{
 	AuditActionKeyAccepted:        BestEffortClass,
 
 	// --- Invites ---
-	AuditActionInviteIssued:          FailStopClass,
+	AuditActionInviteIssued:              FailStopClass,
 	AuditActionInviteIssuedEmailStarted:  BestEffortClass,
 	AuditActionInviteIssuedEmailSent:     BestEffortClass,
 	AuditActionInviteIssuedEmailFailed:   BestEffortClass,
 	AuditActionInviteIssuedEmailTemplate: BestEffortClass,
-	AuditActionInviteAccepted:        FailStopClass,
-	AuditActionInviteRejectedInvalid: BestEffortClass,
-	AuditActionInviteRejectedExpired: BestEffortClass,
-	AuditActionInviteReplayRejected:  BestEffortClass,
+	AuditActionInviteAccepted:            FailStopClass,
+	AuditActionInviteRejectedInvalid:     BestEffortClass,
+	AuditActionInviteRejectedExpired:     BestEffortClass,
+	AuditActionInviteReplayRejected:      BestEffortClass,
 
 	// --- Denials (aggregated hot-path) ---
 	AuditActionOrgBoundaryViolated:   FailStopClass,

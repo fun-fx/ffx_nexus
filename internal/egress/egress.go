@@ -56,6 +56,7 @@ import (
 	"syscall"
 	"time"
 )
+
 // Class is the trust level of whoever chose the destination. It is the only
 // input that changes the IP policy, and it exists because "block private
 // addresses" is correct for one of these and breaks the product for the other.
@@ -363,7 +364,7 @@ func (g *Guard) Dialer(class Class) *net.Dialer {
 		},
 	}
 }
-//
+
 // timeout is the whole-request budget. A non-positive value gets
 // Policy.DefaultTimeout rather than Go's zero-means-forever, because an
 // unbounded outbound request is how a single unreachable vendor turns into a

@@ -19,10 +19,10 @@ import (
 // phishing report queue.
 //
 // Two assertions matter:
-//   1. The dangerous string is not present verbatim in the body.
-//   2. The escaped string IS present, so we can be sure the test was not
-//      "the dangerous string turned into blank" — both halves of the
-//      contract are covered.
+//  1. The dangerous string is not present verbatim in the body.
+//  2. The escaped string IS present, so we can be sure the test was not
+//     "the dangerous string turned into blank" — both halves of the
+//     contract are covered.
 func TestRenderInviteHTMLEscapesInviter(t *testing.T) {
 	body, err := renderInviteHTML(
 		"https://example.com/invite/x",

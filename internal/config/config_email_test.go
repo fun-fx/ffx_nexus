@@ -119,10 +119,10 @@ func TestFromAddressResolution(t *testing.T) {
 	defer a.teardown()
 	// Both unset -> "".
 	// load() does NOT touch .env; it reads the environment directly. By
-// going through load() instead of the public Load(), the tests are not
-// contaminated by a developer's .env file — which is set as a hard
-// invariant in this package, since a leaked .env would silently win over
-// the test inputs and produce a green-light failure mode.
+	// going through load() instead of the public Load(), the tests are not
+	// contaminated by a developer's .env file — which is set as a hard
+	// invariant in this package, since a leaked .env would silently win over
+	// the test inputs and produce a green-light failure mode.
 	a.setenv("NEXUS_EMAIL_FROM_ADDRESS", "")
 	a.setenv("NEXUS_RESEND_FROM_ADDRESS", "")
 	cfg := load()

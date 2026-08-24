@@ -1,0 +1,383 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "annotations": {
+                    "kubeadm.alpha.kubernetes.io/cri-socket": "unix:///run/containerd/containerd.sock",
+                    "node.alpha.kubernetes.io/ttl": "0",
+                    "volumes.kubernetes.io/controller-managed-attach-detach": "true"
+                },
+                "creationTimestamp": "2026-08-21T16:20:01Z",
+                "labels": {
+                    "beta.kubernetes.io/arch": "arm64",
+                    "beta.kubernetes.io/os": "linux",
+                    "kubernetes.io/arch": "arm64",
+                    "kubernetes.io/hostname": "nexus-cni-test-control-plane",
+                    "kubernetes.io/os": "linux",
+                    "node-role.kubernetes.io/control-plane": "",
+                    "node.kubernetes.io/exclude-from-external-load-balancers": ""
+                },
+                "name": "nexus-cni-test-control-plane",
+                "resourceVersion": "864",
+                "uid": "b0736d7f-e605-402d-aedd-fa39eccd68a6"
+            },
+            "spec": {
+                "podCIDR": "10.244.0.0/24",
+                "podCIDRs": [
+                    "10.244.0.0/24"
+                ],
+                "providerID": "kind://docker/nexus-cni-test/nexus-cni-test-control-plane",
+                "taints": [
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node-role.kubernetes.io/control-plane"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/not-ready"
+                    }
+                ]
+            },
+            "status": {
+                "addresses": [
+                    {
+                        "address": "172.19.0.3",
+                        "type": "InternalIP"
+                    },
+                    {
+                        "address": "nexus-cni-test-control-plane",
+                        "type": "Hostname"
+                    }
+                ],
+                "allocatable": {
+                    "cpu": "10",
+                    "ephemeral-storage": "61202244Ki",
+                    "hugepages-1Gi": "0",
+                    "hugepages-2Mi": "0",
+                    "hugepages-32Mi": "0",
+                    "hugepages-64Ki": "0",
+                    "memory": "8025360Ki",
+                    "pods": "110"
+                },
+                "capacity": {
+                    "cpu": "10",
+                    "ephemeral-storage": "61202244Ki",
+                    "hugepages-1Gi": "0",
+                    "hugepages-2Mi": "0",
+                    "hugepages-32Mi": "0",
+                    "hugepages-64Ki": "0",
+                    "memory": "8025360Ki",
+                    "pods": "110"
+                },
+                "conditions": [
+                    {
+                        "lastHeartbeatTime": "2026-08-21T16:25:10Z",
+                        "lastTransitionTime": "2026-08-21T16:19:59Z",
+                        "message": "kubelet has sufficient memory available",
+                        "reason": "KubeletHasSufficientMemory",
+                        "status": "False",
+                        "type": "MemoryPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-08-21T16:25:10Z",
+                        "lastTransitionTime": "2026-08-21T16:19:59Z",
+                        "message": "kubelet has no disk pressure",
+                        "reason": "KubeletHasNoDiskPressure",
+                        "status": "False",
+                        "type": "DiskPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-08-21T16:25:10Z",
+                        "lastTransitionTime": "2026-08-21T16:19:59Z",
+                        "message": "kubelet has sufficient PID available",
+                        "reason": "KubeletHasSufficientPID",
+                        "status": "False",
+                        "type": "PIDPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-08-21T16:25:10Z",
+                        "lastTransitionTime": "2026-08-21T16:19:59Z",
+                        "message": "container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:Network plugin returns error: cni plugin not initialized",
+                        "reason": "KubeletNotReady",
+                        "status": "False",
+                        "type": "Ready"
+                    }
+                ],
+                "daemonEndpoints": {
+                    "kubeletEndpoint": {
+                        "Port": 10250
+                    }
+                },
+                "images": [
+                    {
+                        "names": [
+                            "docker.io/library/import-2023-12-14@sha256:ef971f6c6bb8042fe36028d889bd5cecda29505915fc6138ca667eef49876e1e",
+                            "registry.k8s.io/kube-proxy:v1.29.0"
+                        ],
+                        "sizeBytes": 86630089
+                    },
+                    {
+                        "names": [
+                            "docker.io/library/import-2023-12-14@sha256:3ae927972126a29431ca26dce0bad49f6c1b63ed807820560860cb7f7c884731",
+                            "registry.k8s.io/kube-apiserver:v1.29.0"
+                        ],
+                        "sizeBytes": 83343331
+                    },
+                    {
+                        "names": [
+                            "docker.io/library/import-2023-12-14@sha256:aae689ce581dde7e9070b3fbbbee9308136a6f5a7ccbeaf716b3f266e6182df4",
+                            "registry.k8s.io/kube-controller-manager:v1.29.0"
+                        ],
+                        "sizeBytes": 77706569
+                    },
+                    {
+                        "names": [
+                            "registry.k8s.io/etcd:3.5.10-0"
+                        ],
+                        "sizeBytes": 65198393
+                    },
+                    {
+                        "names": [
+                            "docker.io/library/import-2023-12-14@sha256:fd01ec3705a4d8f55c325c7463b834e819a7fad0222f5d268b7803e5349afd96",
+                            "registry.k8s.io/kube-scheduler:v1.29.0"
+                        ],
+                        "sizeBytes": 59029319
+                    },
+                    {
+                        "names": [
+                            "docker.io/kindest/kindnetd:v20230511-dc714da8"
+                        ],
+                        "sizeBytes": 25334607
+                    },
+                    {
+                        "names": [
+                            "docker.io/kindest/local-path-provisioner:v20230511-dc714da8"
+                        ],
+                        "sizeBytes": 17275248
+                    },
+                    {
+                        "names": [
+                            "registry.k8s.io/coredns/coredns:v1.11.1"
+                        ],
+                        "sizeBytes": 16482581
+                    },
+                    {
+                        "names": [
+                            "docker.io/kindest/local-path-helper:v20230510-486859a6"
+                        ],
+                        "sizeBytes": 2922287
+                    },
+                    {
+                        "names": [
+                            "registry.k8s.io/pause:3.7"
+                        ],
+                        "sizeBytes": 268400
+                    }
+                ],
+                "nodeInfo": {
+                    "architecture": "arm64",
+                    "bootID": "37fe1252-accd-478b-b5b0-b5c53bbe5380",
+                    "containerRuntimeVersion": "containerd://1.7.1",
+                    "kernelVersion": "6.10.14-linuxkit",
+                    "kubeProxyVersion": "v1.29.0",
+                    "kubeletVersion": "v1.29.0",
+                    "machineID": "388099c9645f475cb89e52358e5e09fc",
+                    "operatingSystem": "linux",
+                    "osImage": "Debian GNU/Linux 11 (bullseye)",
+                    "systemUUID": "388099c9645f475cb89e52358e5e09fc"
+                }
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "annotations": {
+                    "kubeadm.alpha.kubernetes.io/cri-socket": "unix:///run/containerd/containerd.sock",
+                    "node.alpha.kubernetes.io/ttl": "0",
+                    "volumes.kubernetes.io/controller-managed-attach-detach": "true"
+                },
+                "creationTimestamp": "2026-08-21T16:20:23Z",
+                "labels": {
+                    "beta.kubernetes.io/arch": "arm64",
+                    "beta.kubernetes.io/os": "linux",
+                    "kubernetes.io/arch": "arm64",
+                    "kubernetes.io/hostname": "nexus-cni-test-worker",
+                    "kubernetes.io/os": "linux"
+                },
+                "name": "nexus-cni-test-worker",
+                "resourceVersion": "896",
+                "uid": "77ce3549-78c0-4b59-8a2e-5a197a6a60f0"
+            },
+            "spec": {
+                "podCIDR": "10.244.1.0/24",
+                "podCIDRs": [
+                    "10.244.1.0/24"
+                ],
+                "providerID": "kind://docker/nexus-cni-test/nexus-cni-test-worker",
+                "taints": [
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/not-ready"
+                    }
+                ]
+            },
+            "status": {
+                "addresses": [
+                    {
+                        "address": "172.19.0.2",
+                        "type": "InternalIP"
+                    },
+                    {
+                        "address": "nexus-cni-test-worker",
+                        "type": "Hostname"
+                    }
+                ],
+                "allocatable": {
+                    "cpu": "10",
+                    "ephemeral-storage": "61202244Ki",
+                    "hugepages-1Gi": "0",
+                    "hugepages-2Mi": "0",
+                    "hugepages-32Mi": "0",
+                    "hugepages-64Ki": "0",
+                    "memory": "8025360Ki",
+                    "pods": "110"
+                },
+                "capacity": {
+                    "cpu": "10",
+                    "ephemeral-storage": "61202244Ki",
+                    "hugepages-1Gi": "0",
+                    "hugepages-2Mi": "0",
+                    "hugepages-32Mi": "0",
+                    "hugepages-64Ki": "0",
+                    "memory": "8025360Ki",
+                    "pods": "110"
+                },
+                "conditions": [
+                    {
+                        "lastHeartbeatTime": "2026-08-21T16:25:32Z",
+                        "lastTransitionTime": "2026-08-21T16:20:23Z",
+                        "message": "kubelet has sufficient memory available",
+                        "reason": "KubeletHasSufficientMemory",
+                        "status": "False",
+                        "type": "MemoryPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-08-21T16:25:32Z",
+                        "lastTransitionTime": "2026-08-21T16:20:23Z",
+                        "message": "kubelet has no disk pressure",
+                        "reason": "KubeletHasNoDiskPressure",
+                        "status": "False",
+                        "type": "DiskPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-08-21T16:25:32Z",
+                        "lastTransitionTime": "2026-08-21T16:20:23Z",
+                        "message": "kubelet has sufficient PID available",
+                        "reason": "KubeletHasSufficientPID",
+                        "status": "False",
+                        "type": "PIDPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-08-21T16:25:32Z",
+                        "lastTransitionTime": "2026-08-21T16:20:23Z",
+                        "message": "container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:Network plugin returns error: cni plugin not initialized",
+                        "reason": "KubeletNotReady",
+                        "status": "False",
+                        "type": "Ready"
+                    }
+                ],
+                "daemonEndpoints": {
+                    "kubeletEndpoint": {
+                        "Port": 10250
+                    }
+                },
+                "images": [
+                    {
+                        "names": [
+                            "docker.io/library/import-2023-12-14@sha256:ef971f6c6bb8042fe36028d889bd5cecda29505915fc6138ca667eef49876e1e",
+                            "registry.k8s.io/kube-proxy:v1.29.0"
+                        ],
+                        "sizeBytes": 86630089
+                    },
+                    {
+                        "names": [
+                            "docker.io/library/import-2023-12-14@sha256:3ae927972126a29431ca26dce0bad49f6c1b63ed807820560860cb7f7c884731",
+                            "registry.k8s.io/kube-apiserver:v1.29.0"
+                        ],
+                        "sizeBytes": 83343331
+                    },
+                    {
+                        "names": [
+                            "docker.io/library/import-2023-12-14@sha256:aae689ce581dde7e9070b3fbbbee9308136a6f5a7ccbeaf716b3f266e6182df4",
+                            "registry.k8s.io/kube-controller-manager:v1.29.0"
+                        ],
+                        "sizeBytes": 77706569
+                    },
+                    {
+                        "names": [
+                            "registry.k8s.io/etcd:3.5.10-0"
+                        ],
+                        "sizeBytes": 65198393
+                    },
+                    {
+                        "names": [
+                            "docker.io/library/import-2023-12-14@sha256:fd01ec3705a4d8f55c325c7463b834e819a7fad0222f5d268b7803e5349afd96",
+                            "registry.k8s.io/kube-scheduler:v1.29.0"
+                        ],
+                        "sizeBytes": 59029319
+                    },
+                    {
+                        "names": [
+                            "docker.io/kindest/kindnetd:v20230511-dc714da8"
+                        ],
+                        "sizeBytes": 25334607
+                    },
+                    {
+                        "names": [
+                            "docker.io/kindest/local-path-provisioner:v20230511-dc714da8"
+                        ],
+                        "sizeBytes": 17275248
+                    },
+                    {
+                        "names": [
+                            "registry.k8s.io/coredns/coredns:v1.11.1"
+                        ],
+                        "sizeBytes": 16482581
+                    },
+                    {
+                        "names": [
+                            "docker.io/kindest/local-path-helper:v20230510-486859a6"
+                        ],
+                        "sizeBytes": 2922287
+                    },
+                    {
+                        "names": [
+                            "registry.k8s.io/pause:3.7"
+                        ],
+                        "sizeBytes": 268400
+                    }
+                ],
+                "nodeInfo": {
+                    "architecture": "arm64",
+                    "bootID": "37fe1252-accd-478b-b5b0-b5c53bbe5380",
+                    "containerRuntimeVersion": "containerd://1.7.1",
+                    "kernelVersion": "6.10.14-linuxkit",
+                    "kubeProxyVersion": "v1.29.0",
+                    "kubeletVersion": "v1.29.0",
+                    "machineID": "34709b11c05e4703b0033558bdaa7cb2",
+                    "operatingSystem": "linux",
+                    "osImage": "Debian GNU/Linux 11 (bullseye)",
+                    "systemUUID": "34709b11c05e4703b0033558bdaa7cb2"
+                }
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

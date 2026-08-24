@@ -46,9 +46,9 @@ import (
 // *http.Client is safe for concurrent use.
 type ResendClient struct {
 	APIKey   string
-	From     string                  // e.g. "Nexus <noreply@yourcompany.example>"
-	Endpoint string                  // overridable for test stubs and internal relays
-	BaseURL  string                  // base for /emails resolution; defaults to https://api.resend.com
+	From     string // e.g. "Nexus <noreply@yourcompany.example>"
+	Endpoint string // overridable for test stubs and internal relays
+	BaseURL  string // base for /emails resolution; defaults to https://api.resend.com
 	Timeout  time.Duration
 
 	hc *http.Client

@@ -1,0 +1,4 @@
+cluster_name=nexus-cni-test
+k8s_version=1.29.0
+cilium_version=1.15.3
+kube_worker_count=1
