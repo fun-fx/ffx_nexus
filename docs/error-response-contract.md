@@ -5,9 +5,10 @@ purpose, but they do NOT share a body shape because the audiences are
 completely different:
 
 1.  **The OpenAI-compatible surface** at `/v1/chat/completions`,
-    `/v1/embeddings`, `/v1/images`, `/v1/moderations`, and
-    `/v1/responses`. Customers reach this through stock OpenAI SDKs
-    (`openai`, `openai-node`, etc.). The body is the OpenAI error shape:
+    `/v1/embeddings`, `/v1/images`, `/v1/moderations`,
+    `/v1/responses`, and `/v1/messages`. Customers reach this through
+    stock OpenAI or Anthropic SDKs (`openai`, `openai-node`,
+    `@anthropic-ai/sdk`, `anthropic`). The body is the OpenAI error shape:
 
     ```json
     {

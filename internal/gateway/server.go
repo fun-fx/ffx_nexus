@@ -58,6 +58,14 @@ func NewMux(h *Handler, auth VKeyAuthenticator, lim Limiter, concCap CapIface, r
 		r.Use(Concurrency(concCap))
 		r.Post("/v1/chat/completions", h.ChatCompletions)
 		r.Post("/v1/responses", h.Responses)
+		// POST /v1/messages accepts the Anthropic Messages API request body
+		// (model, max_tokens, system, messages, tools, ...) and returns the
+		// matching Messages response. Wired alongside /v1/chat/completions
+		// so stock Anthropic SDKs and Cursor agents configured with a
+		// Nexus base URL can hit the gateway without an inline translation
+		// shim. Always exposed (no opt-in toggle) — pair with the
+		// /v1/chat/completions path for callers that prefer OpenAI shapes.
+		r.Post("/v1/messages", h.Messages)
 		r.Post("/v1/embeddings", h.Embeddings)
 		r.Post("/v1/moderations", h.Moderations)
 		r.Post("/v1/images/generations", h.Images)
