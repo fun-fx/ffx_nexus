@@ -287,13 +287,23 @@ Use a `provider/model` prefix to force a backend, e.g. `anthropic/claude-sonnet-
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming, tools with `tool_choice` + `parallel_tool_calls`, structured output). Also accepts the **Cursor Agent "hybrid" body** (Responses-shaped `input`, flat functions, custom tools, `reasoning.effort`) and rewrites it to canonical chat shape — see [Cursor Agent compatibility](#cursor-agent-compatibility). |
 | `POST /v1/responses` | OpenAI Responses API (string or array `input`, tool calls surfaced as `function_call` items). Streaming emits a full **OpenAI-spec `response.completed`** envelope (with `instructions`, `tools`, `parallel_tool_calls`, `usage`), a `response.failed` event on stream errors, and an `incomplete` close when the upstream truncates; `ApplyPatch` tool grammar is preserved end-to-end. Implemented as a shim over `/v1/chat/completions`. |
+| `POST /v1/messages` | Anthropic Messages API (top-level `system`, content blocks, `max_tokens`, `tool_use` / `tool_result` exchanges). Streaming emits `message_start` → `content_block_*` → `message_delta` → `message_stop` per the Anthropic spec. Stock Anthropic Python and TypeScript SDKs point at the gateway by configuring their base URL to `https://<nexus>/v1` — no inline adapter required. Implemented as a shim over `/v1/chat/completions` so every backend the gateway already supports (OpenAI / Anthropic / Gemini / Groq / Mistral / Grid / user BYOK) is reachable behind the same wire shape. |
 | `POST /v1/embeddings` | OpenAI-compatible embeddings for providers that implement the `EmbeddingsProvider` interface (OpenAI / Mistral today; Anthropic / Gemini / Groq to follow). Supports string and string-array `input`. |
 | `POST /v1/moderations` | OpenAI-compatible content moderation. Omitted `model` defaults to `omni-moderation-latest`. Same `Auth`+`Enforce`+`BYOK` chain as chat. |
 | `POST /v1/images/generations` | OpenAI-compatible image generation (`dall-e-3` and friends). Omitted `model` defaults to `dall-e-3`. |
 | `GET  /v1/models` | Union of registered chat / embedding / moderation / image model ids across all installed providers |
 
-All six endpoints go through the same `Auth` + `Enforce` middleware chain, so
+All seven endpoints go through the same `Auth` + `Enforce` middleware chain, so
 virtual-key RPM/budget limits and BYOK credential resolution apply uniformly.
+The chat and `/v1/messages` paths share the same canonical pipeline (quality-
+aware routing, fail-over, eval trace, semantic cache, guardrails) without
+duplication.
+
+> **Auth note for `/v1/messages`**: stock Anthropic SDKs default to an
+> `x-api-key` header. Nexus auth reads `Authorization: Bearer <vkey>` (and
+> `X-Nexus-Key`). Configure the SDK to set `auth_token = "Bearer <vkey>"`
+> (`@anthropic-ai/sdk` `authToken` option) for the call to reach the
+> virtual-key middleware.
 
 ### Cursor Agent compatibility
 
