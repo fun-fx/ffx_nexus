@@ -126,7 +126,9 @@ func TestProfileMatrixDevelopmentOmitted(t *testing.T) {
 
 // TestProfileMatrixEnterpriseModeDisabled fails-closed for
 // profile=enterprise. Per the schema:
-//   profile=enterprise + mode=disabled MUST be rejected
+//
+//	profile=enterprise + mode=disabled MUST be rejected
+//
 // because `mode=disabled` means no network policy at all,
 // and the spec explicitly forbids that combination.
 func TestProfileMatrixEnterpriseModeDisabled(t *testing.T) {

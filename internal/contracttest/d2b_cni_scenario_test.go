@@ -11,17 +11,17 @@
 // post-install smoke for live clusters.
 //
 // The eight scenarios:
-//   1. Ingress controller role Pod → Gateway API: succeeds
-//   2. Prometheus role Pod → Gateway/Worker metrics: succeeds
-//   3. Untrusted Pod → Worker metrics/health: fails
-//   4. Gateway/Worker → PostgreSQL, DNS, required Redis/ClickHouse: succeeds
-//   5. Gateway/Worker → namespace-internal arbitrary Service, metadata IP,
-//      arbitrary external IP: fails
-//   6. Gateway/Worker → egress proxy: succeeds.
-//      Direct provider destinations: fails.
-//   7. Migration Job → PostgreSQL: succeeds.
-//      Migration Job → external provider: fails.
-//   8. feature off → no NetworkPolicy rule for ClickHouse/SSO/email.
+//  1. Ingress controller role Pod → Gateway API: succeeds
+//  2. Prometheus role Pod → Gateway/Worker metrics: succeeds
+//  3. Untrusted Pod → Worker metrics/health: fails
+//  4. Gateway/Worker → PostgreSQL, DNS, required Redis/ClickHouse: succeeds
+//  5. Gateway/Worker → namespace-internal arbitrary Service, metadata IP,
+//     arbitrary external IP: fails
+//  6. Gateway/Worker → egress proxy: succeeds.
+//     Direct provider destinations: fails.
+//  7. Migration Job → PostgreSQL: succeeds.
+//     Migration Job → external provider: fails.
+//  8. feature off → no NetworkPolicy rule for ClickHouse/SSO/email.
 //
 // We model "succeed/fail" by analysing the rendered
 // NetworkPolicy objects: a peer is `matched` if its
@@ -275,26 +275,26 @@ func TestScenario4GatewayCanReachPostgresAndDNS(t *testing.T) {
 	egress, _ := spec["egress"].([]interface{})
 	hasPG := false
 	hasDNS := false
-for _, rule := range egress {
-			ports, _ := rule.(map[string]interface{})["ports"].([]interface{})
-			for _, port := range ports {
-				pm, _ := port.(map[string]interface{})
-				portNum := portOf(pm)
-				switch portNum {
-				case 5432:
-					hasPG = true
-				case 53:
-					hasDNS = true
-				}
+	for _, rule := range egress {
+		ports, _ := rule.(map[string]interface{})["ports"].([]interface{})
+		for _, port := range ports {
+			pm, _ := port.(map[string]interface{})
+			portNum := portOf(pm)
+			switch portNum {
+			case 5432:
+				hasPG = true
+			case 53:
+				hasDNS = true
 			}
 		}
-		if !hasPG {
-			t.Errorf("Gateway policy has no Postgres (5432) egress")
-		}
-		if !hasDNS {
-			t.Errorf("Gateway policy has no DNS (53) egress")
-		}
 	}
+	if !hasPG {
+		t.Errorf("Gateway policy has no Postgres (5432) egress")
+	}
+	if !hasDNS {
+		t.Errorf("Gateway policy has no DNS (53) egress")
+	}
+}
 
 // TestScenario5aNoCIDRWildcard is the inverse of
 // scenario 5: rendering the chart with profile=
@@ -428,17 +428,17 @@ func TestScenario7MigrationPolicyEgressOnlyPostgres(t *testing.T) {
 	}
 	spec := mig["spec"].(map[string]interface{})
 	egress, _ := spec["egress"].([]interface{})
-for _, rule := range egress {
-			ports, _ := rule.(map[string]interface{})["ports"].([]interface{})
-			for _, port := range ports {
-				pm, _ := port.(map[string]interface{})
-				portNum := portOf(pm)
-				if portNum != 53 && portNum != 5432 {
-					t.Errorf("Migration policy egress on port %d (only 53, 5432 allowed)", portNum)
-				}
+	for _, rule := range egress {
+		ports, _ := rule.(map[string]interface{})["ports"].([]interface{})
+		for _, port := range ports {
+			pm, _ := port.(map[string]interface{})
+			portNum := portOf(pm)
+			if portNum != 53 && portNum != 5432 {
+				t.Errorf("Migration policy egress on port %d (only 53, 5432 allowed)", portNum)
 			}
 		}
 	}
+}
 
 // TestScenario8FeatureOffOmitsRule covers scenario
 // 8: when tracePersist is OFF, no ClickHouse
@@ -454,14 +454,14 @@ func TestScenario8FeatureOffOmitsRule(t *testing.T) {
 	}
 	spec := gw["spec"].(map[string]interface{})
 	egress, _ := spec["egress"].([]interface{})
-for _, rule := range egress {
-			ports, _ := rule.(map[string]interface{})["ports"].([]interface{})
-			for _, port := range ports {
-				pm, _ := port.(map[string]interface{})
-				portNum := portOf(pm)
-				if portNum == 9000 || portNum == 8123 {
-					t.Errorf("ClickHouse egress rule (port %d) appeared with tracePersist=false", portNum)
-				}
+	for _, rule := range egress {
+		ports, _ := rule.(map[string]interface{})["ports"].([]interface{})
+		for _, port := range ports {
+			pm, _ := port.(map[string]interface{})
+			portNum := portOf(pm)
+			if portNum == 9000 || portNum == 8123 {
+				t.Errorf("ClickHouse egress rule (port %d) appeared with tracePersist=false", portNum)
 			}
 		}
 	}
+}

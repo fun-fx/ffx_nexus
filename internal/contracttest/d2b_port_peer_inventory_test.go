@@ -59,8 +59,8 @@ func TestPortPeerInventoryCrossReferenced(t *testing.T) {
 	}
 	rendered := renderEnterpriseChart(t, root)
 	for _, f := range []struct {
-		path   string
-		text   string
+		path string
+		text string
 	}{
 		{"deployment", rendered["deployment"]},
 		{"service", rendered["service"]},
@@ -125,7 +125,7 @@ func TestPortPeerInventoryCrossReferenced(t *testing.T) {
 // `app.kubernetes.io/component` entry. This locks the chart's
 // observability contract:
 //
-//   ServiceMonitor_selector ⊆ Service_selector ∪ {component}
+//	ServiceMonitor_selector ⊆ Service_selector ∪ {component}
 //
 // If a future change dangles the selector (e.g. drops the
 // `app.kubernetes.io/instance` label) the rule is silently
@@ -167,14 +167,14 @@ func TestServiceMonitorSelectorSubsetOfService(t *testing.T) {
 // parseSelectorLabels extracts `selector:` from a rendered
 // K8s resource. Two encodings are in play in this chart:
 //
-//   spec:
-//     selector:
-//       matchLabels:
-//         <key>: <value>
+//	spec:
+//	  selector:
+//	    matchLabels:
+//	      <key>: <value>
 //
-//   spec:
-//     selector:
-//       <key>: <value>      # shorthand
+//	spec:
+//	  selector:
+//	    <key>: <value>      # shorthand
 //
 // Both return a map[string]string. The Service uses the
 // shorthand; the ServiceMonitor uses matchLabels (or a mix).
@@ -350,7 +350,7 @@ func splitIngressRules(text string) []string {
 //
 // Strategy: this chart writes a deterministic comment
 //
-//   # Postgres egress — selector mode (in-cluster operator Postgres)
+//	# Postgres egress — selector mode (in-cluster operator Postgres)
 //
 // immediately before the Postgres namespaceSelector and
 // podSelector. The same comment appears in front of the

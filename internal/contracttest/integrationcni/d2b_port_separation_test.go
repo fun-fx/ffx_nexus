@@ -29,11 +29,12 @@ import (
 // can reach more than its documented ports.
 //
 // The mapping:
-//   ingress controller → Gateway/8080 only
-//   ingress controller → Worker is FORBIDDEN
-//   Prometheus → Gateway/9101 (metrics) only
-//   Prometheus → Gateway/8080 is FORBIDDEN
-//   Prometheus → Worker/9101 (metrics) only
+//
+//	ingress controller → Gateway/8080 only
+//	ingress controller → Worker is FORBIDDEN
+//	Prometheus → Gateway/9101 (metrics) only
+//	Prometheus → Gateway/8080 is FORBIDDEN
+//	Prometheus → Worker/9101 (metrics) only
 //
 // The matching happens at the rendered
 // NetworkPolicy level — a `kubectl exec` of a

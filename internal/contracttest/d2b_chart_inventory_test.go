@@ -34,8 +34,8 @@ import (
 // TestValuesSchemaInventoryMatchesChart runs at rooted
 // deploy/helm/nexus and exercises the
 //
-//   1) profile=enterprise, mode=enforce
-//   2) profile=development, mode=disabled
+//  1. profile=enterprise, mode=enforce
+//  2. profile=development, mode=disabled
 //
 // helm renditions and verifies that the second omits the
 // per-component NetworkPolicies. This is the same shape of

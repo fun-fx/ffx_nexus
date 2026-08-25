@@ -219,7 +219,10 @@ func TestScenario7WorkerToPostgresDNS(t *testing.T) {
 	if !kubectxReady(t) {
 		t.Skip("kubectl not configured")
 	}
-	for _, tgt := range []struct{ host string; port int }{
+	for _, tgt := range []struct {
+		host string
+		port int
+	}{
 		{"postgres.nexus-test-postgres.svc.cluster.local", 5432},
 		{"kube-dns.kube-system.svc.cluster.local", 53},
 	} {
