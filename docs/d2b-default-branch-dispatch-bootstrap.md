@@ -2,10 +2,29 @@
 
 This document records the role of `.github/workflows/cni-nightly.yml`
 on the **default branch** (`main`). It does NOT execute CNI
-enforcement. Its single job is a `default-branch-guard` that prints
-the dispatch inputs and exits non-zero when `github.ref_name == main`.
+enforcement. Its single job is a `registration-only-refusal` guard
+that unconditionally exits 78 (BSD sysexits.h EX_CONFIG) on EVERY
+ref — main, feature branches (incl. `fix/d2b-cni-clean-tree-artifact`),
+tags, and arbitrary SHA refs — regardless of the input values.
 
-## Why this file exists on `main`
+### Why the refusal is unconditional
+
+GitHub's documentation supports `--ref BRANCH` for `workflow_dispatch`.
+We cannot, prior to a real platform run, prove that every dispatch
+against the candidate branch's `fix/d2b-cni-clean-tree-artifact` ref
+definitively resolves its YAML to the candidate's full enforcement
+workflow definition (rather than this default-branch bootstrap). Until
+that's empi­ri­cal, the safe posture is to make this default-branch
+definition reject every ref. Any green run from this path would be a
+confusing operational artifact: an operator could mistake this run for
+a real heavy CNI pass.
+
+Exit 78 (BSD sysexits.h EX_CONFIG) is a deliberate, distinct refusal
+code, separate from POSIX exit 1 and from the candidate enforcement
+workflow's exit contract (10 source dirtiness, 11 artifact I/O, 14
+image pipeline, 15 fixture invalid). Operators seeing a `failure`
+conclusion from this workflow can correlate the `run_index` against
+the bootstrap-semantic, not the candidate evidence.
 
 GitHub Actions documentation states that a `workflow_dispatch`
 event can only be triggered when the workflow is present in the
@@ -29,14 +48,17 @@ could not create workflow dispatch event: HTTP 422
 
 The fix is to put a workflow file at the **same path on `main`** with
 the **same input schema** as the candidate enforcement workflow but
-with a guard job that refuses enforcement from `main`. Putting the
+with a guard job that refuses enforcement EVERY ref. Putting the
 file there registers the trigger in the repository's workflow
-registry without exposing `main` to enforcement work.
+registry without exposing `main` to any enforcement work.
 
 This is **bootstrap-only**:
 
 - The presence of `workflow_dispatch:` here does **not** mean
-  `main` runs heavy CNI.
+  `main` runs heavy CNI — nor does it mean any other ref runs
+  heavy CNI from this file. The single job
+  `registration-only-refusal` always exits 78 with a refusal
+  message.
 - The default-branch guard job is the **only job** in this file.
 - Scheduler / push / pull_request triggers are **not** enabled.
 
@@ -73,7 +95,9 @@ from the default-branch bootstrap, dispatching against the candidate
 branch ref compiles and runs that full body.
 
 If someone mistakenly dispatches against `--ref main`, the bootstrap
-prints the refusal message and exits with code 1.
+prints the refusal message and exits with code 78 (refusal code is
+distinct from run-index evidence; do NOT record this conclusion as
+D-2b evidence).
 
 ## Permissions / Safety
 
