@@ -1,0 +1,121 @@
+# CNI test fixtures. The labels here must match exactly the
+# selectors emitted by `deploy/helm/nexus/templates/networkpolicy.yaml`
+# when rendered with profile=enterprise / mode=enforce, otherwise the
+# conformance test (TestFixtureLabelsConformToChart) MUST fail
+# with a hard drift error.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-ingress
+  labels:
+    app.kubernetes.io/name: nexus
+    purpose: cni-test
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-prometheus
+  labels:
+    app.kubernetes.io/name: nexus
+    purpose: cni-test
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-untrusted
+  labels:
+    app.kubernetes.io/name: nexus
+    purpose: cni-test
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-ingress-controller
+  namespace: cni-test-ingress
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: ingress-controller
+spec:
+  containers:
+    - name: httpecho
+      image: ghcr.io/fun-fx/nexus-fixture:httpecho
+      args: ["-listen=:8080"]
+      ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-prometheus
+  namespace: cni-test-prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: metrics
+spec:
+  containers:
+    - name: scraper
+      image: ghcr.io/fun-fx/nexus-fixture:metrics
+      args: ["-listen=:9100", "-metrics-path=/metrics"]
+      ports:
+        - containerPort: 9100
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-untrusted-default
+  namespace: cni-test-untrusted
+  labels:
+    app.kubernetes.io/name: untrusted
+    app.kubernetes.io/component: probe
+spec:
+  containers:
+    - name: probe
+      image: ghcr.io/fun-fx/nexus-fixture:probe
+      args: ["-listen=:9111"]
+      ports:
+        - containerPort: 9111
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-nexus-gateway
+  namespace: default
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/instance: nexus-cni-test
+spec:
+  containers:
+    - name: gw
+      image: ghcr.io/fun-fx/nexus-fixture:gateway
+      args: ["-listen=:8080"]
+      ports:
+        - containerPort: 8080
+    - name: metrics
+      image: ghcr.io/fun-fx/nexus-fixture:metrics
+      args: ["-listen=:9100"]
+      ports:
+        - containerPort: 9100
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-nexus-worker
+  namespace: default
+  labels:
+    app.kubernetes.io/name: nexus
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/instance: nexus-cni-test
+spec:
+  containers:
+    - name: wk
+      image: ghcr.io/fun-fx/nexus-fixture:worker
+      args: ["-listen=:8081"]
+      ports:
+        - containerPort: 8081
+    - name: metrics
+      image: ghcr.io/fun-fx/nexus-fixture:metrics
+      args: ["-listen=:9100"]
+      ports:
+        - containerPort: 9100

@@ -626,3 +626,145 @@ podDisruptionBudget:
 eval:
   plugins:
     configMaps: []
+
+# --- Deployment profile ---------------------------------------------------------
+# Profile controls the chart's overall posture:
+#   enterprise — production install with enforced NetworkPolicy,
+#                strict fail-closed on bad config, and split
+#                Gateway/Worker deployments.
+#   development — single all-in-one replica, NetworkPolicy off
+#                by default, broader selector allowances for
+#                local-side scripting. NEVER use for a customer
+#                install.
+profile: enterprise
+
+# Deployment topology:
+#   split — Gateway Deployment + Worker Deployment independently.
+#   allInOne — single replica serving both. Use only for
+#              `profile: development`.
+deploymentMode: split
+
+# --- Per-component knobs -------------------------------------------------------
+gateway:
+  replicaCount: 1
+  # NEXUS_GATEWAY_MAX_CONNS — operator-capable Postgres connection
+  # usage by the Gateway. Includes /api/* handlers, console proxies
+  # and the OpenAI-compatible route.
+  maxConns: 8
+  # Ingress controller namespace selector — only ingresses from
+  # these namespaces are allowed to reach the Gateway API port.
+  ingressControllerNamespaces:
+    - ingress-nginx
+
+worker:
+  replicaCount: 1
+  # NEXUS_WORKER_MAX_CONNS — Postgres connections used by the
+  # async eval worker, scheduler claim and audit writers.
+  maxConns: 8
+  # NEXUS_WORKER_PIN_CONNECTION — when true, the worker pins a
+  # single dedicated Postgres connection for fencing-token
+  # writes so the connection cannot be lost to a Postgres
+  # pg_advisory_unlock race.
+  pinConnection: true
+
+# --- Connection budget -------------------------------------------------------
+# The chart warns (and in profile=enterprise, fails pre-install)
+# if the per-component total exceeds what the operator committed
+# to Postgres with `connections.postgresReserve`.
+connections:
+  # NEXUS_OPERATOR_USABLE_CONNECTIONS — total connections the
+  # Nexus binary is allowed to open to Postgres. Multiply of the
+  # budget the operator has reserved for this tenant.
+  operatorUsableConnections: 64
+  # NEXUS_MIGRATION_JOB_CONNECTIONS — exclusive connection count
+  # owned by the migration Job for the duration of the upgrade.
+  migrationJob: 8
+  # Reservations for other Postgres consumers in the same database.
+  opsReserve: 4
+  biReserve: 8
+  # NEXUS_POSTGRES_MAX — operator-side Postgres capacity that
+  # must be >= operatorUsableConnections + migrationJob +
+  # opsReserve + biReserve.
+  postgresReserve: 92
+  # NEXUS_PG_SLACK_HEADROOM — fraction of operatorUsableConnections
+  # kept unused so transient spikes do not exhaust the pool.
+  slackHeadroom: 0.10
+
+# --- Feature flags --------------------------------------------------------------
+# Each value mirrors a runtime env, e.g.
+#   features.rateLimitRedis=true  ->  NEXUS_SEMANTIC_CACHE_ENABLED=true
+# Defaults match config.go so a fresh install renders the same
+# environment as a go run ./cmd/nexus.
+features:
+  rateLimitRedis: false        # NEXUS_SEMANTIC_CACHE_ENABLED
+  tracePersist: false          # NEXUS_OTLP_ENABLED
+  sso: false                   # requires dependencies.sso.*
+  emailResend: false           # requires dependencies.resend.*
+  selfCorrection: false        # NEXUS_SELF_CORRECTION_ENABLED
+  guardrails: false            # NEXUS_GUARDRAILS_ENABLED
+  dynamicModelSync: false      # NEXUS_DYNAMIC_MODEL_SYNC
+
+# --- Service targets ------------------------------------------------------------
+# Where each consumer reaches its upstream. Empty host disables
+# the consumer. Values are intentionally separate from
+# `dependencies:` (which holds the *connection-string* knob
+# consumed by templates) so a NetworkPolicy selector and a
+# runtime URL never share a single character of input.
+serviceTargets:
+  postgres:
+    host: ""
+    port: 5432
+    namespace: ""
+  redis:
+    host: ""
+    port: 6379
+    namespace: ""
+  clickhouse:
+    host: ""
+    port: 9000
+    namespace: ""
+    enabled: false
+  sso:
+    issuer: ""
+    namespace: ""
+  resend:
+    fromAddress: ""
+    namespace: ""
+  egressProxy:
+    host: ""
+    port: 3128
+    namespace: ""
+
+# --- NetworkPolicy --------------------------------------------------------------
+# D-2b. The chart renders NetworkPolicy only when mode=enforce.
+# mode=disabled is a development escape hatch; schema and
+# validation reject disabled in profile=enterprise.
+networkPolicy:
+  profile: enterprise          # enterprise | development
+  mode: enforce                # enforce | disabled
+  enforcementAcknowledged: false
+  dns:
+    nameservers:
+      - 10.96.0.10             # cluster CoreDNS ClusterIP
+    matchPorts:
+      - 53
+    matchProtocols:
+      - UDP
+      - TCP
+  ingressController:
+    namespaces:
+      - ingress-nginx
+    matchPorts:
+      - 8080                  # Gateway API + Console port
+  prometheus:
+    namespaces:
+      - monitoring
+    matchPorts:
+      - 9100                  # metrics port
+  egress:
+    proxy:
+      enabled: false
+      host: ""
+      port: 3128
+      namespace: ""
+      podSelector: {}

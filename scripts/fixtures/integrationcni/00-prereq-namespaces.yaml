@@ -1,0 +1,67 @@
+# Phase D-2b.21: namespaces fixture for the
+# enforcing-CNI integration test cluster.
+# Each namespace is the source/destination for
+# the twelve scenarios. The podSpec fixtures
+# themselves live in:
+#   scripts/fixtures/integrationcni/01-test-pods.yaml
+#   scripts/fixtures/integrationcni/02-stub-deps.yaml
+#   scripts/fixtures/integrationcni/03-control-pod.yaml
+#
+# Sources live in their own namespaces so the
+# rendered NetworkPolicy can match
+# per-namespace (namespaceSelector). Targets
+# for which the chart's egress rule needs
+# a namespace selector (postgres / redis /
+# clickhouse / proxy) live in default; DNS lives
+# in kube-system. cni-control namespace hosts
+# the L2 (cluster DNS) probe; it is intentionally
+# NOT selected by any rendered NetworkPolicy.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-ingress
+  labels:
+    kubernetes.io/metadata.name: cni-test-ingress
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-prometheus
+  labels:
+    kubernetes.io/metadata.name: cni-test-prometheus
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-untrusted
+  labels:
+    kubernetes.io/metadata.name: cni-test-untrusted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-postgres
+  labels:
+    kubernetes.io/metadata.name: cni-test-postgres
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-redis
+  labels:
+    kubernetes.io/metadata.name: cni-test-redis
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-clickhouse
+  labels:
+    kubernetes.io/metadata.name: cni-test-clickhouse
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-proxy
+  labels:
+    kubernetes.io/metadata.name: cni-test-proxy

@@ -2,6 +2,246 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "Nexus Helm chart values",
   "description": "Strict schema for the Nexus chart. `additionalProperties: false` is deliberate on every object an operator is expected to edit: it turns a mis-indented or misspelled key into a `helm install`/`helm template` failure instead of a silently ignored setting. This exists because SSO, email, Metabase, failover, runtime and concurrency settings were once documented one indent level too deep (under `metrics:`) while the templates read them from `config:`; the chart rendered cleanly, `helm lint` passed, and the operator's IdP configuration was dropped on the floor with no diagnostic. Adding a new setting therefore requires adding it here too - that coupling is the point.",
+  "definitions": {
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "url": {"type": "string"},
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "dependencyHostOnly": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "dependencyHostSecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "database": {"type": "string"},
+        "secretRef": {"type": "string"}
+      }
+    },
+    "dependencyHostDB": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "database": {"type": "string"},
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "dependencySSO": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issuer": {"type": "string"},
+        "clientId": {"type": "string"},
+        "redirectUrl": {"type": "string"},
+        "secretRef": {"type": "string"}
+      }
+    },
+    "dependencyResend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fromAddress": {"type": "string"},
+        "secretRef": {"type": "string"}
+      }
+    },
+    "networkPolicyPeerSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespaces", "matchPorts"],
+      "properties": {
+        "namespaces": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "matchPorts": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "networkPolicyDNS": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nameservers", "matchPorts", "matchProtocols"],
+      "properties": {
+        "nameservers": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "matchPorts": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "matchProtocols": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["UDP", "TCP"]},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "networkPolicyEgress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proxy"],
+      "properties": {
+        "proxy": {"$ref": "#/definitions/networkPolicyProxy"}
+      }
+    },
+    "networkPolicyEgressProxyNS": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port"],
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "namespace": {"type": "string"}
+      }
+    },
+    "networkPolicyIssuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "issuer": {"type": "string"},
+        "namespace": {"type": "string"}
+      }
+    },
+    "networkPolicyResend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fromAddress": {"type": "string"},
+        "namespace": {"type": "string"}
+      }
+    },
+    "dependencyHostNS": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "namespace": {"type": "string"}
+      }
+    },
+    "dependencyHostDBNS": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "namespace": {"type": "string"},
+        "enabled": {"type": "boolean"}
+      }
+    },
+    "networkPolicyProxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "port"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "namespace": {"type": "string"},
+        "podSelector": {"type": "object"}
+      }
+    },
+    "gatewayConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicaCount": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxConns": {"type": "integer", "minimum": 1, "maximum": 256},
+        "ingressControllerNamespaces": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "workerConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicaCount": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxConns": {"type": "integer", "minimum": 1, "maximum": 256},
+        "pinConnection": {"type": "boolean"}
+      }
+    },
+    "connectionsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operatorUsableConnections", "migrationJob", "opsReserve", "biReserve", "postgresReserve", "slackHeadroom"],
+      "properties": {
+        "operatorUsableConnections": {"type": "integer", "minimum": 1},
+        "migrationJob": {"type": "integer", "minimum": 1},
+        "opsReserve": {"type": "integer", "minimum": 0},
+        "biReserve": {"type": "integer", "minimum": 0},
+        "postgresReserve": {"type": "integer", "minimum": 1},
+        "slackHeadroom": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "featuresConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rateLimitRedis": {"type": "boolean"},
+        "tracePersist": {"type": "boolean"},
+        "sso": {"type": "boolean"},
+        "emailResend": {"type": "boolean"},
+        "selfCorrection": {"type": "boolean"},
+        "guardrails": {"type": "boolean"},
+        "dynamicModelSync": {"type": "boolean"}
+      }
+    },
+    "serviceTargetsConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "postgres": {"$ref": "#/definitions/dependencyHostNS"},
+        "redis": {"$ref": "#/definitions/dependencyHostNS"},
+        "clickhouse": {"$ref": "#/definitions/dependencyHostDBNS"},
+        "sso": {"$ref": "#/definitions/networkPolicyIssuer"},
+        "resend": {"$ref": "#/definitions/networkPolicyResend"},
+        "egressProxy": {"$ref": "#/definitions/networkPolicyEgressProxyNS"}
+      }
+    },
+    "networkPolicyConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "mode", "enforcementAcknowledged", "dns", "ingressController", "prometheus", "egress"],
+      "properties": {
+        "profile": {"type": "string", "enum": ["enterprise", "development"]},
+        "mode": {"type": "string", "enum": ["enforce", "disabled"]},
+        "enforcementAcknowledged": {"type": "boolean"},
+        "dns": {"$ref": "#/definitions/networkPolicyDNS"},
+        "ingressController": {"$ref": "#/definitions/networkPolicyPeerSet"},
+        "prometheus": {"$ref": "#/definitions/networkPolicyPeerSet"},
+        "egress": {"$ref": "#/definitions/networkPolicyEgress"}
+      }
+    }
+  },
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -626,6 +866,22 @@
         }
       }
     },
+    "profile": {
+      "type": "string",
+      "enum": ["enterprise", "development"]
+    },
+    "deploymentMode": {
+      "type": "string",
+      "enum": ["split", "allInOne"]
+    },
+    "gateway": {"$ref": "#/definitions/gatewayConfig"},
+    "worker": {"$ref": "#/definitions/workerConfig"},
+    "connections": {"$ref": "#/definitions/connectionsConfig"},
+    "features": {"$ref": "#/definitions/featuresConfig"},
+    "serviceTargets": {"$ref": "#/definitions/serviceTargetsConfig"},
+    "networkPolicy": {
+      "$ref": "#/definitions/networkPolicyConfig"
+    },
     "existingSecret": {
       "type": "string",
       "description": "Name of an operator-managed Secret supplying every NEXUS_* secret env. Recommended for production so no credential is ever written to a values file."
@@ -865,18 +1121,89 @@
       }
     }
   },
-  "definitions": {
-    "dependency": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "url": {
-          "type": "string"
-        }
+  "profile": {
+    "type": "string",
+    "enum": ["enterprise", "development"],
+    "description": "Operator install profile. enterprise = strict fail-closed, NetworkPolicy enforce, split Gateway/Worker. development = single all-in-one replica, NetworkPolicy disabled by default. NEVER use development for a customer install."
+  },
+  "deploymentMode": {
+    "type": "string",
+    "enum": ["split", "allInOne"],
+    "description": "Gateway/Worker topology. split = independent Deployments. allInOne = single replica serving both; only valid for profile=development."
+  },
+  "gateway": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "replicaCount": {"type": "integer", "minimum": 1, "maximum": 32},
+      "maxConns": {"type": "integer", "minimum": 1, "maximum": 256},
+      "ingressControllerNamespaces": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 1,
+        "uniqueItems": true
       }
+    }
+  },
+  "worker": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "replicaCount": {"type": "integer", "minimum": 1, "maximum": 32},
+      "maxConns": {"type": "integer", "minimum": 1, "maximum": 256},
+      "pinConnection": {"type": "boolean"}
+    }
+  },
+  "connections": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["operatorUsableConnections", "migrationJob", "opsReserve", "biReserve", "postgresReserve", "slackHeadroom"],
+    "properties": {
+      "operatorUsableConnections": {"type": "integer", "minimum": 1},
+      "migrationJob": {"type": "integer", "minimum": 1},
+      "opsReserve": {"type": "integer", "minimum": 0},
+      "biReserve": {"type": "integer", "minimum": 0},
+      "postgresReserve": {"type": "integer", "minimum": 1},
+      "slackHeadroom": {"type": "number", "minimum": 0, "maximum": 1}
+    }
+  },
+  "features": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "rateLimitRedis": {"type": "boolean"},
+      "tracePersist": {"type": "boolean"},
+      "sso": {"type": "boolean"},
+      "emailResend": {"type": "boolean"},
+      "selfCorrection": {"type": "boolean"},
+      "guardrails": {"type": "boolean"},
+      "dynamicModelSync": {"type": "boolean"}
+    }
+  },
+  "serviceTargets": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "postgres": {"$ref": "#/definitions/dependencyHostNS"},
+      "redis": {"$ref": "#/definitions/dependencyHostNS"},
+      "clickhouse": {"$ref": "#/definitions/dependencyHostDBNS"},
+      "sso": {"$ref": "#/definitions/networkPolicyIssuer"},
+      "resend": {"$ref": "#/definitions/networkPolicyResend"},
+      "egressProxy": {"$ref": "#/definitions/networkPolicyEgressProxyNS"}
+    }
+  },
+  "networkPolicy": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["profile", "mode", "enforcementAcknowledged", "dns", "ingressController", "prometheus", "egress"],
+    "properties": {
+      "profile": {"type": "string", "enum": ["enterprise", "development"]},
+      "mode": {"type": "string", "enum": ["enforce", "disabled"]},
+      "enforcementAcknowledged": {"type": "boolean"},
+      "dns": {"$ref": "#/definitions/networkPolicyDNS"},
+      "ingressController": {"$ref": "#/definitions/networkPolicyPeerSet"},
+      "prometheus": {"$ref": "#/definitions/networkPolicyPeerSet"},
+      "egress": {"$ref": "#/definitions/networkPolicyEgress"}
     }
   }
 }

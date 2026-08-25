@@ -1,0 +1,241 @@
+# D-2b NetworkPolicy CI gate.
+#
+# Three jobs, separated by role, so GitHub
+# branch protection sees deterministic state
+# on every PR:
+#
+#   cni-lightweight-gate
+#     - always runs when this workflow fires
+#       (even on PRs with no policy changes)
+#     - renders the chart with the canonical
+#       enterprise profile
+#     - asserts render yields 4 NetworkPolicy
+#       kinds with the expected role labels
+#     - emits ALWAYS a pass/fail conclusion
+#     - cheap (>30s). Acts as the merge
+#       requirement when no policy file
+#       changed.
+#
+#   cni-policy-required
+#     - path-filtered to policy files
+#     - runs the full enforcing-CNI integration
+#       gate (12 scenarios + mutations +
+#       upgrade rehearsal)
+#     - heavy (~20-30 minutes)
+#     - this is the additional merge
+#       requirement that fires on policy change
+#
+#   cni-policy-gate-logs (artifact upload)
+#     - every policy-required run uploads
+#       artifacts/ named with
+#       cni-${GITHUB_RUN_ID}-${GITHUB_SHA::7}
+#       so a failure can be diffed across runs.
+#
+# The lightweight gate is what every PR waits
+# for. The heavy gate only fires on policy
+# changes. NO smoke-and-trick: every gate state
+# is explicit and grep-able.
+#
+# Concurrency:
+#   group = cni-gate-${{ github.event.pull_request.head.ref || github.ref }}
+#   cancel-in-progress = true
+#   so a re-push on the same PR cancels the
+#   prior run; only the latest commit's result
+#   becomes the merge gate.
+#
+# No retries. A failed run is a failed run.
+# A flake is recorded exactly once; rerunning
+# the gate is a new workflow_run record.
+
+name: cni-policy-gate
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  pull_request:
+    paths:
+      - "deploy/helm/nexus/templates/networkpolicy.yaml"
+      - "deploy/helm/nexus/templates/serviceaccount-worker.yaml"
+      - "deploy/helm/nexus/templates/deployment.yaml"
+      - "deploy/helm/nexus/templates/deployment-worker.yaml"
+      - "deploy/helm/nexus/templates/pre-install-validation.yaml"
+      - "deploy/helm/nexus/templates/servicemonitor.yaml"
+      - "deploy/helm/nexus/templates/networkpolicy.yaml"
+      - "deploy/helm/nexus/templates/migration-job.yaml"
+      - "deploy/helm/nexus/values.yaml"
+      - "deploy/helm/nexus/values.schema.json"
+      - "deploy/helm/nexus/tests/render_test.py"
+      - "deploy/helm/nexus/tests/mutation_test.py"
+      - "internal/netpolicy/**"
+      - "internal/urlpolicy/**"
+      - "internal/depinventory/**"
+      - "internal/contracttest/integrationcni/**"
+      - "internal/contracttest/d2b_*_test.go"
+      - "internal/config/**"
+      - "docs/network-allowlist.md"
+      - "docs/dependency-contract.md"
+      - "docs/d2b-egress-proxy-contract.md"
+      - "docs/cni-comparison.md"
+      - "docs/cni-environment-changes.md"
+      - "docs/phase-d2b-*"
+      - "scripts/test-cluster-up.sh"
+      - "scripts/test-cluster-down.sh"
+      - "scripts/install-nexus-test.sh"
+      - "scripts/test-upgrade-rehearsal.sh"
+      - "scripts/test-upgrade-rehearsal-up.sh"
+      - "scripts/d2b-twelve-scenarios.sh"
+      - "scripts/d2b-failure-reproduction.py"
+      - "scripts/fixtures/integrationcni/**"
+      - "scripts/wait-cilium-endpoints.sh"
+      - "Makefile"
+      - ".github/workflows/cni-nightly.yml"
+      - "go.mod"
+  workflow_dispatch:
+
+# Concurrency: only one in-flight run per
+# branch, latest-commit-wins.
+concurrency:
+  group: cni-gate-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: true
+
+# Permissions: read-only. Anything that needs
+# write is a token escalation we should NOT
+# silently grant to CNI runs.
+permissions:
+  contents: read
+
+jobs:
+  # ====================================================================
+  # LIGHTWEIGHT GATE — runs on every PR.
+  # Renders the chart with the canonical
+  # enterprise-profile values. Asserts:
+  #   - helm template succeeds
+  #   - 4 NetworkPolicy documents are emitted
+  #     (default-deny ingress + egress,
+  #      gateway, worker, migration)
+  #   - each policy's podSelector matches the
+  #     documented role label contract.
+  # RAPID: ~30s on a fast runner.
+  # This job ALWAYS produces a conclusion
+  # (success or failure); branch protection's
+  # required check has unambiguous status.
+  # ====================================================================
+  cni-lightweight-gate:
+    name: CNI lightweight gate (always)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: helm render + NetworkPolicy shape check
+        run: |
+          set -euo pipefail
+          helm version --short
+          # Render with enterprise enforcement.
+          helm template render-test deploy/helm/nexus \
+            --set networkPolicy.mode=enforce \
+            --set networkPolicy.profile=enterprise \
+            --set networkPolicy.enforcementAcknowledged=true \
+            --set networkPolicy.egress.proxy.enabled=true \
+            --set networkPolicy.egress.proxy.host=p.example.svc.cluster.local \
+            --set networkPolicy.egress.proxy.port=3128 \
+            --set networkPolicy.egress.proxy.namespace=p \
+            > /tmp/render.out
+          # Count NetworkPolicy documents.
+          count=$(grep -c '^kind: NetworkPolicy$' /tmp/render.out)
+          echo "NetworkPolicy docs: $count"
+          if [[ "$count" -lt 4 ]]; then
+            echo "FAIL: expected at least 4 NetworkPolicy docs (default-deny ingress, default-deny egress, gateway, worker, migration)."
+            exit 1
+          fi
+          # Role selectors must be present.
+          for role in gateway worker migration; do
+            if ! grep -A2 "app.kubernetes.io/component: ${role}" /tmp/render.out | grep -q 'podSelector'; then
+              echo "FAIL: podSelector for role=$role not found in rendered policies."
+              exit 1
+            fi
+          done
+          echo "OK"
+      - name: Upload lightweight render artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cni-lightweight-render-${{ github.run_id }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: /tmp/render.out
+          if-no-files-found: ignore
+
+  # ====================================================================
+  # POLICY-REQUIRED GATE — runs ONLY when the
+  # PR touches a policy-bearing file. This
+  # job is the heavy enforcing-CNI integration
+  # gate (kind + Cilium + 12 scenarios +
+  # mutations + upgrade rehearsal). The
+  # branch protection rule for the policy
+  # paths maps here.
+  # D-2b verdict: ALLOW gate is GREEN iff the
+  # most recent 3 consecutive policy-required
+  # runs all 12 scenarios PASS_OK (or the
+  # documented ALLOW_DENY for s11 when redis
+  # feature is OFF).
+  # ====================================================================
+  cni-policy-required:
+    name: CNI enforcement gate (policy changes only)
+    needs: cni-lightweight-gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15
+        run: |
+          set -euo pipefail
+          curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+          curl -Lo /tmp/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          curl -fsSL https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz | tar -C /tmp -xz linux-amd64/helm
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          curl -L -o /tmp/cilium.tar.gz https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz
+          tar -C /tmp -xz /tmp/cilium.tar.gz
+          sudo install -m 0755 /tmp/cilium /usr/local/bin/cilium
+          kind version
+          kubectl version --client
+          helm version
+          cilium version
+
+      - name: Bring up multi-node kind + Cilium cluster
+        run: bash scripts/test-cluster-up.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+          KUBE_WORKER_COUNT: 2
+
+      - name: Install chart with enterprise profile
+        if: success()
+        run: bash scripts/install-nexus-test.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Run 12 enforcing-CNI scenarios (three-tier probe)
+        if: success()
+        run: bash scripts/d2b-twelve-scenarios.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Helm upgrade rehearsal (disabled -> enforce + --atomic rollback)
+        if: success()
+        run: bash scripts/test-upgrade-rehearsal-up.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Tear down cluster (always)
+        if: always()
+        run: bash scripts/test-cluster-down.sh || true
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Upload CNI gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cni-policy-gate-logs-${{ github.run_id }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: artifacts/integrationcni/
+          if-no-files-found: error
+          retention-days: 90

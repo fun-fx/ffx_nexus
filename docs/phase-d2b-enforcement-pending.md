@@ -1,5 +1,41 @@
 # Phase D-2b — Enforcement Verification Tracker
 
+> **STATUS — INVALIDATED on 2026-08-21**
+>
+> This file is SUPERSEDED by D-2b being reopened in
+> fix/d2b-real-chart-and-enforcement. The "3 consecutive
+> green runs" table below references artifacts that
+> were never tracked into a merged commit in the
+> repository at the time the runs were recorded:
+>
+>   1. The Helm chart in main did not contain a
+>      `networkPolicy:` values block or a
+>      `templates/networkpolicy.yaml` file. The runs
+>      were produced by a working tree whose chart
+>      scaffolding was untracked. Without a tracked
+>      SHA, the runs cannot be reproduced from the
+>      history — a future cherry-pick of those tests
+>      would synthesize a green CI on a chart that
+>      does not exist in main.
+>   2. The conformance tests
+>      (`TestFixtureLabelsConformToChart`,
+>      `TestMigrationJobLabelMatchesNetworkPolicy`)
+>      were modified to skip when the chart
+>      scaffolding was absent in PR #263. A skip
+>      silently vacates the verification instead of
+>      surfacing the gap. Two weeks of green CI was
+>      therefore evidence only that helm template
+>      could be invoked, not that the rendered policy
+>      enforced anything.
+>
+> **Consequence**: every "closed | green" entry in
+> the table below is INVALIDATED. The recovery PR
+> bundles (a) the real chart, (b) non-skip
+> conformance tests, (c) a chart-inventory test,
+> (d) the rerun-ready CNI workflow. New runs that
+> close any gate must be recorded against the SHA
+> of that recovery PR; until then D-2b is open.
+
 This file pins D-2b's status honestly: every gate
 below is the contract the customer / CI is asked
 to keep green. Crossing out a gate means we have
