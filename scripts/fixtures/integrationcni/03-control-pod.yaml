@@ -38,10 +38,19 @@ spec:
       nodeName: nexus-cni-test-worker2
       containers:
         - name: probe
-          image: nicolaka/netshoot:latest
-          command: ["sleep","infinity"]
+          image: cni-listener:local
+          imagePullPolicy: Never
+          command: ["/cni-listener"]
+          args: ["-ports=8080", "-role=control", "-target=cni-control-probe"]
+          ports:
+            - containerPort: 8080
+              name: control
+              protocol: TCP
           readinessProbe:
             exec:
-              command: ["true"]
+              command: ["/cni-listener", "-probe=8080"]
             initialDelaySeconds: 1
-            periodSeconds: 5
+            periodSeconds: 3
+          env:
+            - name: POD_NAME
+              value: cni-control-probe

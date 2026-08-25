@@ -538,38 +538,181 @@ fi
 # (routing, kubelet, DNS, cilium identity
 # publish) and not a chart policy problem.
 # -----------------------------------------------------------------
-step_name="09-control-probe"
+step_name="09-fixture-service-control"
 step_no=9
 run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
 if run_in_phase; then
 
-# The original control probe asked a busybox
-# mock inside cni-control-probe to curl
-# http://127.0.0.1:8080/readyz and
-# http://cni-gateway.default.svc.cluster.local:8080/readyz
-# but neither target serves that endpoint -
-# the mock Pod ships busybox and the Service
-# routes to that mock. Step #6 already verified
-# cilium's status line reports "Connectivity: OK"
-# / "Cluster health: N/N reachable"; if that
-# is true, the cluster/CNI has functioning pod-
-# to-pod routing + identity publication. A
-# synthetic control probe must not redefine
-# the probe to a payload that does not exist.
-# We therefore re-emit step #6's connectivity
-# verdict as the control verdict, so step #9 is
-# a no-mock side-effect-free aggregation of the
-# evidence the cluster already gave us.
-PROBE_RESULT="no-mock-required"
-CONNECTIVITY_LINE=$(kubectl -n kube-system exec ds/cilium -- \
-  cilium status 2>>"$READINESS_LOG" | grep -E "Connectivity:|Cluster health:" | head -1 | tr -d '\n' || true)
-if [[ -n "$CONNECTIVITY_LINE" ]]; then
-  PROBE_RESULT="$CONNECTIVITY_LINE"
-else
-  record_step 9 "failed" "cilium connectivity line absent at step 9 even though step 6 passed"
-  classify failed 10 CLUSTER_OR_CNI_NOT_READY
+# Phase D-2b.25 step #9: fixture-service-control
+# gate. This gate proves that the cluster can
+# route a packet from a deterministic control
+# SOURCE Pod (cni-control-probe) to a
+# deterministic control TARGET Pod
+# (cni-control-target) over the Service IP path,
+# under a control-only NetworkPolicy that the
+# chart product NetworkPolicy cannot influence.
+#
+# Step #6 (cilium status) confirms the datapath
+# is up; step #9 confirms the Service / DNS /
+# EndpointSlice plumbing actually delivers a
+# real response. The two are distinct facts.
+#
+# Mutations tested in deploy/helm/nexus/tests/
+# cni_readiness_gate_test.py pin the verdict
+# of each failure mode to a CLASSIFICATION
+# that the chart-side verifier can route to
+# the right handler:
+#
+#   - target Pod's local listener is missing
+#       -> FIXTURE_NOT_READY (the fixture image
+#          did not come up; not a chart regression)
+#   - target Service EndpointSlice is empty
+#       -> FIXTURE_NOT_READY (selector mismatch
+#          by the Service spec; not a chart policy)
+#   - DNS resolution from control source fails
+#       -> FIXTURE_NOT_READY (CoreDNS not yet
+#          propagated; not a chart policy)
+#   - HTTP fetch from control source fails
+#       -> CONTROL_PATH_BLOCKED (control
+#          NetworkPolicy 05-control-policy.yaml
+#          is missing OR its ingress rule does
+#          not allow this; NOT a scenario policy
+#          regression because the chart's
+#          NetworkPolicy never names the
+#          cni-control namespace).
+#   - cilium enforcement dropped in parallel
+#       -> CLUSTER_OR_CNI_NOT_READY (preempted
+#          by step #6, but if step #6 passes then
+#          this case is not "step #9 fail").
+CONTROL_NS=cni-control
+SOURCE_POD=cni-control-probe
+TARGET_POD=cni-control-target
+TARGET_SVC=cni-control-target-svc
+TARGET_PORT=18080
+
+PROBE_JSON="$ARTIFACTS/step-09-fixture-service-control.json"
+: > "$PROBE_JSON"
+emit_probe() {
+  # Append a single JSON line so jq can read
+  # the full transcript in one stream. The
+  # artifact is the only thing a downstream
+  # verifier sees.
+  python3 -c "
+import json,sys
+keys=['phase','src_pod','src_ip','src_ns','target_pod','target_ip','target_svc','target_svc_ip','port','dns_resolved','endpoint_ready','local_listener_open','http_status','body','verdict']
+vals=sys.argv[1:]
+print(json.dumps(dict(zip(keys,vals))))
+" "$@" >> "$PROBE_JSON"
+}
+FINAL_VERDICT="ok"
+FINAL_DETAIL=""
+
+# (1) target Pod's local listener is open.
+TARGET_PRESENT=$(kubectl -n "$CONTROL_NS" get pod "$TARGET_POD" \
+  -o jsonpath='{.status.podIP}' 2>/dev/null || true)
+if [[ -z "$TARGET_PRESENT" ]]; then
+  FINAL_VERDICT="failed"; FINAL_DETAIL="target pod $TARGET_POD missing in $CONTROL_NS"
+  emit_probe "post-fixture" "$SOURCE_POD" "" "$CONTROL_NS" "$TARGET_POD" "" "$TARGET_SVC" "" "$TARGET_PORT" "false" "false" "false" "0" "" "missing_target_pod"
+  record_step 9 "failed" "$FINAL_DETAIL"
+  classify failed 12 FIXTURE_NOT_READY
 fi
-record_step 9 "ok" "$PROBE_RESULT"
+LOCAL_OK=$(kubectl -n "$CONTROL_NS" exec "$TARGET_POD" -- \
+  /cni-listener -probe="$TARGET_PORT" 2>&1 || true)
+if [[ -z "$LOCAL_OK" ]]; then
+  LOCAL_LISTENER_OPEN="false"
+  FINAL_VERDICT="failed"
+  FINAL_DETAIL="target pod $TARGET_POD not accepting SYNs on 127.0.0.1:$TARGET_PORT"
+  record_step 9 "failed" "$FINAL_DETAIL"
+  emit_probe "post-fixture" "$SOURCE_POD" "" "$CONTROL_NS" "$TARGET_POD" "$TARGET_PRESENT" "$TARGET_SVC" "" "$TARGET_PORT" "false" "false" "false" "0" "" "local_listener_closed"
+  classify failed 12 FIXTURE_NOT_READY
+else
+  LOCAL_LISTENER_OPEN="true"
+fi
+
+# (2) target Service's EndpointSlice has a ready address.
+ES_READY_OUT=$(kubectl -n "$CONTROL_NS" get endpointslices \
+  -l "kubernetes.io/service-name=$TARGET_SVC" \
+  -o json 2>/dev/null || true)
+ENDPOINT_READY=$(echo "$ES_READY_OUT" | python3 -c "
+import json,sys
+try:
+    d=json.loads(sys.stdin.read())
+except Exception:
+    d={}
+items = d.get('items') if isinstance(d,dict) else d
+ready = any(
+    any((c.get('conditions',{}).get('ready') is True) for c in (e.get('endpoints') or []))
+    for e in (items or []))
+print('true' if ready else 'false')" 2>/dev/null || echo "false")
+if [[ "$ENDPOINT_READY" != "true" ]]; then
+  FINAL_VERDICT="failed"
+  FINAL_DETAIL="Service $TARGET_SVC has no ready EndpointSlice address"
+  record_step 9 "failed" "$FINAL_DETAIL"
+  SVC_IP=$(kubectl -n "$CONTROL_NS" get svc "$TARGET_SVC" \
+    -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+  emit_probe "post-fixture" "$SOURCE_POD" "" "$CONTROL_NS" "$TARGET_POD" "$TARGET_PRESENT" "$TARGET_SVC" "$SVC_IP" "$TARGET_PORT" "false" "false" "$LOCAL_LISTENER_OPEN" "0" "" "endpoint_not_ready"
+  classify failed 12 FIXTURE_NOT_READY
+fi
+
+# (3) control source Pod resolves target Service via DNS.
+SOURCE_IP=$(kubectl -n "$CONTROL_NS" get pod "$SOURCE_POD" \
+  -o jsonpath='{.status.podIP}' 2>/dev/null || true)
+SVC_IP=$(kubectl -n "$CONTROL_NS" get svc "$TARGET_SVC" \
+  -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+DNS_RESOLVED="false"
+if [[ -n "$SVC_IP" ]]; then
+  DNS_OUT=$(kubectl -n "$CONTROL_NS" exec "$SOURCE_POD" -- \
+    sh -c 'getent hosts cni-control-target-svc.cni-control.svc.cluster.local' \
+    2>/dev/null || true)
+  if grep -q "$SVC_IP" <<<"$DNS_OUT"; then
+    DNS_RESOLVED="true"
+  fi
+fi
+if [[ "$DNS_RESOLVED" != "true" ]]; then
+  FINAL_VERDICT="failed"
+  FINAL_DETAIL="DNS for $TARGET_SVC.$CONTROL_NS.svc.cluster.local did not resolve to $SVC_IP from $SOURCE_POD"
+  record_step 9 "failed" "$FINAL_DETAIL"
+  emit_probe "post-fixture" "$SOURCE_POD" "$SOURCE_IP" "$CONTROL_NS" "$TARGET_POD" "$TARGET_PRESENT" "$TARGET_SVC" "$SVC_IP" "$TARGET_PORT" "false" "$ENDPOINT_READY" "$LOCAL_LISTENER_OPEN" "0" "" "dns_not_resolved"
+  classify failed 12 FIXTURE_NOT_READY
+fi
+
+# (4) control source Pod performs an HTTP GET against
+# the Service IP on the target port. We talk to the
+# Service ClusterIP and the FQDN; both must succeed.
+# We accept either response body as long as it parses
+# as JSON with port=18080 and ready=true, because
+# the cni-listener serves a deterministic JSON body
+# (see scripts/fixtures/integrationcni/cmd/cni-listener
+# /main.go).
+HTTP_STATUS=$(kubectl -n "$CONTROL_NS" exec "$SOURCE_POD" -- \
+  sh -c 'curl -sS -m 5 -o /tmp/probe.body -w "%{http_code}" \
+    http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz' \
+  2>/dev/null || echo "0")
+PROBE_BODY=$(kubectl -n "$CONTROL_NS" exec "$SOURCE_POD" -- \
+  cat /tmp/probe.body 2>/dev/null || true)
+BODY_OK=$(echo "$PROBE_BODY" | python3 -c "
+import json,sys
+try:
+    d=json.loads(sys.stdin.read())
+except Exception:
+    d={}
+ok = (d.get('ready') is True and int(d.get('port',-1)) == 18080)
+print('true' if ok else 'false')" 2>/dev/null || echo "false")
+if [[ "$HTTP_STATUS" != "200" || "$BODY_OK" != "true" ]]; then
+  FINAL_VERDICT="CONTROL_PATH_BLOCKED"
+  FINAL_DETAIL="control source $SOURCE_POD could not HTTP through Service: status=$HTTP_STATUS body=$PROBE_BODY"
+  record_step 9 "failed" "$FINAL_DETAIL"
+  emit_probe "post-fixture" "$SOURCE_POD" "$SOURCE_IP" "$CONTROL_NS" "$TARGET_POD" "$TARGET_PRESENT" "$TARGET_SVC" "$SVC_IP" "$TARGET_PORT" "$DNS_RESOLVED" "$ENDPOINT_READY" "$LOCAL_LISTENER_OPEN" "$HTTP_STATUS" "$PROBE_BODY" "control_path_blocked"
+  # NOTE: this classification is FIXTURE_NOT_READY
+  # because the failure is about the control
+  # NetworkPolicy in 05-control-policy.yaml,
+  # which is a fixture artefact, not a chart
+  # NetworkPolicy.
+  classify failed 12 FIXTURE_NOT_READY
+fi
+
+emit_probe "post-fixture" "$SOURCE_POD" "$SOURCE_IP" "$CONTROL_NS" "$TARGET_POD" "$TARGET_PRESENT" "$TARGET_SVC" "$SVC_IP" "$TARGET_PORT" "$DNS_RESOLVED" "$ENDPOINT_READY" "$LOCAL_LISTENER_OPEN" "$HTTP_STATUS" "$PROBE_BODY" "ok"
+record_step 9 "ok" "control probe complete: HTTP=$HTTP_STATUS dns=$DNS_RESOLVED endpoint=$ENDPOINT_READY local=$LOCAL_LISTENER_OPEN"
 fi
 
 # -----------------------------------------------------------------

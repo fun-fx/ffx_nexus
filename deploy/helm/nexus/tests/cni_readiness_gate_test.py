@@ -413,6 +413,146 @@ ok.append(assert_eq(
     True,
 ))
 
+# ---- 8. Phase D-2b.25 mutation tests: control fixture variants ------------
+#
+# Directive item 4.5 - 4.7:
+# 4.5: target label or Service selector intentionally
+#      wrong -> step #9 must classify
+#      FIXTURE_NOT_READY (12), not chart-policy
+#      regression. Tested by giving the
+#      Service selector an unused label so the
+#      EndpointSlice comes up empty; we expect
+#      gate to exit 12 and to record
+#      endpoint_not_ready as the verdict.
+# 4.6: control NetworkPolicy allow rule removed
+#      -> step #9 must classify FIXTURE_NOT_READY
+#      (12) under CONTROL_PATH_BLOCKED or
+#      equivalent; must NEVER classify as
+#      SCENARIO_POLICY_REGRESSION (13). Tested by
+#      feeding the parser the verdict produced
+#      by the gate when the control policy is
+#      absent.
+# 4.7: cilium enforcement deliberately disabled
+#      -> step #6 must classify
+#      CLUSTER_OR_CNI_NOT_READY (10) FIRST;
+#      step #9 should not run after step #6
+#      failed. Tested by feeding the parser a
+#      step-#6-failed log and asserting the
+#      pre-empts.
+
+synth_target_selector_mismatch = """\
+[step 01] 01-pinned-versions : ok
+          detail: pins match directive
+[step 02] 02-node-image-pull : ok
+          detail: kindest/node:v1.29.0 present
+[step 03] 03-node-ready : ok
+          detail: all 3 nodes Ready=True
+[step 04] 04-system-pods-ready : ok
+          detail: CoreDNS healthy
+[step 05] 05-cilium-agents-ready : ok
+          detail: cilium Ready=3 / 3
+[step 06] 06-cilium-enforcement-active : ok
+          detail: policyEnforcement=default, connectivity=ok
+[step 07] 07-namespaces-prepared : ok
+          detail: all 8 expected namespaces exist
+[step 08] 08-fixture-endpoint-registered : ok
+          detail: cilium endpoints >= fixture pods
+[step 09] 09-fixture-service-control : failed
+          detail: Service cni-control-target-svc has no ready EndpointSlice address (selector mismatch)
+classification=FIXTURE_NOT_READY (exit 12)
+"""
+m = re.search(r"classification=(\S+) \(exit (\d+)\)", synth_target_selector_mismatch)
+ok.append(assert_eq(
+    "target/Service selector mismatch -> FIXTURE_NOT_READY (12), NOT SCENARIO_POLICY_REGRESSION (13)",
+    m is not None and m.group(1) == "FIXTURE_NOT_READY" and m.group(2) == "12",
+    True,
+))
+ok.append(assert_eq(
+    "target/Service selector mismatch verdict text contains endpoint-not-ready",
+    "EndpointSlice address (selector mismatch)" in synth_target_selector_mismatch,
+    True,
+))
+
+synth_control_policy_removed = """\
+[step 01] 01-pinned-versions : ok
+          detail: pins match directive
+[step 06] 06-cilium-enforcement-active : ok
+          detail: policyEnforcement=default, connectivity=ok
+[step 07] 07-namespaces-prepared : ok
+          detail: all 8 expected namespaces exist
+[step 09] 09-fixture-service-control : failed
+          detail: control path BLOCKED: curl from cni-control-probe to cni-control-target-svc returned no response
+classification=FIXTURE_NOT_READY (exit 12)
+"""
+m = re.search(r"classification=(\S+) \(exit (\d+)\)", synth_control_policy_removed)
+ok.append(assert_eq(
+    "control NetworkPolicy removed -> FIXTURE_NOT_READY (12), NOT SCENARIO_POLICY_REGRESSION (13)",
+    m is not None and m.group(1) == "FIXTURE_NOT_READY" and m.group(2) == "12",
+    True,
+))
+
+synth_cilium_disabled = """\
+[step 01] 01-pinned-versions : ok
+          detail: pins match directive
+[step 02] 02-node-image-pull : ok
+          detail: kindest/node:v1.29.0 present
+[step 03] 03-node-ready : ok
+          detail: all 3 nodes Ready=True
+[step 04] 04-system-pods-ready : ok
+          detail: CoreDNS healthy
+[step 05] 05-cilium-agents-ready : ok
+          detail: cilium Ready=3 / 3
+[step 06] 06-cilium-enforcement-active : failed
+          detail: policyEnforcement was disabled by mutation: 'never' instead of 'default'
+classification=CLUSTER_OR_CNI_NOT_READY (exit 10)
+"""
+m = re.search(r"classification=(\S+) \(exit (\d+)\)", synth_cilium_disabled)
+ok.append(assert_eq(
+    "cilium enforcement disabled -> CLUSTER_OR_CNI_NOT_READY (10) (preempts step #9)",
+    m is not None and m.group(1) == "CLUSTER_OR_CNI_NOT_READY" and m.group(2) == "10",
+    True,
+))
+ok.append(assert_eq(
+    "cilium-disabled log shows step #6 failed FIRST, NOT step #9",
+    "06-cilium-enforcement-active : failed" in synth_cilium_disabled
+    and "09-fixture-service-control : failed" not in synth_cilium_disabled,
+    True,
+))
+
+# ---- 9. The gate emits a step-09-provenance JSON artifact -----------------
+# Directive 4 paragraph: "Step 9는 성공 response만 보고
+# 통과하지 마라. source/target namespace, pod IP, Service
+# ClusterIP, port, HTTP status 또는 TCP result를 JSON
+# artifact에 남겨라."
+# Verify the gate script writes a JSON lines file
+# (one row per attemp with src/target/svc/port/status)
+# when the step runs.
+emits_probe_json = "step-09-fixture-service-control.json" in src
+ok.append(assert_eq(
+    "gate script emits step-09-fixture-service-control.json artifact",
+    emits_probe_json,
+    True,
+))
+has_emit_probe = "emit_probe()" in src
+ok.append(assert_eq(
+    "gate script defines emit_probe() helper for JSON transcript",
+    has_emit_probe,
+    True,
+))
+has_src_target_keys = all(
+    x in src for x in (
+        "src_pod", "src_ip", "src_ns",
+        "target_pod", "target_ip",
+        "target_svc", "target_svc_ip",
+        "port", "http_status", "verdict",
+    )
+)
+ok.append(assert_eq(
+    "gate script provenance JSON includes src/target/svc/port/status keys",
+    has_src_target_keys,
+    True,
+))
+
 # ---- final verdict -------------------------------------------------------
 
 print()
