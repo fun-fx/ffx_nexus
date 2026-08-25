@@ -28,7 +28,7 @@ if [[ ! -f "$WORKFLOW_FILE" ]]; then
     echo "FATAL: workflow file not found: $WORKFLOW_FILE" >&2
     exit 2
 fi
-if [[ ! -d "$REPO_ROOT/.git" ]]; then
+if [[ ! -d "$REPO_ROOT/.git" && ! -f "$REPO_ROOT/.git" ]]; then
     echo "FATAL: repo root not a git checkout: $REPO_ROOT" >&2
     exit 2
 fi
