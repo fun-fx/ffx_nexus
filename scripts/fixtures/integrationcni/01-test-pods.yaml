@@ -3,6 +3,18 @@
 # when rendered with profile=enterprise / mode=enforce, otherwise the
 # conformance test (TestFixtureLabelsConformToChart) MUST fail
 # with a hard drift error.
+#
+# Phase D-2b.27 — strict YAML structure rule:
+#
+#   Every Pod document MUST place spec.containers,
+#   spec.containers[].readinessProbe,
+#   spec.containers[].imagePullPolicy,
+#   spec.containers[].args, etc., DIRECTLY UNDER
+#   spec:. This file is checked by
+#   deploy/helm/nexus/tests/fixture_yaml_structure_test.py
+#   which fails the run if any drift remains.
+#   Run `kubectl apply --dry-run=server` for an
+#   authoritative end-to-end check at install time.
 ---
 apiVersion: v1
 kind: Namespace
@@ -37,20 +49,20 @@ metadata:
     app.kubernetes.io/name: ingress-nginx
     app.kubernetes.io/component: ingress-controller
 spec:
-containers:
-        - name: httpecho
-          image: cni-listener:local
-          imagePullPolicy: Never
-          args: ["-ports=8080", "-role=ingress", "-target=cni-mock-ingress-controller"]
-          ports:
-            - containerPort: 8080
-              name: http
-              protocol: TCP
-          readinessProbe:
-            exec:
-              command: ["/cni-listener", "-probe=8080"]
-            initialDelaySeconds: 1
-            periodSeconds: 3
+  containers:
+    - name: httpecho
+      image: cni-listener:local
+      imagePullPolicy: Never
+      args: ["-ports=8080", "-role=ingress", "-target=cni-mock-ingress-controller"]
+      ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+      readinessProbe:
+        exec:
+          command: ["/cni-listener", "-probe=8080"]
+        initialDelaySeconds: 1
+        periodSeconds: 3
 ---
 apiVersion: v1
 kind: Pod
@@ -61,20 +73,20 @@ metadata:
     app.kubernetes.io/name: prometheus
     app.kubernetes.io/component: metrics
 spec:
-containers:
-        - name: scraper
-          image: cni-listener:local
-          imagePullPolicy: Never
-          args: ["-ports=9100", "-role=prometheus", "-target=cni-mock-prometheus"]
-          ports:
-            - containerPort: 9100
-              name: metrics
-              protocol: TCP
-          readinessProbe:
-            exec:
-              command: ["/cni-listener", "-probe=9100"]
-            initialDelaySeconds: 1
-            periodSeconds: 3
+  containers:
+    - name: scraper
+      image: cni-listener:local
+      imagePullPolicy: Never
+      args: ["-ports=9100", "-role=prometheus", "-target=cni-mock-prometheus"]
+      ports:
+        - containerPort: 9100
+          name: metrics
+          protocol: TCP
+      readinessProbe:
+        exec:
+          command: ["/cni-listener", "-probe=9100"]
+        initialDelaySeconds: 1
+        periodSeconds: 3
 ---
 apiVersion: v1
 kind: Pod
@@ -85,20 +97,20 @@ metadata:
     app.kubernetes.io/name: untrusted
     app.kubernetes.io/component: probe
 spec:
-containers:
-        - name: probe
-          image: cni-listener:local
-          imagePullPolicy: Never
-          args: ["-ports=9111", "-role=untrusted", "-target=cni-untrusted-default"]
-          ports:
-            - containerPort: 9111
-              name: probe
-              protocol: TCP
-          readinessProbe:
-            exec:
-              command: ["/cni-listener", "-probe=9111"]
-            initialDelaySeconds: 1
-            periodSeconds: 3
+  containers:
+    - name: probe
+      image: cni-listener:local
+      imagePullPolicy: Never
+      args: ["-ports=9111", "-role=untrusted", "-target=cni-untrusted-default"]
+      ports:
+        - containerPort: 9111
+          name: probe
+          protocol: TCP
+      readinessProbe:
+        exec:
+          command: ["/cni-listener", "-probe=9111"]
+        initialDelaySeconds: 1
+        periodSeconds: 3
 ---
 apiVersion: v1
 kind: Pod
@@ -110,23 +122,23 @@ metadata:
     app.kubernetes.io/component: gateway
     app.kubernetes.io/instance: nexus-cni-test
 spec:
-containers:
-        - name: gw
-          image: cni-listener:local
-          imagePullPolicy: Never
-          args: ["-ports=8080,9101", "-role=gateway", "-target=cni-mock-nexus-gateway"]
-          ports:
-            - containerPort: 8080
-              name: http
-              protocol: TCP
-            - containerPort: 9101
-              name: metrics
-              protocol: TCP
-          readinessProbe:
-            exec:
-              command: ["/cni-listener", "-probe=8080"]
-            initialDelaySeconds: 1
-            periodSeconds: 3
+  containers:
+    - name: gw
+      image: cni-listener:local
+      imagePullPolicy: Never
+      args: ["-ports=8080,9101", "-role=gateway", "-target=cni-mock-nexus-gateway"]
+      ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 9101
+          name: metrics
+          protocol: TCP
+      readinessProbe:
+        exec:
+          command: ["/cni-listener", "-probe=8080"]
+        initialDelaySeconds: 1
+        periodSeconds: 3
 ---
 apiVersion: v1
 kind: Pod
@@ -138,20 +150,20 @@ metadata:
     app.kubernetes.io/component: worker
     app.kubernetes.io/instance: nexus-cni-test
 spec:
-containers:
-        - name: wk
-          image: cni-listener:local
-          imagePullPolicy: Never
-          args: ["-ports=8081,9101", "-role=worker", "-target=cni-mock-nexus-worker"]
-          ports:
-            - containerPort: 8081
-              name: http
-              protocol: TCP
-            - containerPort: 9101
-              name: metrics
-              protocol: TCP
-          readinessProbe:
-            exec:
-              command: ["/cni-listener", "-probe=8081"]
-            initialDelaySeconds: 1
-            periodSeconds: 3
+  containers:
+    - name: wk
+      image: cni-listener:local
+      imagePullPolicy: Never
+      args: ["-ports=8081,9101", "-role=worker", "-target=cni-mock-nexus-worker"]
+      ports:
+        - containerPort: 8081
+          name: http
+          protocol: TCP
+        - containerPort: 9101
+          name: metrics
+          protocol: TCP
+      readinessProbe:
+        exec:
+          command: ["/cni-listener", "-probe=8081"]
+        initialDelaySeconds: 1
+        periodSeconds: 3

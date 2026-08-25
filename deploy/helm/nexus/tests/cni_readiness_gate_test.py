@@ -90,6 +90,7 @@ EXPECTED_LABELS = {
     12: "FIXTURE_NOT_READY",
     13: "SCENARIO_POLICY_REGRESSION",
     14: "FIXTURE_IMAGE_NOT_LOADED",
+    15: "FIXTURE_INVALID",
 }
 
 def assert_eq(label, got, want):
@@ -125,6 +126,8 @@ label_locations = {
     "CHART_OR_POLICY_INVALID": src.count("CHART_OR_POLICY_INVALID"),
     "FIXTURE_NOT_READY":       src.count("FIXTURE_NOT_READY"),
     "SCENARIO_POLICY_REGRESSION": src.count("SCENARIO_POLICY_REGRESSION"),
+    "FIXTURE_IMAGE_NOT_LOADED": src.count("FIXTURE_IMAGE_NOT_LOADED"),
+    "FIXTURE_INVALID": src.count("FIXTURE_INVALID"),
 }
 for label, count in label_locations.items():
     ok.append(assert_eq(
@@ -643,6 +646,21 @@ install_src = install_src_path.read_text() if install_src_path.exists() else ""
 ok.append(assert_eq(
     "install-nexus-test.sh routes image-pipeline failures to exit 14",
     "exit 14" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh routes pre-flight fixture dry-run failure to exit 15",
+    "exit 15" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh runs kubectl apply --dry-run=server --validate=strict",
+    "kubectl apply --dry-run=server --validate=strict" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh records fixture-dryrun.log artifact",
+    "fixture-dryrun.log" in install_src,
     True,
 ))
 ok.append(assert_eq(

@@ -196,6 +196,64 @@ kubectl apply -f scripts/fixtures/integrationcni/03-control-pod.yaml 2>&1 | tee 
 kubectl apply -f scripts/fixtures/integrationcni/04-control-service.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
 kubectl apply -f scripts/fixtures/integrationcni/05-control-policy.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
 
+# Phase D-2b.27: pre-flight dry-run gate.
+#
+# Every fixture yaml is `kubectl apply`-
+# --dry-run=server --validate=strict on a
+# kind control plane before any of them is
+# applied for real. A failure here means the
+# fixture yaml is structurally unsound and
+# is independent of:
+#   - the cluster / CNI / cilium policy
+#   - the chart's Helm render or NetworkPolicy
+# so the unified gate MUST classify it as
+# FIXTURE_INVALID (exit 15) and never as
+# CLUSTER_OR_CNI_NOT_READY (10),
+# CHART_OR_POLICY_INVALID (11),
+# FIXTURE_NOT_READY (12),
+# FIXTURE_IMAGE_NOT_LOADED (14), or
+# SCENARIO_POLICY_REGRESSION (13).
+# Without this pre-flight, run-id 32470841379
+# applied a Pod whose `containers:` key was a
+# sibling of `spec:`, the server rejected it
+# with strict-decode error, and the run
+# looked like a green image pipeline plus a
+# red scenario verdict — both readings were wrong.
+DRYRUN_LOG="$ARTIFACTS/fixture-dryrun.log"
+: > "$DRYRUN_LOG"
+DRYRUN_OK=1
+for fy in \
+  scripts/fixtures/integrationcni/00-prereq-namespaces.yaml \
+  scripts/fixtures/integrationcni/01-test-pods.yaml \
+  scripts/fixtures/integrationcni/02-stub-deps.yaml \
+  scripts/fixtures/integrationcni/03-control-pod.yaml \
+  scripts/fixtures/integrationcni/04-control-service.yaml \
+  scripts/fixtures/integrationcni/05-control-policy.yaml \
+; do
+    echo "--- kubectl apply --dry-run=server --validate=strict -f $fy ---" | tee -a "$DRYRUN_LOG"
+    if ! kubectl apply --dry-run=server --validate=strict -f "$fy" 2>&1 \
+        | tee -a "$DRYRUN_LOG"; then
+      echo "[install] dry-run FAILED on $fy" | tee -a "$DRYRUN_LOG"
+      DRYRUN_OK=0
+    fi
+done
+if (( DRYRUN_OK != 1 )); then
+    echo "[install] ERROR: pre-flight fixture dry-run failed" \
+      | tee -a "$ARTIFACTS/install.log"
+    cat "$DRYRUN_LOG" | tee -a "$ARTIFACTS/install.log" || true
+    FIXTURE_INVALID=1
+    FIXTURE_INVALID_FAILURE_DETAIL="pre-flight kubectl apply --dry-run=server --validate=strict FAILED on one or more fixture yamls (see $DRYRUN_LOG)"
+    GATE_PHASE=post-fixture \
+      RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+      WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+      ARTIFACTS="${ARTIFACTS}" \
+      FIXTURE_INVALID=1 \
+      FIXTURE_INVALID_FAILURE_DETAIL="$FIXTURE_INVALID_FAILURE_DETAIL" \
+      bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || exit $?
+    exit 15
+fi
+echo "[install] pre-flight fixture dry-run OK" | tee -a "$ARTIFACTS/install.log"
+
 # Polled wait for fixture Pods to be Ready
 # before we count cilium endpoints. A Pod that
 # is still being scheduled does NOT have a
