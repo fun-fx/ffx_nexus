@@ -98,11 +98,22 @@ KNOWN_CP=1
 
 echo "[setup] kind cluster ${CLUSTER_NAME} (k8s ${K8S_VERSION}, ${KNOWN_CP}+${KNOWN_WORKERS} nodes)"
 
+# The control-plane node takes longer than
+# `kind`'s default 3m Ready window under
+# Azure westus3 GHA runners (observed: ~3m10s
+# cold-pull of kindest/node:v1.29.0). We bump
+# the wait to 6m (360s) so the chart-side CNI
+# gate isn't masked by an environment timeout.
+# If this still times out, the artifact
+# versions.txt+pinned-versions.txt + cluster-
+# topology.json still let a verifier tell
+# control-plane unavailability from a real
+# chart failure.
 kind create cluster \
   --name "${CLUSTER_NAME}" \
   --image "kindest/node:v${K8S_VERSION}" \
   --config "${ARTIFACTS}/kind.yaml" \
-  --wait 180s
+  --wait 360s
 
 # Capture node topology.
 kubectl get nodes -o json > "$ARTIFACTS/cluster-topology.json"
