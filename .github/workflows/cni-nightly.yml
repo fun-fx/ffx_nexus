@@ -90,12 +90,31 @@ on:
       - "Makefile"
       - ".github/workflows/cni-nightly.yml"
       - "go.mod"
+  # The heavy enforcement gate is run ONLY when a
+  # human invokes it. The input `recovery_pr_sha`
+  # is the SHA pinned in the chart's branch — the
+  # CNI run is valid ONLY for that SHA. The agent /
+  # operator opens this workflow dispatch three
+  # times against the SAME SHA. Three separate
+  # runs are required before the merge gate flips
+  # to green.
   workflow_dispatch:
+    inputs:
+      recovery_pr_sha:
+        description: "Recovery PR SHA pinned by the chart agent. CNI run is only valid for this SHA."
+        required: true
+        type: string
+      run_index:
+        description: "Run index 1-of-3, 2-of-3, 3-of-3. Recorded into the artifact name."
+        required: true
+        type: string
 
-# Concurrency: only one in-flight run per
-# branch, latest-commit-wins.
+# Concurrency: ONLY the lightweight gate cancels
+# in-flight runs per branch. The enforcement gate
+# records three independent runs as separate
+# artifacts; we must NOT collapse them.
 concurrency:
-  group: cni-gate-${{ github.event.pull_request.head.ref || github.ref }}
+  group: cni-lightweight-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: true
 
 # Permissions: read-only. Anything that needs
@@ -164,27 +183,66 @@ jobs:
           if-no-files-found: ignore
 
   # ====================================================================
-  # POLICY-REQUIRED GATE — runs ONLY when the
-  # PR touches a policy-bearing file. This
-  # job is the heavy enforcing-CNI integration
-  # gate (kind + Cilium + 12 scenarios +
-  # mutations + upgrade rehearsal). The
-  # branch protection rule for the policy
-  # paths maps here.
-  # D-2b verdict: ALLOW gate is GREEN iff the
-  # most recent 3 consecutive policy-required
-  # runs all 12 scenarios PASS_OK (or the
-  # documented ALLOW_DENY for s11 when redis
-  # feature is OFF).
+  # ENFORCEMENT GATE — Pin the CNI run to a
+  # specific recovery PR SHA. We do NOT use the
+  # default `actions/checkout@v4` ref, because
+  # the action reflows to whatever the run's
+  # caller (schedule / PR / dispatch) implied.
+  # Instead we checkout the SHA from
+  # `github.event.inputs.recovery_pr_sha` so
+  # the chart code matches the SHA recorded in
+  # the merge report. If the input is empty
+  # (e.g. dispatched by `schedule`), the run
+  # refuses with an explicit error.
+  #
+  # Runs 3× independently on the SAME SHA. The
+  # chart agent bundles the three workflow runs
+  # URLs into the PR description as the merge
+  # gate evidence.
   # ====================================================================
-  cni-policy-required:
-    name: CNI enforcement gate (policy changes only)
-    needs: cni-lightweight-gate
+  cni-enforcement-gate:
+    name: CNI enforcement gate (3× runs on pinned SHA)
+    # workflow_dispatch is the only trigger for
+    # the heavy gate: schedule + PR paths can
+    # never produce enough evidence (PRs change
+    # between runs; schedule runs against refs
+    # we cannot pin).
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
+      - name: Validate SHA input
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ github.event.inputs.recovery_pr_sha }}" ]]; then
+            echo "FAIL: workflow_dispatch must supply recovery_pr_sha"
+            exit 1
+          fi
+          if [[ -z "${{ github.event.inputs.run_index }}" ]]; then
+            echo "FAIL: workflow_dispatch must supply run_index (1-of-3, 2-of-3, 3-of-3)"
+            exit 1
+          fi
+          echo "Pinned SHA: ${{ github.event.inputs.recovery_pr_sha }}"
+          echo "Run index:  ${{ github.event.inputs.run_index }}"
+
       - uses: actions/checkout@v4
-      - name: Install kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15
+        with:
+          ref: ${{ github.event.inputs.recovery_pr_sha }}
+          fetch-depth: 0
+
+      - name: Verify checked-out SHA matches
+        run: |
+          set -euo pipefail
+          cur_sha=$(git rev-parse HEAD)
+          want_sha="${{ github.event.inputs.recovery_pr_sha }}"
+          echo "actual=$cur_sha"
+          echo "want  =$want_sha"
+          if [[ "$cur_sha" != "$want_sha" ]]; then
+            echo "FAIL: checkout SHA did not pin to the dispatch input"
+            exit 1
+          fi
+
+      - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15
         run: |
           set -euo pipefail
           curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
@@ -200,6 +258,20 @@ jobs:
           kubectl version --client
           helm version
           cilium version
+          echo "Pinned: kind v0.22.0 | kubectl v1.29.0 | helm v3.14.4 | cilium v0.15.20"
+          # Record the pinned versions into the
+          # artifact folder so a downstream
+          # verifier can match expectations.
+          mkdir -p artifacts/integrationcni
+          {
+            echo "kind: $(kind version | head -1)"
+            echo "kubectl: $(kubectl version --client=true --short 2>/dev/null || kubectl version --client | head -1)"
+            echo "helm: $(helm version --short)"
+            echo "cilium: $(cilium version | head -1)"
+            echo "k8s node image: kindest/node:v1.29.0  (script default)"
+            echo "sha:  $(git rev-parse HEAD)"
+            echo "run:  ${{ github.event.inputs.run_index }}"
+          } > artifacts/integrationcni/pinned-versions.txt
 
       - name: Bring up multi-node kind + Cilium cluster
         run: bash scripts/test-cluster-up.sh
@@ -235,7 +307,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cni-policy-gate-logs-${{ github.run_id }}-${{ github.event.pull_request.head.sha || github.sha }}
+          name: cni-enforcement-logs-${{ github.event.inputs.run_index }}-${{ github.event.inputs.recovery_pr_sha }}-${{ github.run_id }}
           path: artifacts/integrationcni/
           if-no-files-found: error
           retention-days: 90

@@ -24,6 +24,21 @@ func renderTop(t testingT, chart string, args []string) string {
 	return string(out)
 }
 
+// renderShowOnly renders a single template file. Used by the
+// port × peer inventory test which needs to compare five
+// manifests side by side.
+func renderShowOnly(t testingT, chart string, showOnly string, args []string) string {
+	t.Helper()
+	preArgs := []string{"template", "render-test", chart, "--show-only", showOnly}
+	all := append(preArgs, args...)
+	cmd := exec.Command("helm", all...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template --show-only %s: %v\n%s", showOnly, err, string(out))
+	}
+	return string(out)
+}
+
 func countNP(s string) int {
 	return strings.Count(s, "kind: NetworkPolicy")
 }
