@@ -55,7 +55,7 @@
 #
 # Output:
 #   - /cni-listener binary, <5 MiB
-FROM golang:1.22-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 # The build context is
 # `scripts/fixtures/integrationcni/`. Bring the
@@ -64,7 +64,7 @@ WORKDIR /src
 # ./cmd/cni-listener` resolves the cmd
 # package against the synthesized module root.
 COPY cmd/ ./cmd/
-RUN printf 'module github.com/fun-fx/ffx_nexus/scripts/fixtures/integrationcni/cmd\n\ngo 1.22\n' > ./go.mod \
+RUN printf 'module github.com/fun-fx/ffx_nexus/scripts/fixtures/integrationcni/cmd\n\ngo 1.26\n' > ./go.mod \
  && CGO_ENABLED=0 GOOS=linux go build -trimpath \
       -ldflags='-s -w' -o /out/cni-listener ./cmd/cni-listener
 FROM scratch AS runtime
