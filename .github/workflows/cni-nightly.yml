@@ -243,80 +243,88 @@ jobs:
           fi
 
       # ----------------------------------------------------------------
-      # Phase D-2b.32 — checkout identity capture,
-      # self-reference corrected.
+      # Phase D-2b.33 — Step A artifact I/O contract tightened.
       #
-      # The CNI run must be reproducible from
-      # the artifacts uploaded at the end. We
-      # therefore record AT WORKFLOW ENTRY
-      # (before any fixture apply):
+      # d2b.32 routed the identity capture to a path
+      # outside the worktree and verified a clean source
+      # checkout. d2b.33 makes the I/O contract explicit
+      # and fail-closed:
       #
-      #   1. git rev-parse HEAD (already done
-      #      by the verify-sha step above).
-      #   2. git status --porcelain (must be
-      #      empty; dirty tree = checkout
-      #      drift).
-      #   3. git diff --exit-code against HEAD
-      #      (must be silent).
+      #   (a) RUNNER_TEMP is REQUIRED. Silently
+      #       falling back to /tmp would hide a
+      #       configuration defect from the
+      #       operator and put cluster/ install /
+      #       scenario evidence on a path the runner
+      #       may recycle between steps.
+      #   (b) `fail_artifact_io` helper turns every
+      #       mkdir / write / cp failure into an
+      #       explicit exit 11 BEFORE the workflow
+      #       continues to cluster install or CNI
+      #       scenarios. This keeps the exit
+      #       classifier distinguishable from exit
+      #       10 (real source dirtiness) and from
+      #       exit 1 (subprocess crash), so a CI
+      #       reviewer can tell at a glance whether
+      #       the failure was a clean-tree issue
+      #       (10) or an artifact I/O issue (11).
+      #   (c) No `.gitignore` is added; no path
+      #       filter is applied to the source
+      #       `git status --porcelain` output. The
+      #       clean-tree judgement still inspects
+      #       everything in the worktree.
+      #   (d) After the clean-tree assertion
+      #       passes, the outside-tree capture is
+      #       copied under artifacts/ for upload;
+      #       that copy is the only place the
+      #       artifact path is created and the
+      #       cleanliness judgement is already
+      #       behind us.
       #
-      # The previous implementation wrote the
-      # identity capture to
-      # `artifacts/integrationcni/checkout-identity.txt`
-      # BEFORE running `git status --porcelain`,
-      # which caused the file itself to appear
-      # as an untracked `??` entry and trip
-      # the same step's clean-tree assertion
-      # (exit 10). That is a self-reference
-      # defect independent of any real source
-      # dirtiness, and therefore cannot count
-      # as a 1-of-3 failure.
-      #
-      # The corrected flow:
-      #
-      #   (1) write the identity capture to an
-      #       absolute path OUTSIDE the
-      #       worktree (e.g. ${RUNNER_TEMP:-/tmp}).
-      #   (2) `git status --porcelain` and
-      #       `git diff --exit-code HEAD` are
-      #       then run against an undisturbed
-      #       worktree. If any real source
-      #       dirtiness is present, the step
-      #       exits 10 exactly as before.
-      #   (3) Only AFTER the source-clean
-      #       assertion passes, the contents of
-      #       the outside-tree capture are
-      #       copied INTO artifacts/integrationcni
-      #       so the workflow upload step can
-      #       attach them. The repository
-      #       cleanliness judgement no longer
-      #       sees the artifact path because
-      #       the assertion was already done.
-      #
-      # No `.gitignore` is added; the
-      # cleanliness test is not weakened.
-      # If the outside-tree write OR the
-      # artifacts-dir copy fails, the step
-      # exits 11 and the workflow aborts
-      # before any cluster / install /
-      # scenario work is attempted, so a
-      # failed identity capture cannot silently
-      # be skipped.
+      # The companion regression at
+      # scripts/test_clean_tree_artifact_regression.sh
+      # enforces (a)–(d) by exercising each I/O
+      # failure mode against a deterministic
+      # precondition, never relying on chmod-only
+      # permission tricks which behave
+      # differently in root contexts.
       # ----------------------------------------------------------------
-      - name: Step A — checkout identity + clean tree assertion (d2b.32: outside-tree capture)
+      - name: Step A — checkout identity + clean tree assertion (d2b.33: tightened artifact I/O contract)
         run: |
           set -euo pipefail
-          # (1) write the identity capture to a path that is GUARANTEED to be
-          #     outside the checkout tree. RUNNER_TEMP is set by GitHub
-          #     Actions on every runner and is independent of the worktree;
-          #     we fall back to /tmp only as a defensive escape hatch.
-          OUT_TMP_BASE="${RUNNER_TEMP:-/tmp}"
-          if [[ -z "$OUT_TMP_BASE" ]]; then
-            echo "FAIL: neither RUNNER_TEMP nor /tmp is available for outside-tree capture"
+
+          # ---- fail-closed helper for artifact I/O ----
+          # Every Step-A artifact I/O fault surfaces as exit 11 with a
+          # diagnosable message. We deliberately do NOT use `set -e` alone
+          # because that collapses multiple fault shapes (mkdir vs write vs
+          # cp vs RUNNER_TEMP unset) into the same exit code; an auditor
+          # should be able to tell what failed without parsing log lines.
+          fail_artifact_io() {
+            echo "FAIL: $*" >&2
             exit 11
+          }
+
+          # (1) RUNNER_TEMP is required. No silent fallback.
+          if [[ -z "${RUNNER_TEMP:-}" ]]; then
+            fail_artifact_io "RUNNER_TEMP is unset/empty; outside-tree identity capture requires it (no /tmp fallback)"
           fi
-          OUT_ID="${OUT_TMP_BASE}/integrationcni-checkout-identity.txt"
-          mkdir -p "$(dirname "$OUT_ID")"
-          {
+
+          OUT_ID="${RUNNER_TEMP}/integrationcni-checkout-identity.txt"
+
+          # (2) External capture directory must be creatable. We choose
+          #     filename as a deterministic target so the test framework can
+          #     pre-create a regular file at this path to force a real
+          #     mkdir-vs-file conflict (deterministic precondition, not
+          #     permission lottery).
+          ART_PARENT_DIR="$(dirname "$OUT_ID")"
+          if [[ -e "$ART_PARENT_DIR" && ! -d "$ART_PARENT_DIR" ]]; then
+            fail_artifact_io "external capture path $ART_PARENT_DIR exists and is not a directory"
+          fi
+          if ! mkdir -p "$ART_PARENT_DIR" 2>/dev/null; then
+            fail_artifact_io "could not create external capture directory $ART_PARENT_DIR"
+          fi
+
+          # (3) Identity capture write itself must succeed.
+          if ! {
             echo "head_sha:          $(git rev-parse HEAD)"
             echo "short_sha:         $(git rev-parse --short HEAD)"
             echo "branch:            $(git rev-parse --abbrev-ref HEAD || echo detached)"
@@ -324,56 +332,53 @@ jobs:
             echo "worktree_clean_asserted_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "clean_tree_required: yes"
             echo "porcelain_clean:"
-            # Note: porcelain is captured AFTER assertion pass too. The
-            # authorized identity record is what gets copied to the artifact;
-            # the snapshot below is fixed up to empty because clean tree is
-            # our preconditions (and we keep the block to preserve contract).
-            echo "(captured after clean assertion)"
             echo "porcelain_end"
-          } > "$OUT_ID"
+          } > "$OUT_ID" 2>/dev/null; then
+            fail_artifact_io "could not write external checkout identity to $OUT_ID"
+          fi
           if [[ ! -s "$OUT_ID" ]]; then
-            echo "FAIL: outside-tree identity capture at $OUT_ID is empty or missing"
-            exit 11
+            fail_artifact_io "external identity capture at $OUT_ID is empty or missing"
           fi
 
-          # (2) run the source-clean assertion against an UNDISTURBED worktree.
-          #     Neither the identity file nor any artifact path has been
-          #     touched inside the repo at this point.
+          # (4) Source-clean assertion, raw and unfiltered. ANY dirty entry
+          #     in the worktree — including paths the operator does not
+          #     expect — fails-closes with exit 10. We do not pipe
+          #     `git status --porcelain` through grep/sed/awk to mask any
+          #     path; the entire output is the subject of the judgement.
           porcelain=$(git status --porcelain || true)
           dirt=$(printf "%s" "$porcelain" | grep -cEv '^$' || true)
           if [[ "$dirt" != "0" ]]; then
-            echo "FAIL: working tree has $dirt dirty entries (clean tree required)"
-            printf "%s\n" "$porcelain" | sed 's/^/  dirt: /'
+            echo "FAIL: working tree has $dirt dirty entries (clean tree required)" >&2
+            printf "%s\n" "$porcelain" | sed 's/^/  dirt: /' >&2
             exit 10
           fi
-          # diff --exit-code returns 1 if there are uncommitted changes; we
-          # probe without aborting under set -e by typing it into a subshell.
+          # diff --exit-code returns 1 if the working tree differs from HEAD.
           if ! git diff --exit-code HEAD > /dev/null 2>&1; then
-            echo "FAIL: working tree diverges from HEAD on at least one file"
+            echo "FAIL: working tree diverges from HEAD on at least one file (uncommitted tracked changes)" >&2
             exit 10
           fi
           echo "OK: source tree clean (porcelain=0, diff vs HEAD clean) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          # (3) Only now — after the source-clean assertion PASSED — does the
-          #     workflow copy the outside-tree capture into the artifacts
-          #     directory. The cleanliness judgement has already been
-          #     recorded; this copy is purely for downstream upload.
-          mkdir -p artifacts/integrationcni
-          ART_ID="artifacts/integrationcni/checkout-identity.txt"
-          if ! cp "$OUT_ID" "$ART_ID"; then
-            echo "FAIL: copy of outside-tree identity capture to $ART_ID failed"
-            exit 11
+          # (5) Post-assertion artifact copy. We force exit 11 on any
+          #     directory-vs-file conflict so a regression that breaks the
+          #     assertion order is loud.
+          ART_DIR="artifacts/integrationcni"
+          if [[ -e "$ART_DIR" && ! -d "$ART_DIR" ]]; then
+            fail_artifact_io "artifact target $ART_DIR exists and is not a directory"
           fi
-          # Now append the actual porcelain snapshot (recorded against an
-          # undisturbed tree) to the artifact record so a reader can see the
-          # exact empty line. Subsequent steps may not modify porcelain.
-          cat >> "$ART_ID" <<EOF
-porcelain_clean_actual: $(printf "%s" "$porcelain" | grep -E '^' | head -n 1; echo)
-EOF
+          if ! mkdir -p "$ART_DIR" 2>/dev/null; then
+            fail_artifact_io "could not create artifact directory $ART_DIR"
+          fi
+          ART_ID="${ART_DIR}/checkout-identity.txt"
+          if ! cp "$OUT_ID" "$ART_ID" 2>/dev/null; then
+            fail_artifact_io "could not copy external checkout identity to $ART_ID"
+          fi
           if [[ ! -s "$ART_ID" ]]; then
-            echo "FAIL: artifact copy at $ART_ID is empty after copy"
-            exit 11
+            fail_artifact_io "artifact copy at $ART_ID is empty after copy"
           fi
+          # Append the porcelain snapshot (taken against an undisturbed
+          # tree, so it must be empty) for the upload-only record.
+          printf 'porcelain_clean_actual: %s\n' "$porcelain" >> "$ART_ID"
           echo "OK: step A — checkout identity captured, working tree matches HEAD"
 
       - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15 (verified)
