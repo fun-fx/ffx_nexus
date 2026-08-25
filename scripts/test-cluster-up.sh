@@ -217,6 +217,12 @@ if (( ATTEMPTS >= 60 )); then
   exit 2
 fi
 
+# Resolve the script directory so the readiness
+# gate can be invoked from a workflow whose cwd
+# is the repo root (the cni-policy-gate job sets
+# working-directory to repo root, not scripts/).
+SCRIPTS_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+
 # Write sentinel LAST.
 echo "${CLUSTER_NAME}" > "$ARTIFACTS/cluster-up.txt"
 # Refresh versions AFTER cilium is in.
@@ -231,5 +237,23 @@ echo "${CLUSTER_NAME}" > "$ARTIFACTS/cluster-up.txt"
   echo "policyEnforcementMode: default"
   echo "kube_dns_ready: true"
 } > "$ARTIFACTS/versions.txt"
+
+# Run the unified readiness gate in pre-fixture
+# mode (gate #1..#7). This is the *first time*
+# the chart's CNI environment is observed under
+# a bounded contract. Any failure here is
+# classified CLUSTER_OR_CNI_NOT_READY (exit 10)
+# and never reaches a chart-side regression
+# snapshot, so an env flake cannot be misread
+# as a chart defect downstream.
+RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}"
+GATE_PHASE=pre-fixture \
+  K8S_VERSION="${K8S_VERSION}" \
+  CILIUM_VERSION="${CILIUM_VERSION}" \
+  RECOVERY_PR_SHA="${RECOVERY_PR_SHA}" \
+  WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID}" \
+  ARTIFACTS="${ARTIFACTS}" \
+  bash "${SCRIPTS_DIR}/cni-readiness-gate.sh"
 
 echo "[setup] test cluster ready: ${CLUSTER_NAME} (${KUBE_WORKER_COUNT} workers)"
