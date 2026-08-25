@@ -35,7 +35,7 @@ metadata:
   name: {{ include "nexus.fullname" . }}-migrate-{{ .Release.Revision }}
   labels:
     {{- include "nexus.labels" . | nindent 4 }}
-    app.kubernetes.io/component: migrate
+    app.kubernetes.io/component: migration
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     # Negative weight: run before anything else the release creates.
@@ -51,7 +51,7 @@ spec:
     metadata:
       labels:
         {{- include "nexus.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: migrate
+        app.kubernetes.io/component: migration
       {{- with .Values.migrations.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}

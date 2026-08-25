@@ -57,27 +57,31 @@ func TestMigrationJobLabelMatchesNetworkPolicy(t *testing.T) {
 func extractMigrationSelector(np string) string {
 	const marker = `$migrationSelector := dict`
 	const component = `"app.kubernetes.io/component"`
-	const sep = `" `
 	const sepEnd = `"`
 	idx := strings.Index(np, marker)
 	if idx < 0 {
 		return ""
 	}
 	rest := np[idx:]
-	end := strings.Index(rest, sepEnd+" "+sepEnd)
-	if end < 0 {
+	// Find the component-key quote.
+	compIdx := strings.Index(rest, component)
+	if compIdx < 0 {
 		return ""
 	}
-	chunk := rest
-	comp := strings.Index(chunk, component)
-	if comp < 0 {
+	// After "app.kubernetes.io/component" comes the value string, e.g.:
+	//   $migrationSelector := dict "key" "value" -}}
+	afterKey := rest[compIdx+len(component):]
+	// Skip whitespace; expect opening quote.
+	afterKey = strings.TrimLeft(afterKey, " \t")
+	if !strings.HasPrefix(afterKey, sepEnd) {
 		return ""
 	}
-	tail := chunk[comp+len(component)+2:]
-	if strings.HasPrefix(tail, "migration") {
-		return "migration"
+	val := afterKey[len(sepEnd):]
+	valEnd := strings.Index(val, sepEnd)
+	if valEnd < 0 {
+		return ""
 	}
-	return ""
+	return val[:valEnd]
 }
 
 func truncate(s string) string {

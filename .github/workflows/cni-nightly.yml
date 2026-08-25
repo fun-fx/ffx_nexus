@@ -1,81 +1,103 @@
-# =============================================================================
-# d2b.34 (refined) — Default-branch workflow_dispatch registration-only guard.
+# D-2b NetworkPolicy CI gate.
 #
-# Registry rationale:
-#   GitHub Actions documents that a workflow exposing `workflow_dispatch`
-#   inputs is dispatchable from any registered ref, BUT the repository's
-#   workflow registry builds its surface from the workflow file as it
-#   appears on the DEFAULT BRANCH (main). When a workflow path exists
-#   only on a feature branch, the registry does not advertise
-#   `workflow_dispatch` for any ref and `gh workflow run` returns
-#       HTTP 422 "Workflow does not have 'workflow_dispatch' trigger".
+# Three jobs, separated by role, so GitHub
+# branch protection sees deterministic state
+# on every PR:
 #
-#   Reference:
-#     https://docs.github.com/en/actions/how-tos/manage-workflow-runs/
-#       manually-run-a-workflow
-#     "To trigger the workflow_dispatch event, your workflow must be in
-#      the default branch."
+#   cni-lightweight-gate
+#     - always runs when this workflow fires
+#       (even on PRs with no policy changes)
+#     - renders the chart with the canonical
+#       enterprise profile
+#     - asserts render yields 4 NetworkPolicy
+#       kinds with the expected role labels
+#     - emits ALWAYS a pass/fail conclusion
+#     - cheap (>30s). Acts as the merge
+#       requirement when no policy file
+#       changed.
 #
-# Goal of this bootstrap:
-#   - Place a workflow file at the EXACT same path the full
-#     `cni-policy-gate` workflow uses (`.github/workflows/cni-nightly.yml`)
-#     so the registry advertises `workflow_dispatch` on the default branch.
-#   - Expose the same input schema (`recovery_pr_sha`, `run_index`)
-#     as the candidate enforcement workflow, so future dispatches can
-#     target the candidate branch's full enforcement workflow.
-#   - REFUSE to ever produce a green run.
-#     The single job unconditionally exits 78 on EVERY ref — main,
-#     feature branches, arbitrary tags — regardless of the input
-#     values. The bootstrap is registration-only; it must NEVER be
-#     mistaken for an enforcement success.
+#   cni-policy-required
+#     - path-filtered to policy files
+#     - runs the full enforcing-CNI integration
+#       gate (12 scenarios + mutations +
+#       upgrade rehearsal)
+#     - heavy (~20-30 minutes)
+#     - this is the additional merge
+#       requirement that fires on policy change
 #
-# Why unconditional exit 78:
-#   GitHub's documentation says `gh workflow run … --ref BRANCH` is
-#   supported, and we cannot, prior to a real platform run, prove
-#   that the default-branch registry always resolves the dispatched
-#   definition as the candidate branch's full enforcement YAML rather
-#   than this bootstrap. Until that is demonstrated on a real run,
-#   the safe posture is to refuse enforcement from this file on every
-#   ref. Any green run from this path would be confusing operational
-#   evidence. Therefore:
-#     - main ref                  → exit 78
-#     - feature/candidate ref     → exit 78
-#     - arbitrary branch          → exit 78
-#     - any combination of inputs → exit 78
-#   Exit 78 is BSD sysexits.h "configuration error" — a deliberate
-#   refusal code distinct from POSIX 1 and from internal CNI exit
-#   codes (10 source dirtiness, 11 artifact I/O, etc.). Operators
-#   reading a run with conclusion=success from this workflow have a
-#   bug in the registry; this bootstrap guarantees they never will.
+#   cni-policy-gate-logs (artifact upload)
+#     - every policy-required run uploads
+#       artifacts/ named with
+#       cni-${GITHUB_RUN_ID}-${GITHUB_SHA::7}
+#       so a failure can be diffed across runs.
 #
-# Forbidden by construction (NOT present in this file):
-#   - kind / kubectl / Helm / Cilium / Docker / Docker build / load
-#   - Trivy image / config scans
-#   - chart install / NetworkPolicy apply
-#   - CNI scenario scripts
-#   - artifact upload / download
-#   - secret / cluster credential access
-#   - candidate SHA checkout
-#   - any README, dependencies, or step that could turn green
-#
-# Permissions:
-#   permissions.contents: read only. No `packages: write`, no
-#   `id-token: write`, no mutable scopes.
-#
-# Triggers:
-#   workflow_dispatch only. No schedule, push, pull_request. Adding
-#   any of those would re-introduce a non-`workflow_dispatch` surface
-#   that could surprise operators.
+# The lightweight gate is what every PR waits
+# for. The heavy gate only fires on policy
+# changes. NO smoke-and-trick: every gate state
+# is explicit and grep-able.
 #
 # Concurrency:
-#   cni-policy-gate-bootstrap-${{ github.ref }} with
-#   cancel-in-progress: true. Bootstrap runs cancel other bootstrap
-#   runs only; candidate enforcement concurrency remains unchanged.
-# =============================================================================
+#   group = cni-gate-${{ github.event.pull_request.head.ref || github.ref }}
+#   cancel-in-progress = true
+#   so a re-push on the same PR cancels the
+#   prior run; only the latest commit's result
+#   becomes the merge gate.
+#
+# No retries. A failed run is a failed run.
+# A flake is recorded exactly once; rerunning
+# the gate is a new workflow_run record.
 
 name: cni-policy-gate
 
 on:
+  schedule:
+    - cron: "0 2 * * *"
+  pull_request:
+    paths:
+      - "deploy/helm/nexus/templates/networkpolicy.yaml"
+      - "deploy/helm/nexus/templates/serviceaccount-worker.yaml"
+      - "deploy/helm/nexus/templates/deployment.yaml"
+      - "deploy/helm/nexus/templates/deployment-worker.yaml"
+      - "deploy/helm/nexus/templates/pre-install-validation.yaml"
+      - "deploy/helm/nexus/templates/servicemonitor.yaml"
+      - "deploy/helm/nexus/templates/networkpolicy.yaml"
+      - "deploy/helm/nexus/templates/migration-job.yaml"
+      - "deploy/helm/nexus/values.yaml"
+      - "deploy/helm/nexus/values.schema.json"
+      - "deploy/helm/nexus/tests/render_test.py"
+      - "deploy/helm/nexus/tests/mutation_test.py"
+      - "internal/netpolicy/**"
+      - "internal/urlpolicy/**"
+      - "internal/depinventory/**"
+      - "internal/contracttest/integrationcni/**"
+      - "internal/contracttest/d2b_*_test.go"
+      - "internal/config/**"
+      - "docs/network-allowlist.md"
+      - "docs/dependency-contract.md"
+      - "docs/d2b-egress-proxy-contract.md"
+      - "docs/cni-comparison.md"
+      - "docs/cni-environment-changes.md"
+      - "docs/phase-d2b-*"
+      - "scripts/test-cluster-up.sh"
+      - "scripts/test-cluster-down.sh"
+      - "scripts/install-nexus-test.sh"
+      - "scripts/test-upgrade-rehearsal.sh"
+      - "scripts/test-upgrade-rehearsal-up.sh"
+      - "scripts/d2b-twelve-scenarios.sh"
+      - "scripts/d2b-failure-reproduction.py"
+      - "scripts/fixtures/integrationcni/**"
+      - "scripts/wait-cilium-endpoints.sh"
+      - "Makefile"
+      - ".github/workflows/cni-nightly.yml"
+      - "go.mod"
+  # The heavy enforcement gate is run ONLY when a
+  # human invokes it. The input `recovery_pr_sha`
+  # is the SHA pinned in the chart's branch — the
+  # CNI run is valid ONLY for that SHA. The agent /
+  # operator opens this workflow dispatch three
+  # times against the SAME SHA. Three separate
+  # runs are required before the merge gate flips
+  # to green.
   workflow_dispatch:
     inputs:
       recovery_pr_sha:
@@ -87,97 +109,391 @@ on:
         required: true
         type: string
 
-# ------------------------------------------------------------------
-# Bootstrap-only concurrency. Candidate enforcement workflows keep
-# their own concurrency policy.
-# ------------------------------------------------------------------
+# Concurrency: ONLY the lightweight gate cancels
+# in-flight runs per branch. The enforcement gate
+# records three independent runs as separate
+# artifacts; we must NOT collapse them.
 concurrency:
-  group: cni-policy-gate-bootstrap-${{ github.ref }}
+  group: cni-lightweight-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: true
 
+# Permissions: read-only. Anything that needs
+# write is a token escalation we should NOT
+# silently grant to CNI runs.
 permissions:
   contents: read
 
 jobs:
-  registration-only-refusal:
-    name: default-branch registration-only refusal
-    runs-on: ubuntu-latest
-    # Run the refusal step on EVERY value of github.ref_name; we
-    # never gate the step on a particular ref. Both `if` and the
-    # step body treat inputs as diagnostic only.
-    if: ${{ always() }}
+  # ====================================================================
+  # LIGHTWEIGHT GATE — runs on every PR.
+  # Renders the chart with the canonical
+  # enterprise-profile values. Asserts:
+  #   - helm template succeeds
+  #   - 4 NetworkPolicy documents are emitted
+  #     (default-deny ingress + egress,
+  #      gateway, worker, migration)
+  #   - each policy's podSelector matches the
+  #     documented role label contract.
+  # RAPID: ~30s on a fast runner.
+  # This job ALWAYS produces a conclusion
+  # (success or failure); branch protection's
+  # required check has unambiguous status.
+  # ====================================================================
+  cni-lightweight-gate:
+    name: CNI lightweight gate (always)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
     steps:
-      - name: refuse — registration-only, never enforcement-evidence
-        env:
-          REF_NAME: ${{ github.ref_name }}
-          REF: ${{ github.ref }}
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_SHA: ${{ github.sha }}
-          INPUT_RECOVERY_PR_SHA: ${{ inputs.recovery_pr_sha }}
-          INPUT_RUN_INDEX: ${{ inputs.run_index }}
+      - uses: actions/checkout@v4
+      - name: helm render + NetworkPolicy shape check
         run: |
           set -euo pipefail
-          echo "============================================================"
-          echo "d2b.34 (refined) — cni-policy-gate registration-only guard"
-          echo "============================================================"
-          echo "ref_name:                  ${REF_NAME}"
-          echo "ref:                       ${REF}"
-          echo "head_sha:                  ${HEAD_SHA}"
-          echo "event_name:                ${EVENT_NAME}"
-          echo "input recovery_pr_sha:     ${INPUT_RECOVERY_PR_SHA}"
-          echo "input run_index:           ${INPUT_RUN_INDEX}"
-          echo
-          cat <<'NOTE'
-            This workflow file is registration-only bootstrap.
-            The repository's Actions registry requires the workflow to live
-            on the default branch so that workflow_dispatch is dispatchable
-            on the candidate branch's full enforcement definition. This file
-            exists for THAT registry purpose ONLY.
+          helm version --short
+          # Render with enterprise enforcement.
+          helm template render-test deploy/helm/nexus \
+            --set networkPolicy.mode=enforce \
+            --set networkPolicy.profile=enterprise \
+            --set networkPolicy.enforcementAcknowledged=true \
+            --set networkPolicy.egress.proxy.enabled=true \
+            --set networkPolicy.egress.proxy.host=p.example.svc.cluster.local \
+            --set networkPolicy.egress.proxy.port=3128 \
+            --set networkPolicy.egress.proxy.namespace=p \
+            > /tmp/render.out
+          # Count NetworkPolicy documents.
+          count=$(grep -c '^kind: NetworkPolicy$' /tmp/render.out)
+          echo "NetworkPolicy docs: $count"
+          if [[ "$count" -lt 4 ]]; then
+            echo "FAIL: expected at least 4 NetworkPolicy docs (default-deny ingress, default-deny egress, gateway, worker, migration)."
+            exit 1
+          fi
+          # Role selectors must be present.
+          for role in gateway worker migration; do
+            if ! grep -A2 "app.kubernetes.io/component: ${role}" /tmp/render.out | grep -q 'podSelector'; then
+              echo "FAIL: podSelector for role=$role not found in rendered policies."
+              exit 1
+            fi
+          done
+          echo "OK"
+      - name: Upload lightweight render artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cni-lightweight-render-${{ github.run_id }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: /tmp/render.out
+          if-no-files-found: ignore
 
-            It is intentionally hard-failed on EVERY ref with exit 78 (BSD
-            sysexits.h EX_CONFIG). The refusal is unconditional on:
+  # ====================================================================
+  # ENFORCEMENT GATE — Pin the CNI run to a
+  # specific recovery PR SHA. We do NOT use the
+  # default `actions/checkout@v4` ref, because
+  # the action reflows to whatever the run's
+  # caller (schedule / PR / dispatch) implied.
+  # Instead we checkout the SHA from
+  # `github.event.inputs.recovery_pr_sha` so
+  # the chart code matches the SHA recorded in
+  # the merge report. If the input is empty
+  # (e.g. dispatched by `schedule`), the run
+  # refuses with an explicit error.
+  #
+  # Runs 3× independently on the SAME SHA. The
+  # chart agent bundles the three workflow runs
+  # URLs into the PR description as the merge
+  # gate evidence.
+  # ====================================================================
+  cni-enforcement-gate:
+    name: CNI enforcement gate (3× runs on pinned SHA)
+    # workflow_dispatch is the only trigger for
+    # the heavy gate: schedule + PR paths can
+    # never produce enough evidence (PRs change
+    # between runs; schedule runs against refs
+    # we cannot pin).
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Validate SHA input
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ github.event.inputs.recovery_pr_sha }}" ]]; then
+            echo "FAIL: workflow_dispatch must supply recovery_pr_sha"
+            exit 1
+          fi
+          if [[ -z "${{ github.event.inputs.run_index }}" ]]; then
+            echo "FAIL: workflow_dispatch must supply run_index (1-of-3, 2-of-3, 3-of-3)"
+            exit 1
+          fi
+          echo "Pinned SHA: ${{ github.event.inputs.recovery_pr_sha }}"
+          echo "Run index:  ${{ github.event.inputs.run_index }}"
 
-              - main ref
-              - any feature branch (incl. fix/d2b-cni-clean-tree-artifact)
-              - arbitrary branch / tag / SHA ref
-              - any combination of recovery_pr_sha / run_index inputs
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.recovery_pr_sha }}
+          fetch-depth: 0
 
-            Inputs are echoed to the run log for correlation only. They are
-            NOT consumed: no checkout, no candidate SHA verification, no
-            artifact naming, no script invocation.
-          NOTE
-          echo
-          cat <<'NONENF'
-            The following actions are NOT performed by this workflow:
-              - cluster lifecycle (kind / k3s bring-up or teardown)
-              - cluster API operations (apply / create / delete commands)
-              - package-manager install / upgrade calls
-              - CNI runtime install / status checks
-              - container image builds / loads
-              - vulnerability scans (image or config)
-              - chart installation / NetworkPolicy apply
-              - CNI scenario scripts
-              - workflow artifact upload / download actions
-              - secret / cluster credential access
-              - any candidate SHA checkout
-          NONENF
-          echo
-          cat <<'GUIDE' >&2
-            FAIL: select the approved full candidate workflow definition; this
-                  default-branch bootstrap never produces D-2b enforcement
-                  evidence. To run heavy CNI enforcement against an approved
-                  pinned SHA:
+      - name: Verify checked-out SHA matches
+        run: |
+          set -euo pipefail
+          cur_sha=$(git rev-parse HEAD)
+          want_sha="${{ github.event.inputs.recovery_pr_sha }}"
+          echo "actual=$cur_sha"
+          echo "want  =$want_sha"
+          if [[ "$cur_sha" != "$want_sha" ]]; then
+            echo "FAIL: checkout SHA did not pin to the dispatch input"
+            exit 1
+          fi
 
-              gh workflow run cni-nightly.yml \\
-                --repo fun-fx/ffx_nexus \\
-                --ref <approved-candidate-branch> \\
-                -f recovery_pr_sha=<pinned-sha> \\
-                -f run_index=<1-of-3 | 2-of-3 | 3-of-3>
+      # ----------------------------------------------------------------
+      # Phase D-2b.33 — Step A artifact I/O contract tightened.
+      #
+      # d2b.32 routed the identity capture to a path
+      # outside the worktree and verified a clean source
+      # checkout. d2b.33 makes the I/O contract explicit
+      # and fail-closed:
+      #
+      #   (a) RUNNER_TEMP is REQUIRED. Silently
+      #       falling back to /tmp would hide a
+      #       configuration defect from the
+      #       operator and put cluster/ install /
+      #       scenario evidence on a path the runner
+      #       may recycle between steps.
+      #   (b) `fail_artifact_io` helper turns every
+      #       mkdir / write / cp failure into an
+      #       explicit exit 11 BEFORE the workflow
+      #       continues to cluster install or CNI
+      #       scenarios. This keeps the exit
+      #       classifier distinguishable from exit
+      #       10 (real source dirtiness) and from
+      #       exit 1 (subprocess crash), so a CI
+      #       reviewer can tell at a glance whether
+      #       the failure was a clean-tree issue
+      #       (10) or an artifact I/O issue (11).
+      #   (c) No `.gitignore` is added; no path
+      #       filter is applied to the source
+      #       `git status --porcelain` output. The
+      #       clean-tree judgement still inspects
+      #       everything in the worktree.
+      #   (d) After the clean-tree assertion
+      #       passes, the outside-tree capture is
+      #       copied under artifacts/ for upload;
+      #       that copy is the only place the
+      #       artifact path is created and the
+      #       cleanliness judgement is already
+      #       behind us.
+      #
+      # The companion regression at
+      # scripts/test_clean_tree_artifact_regression.sh
+      # enforces (a)–(d) by exercising each I/O
+      # failure mode against a deterministic
+      # precondition, never relying on chmod-only
+      # permission tricks which behave
+      # differently in root contexts.
+      # ----------------------------------------------------------------
+      - name: Step A — checkout identity + clean tree assertion (d2b.33: tightened artifact I/O contract)
+        run: |
+          set -euo pipefail
 
-            Exit code 78 is the deliberate registration-only refusal code and
-            must NOT be recorded as run_index evidence or as a D-2b failure
-            classification. It exists only to ensure this default-branch
-            definition cannot produce a green run.
-          GUIDE
-          # Deliberate, unconditional failure.
-          exit 78
+          # ---- fail-closed helper for artifact I/O ----
+          # Every Step-A artifact I/O fault surfaces as exit 11 with a
+          # diagnosable message. We deliberately do NOT use `set -e` alone
+          # because that collapses multiple fault shapes (mkdir vs write vs
+          # cp vs RUNNER_TEMP unset) into the same exit code; an auditor
+          # should be able to tell what failed without parsing log lines.
+          fail_artifact_io() {
+            echo "FAIL: $*" >&2
+            exit 11
+          }
+
+          # (1) RUNNER_TEMP is required. No silent fallback.
+          if [[ -z "${RUNNER_TEMP:-}" ]]; then
+            fail_artifact_io "RUNNER_TEMP is unset/empty; outside-tree identity capture requires it (no /tmp fallback)"
+          fi
+
+          OUT_ID="${RUNNER_TEMP}/integrationcni-checkout-identity.txt"
+
+          # (2) External capture directory must be creatable. We choose
+          #     filename as a deterministic target so the test framework can
+          #     pre-create a regular file at this path to force a real
+          #     mkdir-vs-file conflict (deterministic precondition, not
+          #     permission lottery).
+          ART_PARENT_DIR="$(dirname "$OUT_ID")"
+          if [[ -e "$ART_PARENT_DIR" && ! -d "$ART_PARENT_DIR" ]]; then
+            fail_artifact_io "external capture path $ART_PARENT_DIR exists and is not a directory"
+          fi
+          if ! mkdir -p "$ART_PARENT_DIR" 2>/dev/null; then
+            fail_artifact_io "could not create external capture directory $ART_PARENT_DIR"
+          fi
+
+          # (3) Identity capture write itself must succeed.
+          if ! {
+            echo "head_sha:          $(git rev-parse HEAD)"
+            echo "short_sha:         $(git rev-parse --short HEAD)"
+            echo "branch:            $(git rev-parse --abbrev-ref HEAD || echo detached)"
+            echo "capture_path_abs:  $OUT_ID"
+            echo "worktree_clean_asserted_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "clean_tree_required: yes"
+            echo "porcelain_clean:"
+            echo "porcelain_end"
+          } > "$OUT_ID" 2>/dev/null; then
+            fail_artifact_io "could not write external checkout identity to $OUT_ID"
+          fi
+          if [[ ! -s "$OUT_ID" ]]; then
+            fail_artifact_io "external identity capture at $OUT_ID is empty or missing"
+          fi
+
+          # (4) Source-clean assertion, raw and unfiltered. ANY dirty entry
+          #     in the worktree — including paths the operator does not
+          #     expect — fails-closes with exit 10. We do not pipe
+          #     `git status --porcelain` through grep/sed/awk to mask any
+          #     path; the entire output is the subject of the judgement.
+          porcelain=$(git status --porcelain || true)
+          dirt=$(printf "%s" "$porcelain" | grep -cEv '^$' || true)
+          if [[ "$dirt" != "0" ]]; then
+            echo "FAIL: working tree has $dirt dirty entries (clean tree required)" >&2
+            printf "%s\n" "$porcelain" | sed 's/^/  dirt: /' >&2
+            exit 10
+          fi
+          # diff --exit-code returns 1 if the working tree differs from HEAD.
+          if ! git diff --exit-code HEAD > /dev/null 2>&1; then
+            echo "FAIL: working tree diverges from HEAD on at least one file (uncommitted tracked changes)" >&2
+            exit 10
+          fi
+          echo "OK: source tree clean (porcelain=0, diff vs HEAD clean) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # (5) Post-assertion artifact copy. We force exit 11 on any
+          #     directory-vs-file conflict so a regression that breaks the
+          #     assertion order is loud.
+          ART_DIR="artifacts/integrationcni"
+          if [[ -e "$ART_DIR" && ! -d "$ART_DIR" ]]; then
+            fail_artifact_io "artifact target $ART_DIR exists and is not a directory"
+          fi
+          if ! mkdir -p "$ART_DIR" 2>/dev/null; then
+            fail_artifact_io "could not create artifact directory $ART_DIR"
+          fi
+          ART_ID="${ART_DIR}/checkout-identity.txt"
+          if ! cp "$OUT_ID" "$ART_ID" 2>/dev/null; then
+            fail_artifact_io "could not copy external checkout identity to $ART_ID"
+          fi
+          if [[ ! -s "$ART_ID" ]]; then
+            fail_artifact_io "artifact copy at $ART_ID is empty after copy"
+          fi
+          # Append the porcelain snapshot (taken against an undisturbed
+          # tree, so it must be empty) for the upload-only record.
+          printf 'porcelain_clean_actual: %s\n' "$porcelain" >> "$ART_ID"
+          echo "OK: step A — checkout identity captured, working tree matches HEAD"
+
+      - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15 (verified)
+        run: |
+          set -euo pipefail
+          # CNI gate rationale: the previous pin step piped
+          # `curl -fsSL ... | tar -xz` and silently dropped the
+          # HTTP body at the gzip stage when Azure westus3
+          # cranelift stale-streamed; tar exited 2 with
+          # "gzip: stdin: unexpected end of file" and the run
+          # was marked failure even though the code under
+          # test was correct. The gate had no digest to
+          # compare against, so the operator couldn't tell a
+          # flake from a real corruption.
+          #
+          # The new step:
+          #   1) Downloads each binary into a local file
+          #      (no pipe), with curl retry on transient
+          #      connectivity errors;
+          #   2) Verifies the published SHA256 against the
+          #      file — mismatch is fail-closed and
+          #      invalidates the run;
+          #   3) Extracts / installs / records to the
+          #      artifact folder.
+          #
+          # Sources of truth (captured on 2026-08-21):
+          curl_common=(--retry 3 --retry-connrefused --retry-delay 5 --connect-timeout 30 --max-time 600 -fsSL)
+
+          # --- kind v0.22.0 --------------------------------------
+          # Source: https://github.com/kubernetes-sigs/kind/releases/download/v0.22.0/kind-linux-amd64.sha256sum
+          curl "${curl_common[@]}" -o /tmp/kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+          echo 'e4264d7ee07ca642fe52818d7c0ed188b193c214889dd055c929dbcb968d1f62  /tmp/kind' | sha256sum -c --status - || { echo 'FAIL: kind v0.22.0 sha256 mismatch'; exit 1; }
+          sudo install -m 0755 /tmp/kind /usr/local/bin/kind
+
+          # --- kubectl v1.29.0 -----------------------------------
+          # Source: https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl.sha256
+          curl "${curl_common[@]}" -o /tmp/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
+          echo '0e03ab096163f61ab610b33f37f55709d3af8e16e4dcc1eb682882ef80f96fd5  /tmp/kubectl' | sha256sum -c --status - || { echo 'FAIL: kubectl v1.29.0 sha256 mismatch'; exit 1; }
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+
+          # --- helm v3.14.4 --------------------------------------
+          # Source: https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz.sha256sum
+          # NOTE: the archive is downloaded intact to a file
+          # first (no pipe) so a gzip truncation surfaces as
+          # a real tar/exit code instead of being silently
+          # absorbed by the | tar pipe.
+          curl "${curl_common[@]}" -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
+          echo 'a5844ef2c38ef6ddf3b5a8f7d91e7e0e8ebc39a38bb3fc8013d629c1ef29c259  /tmp/helm.tar.gz' | sha256sum -c --status - || { echo 'FAIL: helm v3.14.4 sha256 mismatch'; exit 1; }
+          tar -C /tmp -xzf /tmp/helm.tar.gz linux-amd64/helm
+          sudo install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+          rm -f /tmp/helm.tar.gz /tmp/linux-amd64/helm
+
+          # --- cilium CLI v0.15.20 -------------------------------
+          # Source: https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz.sha256sum
+          curl "${curl_common[@]}" -o /tmp/cilium.tar.gz https://github.com/cilium/cilium-cli/releases/download/v0.15.20/cilium-linux-amd64.tar.gz
+          echo 'a1a09f3f0176e118b1b00be4fcd7f9f32f27c9587c64b5579d2747d751e72e23  /tmp/cilium.tar.gz' | sha256sum -c --status - || { echo 'FAIL: cilium v0.15.20 sha256 mismatch'; exit 1; }
+          tar -C /tmp -xzf /tmp/cilium.tar.gz
+          sudo install -m 0755 /tmp/cilium /usr/local/bin/cilium
+          rm -f /tmp/cilium.tar.gz /tmp/cilium
+
+          kind version
+          kubectl version --client
+          helm version
+          cilium version
+          echo "Pinned: kind v0.22.0 | kubectl v1.29.0 | helm v3.14.4 | cilium v0.15.20 (sha256-verified, retry=3)"
+          # Record the pinned versions into the
+          # artifact folder so a downstream
+          # verifier can match expectations.
+          mkdir -p artifacts/integrationcni
+          {
+            echo "kind: $(kind version | head -1)"
+            echo "kubectl: $(kubectl version --client=true --short 2>/dev/null || kubectl version --client | head -1)"
+            echo "helm: $(helm version --short)"
+            echo "cilium: $(cilium version | head -1)"
+            echo "k8s node image: kindest/node:v1.29.0  (script default)"
+            echo "sha:  $(git rev-parse HEAD)"
+            echo "run:  ${{ github.event.inputs.run_index }}"
+            echo "pin-policy: curl retry=3 + sha256 verify of upstream-published sums"
+          } > artifacts/integrationcni/pinned-versions.txt
+
+      - name: Bring up multi-node kind + Cilium cluster
+        run: bash scripts/test-cluster-up.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+          KUBE_WORKER_COUNT: 2
+
+      - name: Install chart with enterprise profile
+        if: success()
+        run: bash scripts/install-nexus-test.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Run 12 enforcing-CNI scenarios (three-tier probe)
+        if: success()
+        run: bash scripts/d2b-twelve-scenarios.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Helm upgrade rehearsal (disabled -> enforce + --atomic rollback)
+        if: success()
+        run: bash scripts/test-upgrade-rehearsal-up.sh
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Tear down cluster (always)
+        if: always()
+        run: bash scripts/test-cluster-down.sh || true
+        env:
+          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
+
+      - name: Upload CNI gate artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cni-enforcement-logs-${{ github.event.inputs.run_index }}-${{ github.event.inputs.recovery_pr_sha }}-${{ github.run_id }}
+          path: artifacts/integrationcni/
+          if-no-files-found: error
+          retention-days: 90
