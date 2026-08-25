@@ -1,0 +1,72 @@
+# scripts/fixtures/integrationcni/values-extra-cni.yaml
+#
+# Extra values merged on top of the chart's
+# default values for the D-2b CNI enforcement
+# gate. The scripts install-nexus-test.sh,
+# test-upgrade-rehearsal-up.sh and
+# test-upgrade-rehearsal.sh all pass this file
+# via `helm … --values scripts/fixtures/
+# integrationcni/values-extra-cni.yaml`.
+#
+# Why a side file instead of --set flags:
+#   - `networkPolicy.postgres.selector.matchLabels`
+#     is a `map[string]string`. Helm `--set` opens
+#     this as nested scalar path segments, which
+#     mis-parses keys containing '.' or '/' (e.g.
+#     `app.kubernetes.io/name`) and the schema
+#     rejects the malformed map. --values is the
+#     safe path for map values used by fixtures.
+#
+# This file is paired with the canonical
+# narrative in docs/network-allowlist.md. Any
+# change must propagate to all three CNI scripts
+# AT THE SAME TIME or the chart-side schema
+# rejects the render.
+networkPolicy:
+  postgres:
+    selector:
+      enabled: true
+      namespace: database
+      matchLabels:
+        app: postgres
+        app.kubernetes.io/name: postgres
+    cidr:
+      enabled: false
+      cidrs:
+        - ""
+      port: 5432
+  ingressController:
+    namespaces:
+      - cni-test-ingress
+    matchPorts:
+      - 8080
+  prometheus:
+    namespaces:
+      - cni-test-prometheus
+  dns:
+    nameservers:
+      - 10.96.0.10
+    matchPorts:
+      - 53
+    matchProtocols:
+      - UDP
+      - TCP
+  egress:
+    proxy:
+      enabled: true
+      host: cni-proxy.default.svc.cluster.local
+      port: 3128
+      namespace: default
+      podSelector: {}
+
+dependencies:
+  postgres:
+    enabled: true
+    host: stub-postgres.default.svc.cluster.local
+    port: 5432
+    namespace: database
+  redis:
+    enabled: true
+    host: stub-redis.default.svc.cluster.local
+    port: 6379
+    namespace: database

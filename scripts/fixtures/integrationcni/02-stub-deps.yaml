@@ -1,0 +1,381 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-gateway
+  labels:
+    app.kubernetes.io/part-of: nexus
+    app.kubernetes.io/name: nexus-cni-test-nexus
+    app.kubernetes.io/instance: nexus-cni-test-nexus
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: gateway
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/instance: nexus-cni-test
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: gateway
+  - port: 9101
+    targetPort: 9101
+    protocol: TCP
+    name: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-worker-metrics
+  labels:
+    app.kubernetes.io/part-of: nexus
+    app.kubernetes.io/name: nexus-cni-test-nexus
+    app.kubernetes.io/instance: nexus-cni-test-nexus
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: worker
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/instance: nexus-cni-test
+  ports:
+  - port: 9101
+    targetPort: 9101
+    protocol: TCP
+    name: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-proxy
+  labels:
+    app.kubernetes.io/part-of: nexus
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/component: egress-proxy
+  ports:
+  - port: 3128
+    targetPort: 3128
+    protocol: TCP
+    name: proxy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-postgres
+  labels:
+    app.kubernetes.io/part-of: nexus
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/component: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+    protocol: TCP
+    name: pg
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-redis
+  labels:
+    app.kubernetes.io/part-of: nexus
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/component: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+    protocol: TCP
+    name: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cni-clickhouse
+  labels:
+    app.kubernetes.io/part-of: nexus
+  namespace: default
+spec:
+  selector:
+    app.kubernetes.io/component: clickhouse
+  ports:
+  - port: 9000
+    targetPort: 9000
+    protocol: TCP
+    name: ch
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-ingress
+  labels:
+    kubernetes.io/metadata.name: cni-test-ingress
+spec:
+  selector:
+    app.kubernetes.io/component: arbitrary
+  ports:
+  - port: 9090
+    targetPort: 9090
+    protocol: TCP
+    name: tcp
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-prometheus
+  labels:
+    kubernetes.io/metadata.name: cni-test-prometheus
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-untrusted
+  labels:
+    kubernetes.io/metadata.name: cni-test-untrusted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-postgres
+  labels:
+    kubernetes.io/metadata.name: cni-test-postgres
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-redis
+  labels:
+    kubernetes.io/metadata.name: cni-test-redis
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-clickhouse
+  labels:
+    kubernetes.io/metadata.name: cni-test-clickhouse
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-test-proxy
+  labels:
+    kubernetes.io/metadata.name: cni-test-proxy
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-egress-proxy
+  namespace: default
+  labels:
+    app.kubernetes.io/name: proxy
+    app.kubernetes.io/component: egress-proxy
+spec:
+  containers:
+  - name: proxy
+    image: cni-listener:local
+    imagePullPolicy: Never
+    args:
+    - -ports=3128
+    - -role=egress-proxy
+    - -target=cni-mock-egress-proxy
+    ports:
+    - containerPort: 3128
+      name: proxy
+      protocol: TCP
+    readinessProbe:
+      exec:
+        command:
+        - /cni-listener
+        - -probe=3128
+      initialDelaySeconds: 1
+      periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-postgres
+  namespace: default
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: postgres
+spec:
+  containers:
+  - name: pg
+    image: cni-listener:local
+    imagePullPolicy: Never
+    args:
+    - -ports=5432
+    - -role=postgres
+    - -target=cni-mock-postgres
+    ports:
+    - containerPort: 5432
+      name: pg
+      protocol: TCP
+    readinessProbe:
+      exec:
+        command:
+        - /cni-listener
+        - -probe=5432
+      initialDelaySeconds: 1
+      periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-redis
+  namespace: default
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: redis
+spec:
+  containers:
+  - name: redis
+    image: cni-listener:local
+    imagePullPolicy: Never
+    args:
+    - -ports=6379
+    - -role=redis
+    - -target=cni-mock-redis
+    ports:
+    - containerPort: 6379
+      name: redis
+      protocol: TCP
+    readinessProbe:
+      exec:
+        command:
+        - /cni-listener
+        - -probe=6379
+      initialDelaySeconds: 1
+      periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-clickhouse
+  namespace: default
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/component: clickhouse
+spec:
+  containers:
+  - name: ch
+    image: cni-listener:local
+    imagePullPolicy: Never
+    args:
+    - -ports=9000
+    - -role=clickhouse
+    - -target=cni-mock-clickhouse
+    ports:
+    - containerPort: 9000
+      name: ch
+      protocol: TCP
+    readinessProbe:
+      exec:
+        command:
+        - /cni-listener
+        - -probe=9000
+      initialDelaySeconds: 1
+      periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cni-mock-arbitrary
+  namespace: default
+  labels:
+    app.kubernetes.io/name: arbitrary
+    app.kubernetes.io/component: arbitrary
+spec:
+  containers:
+  - name: ar
+    image: cni-listener:local
+    imagePullPolicy: Never
+    args:
+    - -ports=9090
+    - -role=arbitrary
+    - -target=cni-mock-arbitrary
+    ports:
+    - containerPort: 9090
+      name: tcp
+      protocol: TCP
+    readinessProbe:
+      exec:
+        command:
+        - /cni-listener
+        - -probe=9090
+      initialDelaySeconds: 1
+      periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault

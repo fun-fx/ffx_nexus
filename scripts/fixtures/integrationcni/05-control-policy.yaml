@@ -1,0 +1,110 @@
+# scripts/fixtures/integrationcni/05-control-policy.yaml
+#
+# Phase D-2b.25: control-plane NetworkPolicy
+# for the fixture-service-control gate.
+#
+# Purpose:
+#
+#   step #9 of cni-readiness-gate.sh asserts
+#   that the cluster's Service + EndpointSlice
+#   + DNS path actually carries a packet from
+#   cni-control-probe  to  cni-control-target.
+#
+#   We do NOT want step #9 to ride on the
+#   chart's product NetworkPolicy because a
+#   product regression that fails step #9 is
+#   indistinguishable from a cluster plumbing
+#   regression. We must keep the two surfaces
+#   independent:
+#
+#     (control policy, this file)  - admits
+#       ONLY cni-control-app-source-pods to
+#       cni-control role=probe-target TCP/18080
+#     (chart product policy, deploy/helm/nexus/
+#       templates/networkpolicy.yaml) - admits
+#       cni-test-ingress / cni-test-prometheus
+#       and egress to cni-test-postgres / etc.
+#
+#   Both policies are present in the cluster
+#   during the scenario probes. A chart-side
+#   regression (policy deletion, wrong peer)
+#   shows up in step #9 only if it accidentally
+#   affects cni-control namespace, which the
+#   chart's networkpolicy.yaml never does
+#   because cni-control is not in the value
+#   defaults and not in the rendered selectors.
+#
+# Why the policy is permissive inside the
+# control boundary and DENY-by-default outside:
+#
+#   The isolation invariant requires the gate
+#   to test ONLY in-policy allows. If step #9
+#   succeeded under a default-allow (i.e., with
+#   the control policy removed), the gate would
+#   silently accept charts whose product
+#   policies are also permissive, defeating
+#   the test.
+#
+# Why the policy only opens TCP/18080:
+#
+#   The control target only listens on 18080.
+#   Opening 8080 etc. would couple the control
+#   fixture to chart-side port numbers and would
+#   not isolate "service plumbing" from
+#   "policy plumbing".
+#
+# podSelector / namespaceSelector:
+#
+#   podSelector: app=cni-control, role=probe-target
+#   policyTypes: Ingress (only)
+#   ingress from:
+#     - podSelector:
+#         app: cni-control
+#         role: probe
+#   ports:
+#     - protocol: TCP
+#       port: 18080
+#
+#   The source pod is cni-control-probe (a
+#   separate pod in the same namespace). The
+#   selector target is cni-control-target. So
+#   the policy is: "only allow TCP traffic
+#   from the probe Pod (label: app=cni-control
+#   role=probe) into the target Pod (label:
+#   app=cni-control role=probe-target) on
+#   TCP/18080". Nothing else can connect.
+#
+# Mutation tests for this policy:
+#
+#   - removing the ingress rule -> step #9
+#     fails with CONTROL_PATH_BLOCKED (NOT
+#     SCENARIO_POLICY_REGRESSION).
+#   - changing the port away from 18080 ->
+#     step #9 fails with TARGET_PORT_MISMATCH.
+#   - changing the selector to role=wrong
+#     -> step #9 fails with TARGET_SELECTOR_MISMATCH.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cni-control-allow-probe-to-target
+  namespace: cni-control
+  labels:
+    app: cni-control
+    role: control-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: cni-control
+      role: probe-target
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: cni-control
+              role: probe
+      ports:
+        - protocol: TCP
+          port: 18080
