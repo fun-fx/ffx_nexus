@@ -1,0 +1,183 @@
+# =============================================================================
+# d2b.34 (refined) — Default-branch workflow_dispatch registration-only guard.
+#
+# Registry rationale:
+#   GitHub Actions documents that a workflow exposing `workflow_dispatch`
+#   inputs is dispatchable from any registered ref, BUT the repository's
+#   workflow registry builds its surface from the workflow file as it
+#   appears on the DEFAULT BRANCH (main). When a workflow path exists
+#   only on a feature branch, the registry does not advertise
+#   `workflow_dispatch` for any ref and `gh workflow run` returns
+#       HTTP 422 "Workflow does not have 'workflow_dispatch' trigger".
+#
+#   Reference:
+#     https://docs.github.com/en/actions/how-tos/manage-workflow-runs/
+#       manually-run-a-workflow
+#     "To trigger the workflow_dispatch event, your workflow must be in
+#      the default branch."
+#
+# Goal of this bootstrap:
+#   - Place a workflow file at the EXACT same path the full
+#     `cni-policy-gate` workflow uses (`.github/workflows/cni-nightly.yml`)
+#     so the registry advertises `workflow_dispatch` on the default branch.
+#   - Expose the same input schema (`recovery_pr_sha`, `run_index`)
+#     as the candidate enforcement workflow, so future dispatches can
+#     target the candidate branch's full enforcement workflow.
+#   - REFUSE to ever produce a green run.
+#     The single job unconditionally exits 78 on EVERY ref — main,
+#     feature branches, arbitrary tags — regardless of the input
+#     values. The bootstrap is registration-only; it must NEVER be
+#     mistaken for an enforcement success.
+#
+# Why unconditional exit 78:
+#   GitHub's documentation says `gh workflow run … --ref BRANCH` is
+#   supported, and we cannot, prior to a real platform run, prove
+#   that the default-branch registry always resolves the dispatched
+#   definition as the candidate branch's full enforcement YAML rather
+#   than this bootstrap. Until that is demonstrated on a real run,
+#   the safe posture is to refuse enforcement from this file on every
+#   ref. Any green run from this path would be confusing operational
+#   evidence. Therefore:
+#     - main ref                  → exit 78
+#     - feature/candidate ref     → exit 78
+#     - arbitrary branch          → exit 78
+#     - any combination of inputs → exit 78
+#   Exit 78 is BSD sysexits.h "configuration error" — a deliberate
+#   refusal code distinct from POSIX 1 and from internal CNI exit
+#   codes (10 source dirtiness, 11 artifact I/O, etc.). Operators
+#   reading a run with conclusion=success from this workflow have a
+#   bug in the registry; this bootstrap guarantees they never will.
+#
+# Forbidden by construction (NOT present in this file):
+#   - kind / kubectl / Helm / Cilium / Docker / Docker build / load
+#   - Trivy image / config scans
+#   - chart install / NetworkPolicy apply
+#   - CNI scenario scripts
+#   - artifact upload / download
+#   - secret / cluster credential access
+#   - candidate SHA checkout
+#   - any README, dependencies, or step that could turn green
+#
+# Permissions:
+#   permissions.contents: read only. No `packages: write`, no
+#   `id-token: write`, no mutable scopes.
+#
+# Triggers:
+#   workflow_dispatch only. No schedule, push, pull_request. Adding
+#   any of those would re-introduce a non-`workflow_dispatch` surface
+#   that could surprise operators.
+#
+# Concurrency:
+#   cni-policy-gate-bootstrap-${{ github.ref }} with
+#   cancel-in-progress: true. Bootstrap runs cancel other bootstrap
+#   runs only; candidate enforcement concurrency remains unchanged.
+# =============================================================================
+
+name: cni-policy-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      recovery_pr_sha:
+        description: "Recovery PR SHA pinned by the chart agent. CNI run is only valid for this SHA."
+        required: true
+        type: string
+      run_index:
+        description: "Run index 1-of-3, 2-of-3, 3-of-3. Recorded into the artifact name."
+        required: true
+        type: string
+
+# ------------------------------------------------------------------
+# Bootstrap-only concurrency. Candidate enforcement workflows keep
+# their own concurrency policy.
+# ------------------------------------------------------------------
+concurrency:
+  group: cni-policy-gate-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  registration-only-refusal:
+    name: default-branch registration-only refusal
+    runs-on: ubuntu-latest
+    # Run the refusal step on EVERY value of github.ref_name; we
+    # never gate the step on a particular ref. Both `if` and the
+    # step body treat inputs as diagnostic only.
+    if: ${{ always() }}
+    steps:
+      - name: refuse — registration-only, never enforcement-evidence
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          INPUT_RECOVERY_PR_SHA: ${{ inputs.recovery_pr_sha }}
+          INPUT_RUN_INDEX: ${{ inputs.run_index }}
+        run: |
+          set -euo pipefail
+          echo "============================================================"
+          echo "d2b.34 (refined) — cni-policy-gate registration-only guard"
+          echo "============================================================"
+          echo "ref_name:                  ${REF_NAME}"
+          echo "ref:                       ${REF}"
+          echo "head_sha:                  ${HEAD_SHA}"
+          echo "event_name:                ${EVENT_NAME}"
+          echo "input recovery_pr_sha:     ${INPUT_RECOVERY_PR_SHA}"
+          echo "input run_index:           ${INPUT_RUN_INDEX}"
+          echo
+          cat <<'NOTE'
+            This workflow file is registration-only bootstrap.
+            The repository's Actions registry requires the workflow to live
+            on the default branch so that workflow_dispatch is dispatchable
+            on the candidate branch's full enforcement definition. This file
+            exists for THAT registry purpose ONLY.
+
+            It is intentionally hard-failed on EVERY ref with exit 78 (BSD
+            sysexits.h EX_CONFIG). The refusal is unconditional on:
+
+              - main ref
+              - any feature branch (incl. fix/d2b-cni-clean-tree-artifact)
+              - arbitrary branch / tag / SHA ref
+              - any combination of recovery_pr_sha / run_index inputs
+
+            Inputs are echoed to the run log for correlation only. They are
+            NOT consumed: no checkout, no candidate SHA verification, no
+            artifact naming, no script invocation.
+          NOTE
+          echo
+          cat <<'NONENF'
+            The following actions are NOT performed by this workflow:
+              - cluster lifecycle (kind / k3s bring-up or teardown)
+              - cluster API operations (apply / create / delete commands)
+              - package-manager install / upgrade calls
+              - CNI runtime install / status checks
+              - container image builds / loads
+              - vulnerability scans (image or config)
+              - chart installation / NetworkPolicy apply
+              - CNI scenario scripts
+              - workflow artifact upload / download actions
+              - secret / cluster credential access
+              - any candidate SHA checkout
+          NONENF
+          echo
+          cat <<'GUIDE' >&2
+            FAIL: select the approved full candidate workflow definition; this
+                  default-branch bootstrap never produces D-2b enforcement
+                  evidence. To run heavy CNI enforcement against an approved
+                  pinned SHA:
+
+              gh workflow run cni-nightly.yml \\
+                --repo fun-fx/ffx_nexus \\
+                --ref <approved-candidate-branch> \\
+                -f recovery_pr_sha=<pinned-sha> \\
+                -f run_index=<1-of-3 | 2-of-3 | 3-of-3>
+
+            Exit code 78 is the deliberate registration-only refusal code and
+            must NOT be recorded as run_index evidence or as a D-2b failure
+            classification. It exists only to ensure this default-branch
+            definition cannot produce a green run.
+          GUIDE
+          # Deliberate, unconditional failure.
+          exit 78
