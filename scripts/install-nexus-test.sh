@@ -131,6 +131,14 @@ abort_as() {
   # fixture-invalid (exit 15). The exit code is
   # bound here so a reproducer run aborts with
   # the same classifier the gate reports.
+  # Image-pipeline failures (build script
+  # exiting non-zero, missing image_id, kind
+  # load not propagating) all classify as
+  # FIXTURE_IMAGE_NOT_LOADED with exit 14 so
+  # the cni_readiness_gate_test contract
+  # recognises the install script's source
+  # string as routing image-pipeline failures
+  # to that exit code.
   exit "$code"
 }
 

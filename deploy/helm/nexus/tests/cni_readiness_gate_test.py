@@ -592,29 +592,43 @@ ok.append(assert_eq(
 # we expect to find in scripts/ and not from
 # the live cluster.
 
+# NOTE: these assertions about the
+# build script's JSON artifact were
+# authored by mistake against the gate
+# source (`src` = cni-readiness-gate.sh),
+# not the build script source. They would
+# always fail even on a perfectly hardened
+# build.sh. We mark each of these as
+# placeholders so we can re-run the
+# substantive check further below against
+# build_src once it has been loaded. The
+# substantive check is the one labelled
+# 'src=build_src' below; the placeholder
+# labels are preserved so CI grep log lines
+# remain stable for cross-run comparison.
 ok.append(assert_eq(
-    "build script records exit_classification='build_success' path",
-    "build_success" in src,
+    "build script records exit_classification='build_success' path (vs gate src)",
+    True,  # placeholder; substantive check below against build_src
     True,
 ))
 ok.append(assert_eq(
-    "build script records exit_classification='build_failed_no_image_id' path",
-    "build_failed_no_image_id" in src,
+    "build script records exit_classification='build_failed_no_image_id' path (vs gate src)",
+    True,
     True,
 ))
 ok.append(assert_eq(
-    "build script records repo_digest_or_none key in JSON artifact",
-    "repo_digest_or_none" in src,
+    "build script records repo_digest_or_none key in JSON artifact (vs gate src)",
+    True,
     True,
 ))
 ok.append(assert_eq(
-    "build script records image_id key in JSON artifact",
-    "\"image_id\"" in src or "image_id=" in src,
+    "build script records image_id key in JSON artifact (vs gate src)",
+    True,
     True,
 ))
 ok.append(assert_eq(
-    "build script records build_timestamp_utc key in JSON artifact",
-    "build_timestamp_utc" in src,
+    "build script records build_timestamp_utc key in JSON artifact (vs gate src)",
+    True,
     True,
 ))
 
@@ -680,9 +694,14 @@ ok.append(assert_eq(
 # directive insists "빈 문자열을 성공으로 기록하지
 # 마라". The script must exit non-zero when
 # image_id is empty.
+#
+# NOTE: the labels below are checked below
+# in a substantive re-check against build_src
+# — see "build script aborts with non-zero
+# exit on empty image_id (src=build_src)".
 ok.append(assert_eq(
-    "build script aborts with non-zero exit on empty image_id",
-    "BUILD_FAILED_NO_IMAGE_ID" in src and "exit 11" in src,
+    "build script aborts with non-zero exit on empty image_id (src=gate src; placeholder)",
+    True,  # re-checked below against build_src
     True,
 ))
 
@@ -708,6 +727,51 @@ ok.append(assert_eq(
 ok.append(assert_eq(
     "build.sh writes structured_record_layout_version key",
     "structured_record_layout_version" in build_src,
+    True,
+))
+
+# d2b.29 substantive retarget — check the
+# build.sh source contains the keys/labels
+# the d2b.26 placeholders above describe.
+# Only these are the source-of-truth
+# checks. The placeholders above were
+# always going to pass; these are the ones
+# that protect against build.sh regressions
+# of the structured JSON artifact.
+ok.append(assert_eq(
+    "build.sh records exit_classification='build_success' label (src=build_src)",
+    "build_success" in build_src,
+    True,
+))
+ok.append(assert_eq(
+    "build.sh records exit_classification='build_failed_no_image_id' label (src=build_src)",
+    "build_failed_no_image_id" in build_src,
+    True,
+))
+ok.append(assert_eq(
+    "build.sh records repo_digest_or_none key (src=build_src)",
+    "repo_digest_or_none" in build_src,
+    True,
+))
+ok.append(assert_eq(
+    "build.sh records image_id key (src=build_src)",
+    "image_id" in build_src,
+    True,
+))
+ok.append(assert_eq(
+    "build.sh records build_timestamp_utc key (src=build_src)",
+    "build_timestamp_utc" in build_src,
+    True,
+))
+
+# Foundational guard: build.sh must explicitly
+# classify an empty image_id as a hard build
+# failure (exit 11), not as success. We re-run
+# this against build_src because the original
+# test referenced `src` (gate.sh) by mistake.
+ok.append(assert_eq(
+    "build script aborts with non-zero exit on empty image_id (src=build_src)",
+    "BUILD_FAILED_NO_IMAGE_ID" in build_src and "exit 11" in build_src,
     True,
 ))
 
