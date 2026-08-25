@@ -94,11 +94,26 @@ PHASE_FIRST_STEP=1
 PHASE_LAST_STEP=9
 case "$GATE_PHASE" in
   pre-fixture)
+    # The first six gates run before any chart
+    # fixture is applied. Gates 7..9 (namespaces
+    # prepared, fixture endpoints registered,
+    # control probe) are run in the post-fixture
+    # phase because their object of observation
+    # only exists once the fixture manifests have
+    # been `kubectl apply`-ed. The pre-fixture
+    # phase therefore covers: pinned versions,
+    # node image pull, node Ready, CoreDNS,
+    # cilium agents ready, cilium enforcement.
+    # Splitting the phase this way means a
+    # missing fixture namespace is NEVER
+    # logged under CLUSTER_OR_CNI_NOT_READY at
+    # the pre-fixture phase — that classification
+    # is reserved for genuine cluster/env flake.
     PHASE_FIRST_STEP=1
-    PHASE_LAST_STEP=7
+    PHASE_LAST_STEP=6
     ;;
   post-fixture)
-    PHASE_FIRST_STEP=8
+    PHASE_FIRST_STEP=7
     PHASE_LAST_STEP=9
     ;;
   both|"")
