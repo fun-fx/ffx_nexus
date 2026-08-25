@@ -31,6 +31,8 @@
 #     $ARTIFACTS/integrationcni/upgrade.log.
 
 set -euo pipefail
+SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+VALUES_EXTRA="${VALUES_EXTRA:-$SCRIPT_DIR/fixtures/integrationcni/values-extra-cni.yaml}"
 
 ARTIFACTS="${ARTIFACTS:-${PWD}/artifacts/integrationcni}"
 CHART_PATH="${CHART_PATH:-${PWD}/deploy/helm/nexus}"
@@ -43,9 +45,12 @@ if [[ ! -f "${ARTIFACTS}/cluster-up.txt" ]]; then
   exit 2
 fi
 
-echo "[upgrade] step 1/6: install mode=disabled"
+echo "[upgrade] step 1/6: install mode=disabled (development profile; chart fail-closes enterprise+mode=disabled)"
 helm install "${RELEASE}" "${CHART_PATH}" \
+  --set profile=development \
   --set networkPolicy.mode=disabled \
+  --set networkPolicy.profile=development \
+  --set networkPolicy.enforcementAcknowledged=true \
   --set dependencies.postgres.url="postgres://nexus:nopassword@postgres.nexus-test-postgres.svc.cluster.local:5432/nexus" \
   --wait 2>&1 | tee "$ARTIFACTS/upgrade-step1.log"
 
@@ -70,6 +75,7 @@ echo "readyz-ok-disabled" > "$ARTIFACTS/upgrade-step2.txt"
 echo "[upgrade] step 3/6: helm upgrade --atomic to mode=enforce (operator flow)"
 set +e
 helm upgrade "${RELEASE}" "${CHART_PATH}" \
+  --values "${VALUES_EXTRA}" \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
   --set networkPolicy.enforcementAcknowledged=true \
@@ -77,6 +83,10 @@ helm upgrade "${RELEASE}" "${CHART_PATH}" \
   --set networkPolicy.egress.proxy.host="nexus-test-egress-proxy-mock.nexus-test-proxy.svc.cluster.local" \
   --set networkPolicy.egress.proxy.port=3128 \
   --set networkPolicy.egress.proxy.namespace="nexus-test-proxy" \
+  --set networkPolicy.postgres.cidr.enabled=false \
+  --set dependencies.postgres.host=postgres.nexus-test-postgres.svc.cluster.local \
+  --set dependencies.postgres.port=5432 \
+  --set dependencies.postgres.namespace=nexus-test-postgres \
   --atomic 2>&1 | tee "$ARTIFACTS/upgrade-step3.log"
 RC=$?
 set -e
@@ -104,13 +114,16 @@ fi
 echo "readyz-ok-enforced" > "$ARTIFACTS/upgrade-step4.txt"
 
 echo "[upgrade] step 4/6: rollback test using intentionally broken selector"
-# Use a namespaceSelector that does not exist
-# for the egress postgres rule. The chart's
-# pre-install validation passes (it does not
-# validate this), but live traffic will be
-# blocked. --atomic rollback should restore.
+# We point the Postgres egress namespaceSelector at
+# a namespace the fixtures never create. The chart's
+# pre-install validation does NOT catch this — the
+# rendered NetworkPolicy carries the bogus namespace
+# selector verbatim, and live traffic is blocked by
+# the enforcing CNI. --atomic rollback should
+# restore the release to a working state.
 set +e
 helm upgrade "${RELEASE}" "${CHART_PATH}" \
+  --values "${VALUES_EXTRA}" \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
   --set networkPolicy.enforcementAcknowledged=true \
@@ -118,7 +131,11 @@ helm upgrade "${RELEASE}" "${CHART_PATH}" \
   --set networkPolicy.egress.proxy.host="nexus-test-egress-proxy-mock.nexus-test-proxy.svc.cluster.local" \
   --set networkPolicy.egress.proxy.port=3128 \
   --set networkPolicy.egress.proxy.namespace="nexus-test-proxy" \
-  --set networkPolicy.egress.postgres.namespace="bogus-namespace-that-does-not-exist" \
+  --set networkPolicy.postgres.selector.namespace="bogus-namespace-that-does-not-exist" \
+  --set networkPolicy.postgres.cidr.enabled=false \
+  --set dependencies.postgres.host=postgres.bogus-namespace-that-does-not-exist.svc.cluster.local \
+  --set dependencies.postgres.port=5432 \
+  --set dependencies.postgres.namespace="bogus-namespace-that-does-not-exist" \
   --atomic 2>&1 | tee "$ARTIFACTS/upgrade-step5.log"
 RC=$?
 set -e
@@ -146,9 +163,14 @@ echo "[upgrade] step 5/6: split mode check"
 # migration as separate deployments. Verify no
 # ServiceMonitor is in the gateway output.
 helm template render-split "${CHART_PATH}" \
+  --values "${VALUES_EXTRA}" \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
-  --set networkPolicy.enforcementAcknowledged=true 2>&1 | tee "$ARTIFACTS/upgrade-step7.log" > /dev/null
+  --set networkPolicy.enforcementAcknowledged=true \
+  --set networkPolicy.postgres.cidr.enabled=false \
+  --set dependencies.postgres.host=postgres.nexus-test-postgres.svc.cluster.local \
+  --set dependencies.postgres.port=5432 \
+  --set dependencies.postgres.namespace=nexus-test-postgres 2>&1 | tee "$ARTIFACTS/upgrade-step7.log" > /dev/null
 
 if grep -q "kind: ServiceMonitor" "$ARTIFACTS/upgrade-step7.log"; then
   : # fine; ServiceMonitor is allowed

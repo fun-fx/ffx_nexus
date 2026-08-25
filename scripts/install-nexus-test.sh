@@ -22,6 +22,8 @@
 #   ARTIFACTS     (default $PWD/artifacts/integrationcni)
 #   CHART_PATH    (default $PWD/deploy/helm/nexus)
 set -euo pipefail
+SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+VALUES_EXTRA="${VALUES_EXTRA:-$SCRIPT_DIR/fixtures/integrationcni/values-extra-cni.yaml}"
 CLUSTER_NAME="${CLUSTER_NAME:-nexus-cni-test}"
 ARTIFACTS="${ARTIFACTS:-${PWD}/artifacts/integrationcni}"
 CHART_PATH="${CHART_PATH:-${PWD}/deploy/helm/nexus}"
@@ -37,6 +39,7 @@ fi
 # match the fixture Pod selectors exactly.
 RENDER="$ARTIFACTS/rendered-networkpolicy.yaml"
 helm template "${CLUSTER_NAME}" "${CHART_PATH}" \
+  --values "${VALUES_EXTRA}" \
   --set fullnameOverride="${CLUSTER_NAME}" \
   --set image.repository=busybox \
   --set image.tag=1.36 \
@@ -45,23 +48,6 @@ helm template "${CLUSTER_NAME}" "${CHART_PATH}" \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
   --set networkPolicy.enforcementAcknowledged=true \
-  --set networkPolicy.egress.proxy.enabled=true \
-  --set networkPolicy.egress.proxy.host="cni-proxy.default.svc.cluster.local" \
-  --set networkPolicy.egress.proxy.port=3128 \
-  --set networkPolicy.egress.proxy.namespace="default" \
-  --set networkPolicy.egress.postgres.namespace="default" \
-  --set networkPolicy.egress.postgres.podSelector.matchLabels.app="cni-target" \
-  --set networkPolicy.egress.postgres.podSelector.matchLabels.role="postgres" \
-  --set networkPolicy.egress.redis.namespace="default" \
-  --set networkPolicy.egress.redis.podSelector.matchLabels.app="cni-target" \
-  --set networkPolicy.egress.redis.podSelector.matchLabels.role="redis" \
-  --set networkPolicy.egress.clickhouse.namespace="default" \
-  --set networkPolicy.egress.clickhouse.podSelector.matchLabels.app="cni-target" \
-  --set networkPolicy.egress.clickhouse.podSelector.matchLabels.role="clickhouse" \
-  --set networkPolicy.dns.namespace="kube-system" \
-  --set networkPolicy.dns.podSelector.matchLabels.k8s-app="kube-dns" \
-  --set networkPolicy.ingressController.namespace="cni-test-ingress" \
-  --set networkPolicy.prometheus.namespace="cni-test-prometheus" \
   --show-only templates/networkpolicy.yaml \
   > "$RENDER" 2> "$ARTIFACTS/render-errors.log"
 
