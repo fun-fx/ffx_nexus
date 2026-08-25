@@ -92,6 +92,32 @@ READINESS_SUMMARY="$ARTIFACTS/readiness.summary.txt"
 # one artifact, not two).
 PHASE_FIRST_STEP=1
 PHASE_LAST_STEP=9
+
+# Phase D-2b.26: image-pipeline classification.
+#
+# install-nexus-test.sh may abort into the gate
+# with FIXTURE_IMAGE_NOT_LOADED=1 if the
+# built-from-source fixture image is missing on
+# at least one kind node, if the build returned
+# non-zero, or if the fixture Pod never reaches
+# Ready due to ImagePullBackOff /
+# ErrImageNeverPull / CrashLoopBackOff. This is
+# NOT a chart-side regression, and it must NEVER
+# be mis-classified as SCENARIO_POLICY_REGRESSION.
+# The exit code 14 is distinct from 10 (cluster
+# flake), 11 (chart render invalid), 12 (fixture
+# plumbing), and 13 (scenario verdicts).
+if [[ "${FIXTURE_IMAGE_NOT_LOADED:-0}" == "1" ]]; then
+  REASON="${FIXTURE_IMAGE_LOAD_FAILURE_DETAIL:-unspecified}"
+  {
+    printf 'classification=FIXTURE_IMAGE_NOT_LOADED (exit 14)\n'
+    printf 'first_failed_step=00-fixture-image-pipeline\n'
+    printf 'failure_reason=%s\n' "$REASON"
+  } | tee -a "$READINESS_LOG" 2>/dev/null || true
+  printf 'FIXTURE_IMAGE_NOT_LOADED\n' > "$READINESS_SUMMARY"
+  exit 14
+fi
+
 case "$GATE_PHASE" in
   pre-fixture)
     # The first six gates run before any chart

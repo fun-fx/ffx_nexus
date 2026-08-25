@@ -75,22 +75,119 @@ kubectl apply -f "$RENDER" 2>&1 | tee -a "$ARTIFACTS/install.log"
 # refuses to fall back to any remote registry.
 # The build script is the SINGLE source of
 # digest and the digest pin is recorded in
-#   $ARTIFACTS/fixture-image-digest.txt
-# for downstream verifiers.
+#   $ARTIFACTS/fixture-image-digest.json
+# (structured, see Phase D-2b.26).
 SCRIPT_DIR_FLAG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "[install] build cni-listener fixture image" | tee -a "$ARTIFACTS/install.log"
-FIXTURE_DIGEST=$(bash "$SCRIPT_DIR_FLAG/fixtures/integrationcni/build.sh" 2>>"$ARTIFACTS/install.log")
+FIXTURE_BUILD_OUT=$(ARTIFACTS="$ARTIFACTS" \
+                    bash "$SCRIPT_DIR_FLAG/fixtures/integrationcni/build.sh" 2>>"$ARTIFACTS/install.log")
 FIXTURE_RC=$?
-if (( FIXTURE_RC != 0 )) || [[ -z "$FIXTURE_DIGEST" ]]; then
+# Record the build pipeline outputs into the
+# artifact folder so a verifier can correlate
+# per-image build / inspect / kind load with
+# the final Pod readiness. These paths are
+# referenced by deploy/helm/nexus/tests/
+# image_pipeline_mutation_test.py so the
+# names must remain stable.
+ARTIFACTS_DIR_ABS="$(cd "$ARTIFACTS" && pwd -P)"
+echo "[install] fixture build: build.log=${ARTIFACTS_DIR_ABS}/fixture-image-build.log inspect.log=${ARTIFACTS_DIR_ABS}/fixture-image-inspect.json" \
+  | tee -a "$ARTIFACTS/install.log"
+if (( FIXTURE_RC != 0 )) || [[ -z "$FIXTURE_BUILD_OUT" ]]; then
   echo "[install] ERROR: cni-listener fixture build failed (rc=$FIXTURE_RC)" | tee -a "$ARTIFACTS/install.log"
-  exit 12
+  FIXTURE_IMAGE_NOT_LOADED=1
+  # We DO NOT continue into fixture apply;
+  # hand off to the unified readiness gate
+  # so the run is classified FIXTURE_IMAGE_NOT_LOADED
+  # (exit 14) — distinct from CHART_OR_POLICY_INVALID (11),
+  # FIXTURE_NOT_READY (12), and
+  # CLUSTER_OR_CNI_NOT_READY (10).
+  GATE_PHASE=post-fixture \
+    RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+    WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+    ARTIFACTS="${ARTIFACTS}" \
+    FIXTURE_IMAGE_NOT_LOADED=1 \
+    FIXTURE_IMAGE_LOAD_FAILURE_DETAIL="docker build returned rc=$FIXTURE_RC with no stdout json line" \
+    bash "${SCRIPT_DIR_FLAG}/cni-readiness-gate.sh" || exit $?
+  exit 14
 fi
-printf 'fixture_image_digest=%s\nimage_ref=cni-listener:local\n' \
-  "$FIXTURE_DIGEST" > "$ARTIFACTS/fixture-image-digest.txt"
-echo "[install] fixture image digest: $FIXTURE_DIGEST" | tee -a "$ARTIFACTS/install.log"
-echo "[install] kind load docker-image cni-listener:local" | tee -a "$ARTIFACTS/install.log"
-kind load docker-image --name "${CLUSTER_NAME}" cni-listener:local \
-  2>&1 | tee -a "$ARTIFACTS/install.log"
+# Parse the JSON line from stdout (the build
+# script's structured "did the build succeed"
+# signal). Anything else is a contract drift.
+FIXTURE_BUILD_JSON="$FIXTURE_BUILD_OUT"
+echo "[install] build produced JSON: $FIXTURE_BUILD_JSON" | tee -a "$ARTIFACTS/install.log"
+FIXTURE_IMAGE_ID=$(echo "$FIXTURE_BUILD_JSON" | python3 -c "
+import json,sys
+try:
+    d=json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(1)
+print(d.get('image_id',''))")
+FIXTURE_IMAGE_REF=$(echo "$FIXTURE_BUILD_JSON" | python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+print(d.get('image_ref',''))")
+if [[ -z "$FIXTURE_IMAGE_ID" ]]; then
+  echo "[install] ERROR: build artifact missing image_id" | tee -a "$ARTIFACTS/install.log"
+  cat "$ARTIFACTS/fixture-image-digest.json" 2>/dev/null | tee -a "$ARTIFACTS/install.log" || true
+  exit 14
+fi
+
+# kind load docker-image. The exit-code zero
+# alone is NOT a sufficient success signal;
+# we follow it with per-node crictl images to
+# confirm the image made it onto every node.
+KIND_LOAD_LOG="$ARTIFACTS/fixture-image-kind-load.log"
+{
+  echo "kind load docker-image --name ${CLUSTER_NAME} ${FIXTURE_IMAGE_REF}" >>"$KIND_LOAD_LOG"
+  kind load docker-image --name "${CLUSTER_NAME}" "${FIXTURE_IMAGE_REF}"
+} >>"$KIND_LOAD_LOG" 2>&1
+KIND_LOAD_RC=$?
+echo "[install] kind load rc=$KIND_LOAD_RC; verifying per-node runtime" | tee -a "$ARTIFACTS/install.log"
+if (( KIND_LOAD_RC != 0 )); then
+  echo "[install] ERROR: kind load returned non-zero (rc=$KIND_LOAD_RC)" | tee -a "$KIND_LOAD_LOG"
+  cat "$KIND_LOAD_LOG" | tee -a "$ARTIFACTS/install.log"
+  GATE_PHASE=post-fixture \
+    RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+    WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+    ARTIFACTS="${ARTIFACTS}" \
+    FIXTURE_IMAGE_NOT_LOADED=1 \
+    FIXTURE_IMAGE_LOAD_FAILURE_DETAIL="kind load returned rc=$KIND_LOAD_RC" \
+    bash "${SCRIPT_DIR_FLAG}/cni-readiness-gate.sh" || exit $?
+  exit 14
+fi
+
+# Per-node runtime verification: query every
+# kubelet container runtime via `crictl images`
+# (kind uses containerd by default) and confirm
+# the image is present on every node. Empty
+# intersection across nodes is FIXTURE_IMAGE_NOT_LOADED.
+NODE_RUNTIME_LOG="$ARTIFACTS/fixture-image-node-runtime.log"
+{
+  echo "=== per-node runtime image inventory ==="
+  for n in $(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null); do
+    echo "--- node: $n ---"
+    docker exec "${n}" crictl images 2>&1 \
+      | grep -E "$(echo "$FIXTURE_IMAGE_REF" | sed 's,:,\\\\\\\\\\\,:g')|${FIXTURE_IMAGE_ID:0:12}" \
+      || echo "(no match in node $n)"
+  done
+} >>"$NODE_RUNTIME_LOG" 2>&1 || true
+MISSING=$(grep -c "^--- node:" "$NODE_RUNTIME_LOG" || echo 0)
+PRESENT=$(grep -c "${FIXTURE_IMAGE_ID:0:12}" "$NODE_RUNTIME_LOG" || echo 0)
+echo "[install] per-node runtime: ${PRESENT}/${MISSING} nodes have the fixture image_id" \
+  | tee -a "$ARTIFACTS/install.log"
+if (( PRESENT < MISSING )); then
+  cat "$NODE_RUNTIME_LOG" | tee -a "$ARTIFACTS/install.log" || true
+  echo "[install] ERROR: fixture image missing on one or more kind nodes" \
+    | tee -a "$ARTIFACTS/install.log"
+  GATE_PHASE=post-fixture \
+    RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+    WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+    ARTIFACTS="${ARTIFACTS}" \
+    FIXTURE_IMAGE_NOT_LOADED=1 \
+    FIXTURE_IMAGE_LOAD_FAILURE_DETAIL="image_id=${FIXTURE_IMAGE_ID} missing on at least one kind node: ${PRESENT}/${MISSING} present" \
+    bash "${SCRIPT_DIR_FLAG}/cni-readiness-gate.sh" || exit $?
+  exit 14
+fi
 
 kubectl apply -f scripts/fixtures/integrationcni/00-prereq-namespaces.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
 kubectl apply -f scripts/fixtures/integrationcni/01-test-pods.yaml 2>&1 | tee -a "$ARTIFACTS/install.log"
@@ -117,6 +214,51 @@ kubectl apply -f scripts/fixtures/integrationcni/05-control-policy.yaml 2>&1 | t
 # as a chart regression.
 DEADLINE=$(( $(date +%s) + 480 ))
 while (( $(date +%s) < DEADLINE )); do
+  # Drain any image-pull failures into a dedicated
+  # counter so we can say "ImagePullBackOff on one
+  # or more fixture Pods" instead of just
+  # "fixture Pods not Ready within 8 minutes".
+  # An image-pull failure while
+  # imagePullPolicy: Never is the literal
+  # definition of FIXTURE_IMAGE_NOT_LOADED (exit 14):
+  # the image never made it onto this node's
+  # containerd despite kind load reporting rc=0.
+  IMAGE_PULL_FAIL_LOG="$ARTIFACTS/fixture-pod-imagepull.log"
+  {
+    kubectl get pod -A --no-headers 2>/dev/null \
+      | grep -E "cni-target|cni-source|cni-control" \
+      | while read -r ns nm rest; do
+          kubectl get pod "$nm" -n "$ns" -o json 2>/dev/null \
+            | python3 -c "
+import json,sys
+try:
+  d=json.loads(sys.stdin.read())
+except Exception:
+  d={}
+cs=[c.get('state',{}) for c in d.get('status',{}).get('containerStatuses') or []]
+print(d.get('metadata',{}).get('namespace',''), d.get('metadata',{}).get('name',''),
+      [c.get('state',{}).get('waiting',{}).get('reason','') for c in cs if c])"
+      done
+  } >"$IMAGE_PULL_FAIL_LOG" 2>&1 || true
+  PULL_REASONS=$(
+    awk '$3!="" {print $3}' "$IMAGE_PULL_FAIL_LOG" \
+      | tr -d '[]"\047' \
+      | grep -E "^(ImagePullBackOff|ErrImageNeverPull|ErrImagePull|CrashLoopBackOff)$" \
+      | sort -u | tr '\n' ',' | sed 's/,$//'
+  )
+  if [[ -n "$PULL_REASONS" ]]; then
+    echo "[install] ERROR: fixture Pod image-pull failure reasons: $PULL_REASONS" \
+      | tee -a "$ARTIFACTS/install.log"
+    cat "$IMAGE_PULL_FAIL_LOG" | tee -a "$ARTIFACTS/install.log" || true
+    GATE_PHASE=post-fixture \
+      RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
+      WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
+      ARTIFACTS="${ARTIFACTS}" \
+      FIXTURE_IMAGE_NOT_LOADED=1 \
+      FIXTURE_IMAGE_LOAD_FAILURE_DETAIL="fixture Pod entered ImagePullBackOff/ErrImagePull/CrashLoopBackOff despite kind load rc=0: $PULL_REASONS; image_id=${FIXTURE_IMAGE_ID}" \
+      bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || exit $?
+    exit 14
+  fi
   NOTREADY=$(kubectl get pod -A --no-headers 2>/dev/null \
     | grep -E "cni-target|cni-source|cni-control" \
     | awk '$3 != "Running" || $4 != "1/1" {n++}; END {print n+0}')
