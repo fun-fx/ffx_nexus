@@ -72,10 +72,22 @@ def copy_fixtures(dest):
     destination directory, so mutation
     operates on a clone — the original
     fixtures stay intact. The script
-    reads from --fixture-dir CLI flag."""
+    reads from --fixture-dir CLI flag.
+    Phase D-2b.29: the d2b hardened-fixture
+    contract reads `control-netpol-gate.Dockerfile`
+    for the `USER 65534:65534` line; the mutation
+    clone must include that Dockerfile so the
+    baseline (and restore) classifies the clone
+    PASS rather than FAILing on the missing
+    Dockerfile. Otherwise the test trivially
+    always fails on a missing-file errror that
+    does not exist on the actual gate path."""
     dest.mkdir(parents=True, exist_ok=True)
     for fy in FIXTURE_DIR.glob("*.yaml"):
         shutil.copy2(fy, dest / fy.name)
+    df = FIXTURE_DIR / "control-netpol-gate.Dockerfile"
+    if df.exists():
+        shutil.copy2(df, dest / df.name)
 
 
 def run_admit(fixture_dir, rendered_path, expect_fail, scenario):
@@ -192,6 +204,19 @@ def revert_rendered_policy(rendered_path):
     render_chart_networkpolicy(rendered_path)
 
 
+# Phase D-2b.29: a strong revert_control_label
+# must restore BOTH the labels mutation AND
+# any new fixture hardening lines (Pod/container
+# securityContext) that the mutation test
+# itself may have re-saved through yaml.dump.
+# Using `git checkout -- <path>` would discard
+# hardened fixtures whose securityContext is
+# unstaged at the moment of restore; the safer
+# pattern is to keep the snapshot we made at
+# mutation start and re-apply it.
+_CONTROL_LABEL_BACKUP: list[str] | None = None
+
+
 def mutate_control_label_match_product(rendered_path):
     """Mutation 5: injected control-Pod
     labels must NOT match any product
@@ -199,26 +224,113 @@ def mutate_control_label_match_product(rendered_path):
     forcibly align the cni-control target
     Pod's labels with the chart-gateway
     podSelector by editing the fixture
-    yaml directly."""
-    target = FIXTURE_DIR / "04-control-service.yaml"
-    mutate_path = Path(FIXTURE_DIR / "04-control-service.yaml")
-    docs = list(yaml.safe_load_all(mutate_path.read_text()))
-    for d in docs:
-        if not isinstance(d, dict): continue
-        if d.get("kind") == "Pod" and d.get("metadata", {}).get("name") == "cni-control-target":
-            md = d.get("metadata") or {}
-            md["labels"] = {
-                "app.kubernetes.io/name": "nexus",
-                "app.kubernetes.io/component": "gateway",
-                "app.kubernetes.io/instance": "nexus-cni-test",
-            }
-    mutate_path.write_text(yaml.safe_dump_all(
-        docs, default_flow_style=False, sort_keys=False))
+    yaml directly.
+
+    Phase D-2b.29: do NOT round-trip through
+    yaml.dump_all. The fixture file contains
+    docker-style YAML that pyyaml cannot
+    re-emit identically (anchor/alias
+    differences), and a round-trip discards
+    d2b.29 hardening (Pod/container
+    securityContext). Edit the labels block
+    in place so the new noscript lines survive
+    the mutation. After this mutation the
+    semantic-admission script MUST fail on
+    the `podSelector matches a cni-control
+    Pod` check; the revert below restores
+    the labels without touching other lines.
+    """
+    global _CONTROL_LABEL_BACKUP
+    raw = (FIXTURE_DIR / "04-control-service.yaml").read_text()
+    _CONTROL_LABEL_BACKUP = raw.splitlines(keepends=True)
+
+    # Find the cni-control-target Pod doc block and
+    # patch only its `labels:` block. We do this by
+    # replacing the entire `{app:\n    role:` lines
+    # under that doc. Other keys/structure are kept.
+    lines = raw.splitlines(keepends=True)
+    out = []
+    in_target = False
+    in_labels = False
+    replaced = False
+    for ln in lines:
+        if not in_target:
+            out.append(ln)
+            if ln.strip() == "name: cni-control-target":
+                in_target = True
+            continue
+        if not in_labels:
+            out.append(ln)
+            if ln.startswith("  labels:"):
+                in_labels = True
+            elif ln.startswith("---") or ln.strip().startswith("apiVersion:"):
+                # moved on to next doc without finding labels
+                in_target = False
+            continue
+        # in_labels
+        if ln.startswith("    ") or ln.strip() == "":
+            if not replaced:
+                out.append(
+                    "    app.kubernetes.io/name: nexus\n"
+                    "    app.kubernetes.io/component: gateway\n"
+                    "    app.kubernetes.io/instance: nexus-cni-test\n"
+                )
+                replaced = True
+            if ln.strip() == "":
+                out.append(ln)
+                in_labels = False
+            # skip the existing labels lines we don't need
+            continue
+        # We left the labels block. Push the new labels
+        # we already emitted (only once) followed by
+        # the current line; turn off in_labels.
+        if replaced:
+            out.append(ln)
+        else:
+            out.append(
+                "    app.kubernetes.io/name: nexus\n"
+                "    app.kubernetes.io/component: gateway\n"
+                "    app.kubernetes.io/instance: nexus-cni-test\n"
+            )
+            out.append(ln)
+            replaced = True
+        in_labels = False
+    if not replaced:
+        raise RuntimeError(
+            "could not locate cni-control-target.labels for mutation 5"
+        )
+    (FIXTURE_DIR / "04-control-service.yaml").write_text("".join(out))
 
 
 def revert_control_label():
-    import subprocess
-    subprocess.run(["git","checkout","--","scripts/fixtures/integrationcni/04-control-service.yaml"], cwd=REPO, check=True)
+    """Use the in-memory backup captured at
+    mutation start so the hardened fixture
+    (securityContext / seccomp / drop ALL)
+    added in d2b.29 is preserved exactly."""
+    if _CONTROL_LABEL_BACKUP is None:
+        require_failsafe("no control-label backup captured; cannot restore")
+    target = FIXTURE_DIR / "04-control-service.yaml"
+    target.write_text("".join(_CONTROL_LABEL_BACKUP))
+    _drop_backup()
+
+
+def _drop_backup():
+    global _CONTROL_LABEL_BACKUP
+    _CONTROL_LABEL_BACKUP = None
+
+
+def require_failsafe(message):
+    """A helper used by mutation revert paths
+    where the wrong-shape fallback reverts to a
+    pre-hardening index version of a fixture and
+    silently regresses the security contract.
+    We must not let a missing backup pass
+    silently; we abort the run with a clear
+    fixture_semantic_admission_test failure so
+    a follow-up CI run can debug it instead of
+    shipping a half-hardened fixture."""
+    print(f"FATALSAFEGUARD: {message}", file=sys.stderr)
+    sys.exit(2)
 
 
 def main():

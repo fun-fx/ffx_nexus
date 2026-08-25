@@ -193,6 +193,20 @@ spec:
         - -probe=3128
       initialDelaySeconds: 1
       periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
 ---
 apiVersion: v1
 kind: Pod
@@ -222,6 +236,20 @@ spec:
         - -probe=5432
       initialDelaySeconds: 1
       periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
 ---
 apiVersion: v1
 kind: Pod
@@ -251,6 +279,20 @@ spec:
         - -probe=6379
       initialDelaySeconds: 1
       periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
 ---
 apiVersion: v1
 kind: Pod
@@ -280,6 +322,20 @@ spec:
         - -probe=9000
       initialDelaySeconds: 1
       periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
 ---
 apiVersion: v1
 kind: Pod
@@ -309,3 +365,17 @@ spec:
         - -probe=9090
       initialDelaySeconds: 1
       periodSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      capabilities:
+        drop:
+        - ALL
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault

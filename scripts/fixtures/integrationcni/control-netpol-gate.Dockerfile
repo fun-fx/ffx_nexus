@@ -69,4 +69,13 @@ RUN printf 'module github.com/fun-fx/ffx_nexus/scripts/fixtures/integrationcni/c
       -ldflags='-s -w' -o /out/cni-listener ./cmd/cni-listener
 FROM scratch AS runtime
 COPY --from=build /out/cni-listener /cni-listener
+# Phase D-2b.29 hardened runtime contract. The
+# runtime image is `scratch` so it has no /etc/passwd.
+# USER 65534:65534 keeps the kubelet happy on the
+# runtime UID and matches the Pod runAsUser 65534
+# used in 03/04-control Pod fixtures. The cni-listener
+# operand only binds non-privileged ports and does not
+# write to disk in any code path the fixture covers,
+# so non-root execution is the only contract.
+USER 65534:65534
 ENTRYPOINT ["/cni-listener"]

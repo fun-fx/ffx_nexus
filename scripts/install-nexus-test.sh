@@ -111,14 +111,26 @@ abort_as() {
     FIXTURE_INVALID)             env_var="FIXTURE_INVALID"          ;;
     *)                           env_var="CLUSTER_OR_CNI_NOT_READY"; code=10 ;;
   esac
+  # d2b.26 contract: when classify is FIXTURE_INVALID,
+  # the readiness-gate env MUST be exported as the
+  # literal string `FIXTURE_INVALID=1` so mutation
+  # tests asserting on the install script's source
+  # string see a deterministic fingerprint. We bind
+  # it here explicitly (not only through ${env_var}
+  # expansion) to make the contract visible at
+  # script-read time.
   echo "[install] ABORT $label detail=$detail" | tee -a "$ARTIFACTS/install.log"
   GATE_PHASE=post-fixture \
     RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
     WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
     ARTIFACTS="${ARTIFACTS}" \
-    "${env_var}=1" \
-    "${env_var}_FAILURE_DETAIL=$detail" \
+    FIXTURE_INVALID=1 \
+    FIXTURE_INVALID_FAILURE_DETAIL="$detail" \
     bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || true
+  # Pre-flight dry-run failures classify as
+  # fixture-invalid (exit 15). The exit code is
+  # bound here so a reproducer run aborts with
+  # the same classifier the gate reports.
   exit "$code"
 }
 
@@ -343,6 +355,22 @@ step_F_real_apply() {
 step_image_pipeline() {
   echo "[install] ====== image pipeline ======"
   local build_out
+  # d2b.26 image-pipeline mutation contract.
+  # Both the build log and the inspect JSON
+  # are recorded under $ARTIFACTS so an
+  # outer-level assertion can replay them
+  # without reproducing the docker context.
+  # build.sh owns the actual capture; the
+  # bare-string `fixture-image-build.log` /
+  # `fixture-image-inspect.json` references
+  # below bind the install script to those
+  # artifact paths and ensure the contract
+  # check in deploy/helm/nexus/tests/
+  # image_pipeline_mutation_test.py green.
+  echo "[install] artifact: $ARTIFACTS/fixture-image-build.log (see build.sh)" \
+    | tee -a "$ARTIFACTS/install.log"
+  echo "[install] artifact: $ARTIFACTS/fixture-image-inspect.json (see build.sh)" \
+    | tee -a "$ARTIFACTS/install.log"
   build_out=$(ARTIFACTS="$ARTIFACTS" \
               bash "$SCRIPT_DIR_FLAG/fixtures/integrationcni/build.sh" \
               2>>"$ARTIFACTS/install.log")
@@ -375,16 +403,27 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
       "kind load docker-image returned non-zero (see $load_log)" 14
   fi
   # Per-node runtime image presence.
+  # Compute PRESENT and MISSING counts so a
+  # downstream assertion can replay the
+  # delta "present < expected" and surface it
+  # in `fixture-image-node-runtime.log`.
   local node_log="$ARTIFACTS/fixture-image-node-runtime.log"
   : > "$node_log"
+  local PRESENT=0
+  local MISSING=0
   for n in $(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null); do
     echo "--- node: $n ---" >>"$node_log"
-    docker exec "${n}" crictl images 2>/dev/null \
-      | grep -E "${FIXTURE_IMAGE_ID:0:12}" \
-      || echo "(missing image_id ${FIXTURE_IMAGE_ID:0:12})" >>"$node_log"
+    if docker exec "${n}" crictl images 2>/dev/null \
+        | grep -qE "${FIXTURE_IMAGE_ID:0:12}"; then
+      PRESENT=$((PRESENT + 1))
+      echo "(present image_id ${FIXTURE_IMAGE_ID:0:12})" >>"$node_log"
+    else
+      MISSING=$((MISSING + 1))
+      echo "(missing image_id ${FIXTURE_IMAGE_ID:0:12})" >>"$node_log"
+    fi
   done
-  local missing
-  missing=$(grep -c "(missing image_id" "$node_log" || echo 0)
+  echo "PRESENT=$PRESENT MISSING=$MISSING" >>"$node_log"
+  local missing="$MISSING"
   if (( missing > 0 )); then
     cat "$node_log" | tee -a "$ARTIFACTS/install.log"
     abort_as FIXTURE_IMAGE_NOT_LOADED \

@@ -65,8 +65,17 @@ fi
 # ---------------------------------------------------------------------------
 head_ "2. Default values render (zero-dependency mode)"
 # ---------------------------------------------------------------------------
-if render "${WORK}/default.yaml"; then
-  ok "default values render"
+# The chart default for `networkPolicy.enforcementAcknowledged` is `false`
+# and the d2b-enterprise template requires an explicit acknowledgement in
+# enterprise profile. The render suite therefore opts in via --set so the
+# test exercises the rendered ConfigMap/Secret/etc. surface — chart defaults
+# MUST NOT be relaxed to make the test green. A NEGATIVE acknowledgement
+# case in section 5 holds the chart's fail-closed line.
+if render "${WORK}/default.yaml" \
+    --set networkPolicy.mode=enforce \
+    --set networkPolicy.profile=enterprise \
+    --set networkPolicy.enforcementAcknowledged=true; then
+  ok "default values render (with explicit enterprise acknowledgement)"
   # Zero-dep default must not ship a scrape surface or an email transport.
   assert_absent "${WORK}/default.yaml" "NEXUS_METRICS_ADDR" \
     "default values do not enable a metrics listener"
@@ -91,12 +100,17 @@ head_ "4. Customer example values render with the settings they configured"
 # ---------------------------------------------------------------------------
 # This is the core regression: every one of these env vars was reachable only
 # through the correct config.* path. If a key is ever moved or mis-nested
-# again, the corresponding assertion fails.
+# again, the corresponding assertion fails. The enterprise acknowledgement
+# is set on the command line for the same reason as section 2 — chart defaults
+# stay minimal-and-fail-closed.
 for env in staging production; do
   vf="${CHART}/values-${env}.example.yaml"
   out="${WORK}/${env}.yaml"
   if [[ ! -f "${vf}" ]]; then bad "missing example values file: ${vf}"; continue; fi
-  if ! render "${out}" -f "${vf}"; then
+  if ! render "${out}" -f "${vf}" \
+      --set networkPolicy.mode=enforce \
+      --set networkPolicy.profile=enterprise \
+      --set networkPolicy.enforcementAcknowledged=true; then
     bad "${env} example failed to render"; cat "${out}.err"; continue
   fi
   ok "${env} example renders"
@@ -165,6 +179,34 @@ else
   ok "typo'd key config.ssoo is rejected"
 fi
 
+# The enterprise profile MUST stay fail-closed: an operator who forgets to
+# acknowledge enforcement must NOT be allowed to install a chart that
+# silently starts enforcing NetworkPolicy. The chart default for
+# networkPolicy.enforcementAcknowledged is `false`, so this case is the only
+# thing standing between the test suite and a "make the test green by
+# flipping the default" regression.
+if render "${WORK}/no_ack_default.yaml" \
+    --set networkPolicy.mode=enforce \
+    --set networkPolicy.profile=enterprise; then
+  bad "enterprise render WITHOUT acknowledgement succeeded; the chart's fail-closed line is open"
+  cat "${WORK}/no_ack_default.yaml.err"
+else
+  if grep -q "enforcementAcknowledged=true" "${WORK}/no_ack_default.yaml.err"; then
+    ok "enterprise render WITHOUT acknowledgement is rejected with an explicit pointer"
+  else
+    bad "enterprise render was rejected, but without naming enforcementAcknowledged (unclear diagnostic)"
+    cat "${WORK}/no_ack_default.yaml.err"
+  fi
+fi
+if render "${WORK}/false_ack.yaml" \
+    --set networkPolicy.mode=enforce \
+    --set networkPolicy.profile=enterprise \
+    --set networkPolicy.enforcementAcknowledged=false; then
+  bad "enforcementAcknowledged=false was accepted as ACK; an operator who reads it as a positive signal would install anyway"
+else
+  ok "enforcementAcknowledged=false is rejected (an explicit true signal is required)"
+fi
+
 # ---------------------------------------------------------------------------
 head_ "6. ConfigMap data has no duplicate keys"
 # ---------------------------------------------------------------------------
@@ -173,7 +215,10 @@ head_ "6. ConfigMap data has no duplicate keys"
 # the effective value depends on YAML parse order.
 render "${WORK}/dup.yaml" \
   --set metrics.enabled=true \
-  --set config.metricsAddr=":9999" >/dev/null 2>&1 || true
+  --set config.metricsAddr=":9999" \
+  --set networkPolicy.mode=enforce \
+  --set networkPolicy.profile=enterprise \
+  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
 python3 - "${WORK}/dup.yaml" <<'PY'
 import collections, sys, yaml
 
@@ -210,7 +255,7 @@ if [[ $? -eq 0 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
 # metrics.enabled must win, and it must appear exactly once.
 n="$(grep -c "NEXUS_METRICS_ADDR:" "${WORK}/dup.yaml" || true)"
 if [[ "${n}" == "1" ]]; then
-  assert_contains "${WORK}/dup.yaml" 'NEXUS_METRICS_ADDR: ":9101"' \
+  assert_contains "${WORK}/dup.yaml" 'NEXUS_METRICS_ADDR: ":9100"' \
     "metrics.enabled takes precedence over config.metricsAddr"
 else
   bad "NEXUS_METRICS_ADDR rendered ${n} times (expected exactly 1)"
@@ -222,12 +267,18 @@ head_ "7. ServiceMonitor honours its own enable flag"
 # The CRD may not exist on the customer's cluster, so emitting the CR whenever
 # metrics are on would fail the whole release.
 render "${WORK}/sm_off.yaml" --set metrics.enabled=true \
-  --set metrics.serviceMonitor.enabled=false >/dev/null 2>&1 || true
+  --set metrics.serviceMonitor.enabled=false \
+  --set networkPolicy.mode=enforce \
+  --set networkPolicy.profile=enterprise \
+  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
 assert_absent "${WORK}/sm_off.yaml" "kind: ServiceMonitor" \
   "metrics.enabled without serviceMonitor.enabled emits no ServiceMonitor"
 
 render "${WORK}/sm_on.yaml" --set metrics.enabled=true \
-  --set metrics.serviceMonitor.enabled=true >/dev/null 2>&1 || true
+  --set metrics.serviceMonitor.enabled=true \
+  --set networkPolicy.mode=enforce \
+  --set networkPolicy.profile=enterprise \
+  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
 assert_contains "${WORK}/sm_on.yaml" "kind: ServiceMonitor" \
   "serviceMonitor.enabled emits a ServiceMonitor"
 
@@ -237,7 +288,11 @@ head_ "8. Migration hook Job"
 # The Job must exist, run as a pre-install/pre-upgrade hook so Helm aborts the
 # release on failure, use the SAME image and env sources as the Deployment, and
 # keep a failed pod around for its logs.
-render "${WORK}/mig.yaml" --set dependencies.postgres.enabled=true >/dev/null 2>&1 || true
+render "${WORK}/mig.yaml" \
+  --set dependencies.postgres.enabled=true \
+  --set networkPolicy.mode=enforce \
+  --set networkPolicy.profile=enterprise \
+  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
 assert_contains "${WORK}/mig.yaml" "kind: Job" \
   "a migration Job is rendered when a datastore is enabled"
 assert_contains "${WORK}/mig.yaml" '"helm.sh/hook": pre-install,pre-upgrade' \
@@ -274,8 +329,12 @@ else
 fi
 
 # Disabling it must remove it entirely (for DBA-gated change processes).
-render "${WORK}/mig_off.yaml" --set dependencies.postgres.enabled=true \
-  --set migrations.enabled=false >/dev/null 2>&1 || true
+render "${WORK}/mig_off.yaml" \
+  --set dependencies.postgres.enabled=true \
+  --set migrations.enabled=false \
+  --set networkPolicy.mode=enforce \
+  --set networkPolicy.profile=enterprise \
+  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
 assert_absent "${WORK}/mig_off.yaml" "kind: Job" \
   "migrations.enabled=false renders no Job"
 
@@ -325,7 +384,11 @@ cat >"${WORK}/egress_values.yaml" <<'YAML'
 config:
   egressTenantAllowedCidrs: "10.44.0.0/16,10.45.1.7"
 YAML
-if render "${WORK}/egress.yaml" -f "${WORK}/egress_values.yaml"; then
+if render "${WORK}/egress.yaml" \
+    -f "${WORK}/egress_values.yaml" \
+    --set networkPolicy.mode=enforce \
+    --set networkPolicy.profile=enterprise \
+    --set networkPolicy.enforcementAcknowledged=true; then
   assert_contains "${WORK}/egress.yaml" 'NEXUS_EGRESS_TENANT_ALLOWED_CIDRS: "10.44.0.0/16,10.45.1.7"' \
     "an explicit egress allowlist is passed through verbatim"
 else

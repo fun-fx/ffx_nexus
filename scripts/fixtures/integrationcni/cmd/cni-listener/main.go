@@ -7,10 +7,10 @@
 // that opens N TCP listeners (-ports flag,
 // comma-separated). For each port it serves:
 //
-//   GET /              -> 200 application/json
-//   GET /healthz       -> 200 application/json
-//   GET /readyz        -> 200 application/json
-//                         {"ready":true,"port":N,...}
+//	GET /              -> 200 application/json
+//	GET /healthz       -> 200 application/json
+//	GET /readyz        -> 200 application/json
+//	                      {"ready":true,"port":N,...}
 //
 // The /readyz endpoint exists because the
 // fixture's readinessProbe may route through
@@ -29,8 +29,8 @@
 //
 // Usage:
 //
-//   /cni-listener -ports=8080,9100,9111,3128,5432,6379,9000,9090
-//   /cni-listener -probe=8080
+//	/cni-listener -ports=8080,9100,9111,3128,5432,6379,9000,9090
+//	/cni-listener -probe=8080
 //
 // The -ports flag is a comma-separated list
 // because one fixture pod may need to listen

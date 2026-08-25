@@ -36,6 +36,21 @@ spec:
         role: probe
     spec:
       nodeName: nexus-cni-test-worker2
+      # Phase D-2b.29 hardened fixture contract.
+      # cni-listener only binds non-privileged
+      # ports (>1024) and reads /proc/net for
+      # nothing; runAsUser/Group 65534 (nobody) +
+      # readOnlyRootFilesystem + drop ALL
+      # capabilities is sufficient. Any future
+      # code that requires root MUST be caught
+      # by fixture_semantic_admission.py before
+      # it's applied.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: probe
           image: cni-listener:local
@@ -54,3 +69,11 @@ spec:
           env:
             - name: POD_NAME
               value: cni-control-probe
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop:
+                - ALL

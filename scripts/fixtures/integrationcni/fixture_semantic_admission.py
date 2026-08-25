@@ -404,6 +404,147 @@ def check_role_inventory_enforced(fixture_dir):
     return True
 
 
+# ---------------------------------------------------------------------
+# d2b.29 hardened-fixture contract.
+#
+# The fixture container ONLY opens non-privileged
+# TCP ports in code paths the fixture exercises;
+# it does NOT require /proc/sys reads, raw sockets,
+# nor filesystem writes. Therefore a Pod that
+# regresses to a default root securityContext, or
+# a Dockerfile that drops the runtime USER line,
+# is a regression that nothing in the d2b.28
+# semantic-admission surface detects. This check
+# closes that hole.
+#
+# Hard rules:
+#   * Every Pod / Deployment template MUST have
+#     spec.securityContext.runAsNonRoot = true
+#     and a non-zero runAsUser.
+#   * Every container MUST declare
+#     securityContext.allowPrivilegeEscalation=false
+#     and capabilities.drop=["ALL"].
+#   * readOnlyRootFilesystem is REQUIRED for
+#     every fixture container (the operand never
+#     writes to disk).
+#   * seccompProfile.type must be RuntimeDefault
+#     on the Pod-level securityContext.
+#   * control-netpol-gate.Dockerfile must contain
+#     a "USER 65534" line so the fixture image
+#     refuses to start as root if pulled by a
+#     runtime that hasn't mounted /etc/passwd.
+# ---------------------------------------------------------------------
+def _walk_pod_sc(path, doc, problems):
+    kind = doc.get("kind")
+    if kind not in ("Pod", "Deployment", "StatefulSet", "DaemonSet"):
+        return
+    if kind == "Pod":
+        name = doc.get("metadata", {}).get("name", "?")
+        spec = doc.get("spec") or {}
+        containers = spec.get("containers") or []
+        pod_sc = spec.get("securityContext")
+    else:
+        name = doc.get("metadata", {}).get("name", "?")
+        tmpl = (doc.get("spec") or {}).get("template") or {}
+        spec = tmpl.get("spec") or {}
+        containers = spec.get("containers") or []
+        pod_sc = spec.get("securityContext")
+
+    if not isinstance(pod_sc, dict):
+        problems.append((path, kind, name,
+                         "Pod securityContext is missing"))
+    else:
+        if pod_sc.get("runAsNonRoot") is not True:
+            problems.append((path, kind, name,
+                             "Pod securityContext.runAsNonRoot != true"))
+        run_as_user = pod_sc.get("runAsUser")
+        if not isinstance(run_as_user, int) or run_as_user <= 0 \
+                or run_as_user == 0:
+            # Only forbid UID 0. The exact match on
+            # 65534 is asserted below as a stricter
+            # rule of the fixture contract.
+            problems.append((path, kind, name,
+                             "Pod securityContext.runAsUser must be a "
+                             "positive integer (got %r)" % (run_as_user,)))
+        elif run_as_user != 65534:
+            problems.append((path, kind, name,
+                             "Pod securityContext.runAsUser must be 65534 "
+                             "(matches Dockerfile USER 65534:65534); "
+                             "got %d" % (run_as_user,)))
+        sec = pod_sc.get("seccompProfile")
+        if not isinstance(sec, dict) or sec.get("type") != "RuntimeDefault":
+            problems.append((path, kind, name,
+                             "Pod securityContext.seccompProfile.type "
+                             "must be RuntimeDefault"))
+
+    for c in containers:
+        if not isinstance(c, dict):
+            continue
+        c_sc = c.get("securityContext")
+        if not isinstance(c_sc, dict):
+            problems.append((path, kind, name,
+                             "container %s securityContext missing" %
+                             c.get("name", "?")))
+            continue
+        if c_sc.get("allowPrivilegeEscalation") is not False:
+            problems.append((path, kind, name,
+                             "container %s securityContext.allowPrivilegeEscalation "
+                             "must be false" % c.get("name", "?")))
+        if c_sc.get("readOnlyRootFilesystem") is not True:
+            problems.append((path, kind, name,
+                             "container %s securityContext.readOnlyRootFilesystem "
+                             "must be true" % c.get("name", "?")))
+        caps = c_sc.get("capabilities") or {}
+        drop = caps.get("drop") or []
+        if "ALL" not in drop:
+            problems.append((path, kind, name,
+                             "container %s securityContext.capabilities.drop "
+                             "must include ALL" % c.get("name", "?")))
+
+
+def check_pod_security_context_hardened(fixture_dir):
+    problems = []
+    for path in sorted(fixture_dir.glob("*.yaml")):
+        for d in load_documents(path):
+            _walk_pod_sc(path, d, problems)
+    if problems:
+        for path, kind, name, msg in problems:
+            fail(f"{path}: {kind}/{name}: {msg}")
+        return False
+    ok("every fixture Pod + container passes the d2b.29 hardened-fixture contract")
+    return True
+
+
+def check_dockerfile_user_present(fixture_dir):
+    """The fixture Dockerfile MUST declare a
+    non-root USER. We assert a literal
+    `USER 65534:65534` line because:
+       * it's a single, deterministic
+         substring grep;
+       * it matches the kubelet's runAsUser
+         assertion;
+       * absent a USER line, Pod
+         spec.securityContext.runAsUser=65534
+         fails on a scratch image (no
+         /etc/passwd) at runtime, not at
+         template-parse time, so the
+         contract is enforced here rather
+         than later.
+    """
+    df = fixture_dir / "control-netpol-gate.Dockerfile"
+    if not df.exists():
+        fail(f"{df}: missing; the d2b hardened fixture contract cannot be enforced")
+        return False
+    text = df.read_text()
+    has_user_line = "USER 65534:65534" in text
+    if not has_user_line:
+        fail(f"{df}: must declare `USER 65534:65534` so the runtime image cannot "
+             f"start as root (matches Pod runAsUser 65534)")
+        return False
+    ok(f"{df}: USER 65534:65534 declared (matches Pod runAsUser)")
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rendered-networkpolicy", required=False)
@@ -422,7 +563,9 @@ def main():
     s2 = check_service_selector_matches_pod(fixture_dir)
     s3 = check_networkpolicy_selectors(fixture_dir, rendered_path)
     s4 = check_role_inventory_enforced(fixture_dir)
-    if s1 and s2 and s3 and s4:
+    s5 = check_pod_security_context_hardened(fixture_dir)
+    s6 = check_dockerfile_user_present(fixture_dir)
+    if s1 and s2 and s3 and s4 and s5 and s6:
         print()
         print("fixture_semantic_admission: PASS")
         return 0

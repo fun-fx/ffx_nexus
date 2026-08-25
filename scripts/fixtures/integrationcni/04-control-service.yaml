@@ -103,6 +103,21 @@ metadata:
     app: cni-control
     role: probe-target
 spec:
+  # Phase D-2b.29 hardened fixture contract.
+  # The cni-listener operand only opens
+  # non-privileged port 18080 and does not
+  # write to disk; runAsUser 65534 +
+  # readOnlyRootFilesystem + drop ALL
+  # capabilities + RuntimeDefault seccomp is
+  # enough. A regression that re-introduces
+  # write paths or a privileged bind MUST be
+  # caught by fixture_semantic_admission.py.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: target
       image: cni-listener:local
@@ -121,6 +136,14 @@ spec:
       env:
         - name: POD_NAME
           value: cni-control-target
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65534
+        capabilities:
+          drop:
+            - ALL
 ---
 apiVersion: v1
 kind: Service
