@@ -90,6 +90,20 @@ on:
       - "Makefile"
       - ".github/workflows/cni-nightly.yml"
       - "go.mod"
+  # Phase D-2b.34 (reindex) — narrow push trigger limited to main branch
+  # AND the workflow file path only. Forces GitHub Actions to re-evaluate
+  # the workflow definition on every push that touches THIS exact file
+  # on main, so the dispatch registry can re-promote the
+  # `workflow_dispatch` trigger schema after a merge that replaced the
+  # file on the default branch. Any broader scope (chart, application,
+  # docs, fixtures) is explicitly avoided. The heavy enforcement job
+  # remains gated by `if: github.event_name == 'workflow_dispatch'`
+  # so this push run cannot run heavy enforcement regardless of inputs.
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cni-nightly.yml"
   # The heavy enforcement gate is run ONLY when a
   # human invokes it. The input `recovery_pr_sha`
   # is the SHA pinned in the chart's branch — the
