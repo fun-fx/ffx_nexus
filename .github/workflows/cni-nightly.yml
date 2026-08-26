@@ -224,6 +224,17 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    # Phase D-2b.34 — entire heavy-job evidence
+    # root is routed outside the worktree. The
+    # job cannot declare ARTIFACTS at this
+    # scope because ${{ runner.temp }} is not
+    # available at job env (actionlint). Instead
+    # we route it through $GITHUB_ENV via the
+    # dedicated init step below — ${ARTIFACTS}
+    # is then a single source of truth for every
+    # subsequent step (Step A, pinned-versions,
+    # cluster-up, install, scenarios, rehearsal,
+    # teardown, upload-artifact).
     steps:
       - name: Validate SHA input
         run: |
@@ -244,6 +255,75 @@ jobs:
           ref: ${{ github.event.inputs.recovery_pr_sha }}
           fetch-depth: 0
 
+      - name: "Initialize external artifact root (d2b.35: physical boundary + I/O classification)"
+        # d2b.35 — the init step classifies every artifact
+        # I/O fault as a fail_artifact_io-emitted exit 11.
+        # The contract sequence is:
+        #   1. RUNNER_TEMP, GITHUB_WORKSPACE, GITHUB_ENV
+        #      are all required (no silent /tmp fallback).
+        #   2. The raw candidate path
+        #      ${RUNNER_TEMP}/d2b-cni-${github.run_id}
+        #      and ${GITHUB_WORKSPACE} are canonicalised
+        #      with realpath -m (lexical) BEFORE any mkdir
+        #      — a path that looks outside-but-resolves-
+        #      inside-via-symlink is rejected here.
+        #   3. mkdir -p creates the canonical external
+        #      root; any failure exits 11 (the previous
+        #      set -e-only path exited 1 from mkdir, which
+        #      mixed I/O faults with subshell crashes).
+        #   4. The created root is re-canonicalised with
+        #      realpath -e (physical) and the boundary
+        #      test is re-applied. This closes a
+        #      pre-existing symlink / traversal ambiguity.
+        #   5. The path is verified to be a real directory.
+        #   6. ARTIFACTS=<realpath> is appended to
+        #      $GITHUB_ENV (single source of truth for
+        #      every downstream step).
+        # ${{ runner.temp }} is available at step-level but
+        # NOT at job-level, so this is the canonical
+        # propagation pattern. use eval is forbidden and
+        # bare mkdir is wrapped in fail_artifact_io.
+        run: |
+          set -euo pipefail
+          fail_artifact_io() {
+            echo "FAIL: $*" >&2
+            exit 11
+          }
+
+          # (1) every required variable must be set
+          [[ -n "${RUNNER_TEMP:-}"    ]] || fail_artifact_io "RUNNER_TEMP is unset/empty; outside-tree artifact root requires it (no /tmp fallback)"
+          [[ -n "${GITHUB_WORKSPACE:-}" ]] || fail_artifact_io "GITHUB_WORKSPACE is unset/empty; cannot establish physical boundary"
+          [[ -n "${GITHUB_ENV:-}"      ]] || fail_artifact_io "GITHUB_ENV is unset/empty; cannot publish ARTIFACTS"
+
+          # (2) lexical canonicalisation of both paths
+          RAW_ARTIFACTS="${RUNNER_TEMP}/d2b-cni-${{ github.run_id }}"
+          ARTIFACTS_REAL="$(realpath -m -- "${RAW_ARTIFACTS}")" || fail_artifact_io "cannot canonicalize artifact root candidate (${RAW_ARTIFACTS})"
+          WORKSPACE_REAL_LEX="$(realpath -m -- "${GITHUB_WORKSPACE}")" || fail_artifact_io "cannot canonicalize workspace (${GITHUB_WORKSPACE})"
+          case "${ARTIFACTS_REAL}" in
+            "${WORKSPACE_REAL_LEX}"|"${WORKSPACE_REAL_LEX}"/*)
+              fail_artifact_io "artifact root resolves inside worktree (lexical: ${ARTIFACTS_REAL} under ${WORKSPACE_REAL_LEX})" ;;
+          esac
+
+          # (3) mkdir with explicit classification
+          mkdir -p -- "${ARTIFACTS_REAL}" 2>/dev/null || fail_artifact_io "cannot create external artifact root (${ARTIFACTS_REAL})"
+
+          # (4) physical canonicalisation (post-create realpath -e)
+          ARTIFACTS_REAL="$(realpath -e -- "${ARTIFACTS_REAL}")" || fail_artifact_io "cannot physical-resolve created artifact root"
+          WORKSPACE_REAL="$(realpath -e -- "${GITHUB_WORKSPACE}")" || fail_artifact_io "cannot physical-resolve workspace (${GITHUB_WORKSPACE})"
+          case "${ARTIFACTS_REAL}" in
+            "${WORKSPACE_REAL}"|"${WORKSPACE_REAL}"/*)
+              fail_artifact_io "artifact root resolves inside worktree (physical: ${ARTIFACTS_REAL} under ${WORKSPACE_REAL})" ;;
+          esac
+
+          # (5) directory verification
+          [[ -d "${ARTIFACTS_REAL}" ]] || fail_artifact_io "artifact root is not a directory (${ARTIFACTS_REAL})"
+
+          # (6) publish to $GITHUB_ENV
+          printf 'ARTIFACTS=%s\n' "${ARTIFACTS_REAL}" >> "${GITHUB_ENV}" 2>/dev/null \
+            || fail_artifact_io "cannot publish ARTIFACTS to GITHUB_ENV (${GITHUB_ENV})"
+
+          echo "OK: external artifact root published: ${ARTIFACTS_REAL}"
+
       - name: Verify checked-out SHA matches
         run: |
           set -euo pipefail
@@ -257,92 +337,142 @@ jobs:
           fi
 
       # ----------------------------------------------------------------
-      # Phase D-2b.33 — Step A artifact I/O contract tightened.
+      # Phase D-2b.34 — Step A external-artifact-root contract
+      # (single source of truth).
       #
-      # d2b.32 routed the identity capture to a path
-      # outside the worktree and verified a clean source
-      # checkout. d2b.33 makes the I/O contract explicit
-      # and fail-closed:
+      # The Step A artifact capture path IS the upload-artifact
+      # source: every heavy substep of this job reads/writes
+      # ${ARTIFACTS}, which is initialized by the dedicated
+      # `Initialize external artifact root` step above and
+      # published via $GITHUB_ENV. There is no separate
+      # "outside-tree capture + worktree copy" path: the
+      # capture lands in ${ARTIFACTS}/checkout-identity.txt
+      # directly, the clean-tree assertion runs raw
+      # `git status --porcelain` against the worktree, the
+      # boundary check prevents ARTIFACTS from ever
+      # resolving under ${GITHUB_WORKSPACE}, and upload
+      # harvests the same env-driven path. Run 32934127483
+      # proved the prior shape wrote 13 gate-emitted files
+      # into ${GITHUB_WORKSPACE}/artifacts/integrationcni
+      # and a downstream raw porcelain correctly
+      # fail-closed them — d2b.34 makes that impossible.
       #
-      #   (a) RUNNER_TEMP is REQUIRED. Silently
-      #       falling back to /tmp would hide a
-      #       configuration defect from the
-      #       operator and put cluster/ install /
-      #       scenario evidence on a path the runner
-      #       may recycle between steps.
-      #   (b) `fail_artifact_io` helper turns every
-      #       mkdir / write / cp failure into an
-      #       explicit exit 11 BEFORE the workflow
-      #       continues to cluster install or CNI
-      #       scenarios. This keeps the exit
-      #       classifier distinguishable from exit
-      #       10 (real source dirtiness) and from
-      #       exit 1 (subprocess crash), so a CI
-      #       reviewer can tell at a glance whether
-      #       the failure was a clean-tree issue
-      #       (10) or an artifact I/O issue (11).
-      #   (c) No `.gitignore` is added; no path
-      #       filter is applied to the source
-      #       `git status --porcelain` output. The
-      #       clean-tree judgement still inspects
-      #       everything in the worktree.
-      #   (d) After the clean-tree assertion
-      #       passes, the outside-tree capture is
-      #       copied under artifacts/ for upload;
-      #       that copy is the only place the
-      #       artifact path is created and the
-      #       cleanliness judgement is already
-      #       behind us.
+      # Contract rationale:
+      #   (a) ARTIFACTS must be set, propagating from the
+      #       init step. unset ⇒ fail_artifact_io (exit 11)
+      #   (b) The external capture directory must be
+      #       creatable; mkdir-vs-file conflict ⇒ exit 11.
+      #   (c) Identity capture write itself must succeed;
+      #       file-vs-directory conflict ⇒ exit 11.
+      #   (d) The capture IS the upload source. There is no
+      #       post-pass copy of the identity into the
+      #       worktree; the clean-tree assertion runs
+      #       before any worktree write, and the boundary
+      #       check above prevents the worktree from being
+      #       a valid capture root.
+      #   (e) Source-clean judgement is raw and
+      #       unfiltered — no `.gitignore` rule is added,
+      #       no path filter is applied to the porcelain
+      #       output, no `.git/info/exclude` is consulted.
+      #       Genuine tracked/untracked source dirt still
+      #       triggers exit 10.
       #
-      # The companion regression at
+      # The canonical deterministic regression suite at
+      # scripts/test_clean_tree_artifact_routing.sh
+      # enforces these invariants against a fake external
+      # capture root (no Docker / Kind / Cilium / network).
+      # The historical compatibility alias
       # scripts/test_clean_tree_artifact_regression.sh
-      # enforces (a)–(d) by exercising each I/O
-      # failure mode against a deterministic
-      # precondition, never relying on chmod-only
-      # permission tricks which behave
-      # differently in root contexts.
+      # is now a thin wrapper that delegates to the
+      # canonical suite so existing runbooks still find
+      # the canonical contract under the historical name.
       # ----------------------------------------------------------------
-      - name: "Step A — checkout identity + clean tree assertion (d2b.33: tightened artifact I/O contract)"
+      - name: "Step A — checkout identity + clean tree assertion (d2b.34: write-through external artifact root)"
         run: |
           set -euo pipefail
 
           # ---- fail-closed helper for artifact I/O ----
           # Every Step-A artifact I/O fault surfaces as exit 11 with a
           # diagnosable message. We deliberately do NOT use `set -e` alone
-          # because that collapses multiple fault shapes (mkdir vs write vs
-          # cp vs RUNNER_TEMP unset) into the same exit code; an auditor
+          # because that collapses multiple fault shapes (boundary check
+          # vs mkdir vs write) into the same exit code; an auditor
           # should be able to tell what failed without parsing log lines.
           fail_artifact_io() {
             echo "FAIL: $*" >&2
             exit 11
           }
 
-          # (1) RUNNER_TEMP is required. No silent fallback.
-          if [[ -z "${RUNNER_TEMP:-}" ]]; then
-            fail_artifact_io "RUNNER_TEMP is unset/empty; outside-tree identity capture requires it (no /tmp fallback)"
+          # (1) ARTIFACTS must be set, sourced from the
+          #     init step's $GITHUB_ENV propagation. No
+          #     silent fallback.
+          if [[ -z "${ARTIFACTS:-}" ]]; then
+            fail_artifact_io "ARTIFACTS is unset/empty; initialize step did not propagate (no /tmp fallback)"
           fi
 
-          OUT_ID="${RUNNER_TEMP}/integrationcni-checkout-identity.txt"
+          # (1a) ARTIFACTS must not resolve under
+          #      GITHUB_WORKSPACE — physical boundary
+          #      check (d2b.35). The init step already
+          #      performed this test once; we repeat
+          #      here so an operator-mis-deployed env
+          #      override (a future caller) cannot
+          #      re-route the capture into the worktree
+          #      via a symlink whose lexical form looks
+          #      external. Both realpath -m (lexical) and
+          #      realpath -e (physical, post-redirect)
+          #      paths are checked.
+          [[ -n "${GITHUB_WORKSPACE:-}" ]] || fail_artifact_io "GITHUB_WORKSPACE is unset/empty; cannot establish physical boundary"
+          ARTIFACTS_LEX="$(realpath -m -- "${ARTIFACTS}")" || fail_artifact_io "cannot lexical-canonicalize ARTIFACTS (${ARTIFACTS})"
+          WORKSPACE_LEX="$(realpath -m -- "${GITHUB_WORKSPACE}")"  || fail_artifact_io "cannot lexical-canonicalize workspace"
+          case "${ARTIFACTS_LEX}" in
+            "${WORKSPACE_LEX}"|"${WORKSPACE_LEX}"/*)
+              fail_artifact_io "ARTIFACTS resolves inside the worktree (lexical: ${ARTIFACTS_LEX} under ${WORKSPACE_LEX}); outside-tree routing contract violated" ;;
+          esac
 
           # (2) External capture directory must be creatable. We choose
           #     filename as a deterministic target so the test framework can
           #     pre-create a regular file at this path to force a real
           #     mkdir-vs-file conflict (deterministic precondition, not
-          #     permission lottery).
-          ART_PARENT_DIR="$(dirname "$OUT_ID")"
+          #     permission lottery). Note: ${ARTIFACTS} is owned by the
+          #     init step via $GITHUB_ENV propagation; the capture path
+          #     IS the upload-artifact root and there is no worktree
+          #     post-pass copy step.
+          ART_PARENT_DIR="$(dirname "${ARTIFACTS}/checkout-identity.txt")"
           if [[ -e "$ART_PARENT_DIR" && ! -d "$ART_PARENT_DIR" ]]; then
-            fail_artifact_io "external capture path $ART_PARENT_DIR exists and is not a directory"
+            fail_artifact_io "external artifact root $ART_PARENT_DIR exists and is not a directory"
           fi
           if ! mkdir -p "$ART_PARENT_DIR" 2>/dev/null; then
-            fail_artifact_io "could not create external capture directory $ART_PARENT_DIR"
+            fail_artifact_io "could not create external artifact root $ART_PARENT_DIR"
           fi
 
-          # (3) Identity capture write itself must succeed.
+          # (2a) Post-mkdir physical canonicalisation of
+          #      ${ARTIFACTS} and ${GITHUB_WORKSPACE}.
+          #      This catches: (a) the artifact root is
+          #      a symlink (or contains a symlinked
+          #      component) whose target is inside the
+          #      worktree; (b) a parallel `realpath -m`
+          #      lexical canonicalisation (above)
+          #      disagreed with the resolved filesystem
+          #      state. Both axis must agree AND lie
+          #      outside the worktree.
+          ARTIFACTS_REAL="$(realpath -e -- "${ARTIFACTS}" 2>/dev/null)" || fail_artifact_io "cannot physical-resolve ARTIFACTS (${ARTIFACTS})"
+          WORKSPACE_REAL="$(realpath -e -- "${GITHUB_WORKSPACE}" 2>/dev/null)" || fail_artifact_io "cannot physical-resolve workspace"
+          case "${ARTIFACTS_REAL}" in
+            "${WORKSPACE_REAL}"|"${WORKSPACE_REAL}"/*)
+              fail_artifact_io "ARTIFACTS resolves inside the worktree (physical: ${ARTIFACTS_REAL} under ${WORKSPACE_REAL}); outside-tree routing contract violated" ;;
+          esac
+
+          # (3) Identity capture write itself must succeed. d2b.34 writes
+          #     directly into the same ${ARTIFACTS}/checkout-identity.txt
+          #     path the actions/upload-artifact@v4 step will harvest —
+          #     there is no longer a copy from ${RUNNER_TEMP}/<...>.txt
+          #     into artifacts/ which could re-pollute the worktree.
+          OUT_ID="${ARTIFACTS}/checkout-identity.txt"
           if ! {
             echo "head_sha:          $(git rev-parse HEAD)"
             echo "short_sha:         $(git rev-parse --short HEAD)"
             echo "branch:            $(git rev-parse --abbrev-ref HEAD || echo detached)"
             echo "capture_path_abs:  $OUT_ID"
+            echo "artifacts_root:     $ARTIFACTS"
             echo "worktree_clean_asserted_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "clean_tree_required: yes"
             echo "porcelain_clean:"
@@ -371,29 +501,12 @@ jobs:
             echo "FAIL: working tree diverges from HEAD on at least one file (uncommitted tracked changes)" >&2
             exit 10
           fi
-          echo "OK: source tree clean (porcelain=0, diff vs HEAD clean) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-          # (5) Post-assertion artifact copy. We force exit 11 on any
-          #     directory-vs-file conflict so a regression that breaks the
-          #     assertion order is loud.
-          ART_DIR="artifacts/integrationcni"
-          if [[ -e "$ART_DIR" && ! -d "$ART_DIR" ]]; then
-            fail_artifact_io "artifact target $ART_DIR exists and is not a directory"
-          fi
-          if ! mkdir -p "$ART_DIR" 2>/dev/null; then
-            fail_artifact_io "could not create artifact directory $ART_DIR"
-          fi
-          ART_ID="${ART_DIR}/checkout-identity.txt"
-          if ! cp "$OUT_ID" "$ART_ID" 2>/dev/null; then
-            fail_artifact_io "could not copy external checkout identity to $ART_ID"
-          fi
-          if [[ ! -s "$ART_ID" ]]; then
-            fail_artifact_io "artifact copy at $ART_ID is empty after copy"
-          fi
           # Append the porcelain snapshot (taken against an undisturbed
-          # tree, so it must be empty) for the upload-only record.
-          printf 'porcelain_clean_actual: %s\n' "$porcelain" >> "$ART_ID"
-          echo "OK: step A — checkout identity captured, working tree matches HEAD"
+          # tree, so it must be empty) for the upload-only record. This
+          # append happens AT $ARTIFACTS, not in the worktree.
+          printf 'porcelain_clean_actual: %s\n' "$porcelain" >> "$OUT_ID"
+          echo "OK: source tree clean (porcelain=0, diff vs HEAD clean) at $(date -u +%Y-%m-%dT%H:%M:%SZ); external capture at $OUT_ID"
+          echo "OK: step A — checkout identity captured externally, working tree matches HEAD"
 
       - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15 (verified)
         run: |
@@ -458,10 +571,13 @@ jobs:
           helm version
           cilium version
           echo "Pinned: kind v0.22.0 | kubectl v1.29.0 | helm v3.14.4 | cilium v0.15.20 (sha256-verified, retry=3)"
-          # Record the pinned versions into the
-          # artifact folder so a downstream
-          # verifier can match expectations.
-          mkdir -p artifacts/integrationcni
+          # d2b.34: pinned-versions.txt is written to
+          # the heavy-job ${ARTIFACTS} root (published
+          # by the dedicated init step via $GITHUB_ENV),
+          # NOT to ${GITHUB_WORKSPACE}/artifacts/integrationcni
+          # which the fixture preflight raw porcelain
+          # assertion would otherwise read as real source dirt.
+          mkdir -p "${ARTIFACTS}"
           {
             echo "kind: $(kind version | head -1)"
             echo "kubectl: $(kubectl version --client=true --short 2>/dev/null || kubectl version --client | head -1)"
@@ -470,44 +586,36 @@ jobs:
             echo "k8s node image: kindest/node:v1.29.0  (script default)"
             echo "sha:  $(git rev-parse HEAD)"
             echo "run:  ${{ github.event.inputs.run_index }}"
+            echo "artifacts_root: ${ARTIFACTS}"
             echo "pin-policy: curl retry=3 + sha256 verify of upstream-published sums"
-          } > artifacts/integrationcni/pinned-versions.txt
+          } > "${ARTIFACTS}/pinned-versions.txt"
 
       - name: Bring up multi-node kind + Cilium cluster
         run: bash scripts/test-cluster-up.sh
         env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
           KUBE_WORKER_COUNT: 2
 
       - name: Install chart with enterprise profile
         if: success()
         run: bash scripts/install-nexus-test.sh
-        env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
 
       - name: Run 12 enforcing-CNI scenarios (three-tier probe)
         if: success()
         run: bash scripts/d2b-twelve-scenarios.sh
-        env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
 
       - name: Helm upgrade rehearsal (disabled -> enforce + --atomic rollback)
         if: success()
         run: bash scripts/test-upgrade-rehearsal-up.sh
-        env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
 
       - name: Tear down cluster (always)
         if: always()
         run: bash scripts/test-cluster-down.sh || true
-        env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
 
       - name: Upload CNI gate artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cni-enforcement-logs-${{ github.event.inputs.run_index }}-${{ github.event.inputs.recovery_pr_sha }}-${{ github.run_id }}
-          path: artifacts/integrationcni/
+          path: ${{ env.ARTIFACTS }}/
           if-no-files-found: error
           retention-days: 90
