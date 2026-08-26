@@ -255,21 +255,74 @@ jobs:
           ref: ${{ github.event.inputs.recovery_pr_sha }}
           fetch-depth: 0
 
-      - name: "Initialize external artifact root (d2b.34: external ARTIFACTS via GITHUB_ENV)"
-        # d2b.34 — publish ARTIFACTS into
-        # $GITHUB_ENV so every downstream step
-        # reads/writes the SAME outside-tree
-        # root. ${{ runner.temp }} is available
-        # at step-level but NOT at job-level,
-        # so this is the canonical propagation
-        # pattern that keeps the contract a
-        # single source of truth.
+      - name: "Initialize external artifact root (d2b.35: physical boundary + I/O classification)"
+        # d2b.35 — the init step classifies every artifact
+        # I/O fault as a fail_artifact_io-emitted exit 11.
+        # The contract sequence is:
+        #   1. RUNNER_TEMP, GITHUB_WORKSPACE, GITHUB_ENV
+        #      are all required (no silent /tmp fallback).
+        #   2. The raw candidate path
+        #      ${RUNNER_TEMP}/d2b-cni-${github.run_id}
+        #      and ${GITHUB_WORKSPACE} are canonicalised
+        #      with realpath -m (lexical) BEFORE any mkdir
+        #      — a path that looks outside-but-resolves-
+        #      inside-via-symlink is rejected here.
+        #   3. mkdir -p creates the canonical external
+        #      root; any failure exits 11 (the previous
+        #      set -e-only path exited 1 from mkdir, which
+        #      mixed I/O faults with subshell crashes).
+        #   4. The created root is re-canonicalised with
+        #      realpath -e (physical) and the boundary
+        #      test is re-applied. This closes a
+        #      pre-existing symlink / traversal ambiguity.
+        #   5. The path is verified to be a real directory.
+        #   6. ARTIFACTS=<realpath> is appended to
+        #      $GITHUB_ENV (single source of truth for
+        #      every downstream step).
+        # ${{ runner.temp }} is available at step-level but
+        # NOT at job-level, so this is the canonical
+        # propagation pattern. use eval is forbidden and
+        # bare mkdir is wrapped in fail_artifact_io.
         run: |
           set -euo pipefail
-          ARTIFACTS="${{ runner.temp }}/d2b-cni-${{ github.run_id }}"
-          echo "ARTIFACTS=${ARTIFACTS}" >> "$GITHUB_ENV"
-          mkdir -p "${ARTIFACTS}"
-          echo "OK: external artifact root published to \$GITHUB_ENV: ${ARTIFACTS}"
+          fail_artifact_io() {
+            echo "FAIL: $*" >&2
+            exit 11
+          }
+
+          # (1) every required variable must be set
+          [[ -n "${RUNNER_TEMP:-}"    ]] || fail_artifact_io "RUNNER_TEMP is unset/empty; outside-tree artifact root requires it (no /tmp fallback)"
+          [[ -n "${GITHUB_WORKSPACE:-}" ]] || fail_artifact_io "GITHUB_WORKSPACE is unset/empty; cannot establish physical boundary"
+          [[ -n "${GITHUB_ENV:-}"      ]] || fail_artifact_io "GITHUB_ENV is unset/empty; cannot publish ARTIFACTS"
+
+          # (2) lexical canonicalisation of both paths
+          RAW_ARTIFACTS="${RUNNER_TEMP}/d2b-cni-${{ github.run_id }}"
+          ARTIFACTS_REAL="$(realpath -m -- "${RAW_ARTIFACTS}")" || fail_artifact_io "cannot canonicalize artifact root candidate (${RAW_ARTIFACTS})"
+          WORKSPACE_REAL_LEX="$(realpath -m -- "${GITHUB_WORKSPACE}")" || fail_artifact_io "cannot canonicalize workspace (${GITHUB_WORKSPACE})"
+          case "${ARTIFACTS_REAL}" in
+            "${WORKSPACE_REAL_LEX}"|"${WORKSPACE_REAL_LEX}"/*)
+              fail_artifact_io "artifact root resolves inside worktree (lexical: ${ARTIFACTS_REAL} under ${WORKSPACE_REAL_LEX})" ;;
+          esac
+
+          # (3) mkdir with explicit classification
+          mkdir -p -- "${ARTIFACTS_REAL}" 2>/dev/null || fail_artifact_io "cannot create external artifact root (${ARTIFACTS_REAL})"
+
+          # (4) physical canonicalisation (post-create realpath -e)
+          ARTIFACTS_REAL="$(realpath -e -- "${ARTIFACTS_REAL}")" || fail_artifact_io "cannot physical-resolve created artifact root"
+          WORKSPACE_REAL="$(realpath -e -- "${GITHUB_WORKSPACE}")" || fail_artifact_io "cannot physical-resolve workspace (${GITHUB_WORKSPACE})"
+          case "${ARTIFACTS_REAL}" in
+            "${WORKSPACE_REAL}"|"${WORKSPACE_REAL}"/*)
+              fail_artifact_io "artifact root resolves inside worktree (physical: ${ARTIFACTS_REAL} under ${WORKSPACE_REAL})" ;;
+          esac
+
+          # (5) directory verification
+          [[ -d "${ARTIFACTS_REAL}" ]] || fail_artifact_io "artifact root is not a directory (${ARTIFACTS_REAL})"
+
+          # (6) publish to $GITHUB_ENV
+          printf 'ARTIFACTS=%s\n' "${ARTIFACTS_REAL}" >> "${GITHUB_ENV}" 2>/dev/null \
+            || fail_artifact_io "cannot publish ARTIFACTS to GITHUB_ENV (${GITHUB_ENV})"
+
+          echo "OK: external artifact root published: ${ARTIFACTS_REAL}"
 
       - name: Verify checked-out SHA matches
         run: |
@@ -349,22 +402,30 @@ jobs:
             exit 11
           }
 
-          # (1) ARTIFACTS must be set, supplied by the
-          #     job-level env block. No silent fallback.
+          # (1) ARTIFACTS must be set, sourced from the
+          #     init step's $GITHUB_ENV propagation. No
+          #     silent fallback.
           if [[ -z "${ARTIFACTS:-}" ]]; then
-            fail_artifact_io "ARTIFACTS is unset/empty; job-level env block did not propagate (no /tmp fallback)"
+            fail_artifact_io "ARTIFACTS is unset/empty; initialize step did not propagate (no /tmp fallback)"
           fi
+
           # (1a) ARTIFACTS must not resolve under
-          #      GITHUB_WORKSPACE. If it ever does,
-          #      the gate's own captures pollute the
-          #      next `git status --porcelain` (exit
-          #      15/10 self-reference defect). Refuse
-          #      the upload root loudly.
-          WS="${GITHUB_WORKSPACE:-$PWD}"
-          case "$ARTIFACTS" in
-            "$WS"|"$WS"/*)
-              fail_artifact_io "ARTIFACTS resolves inside the worktree ($ARTIFACTS under $WS); outside-tree routing contract violated"
-              ;;
+          #      GITHUB_WORKSPACE — physical boundary
+          #      check (d2b.35). The init step already
+          #      performed this test once; we repeat
+          #      here so an operator-mis-deployed env
+          #      override (a future caller) cannot
+          #      re-route the capture into the worktree
+          #      via a symlink whose lexical form looks
+          #      external. Both realpath -m (lexical) and
+          #      realpath -e (physical, post-redirect)
+          #      paths are checked.
+          [[ -n "${GITHUB_WORKSPACE:-}" ]] || fail_artifact_io "GITHUB_WORKSPACE is unset/empty; cannot establish physical boundary"
+          ARTIFACTS_LEX="$(realpath -m -- "${ARTIFACTS}")" || fail_artifact_io "cannot lexical-canonicalize ARTIFACTS (${ARTIFACTS})"
+          WORKSPACE_LEX="$(realpath -m -- "${GITHUB_WORKSPACE}")"  || fail_artifact_io "cannot lexical-canonicalize workspace"
+          case "${ARTIFACTS_LEX}" in
+            "${WORKSPACE_LEX}"|"${WORKSPACE_LEX}"/*)
+              fail_artifact_io "ARTIFACTS resolves inside the worktree (lexical: ${ARTIFACTS_LEX} under ${WORKSPACE_LEX}); outside-tree routing contract violated" ;;
           esac
 
           # (2) External capture directory must be creatable. We choose
@@ -375,13 +436,30 @@ jobs:
           #     init step via $GITHUB_ENV propagation; the capture path
           #     IS the upload-artifact root and there is no worktree
           #     post-pass copy step.
-          ART_PARENT_DIR="$(dirname "$ARTIFACTS/checkout-identity.txt")"
+          ART_PARENT_DIR="$(dirname "${ARTIFACTS}/checkout-identity.txt")"
           if [[ -e "$ART_PARENT_DIR" && ! -d "$ART_PARENT_DIR" ]]; then
             fail_artifact_io "external artifact root $ART_PARENT_DIR exists and is not a directory"
           fi
           if ! mkdir -p "$ART_PARENT_DIR" 2>/dev/null; then
             fail_artifact_io "could not create external artifact root $ART_PARENT_DIR"
           fi
+
+          # (2a) Post-mkdir physical canonicalisation of
+          #      ${ARTIFACTS} and ${GITHUB_WORKSPACE}.
+          #      This catches: (a) the artifact root is
+          #      a symlink (or contains a symlinked
+          #      component) whose target is inside the
+          #      worktree; (b) a parallel `realpath -m`
+          #      lexical canonicalisation (above)
+          #      disagreed with the resolved filesystem
+          #      state. Both axis must agree AND lie
+          #      outside the worktree.
+          ARTIFACTS_REAL="$(realpath -e -- "${ARTIFACTS}" 2>/dev/null)" || fail_artifact_io "cannot physical-resolve ARTIFACTS (${ARTIFACTS})"
+          WORKSPACE_REAL="$(realpath -e -- "${GITHUB_WORKSPACE}" 2>/dev/null)" || fail_artifact_io "cannot physical-resolve workspace"
+          case "${ARTIFACTS_REAL}" in
+            "${WORKSPACE_REAL}"|"${WORKSPACE_REAL}"/*)
+              fail_artifact_io "ARTIFACTS resolves inside the worktree (physical: ${ARTIFACTS_REAL} under ${WORKSPACE_REAL}); outside-tree routing contract violated" ;;
+          esac
 
           # (3) Identity capture write itself must succeed. d2b.34 writes
           #     directly into the same ${ARTIFACTS}/checkout-identity.txt
