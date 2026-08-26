@@ -224,6 +224,17 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    # Phase D-2b.34 — entire heavy-job evidence
+    # root is routed outside the worktree. The
+    # job cannot declare ARTIFACTS at this
+    # scope because ${{ runner.temp }} is not
+    # available at job env (actionlint). Instead
+    # we route it through $GITHUB_ENV via the
+    # dedicated init step below — ${ARTIFACTS}
+    # is then a single source of truth for every
+    # subsequent step (Step A, pinned-versions,
+    # cluster-up, install, scenarios, rehearsal,
+    # teardown, upload-artifact).
     steps:
       - name: Validate SHA input
         run: |
@@ -244,6 +255,22 @@ jobs:
           ref: ${{ github.event.inputs.recovery_pr_sha }}
           fetch-depth: 0
 
+      - name: "Initialize external artifact root (d2b.34: external ARTIFACTS via GITHUB_ENV)"
+        # d2b.34 — publish ARTIFACTS into
+        # $GITHUB_ENV so every downstream step
+        # reads/writes the SAME outside-tree
+        # root. ${{ runner.temp }} is available
+        # at step-level but NOT at job-level,
+        # so this is the canonical propagation
+        # pattern that keeps the contract a
+        # single source of truth.
+        run: |
+          set -euo pipefail
+          ARTIFACTS="${{ runner.temp }}/d2b-cni-${{ github.run_id }}"
+          echo "ARTIFACTS=${ARTIFACTS}" >> "$GITHUB_ENV"
+          mkdir -p "${ARTIFACTS}"
+          echo "OK: external artifact root published to \$GITHUB_ENV: ${ARTIFACTS}"
+
       - name: Verify checked-out SHA matches
         run: |
           set -euo pipefail
@@ -257,35 +284,8 @@ jobs:
           fi
 
       # ----------------------------------------------------------------
-      # Phase D-2b.33 — Step A artifact I/O contract tightened.
-      #
-      # d2b.32 routed the identity capture to a path
-      # outside the worktree and verified a clean source
-      # checkout. d2b.33 makes the I/O contract explicit
-      # and fail-closed:
-      #
-      #   (a) RUNNER_TEMP is REQUIRED. Silently
-      #       falling back to /tmp would hide a
-      #       configuration defect from the
-      #       operator and put cluster/ install /
-      #       scenario evidence on a path the runner
-      #       may recycle between steps.
-      #   (b) `fail_artifact_io` helper turns every
-      #       mkdir / write / cp failure into an
-      #       explicit exit 11 BEFORE the workflow
-      #       continues to cluster install or CNI
-      #       scenarios. This keeps the exit
-      #       classifier distinguishable from exit
-      #       10 (real source dirtiness) and from
-      #       exit 1 (subprocess crash), so a CI
-      #       reviewer can tell at a glance whether
-      #       the failure was a clean-tree issue
-      #       (10) or an artifact I/O issue (11).
-      #   (c) No `.gitignore` is added; no path
-      #       filter is applied to the source
-      #       `git status --porcelain` output. The
-      #       clean-tree judgement still inspects
-      #       everything in the worktree.
+      # Phase D-2b.34 — Step A artifact I/O contract written, not
+      # post-pass-copied. The d2b.33 contract was:
       #   (d) After the clean-tree assertion
       #       passes, the outside-tree capture is
       #       copied under artifacts/ for upload;
@@ -293,56 +293,99 @@ jobs:
       #       artifact path is created and the
       #       cleanliness judgement is already
       #       behind us.
+      # d2b.34 retires (d):
+      #   (d') The artifact target IS the
+      #       outside-tree capture path. Step A
+      #       writes the checkout identity
+      #       directly to ${ARTIFACTS}/checkout-identity.txt,
+      #       which is the same path every other
+      #       step (pin, cluster-up, install,
+      #       scenarios, rehearsal, teardown) will
+      #       write its evidence into and which
+      #       actions/upload-artifact@v4 will
+      #       harvest. The clean-tree assertion
+      #       passes FIRST; the workspace never
+      #       holds a copy of the captures, so a
+      #       subsequent fixture preflight Step A
+      #       (in install-nexus-test.sh) can still
+      #       run raw `git status --porcelain`
+      #       against the worktree and see only
+      #       genuine source dirt.
+      #   (a') ARTIFACTS must not resolve under
+      #       GITHUB_WORKSPACE. If it does, exit
+      #       11 (artifact I/O failure mode) so an
+      #       auditor can tell the operator
+      #       mis-deployed the env block from a
+      #       real source dirt problem.
       #
       # The companion regression at
-      # scripts/test_clean_tree_artifact_regression.sh
-      # enforces (a)–(d) by exercising each I/O
-      # failure mode against a deterministic
-      # precondition, never relying on chmod-only
+      # scripts/test_clean_tree_artifact_routing.sh
+      # enforces (a)–(c) + (d') against a
+      # deterministic fake external capture
+      # directory, never relying on chmod-only
       # permission tricks which behave
       # differently in root contexts.
       # ----------------------------------------------------------------
-      - name: "Step A — checkout identity + clean tree assertion (d2b.33: tightened artifact I/O contract)"
+      - name: "Step A — checkout identity + clean tree assertion (d2b.34: write-through external artifact root)"
         run: |
           set -euo pipefail
 
           # ---- fail-closed helper for artifact I/O ----
           # Every Step-A artifact I/O fault surfaces as exit 11 with a
           # diagnosable message. We deliberately do NOT use `set -e` alone
-          # because that collapses multiple fault shapes (mkdir vs write vs
-          # cp vs RUNNER_TEMP unset) into the same exit code; an auditor
+          # because that collapses multiple fault shapes (boundary check
+          # vs mkdir vs write) into the same exit code; an auditor
           # should be able to tell what failed without parsing log lines.
           fail_artifact_io() {
             echo "FAIL: $*" >&2
             exit 11
           }
 
-          # (1) RUNNER_TEMP is required. No silent fallback.
-          if [[ -z "${RUNNER_TEMP:-}" ]]; then
-            fail_artifact_io "RUNNER_TEMP is unset/empty; outside-tree identity capture requires it (no /tmp fallback)"
+          # (1) ARTIFACTS must be set, supplied by the
+          #     job-level env block. No silent fallback.
+          if [[ -z "${ARTIFACTS:-}" ]]; then
+            fail_artifact_io "ARTIFACTS is unset/empty; job-level env block did not propagate (no /tmp fallback)"
           fi
-
-          OUT_ID="${RUNNER_TEMP}/integrationcni-checkout-identity.txt"
+          # (1a) ARTIFACTS must resolve OUTSIDE the
+          #      worktree. If it ever resolves under
+          #      GITHUB_WORKSPACE, the gate's own
+          #      captures pollute the next `git status
+          #      --porcelain` (exit 15/10 self-reference
+          #      defect). Refuse the upload root loudly.
+          WS="${GITHUB_WORKSPACE:-$PWD}"
+          case "$ARTIFACTS" in
+            "$WS"|"$WS"/*)
+              fail_artifact_io "ARTIFACTS resolves inside the worktree ($ARTIFACTS under $WS); outside-tree routing contract violated"
+              ;;
+          esac
 
           # (2) External capture directory must be creatable. We choose
           #     filename as a deterministic target so the test framework can
           #     pre-create a regular file at this path to force a real
           #     mkdir-vs-file conflict (deterministic precondition, not
-          #     permission lottery).
-          ART_PARENT_DIR="$(dirname "$OUT_ID")"
+          #     permission lottery). Note: ARTIFACTS is owned by the job
+          #     env block; d2b.34 removes the d2b.33 post-pass cp step so
+          #     this directory IS the upload root.
+          ART_PARENT_DIR="$(dirname "$ARTIFACTS/checkout-identity.txt")"
           if [[ -e "$ART_PARENT_DIR" && ! -d "$ART_PARENT_DIR" ]]; then
-            fail_artifact_io "external capture path $ART_PARENT_DIR exists and is not a directory"
+            fail_artifact_io "external artifact root $ART_PARENT_DIR exists and is not a directory"
           fi
           if ! mkdir -p "$ART_PARENT_DIR" 2>/dev/null; then
-            fail_artifact_io "could not create external capture directory $ART_PARENT_DIR"
+            fail_artifact_io "could not create external artifact root $ART_PARENT_DIR"
           fi
 
-          # (3) Identity capture write itself must succeed.
+          # (3) Identity capture write itself must succeed. d2b.34 writes
+          #     directly into the same ${ARTIFACTS}/checkout-identity.txt
+          #     path the actions/upload-artifact@v4 step will harvest —
+          #     there is no longer a copy from ${RUNNER_TEMP}/<...>.txt
+          #     into artifacts/ which could re-pollute the worktree.
+          OUT_ID="${ARTIFACTS}/checkout-identity.txt"
           if ! {
             echo "head_sha:          $(git rev-parse HEAD)"
             echo "short_sha:         $(git rev-parse --short HEAD)"
             echo "branch:            $(git rev-parse --abbrev-ref HEAD || echo detached)"
             echo "capture_path_abs:  $OUT_ID"
+            echo "artifacts_root:     $ARTIFACTS"
             echo "worktree_clean_asserted_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "clean_tree_required: yes"
             echo "porcelain_clean:"
@@ -371,29 +414,12 @@ jobs:
             echo "FAIL: working tree diverges from HEAD on at least one file (uncommitted tracked changes)" >&2
             exit 10
           fi
-          echo "OK: source tree clean (porcelain=0, diff vs HEAD clean) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-          # (5) Post-assertion artifact copy. We force exit 11 on any
-          #     directory-vs-file conflict so a regression that breaks the
-          #     assertion order is loud.
-          ART_DIR="artifacts/integrationcni"
-          if [[ -e "$ART_DIR" && ! -d "$ART_DIR" ]]; then
-            fail_artifact_io "artifact target $ART_DIR exists and is not a directory"
-          fi
-          if ! mkdir -p "$ART_DIR" 2>/dev/null; then
-            fail_artifact_io "could not create artifact directory $ART_DIR"
-          fi
-          ART_ID="${ART_DIR}/checkout-identity.txt"
-          if ! cp "$OUT_ID" "$ART_ID" 2>/dev/null; then
-            fail_artifact_io "could not copy external checkout identity to $ART_ID"
-          fi
-          if [[ ! -s "$ART_ID" ]]; then
-            fail_artifact_io "artifact copy at $ART_ID is empty after copy"
-          fi
           # Append the porcelain snapshot (taken against an undisturbed
-          # tree, so it must be empty) for the upload-only record.
-          printf 'porcelain_clean_actual: %s\n' "$porcelain" >> "$ART_ID"
-          echo "OK: step A — checkout identity captured, working tree matches HEAD"
+          # tree, so it must be empty) for the upload-only record. This
+          # append happens AT $ARTIFACTS, not in the worktree.
+          printf 'porcelain_clean_actual: %s\n' "$porcelain" >> "$OUT_ID"
+          echo "OK: source tree clean (porcelain=0, diff vs HEAD clean) at $(date -u +%Y-%m-%dT%H:%M:%SZ); external capture at $OUT_ID"
+          echo "OK: step A — checkout identity captured externally, working tree matches HEAD"
 
       - name: pin kind v0.22.0 + kubectl v1.29 + helm 3.14 + Cilium CLI v0.15 (verified)
         run: |
@@ -458,10 +484,11 @@ jobs:
           helm version
           cilium version
           echo "Pinned: kind v0.22.0 | kubectl v1.29.0 | helm v3.14.4 | cilium v0.15.20 (sha256-verified, retry=3)"
-          # Record the pinned versions into the
-          # artifact folder so a downstream
-          # verifier can match expectations.
-          mkdir -p artifacts/integrationcni
+          # d2b.34: pinned-versions.txt is written to
+          # the job-level ${ARTIFACTS} root, NOT to
+          # ${GITHUB_WORKSPACE}/artifacts/integrationcni
+          # which the fixture preflight Step A reads.
+          mkdir -p "${ARTIFACTS}"
           {
             echo "kind: $(kind version | head -1)"
             echo "kubectl: $(kubectl version --client=true --short 2>/dev/null || kubectl version --client | head -1)"
@@ -470,44 +497,36 @@ jobs:
             echo "k8s node image: kindest/node:v1.29.0  (script default)"
             echo "sha:  $(git rev-parse HEAD)"
             echo "run:  ${{ github.event.inputs.run_index }}"
+            echo "artifacts_root: ${ARTIFACTS}"
             echo "pin-policy: curl retry=3 + sha256 verify of upstream-published sums"
-          } > artifacts/integrationcni/pinned-versions.txt
+          } > "${ARTIFACTS}/pinned-versions.txt"
 
       - name: Bring up multi-node kind + Cilium cluster
         run: bash scripts/test-cluster-up.sh
         env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
           KUBE_WORKER_COUNT: 2
 
       - name: Install chart with enterprise profile
         if: success()
         run: bash scripts/install-nexus-test.sh
-        env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
 
       - name: Run 12 enforcing-CNI scenarios (three-tier probe)
         if: success()
         run: bash scripts/d2b-twelve-scenarios.sh
-        env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
 
       - name: Helm upgrade rehearsal (disabled -> enforce + --atomic rollback)
         if: success()
         run: bash scripts/test-upgrade-rehearsal-up.sh
-        env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
 
       - name: Tear down cluster (always)
         if: always()
         run: bash scripts/test-cluster-down.sh || true
-        env:
-          ARTIFACTS: ${{ github.workspace }}/artifacts/integrationcni
 
       - name: Upload CNI gate artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cni-enforcement-logs-${{ github.event.inputs.run_index }}-${{ github.event.inputs.recovery_pr_sha }}-${{ github.run_id }}
-          path: artifacts/integrationcni/
+          path: ${{ env.ARTIFACTS }}/
           if-no-files-found: error
           retention-days: 90
