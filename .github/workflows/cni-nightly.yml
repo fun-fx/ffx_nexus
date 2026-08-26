@@ -284,47 +284,55 @@ jobs:
           fi
 
       # ----------------------------------------------------------------
-      # Phase D-2b.34 — Step A artifact I/O contract written, not
-      # post-pass-copied. The d2b.33 contract was:
-      #   (d) After the clean-tree assertion
-      #       passes, the outside-tree capture is
-      #       copied under artifacts/ for upload;
-      #       that copy is the only place the
-      #       artifact path is created and the
-      #       cleanliness judgement is already
-      #       behind us.
-      # d2b.34 retires (d):
-      #   (d') The artifact target IS the
-      #       outside-tree capture path. Step A
-      #       writes the checkout identity
-      #       directly to ${ARTIFACTS}/checkout-identity.txt,
-      #       which is the same path every other
-      #       step (pin, cluster-up, install,
-      #       scenarios, rehearsal, teardown) will
-      #       write its evidence into and which
-      #       actions/upload-artifact@v4 will
-      #       harvest. The clean-tree assertion
-      #       passes FIRST; the workspace never
-      #       holds a copy of the captures, so a
-      #       subsequent fixture preflight Step A
-      #       (in install-nexus-test.sh) can still
-      #       run raw `git status --porcelain`
-      #       against the worktree and see only
-      #       genuine source dirt.
-      #   (a') ARTIFACTS must not resolve under
-      #       GITHUB_WORKSPACE. If it does, exit
-      #       11 (artifact I/O failure mode) so an
-      #       auditor can tell the operator
-      #       mis-deployed the env block from a
-      #       real source dirt problem.
+      # Phase D-2b.34 — Step A external-artifact-root contract
+      # (single source of truth).
       #
-      # The companion regression at
+      # The Step A artifact capture path IS the upload-artifact
+      # source: every heavy substep of this job reads/writes
+      # ${ARTIFACTS}, which is initialized by the dedicated
+      # `Initialize external artifact root` step above and
+      # published via $GITHUB_ENV. There is no separate
+      # "outside-tree capture + worktree copy" path: the
+      # capture lands in ${ARTIFACTS}/checkout-identity.txt
+      # directly, the clean-tree assertion runs raw
+      # `git status --porcelain` against the worktree, the
+      # boundary check prevents ARTIFACTS from ever
+      # resolving under ${GITHUB_WORKSPACE}, and upload
+      # harvests the same env-driven path. Run 32934127483
+      # proved the prior shape wrote 13 gate-emitted files
+      # into ${GITHUB_WORKSPACE}/artifacts/integrationcni
+      # and a downstream raw porcelain correctly
+      # fail-closed them — d2b.34 makes that impossible.
+      #
+      # Contract rationale:
+      #   (a) ARTIFACTS must be set, propagating from the
+      #       init step. unset ⇒ fail_artifact_io (exit 11)
+      #   (b) The external capture directory must be
+      #       creatable; mkdir-vs-file conflict ⇒ exit 11.
+      #   (c) Identity capture write itself must succeed;
+      #       file-vs-directory conflict ⇒ exit 11.
+      #   (d) The capture IS the upload source. There is no
+      #       post-pass copy of the identity into the
+      #       worktree; the clean-tree assertion runs
+      #       before any worktree write, and the boundary
+      #       check above prevents the worktree from being
+      #       a valid capture root.
+      #   (e) Source-clean judgement is raw and
+      #       unfiltered — no `.gitignore` rule is added,
+      #       no path filter is applied to the porcelain
+      #       output, no `.git/info/exclude` is consulted.
+      #       Genuine tracked/untracked source dirt still
+      #       triggers exit 10.
+      #
+      # The canonical deterministic regression suite at
       # scripts/test_clean_tree_artifact_routing.sh
-      # enforces (a)–(c) + (d') against a
-      # deterministic fake external capture
-      # directory, never relying on chmod-only
-      # permission tricks which behave
-      # differently in root contexts.
+      # enforces these invariants against a fake external
+      # capture root (no Docker / Kind / Cilium / network).
+      # The historical compatibility alias
+      # scripts/test_clean_tree_artifact_regression.sh
+      # is now a thin wrapper that delegates to the
+      # canonical suite so existing runbooks still find
+      # the canonical contract under the historical name.
       # ----------------------------------------------------------------
       - name: "Step A — checkout identity + clean tree assertion (d2b.34: write-through external artifact root)"
         run: |
@@ -346,12 +354,12 @@ jobs:
           if [[ -z "${ARTIFACTS:-}" ]]; then
             fail_artifact_io "ARTIFACTS is unset/empty; job-level env block did not propagate (no /tmp fallback)"
           fi
-          # (1a) ARTIFACTS must resolve OUTSIDE the
-          #      worktree. If it ever resolves under
-          #      GITHUB_WORKSPACE, the gate's own
-          #      captures pollute the next `git status
-          #      --porcelain` (exit 15/10 self-reference
-          #      defect). Refuse the upload root loudly.
+          # (1a) ARTIFACTS must not resolve under
+          #      GITHUB_WORKSPACE. If it ever does,
+          #      the gate's own captures pollute the
+          #      next `git status --porcelain` (exit
+          #      15/10 self-reference defect). Refuse
+          #      the upload root loudly.
           WS="${GITHUB_WORKSPACE:-$PWD}"
           case "$ARTIFACTS" in
             "$WS"|"$WS"/*)
@@ -363,9 +371,10 @@ jobs:
           #     filename as a deterministic target so the test framework can
           #     pre-create a regular file at this path to force a real
           #     mkdir-vs-file conflict (deterministic precondition, not
-          #     permission lottery). Note: ARTIFACTS is owned by the job
-          #     env block; d2b.34 removes the d2b.33 post-pass cp step so
-          #     this directory IS the upload root.
+          #     permission lottery). Note: ${ARTIFACTS} is owned by the
+          #     init step via $GITHUB_ENV propagation; the capture path
+          #     IS the upload-artifact root and there is no worktree
+          #     post-pass copy step.
           ART_PARENT_DIR="$(dirname "$ARTIFACTS/checkout-identity.txt")"
           if [[ -e "$ART_PARENT_DIR" && ! -d "$ART_PARENT_DIR" ]]; then
             fail_artifact_io "external artifact root $ART_PARENT_DIR exists and is not a directory"
@@ -485,9 +494,11 @@ jobs:
           cilium version
           echo "Pinned: kind v0.22.0 | kubectl v1.29.0 | helm v3.14.4 | cilium v0.15.20 (sha256-verified, retry=3)"
           # d2b.34: pinned-versions.txt is written to
-          # the job-level ${ARTIFACTS} root, NOT to
-          # ${GITHUB_WORKSPACE}/artifacts/integrationcni
-          # which the fixture preflight Step A reads.
+          # the heavy-job ${ARTIFACTS} root (published
+          # by the dedicated init step via $GITHUB_ENV),
+          # NOT to ${GITHUB_WORKSPACE}/artifacts/integrationcni
+          # which the fixture preflight raw porcelain
+          # assertion would otherwise read as real source dirt.
           mkdir -p "${ARTIFACTS}"
           {
             echo "kind: $(kind version | head -1)"
