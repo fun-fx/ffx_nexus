@@ -302,7 +302,7 @@ jobs:
       # permission tricks which behave
       # differently in root contexts.
       # ----------------------------------------------------------------
-      - name: Step A — checkout identity + clean tree assertion (d2b.33: tightened artifact I/O contract)
+      - name: "Step A — checkout identity + clean tree assertion (d2b.33: tightened artifact I/O contract)"
         run: |
           set -euo pipefail
 
