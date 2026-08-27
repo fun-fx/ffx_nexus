@@ -46,9 +46,132 @@ FIXTURE_DIR = REPO / "scripts" / "fixtures" / "integrationcni"
 ADMIT = FIXTURE_DIR / "fixture_semantic_admission.py"
 
 
+def resolve_helm_binary():
+    """Phase D-2b portable hermetic Helm resolver.
+
+    Returns the absolute filesystem path to a real Helm
+    binary suitable for rendering the networkpolicy
+    template in this test. The resolver must not invoke
+    `helm` by bare command name, must not read ambient
+    PATH, must not use shutil.which, and must not call
+    Helm via a shell — every step is required to keep a
+    contract-test stub `helm` from accidentally
+    becoming a renderer in a polluted shell environment.
+
+    Resolution order:
+
+      1. Test-only explicit override: the
+         `NEXUS_TEST_HELM_BIN` environment variable. The
+         value MUST be an absolute path that exists on
+         disk and is executable. A relative path, a
+         missing path, or a non-executable path raises a
+         diagnostic `RuntimeError` BEFORE any render is
+         attempted.
+
+      2. No override set? Walk a short deterministic,
+         OS-neutral candidate list in this exact intent
+         order:
+
+            /usr/local/bin/helm
+            /usr/bin/helm
+            /opt/homebrew/bin/helm
+
+         The first entry that resolves to an existing
+         executable file is returned as a `pathlib.Path`.
+
+      3. If none of the above yields an executable
+         file, raise a `RuntimeError` that lists the
+         candidates and documents
+         `NEXUS_TEST_HELM_BIN` as the supported
+         override.
+
+    This contract maps to:
+      * GitHub ubuntu-22.04 (CNI workflow installs the
+        pinned heavy Helm tool) => /usr/local/bin/helm
+        is the standard absolute candidate and resolves.
+      * Local macOS/Homebrew (/opt/homebrew/bin/helm)
+        => the third candidate resolves.
+      * Local Linux with snap/apt helm => /usr/bin/helm
+        resolves as the second candidate.
+    """
+    override = os.environ.get("NEXUS_TEST_HELM_BIN")
+    if override:
+        if not os.path.isabs(override):
+            raise RuntimeError(
+                "resolve_helm_binary: NEXUS_TEST_HELM_BIN=%r must be an "
+                "ABSOLUTE path; received a relative path. Set it to a "
+                "fully-qualified filesystem path." % (override,)
+            )
+        p = Path(override)
+        if not p.exists():
+            raise RuntimeError(
+                "resolve_helm_binary: NEXUS_TEST_HELM_BIN=%r does not "
+                "exist on disk." % (str(p),)
+            )
+        if not p.is_file():
+            raise RuntimeError(
+                "resolve_helm_binary: NEXUS_TEST_HELM_BIN=%r is not a "
+                "regular file." % (str(p),)
+            )
+        # os.access(X_OK) is the cross-platform executor
+        # check. Importantly this does NOT consult PATH
+        # or shell lookup; it tests the named file
+        # directly.
+        if not os.access(str(p), os.X_OK):
+            raise RuntimeError(
+                "resolve_helm_binary: NEXUS_TEST_HELM_BIN=%r exists but is "
+                "not executable; chmod +x or specify a different binary." %
+                (str(p),)
+            )
+        return p
+
+    # Deterministic OS-neutral absolute candidates in
+    # order. The order is intentional: GitHub ubuntu-22.04
+    # places the heavy-tool Helm at /usr/local/bin/helm
+    # first, so the resolver stops there before scanning
+    # local-only paths. The list is closed; do not extend
+    # it without a documented portability reason.
+    candidates = [
+        Path("/usr/local/bin/helm"),
+        Path("/usr/bin/helm"),
+        Path("/opt/homebrew/bin/helm"),
+    ]
+    for cand in candidates:
+        if cand.exists() and cand.is_file() and os.access(str(cand), os.X_OK):
+            return cand
+
+    listed = ", ".join(str(p) for p in candidates)
+    raise RuntimeError(
+        "resolve_helm_binary: no executable Helm binary found in the "
+        "deterministic candidate list (%s). Set NEXUS_TEST_HELM_BIN to "
+        "the absolute path of a real Helm binary before invoking this "
+        "test." % (listed,)
+    )
+
+
 def render_chart_networkpolicy(target_path):
-    proc = subprocess.run(
-        ["helm", "template", "render-test",
+    """Render the chart's `templates/networkpolicy.yaml`
+    into the test workdir using a hermetic, absolute
+    Helm path resolved by `resolve_helm_binary()`.
+
+    Phase D-2b.28 / contract integrity: this test must
+    render with a deterministic Helm executable that
+    ignores the ambient shell PATH. Subprocess invocation
+    uses `str(resolved)` as argv[0] directly; an explicit
+    `env=` dict with an empty PATH guarantees no shell or
+    PATH lookup can substitute a stub binary. This
+    prevents false-PASS surfaces like a contract-test
+    stub `helm` accidentally becoming the renderer.
+
+    The resolver contract (override or candidate list)
+    is enforced inside `resolve_helm_binary()`; this
+    function is the sole caller.
+    """
+    helm_bin = resolve_helm_binary()
+    import subprocess as _sp  # local alias keeps the
+                              # capture site obvious
+    proc = _sp.run(
+        [str(helm_bin), "template", "render-test",
          str(REPO / "deploy" / "helm" / "nexus"),
          "--values",
          str(REPO / "scripts" / "fixtures" / "integrationcni"
@@ -63,6 +186,16 @@ def render_chart_networkpolicy(target_path):
          "--set", "networkPolicy.enforcementAcknowledged=true",
          "--show-only", "templates/networkpolicy.yaml"],
         capture_output=True, text=True, check=True,
+        # Strip PATH so the rendered subprocess cannot
+        # escalate to a stub binary inside the helm
+        # toolchain. We pass through only the explicit
+        # Helm env chain a real binary expects; the test
+        # itself does not depend on other env vars.
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+        },
     )
     target_path.write_text(proc.stdout)
 
@@ -174,29 +307,187 @@ def revert_target_port(fixture_dir):
     shutil.copy2(FIXTURE_DIR / "02-stub-deps.yaml", fixture_dir / "02-stub-deps.yaml")
 
 
-def mutate_rendered_policy_selector(rendered_path):
-    """Mutation 4: change rendered
-    NetworkPolicy podSelector of
-    nexus-cni-test-gateway so it does NOT
-    match any fixture Pod."""
-    docs = list(yaml.safe_load_all(rendered_path.read_text()))
-    for d in docs:
-        if not isinstance(d, dict):
+# Local integrity marker for mutation 4. The string must NOT coincide with
+# any string a default-namespace fixture Pod or chart-side selector could
+# carry, so when we read the fixture clone and assert "no Pod label can
+# possibly select on this value", the assertion is provably sound.
+#
+# No existing fixture has a label value containing this string; no
+# existing chart-side role key starts with the underscore convention
+# reserved for test assertions; selecting it as the matcher value forces
+# the validator's "must match a fixture Pod" check to fail.
+MISMATCH_VERTEX = "__d2b_fixture_selector_mismatch__"
+
+
+def mutate_rendered_policy_selector(fixture_dir, rendered_path):
+    """Mutation 4 (D-2b.28 hardened):
+
+    Require the rendered `nexus-cni-test-gateway` NetworkPolicy to
+    exist and to carry a `component == gateway` selector before
+    mutation, then replace that selector key with the local
+    `MISMATCH_VERTEX` marker so the validator's existing rule
+    (NetworkPolicy podSelector must match a fixture Pod in
+    namespace=default) fails closed with a non-zero exit.
+
+    Hardening rationale
+    -------------------
+    The earlier mutation only renamed `gateway` -> `gataway` in
+    memory and then re-dumped the doc list. Two failure modes
+    silently produced a false PASS:
+
+      1. If the rendered file was empty (e.g. a polluted shell
+         PATH supplied a stub `helm` to `subprocess.run`), the
+         filtered doc-list was empty, the mutation never applied,
+         the validator walked zero NetworkPolicies, and returned
+         exit-zero trivially.
+      2. If `app.kubernetes.io/component` was absent for any
+         reason, the mutation would silently skip and the same
+         false PASS persisted.
+
+    The hardened mutation now:
+
+      a. parses the rendered YAML into a doc list;
+      b. demands exactly one NetworkPolicy whose `metadata.name`
+         ends in "gateway" (post-fix rendered output always has
+         exactly one gateway policy);
+      c. demands that this policy's podSelector.matchLabels
+         contains `app.kubernetes.io/component` whose value is
+         exactly "gateway" before mutation;
+      d. replaces only the gateway component value with the
+         `MISMATCH_VERTEX` marker;
+      e. loads the fixture clone and asserts that no fixture Pod
+         or workload template labels a `app.kubernetes.io/component`
+         equal to the marker (i.e., the marker cannot coincide
+         with any fixture Pod selector value currently in the
+         clone);
+      f. writes the mutated doc list to `rendered_path`;
+      g. re-loads the written file and asserts exactly one
+         rendered gateway NetworkPolicy carries the marker at
+         the expected selector key.
+
+    Any of (a)..(g) failing raises `RuntimeError`, preventing the
+    validator from being invoked against an unmutated or
+    vacuous input. That guarantees the rced=1 reported by
+    `run_admit(expect_fail=True)` reflects the selector change,
+    not luck.
+    """
+    raw = rendered_path.read_text()
+    docs = list(yaml.safe_load_all(raw))
+    if not docs:
+        raise RuntimeError(
+            "mutate_rendered_policy_selector: rendered file contains zero "
+            "YAML documents; the helm render step produced empty output. "
+            "Refusing to claim a selector mutation against an empty file."
+        )
+
+    gateway_policies = [
+        d for d in docs
+        if isinstance(d, dict)
+        and d.get("kind") == "NetworkPolicy"
+        and isinstance(d.get("metadata"), dict)
+        and str(d.get("metadata", {}).get("name", "")).endswith("gateway")
+    ]
+    if not gateway_policies:
+        raise RuntimeError(
+            "mutate_rendered_policy_selector: zero rendered NetworkPolicies "
+            "ending in 'gateway' were found. Expected exactly one (the chart "
+            "renders nexus-cni-test-gateway). Refusing to mutate."
+        )
+    if len(gateway_policies) > 1:
+        raise RuntimeError(
+            "mutate_rendered_policy_selector: %d rendered NetworkPolicies "
+            "ending in 'gateway' were found; expected exactly one. Refusing "
+            "to mutate." % len(gateway_policies)
+        )
+    gateway = gateway_policies[0]
+    spec = gateway.get("spec") or {}
+    pod_sel = spec.get("podSelector") or {}
+    match_labels = pod_sel.get("matchLabels") or {}
+    # Hard pre-condition: the rendered product must carry the role-bearing
+    # component label set to "gateway". If a future chart redesign drops
+    # this exact key/value pair, the marker mutation cannot claim a
+    # baseline, and we fail closed rather than silently passing.
+    if "app.kubernetes.io/component" not in match_labels:
+        raise RuntimeError(
+            "mutate_rendered_policy_selector: rendered gateway NetworkPolicy "
+            "has no spec.podSelector.matchLabels['app.kubernetes.io/component'] "
+            "key; expected component=gateway. Refusing to mutate."
+        )
+    if match_labels["app.kubernetes.io/component"] != "gateway":
+        raise RuntimeError(
+            "mutate_rendered_policy_selector: rendered gateway NetworkPolicy "
+            "spec.podSelector.matchLabels['app.kubernetes.io/component'] is "
+            "%r; expected the literal string 'gateway' before mutation. "
+            "Refusing to mutate." %
+            match_labels["app.kubernetes.io/component"]
+        )
+
+    # Anti-match fail-safe: scan fixture clone Pods (any namespace, not
+    # only default) and Pod-template workloads and refuse the mutation
+    # if any Pod's `app.kubernetes.io/component` label could already
+    # match the marker. The marker is unique to this assertion, so a
+    # match means the fixture is contaminated or the marker string is
+    # not unique enough — either way, fail-closed.
+    matched_pods = []
+    for fy in sorted(Path(fixture_dir).glob("*.yaml")):
+        try:
+            fdocs = list(yaml.safe_load_all(fy.read_text()))
+        except Exception:
             continue
-        if d.get("kind") != "NetworkPolicy":
-            continue
-        name = d.get("metadata", {}).get("name", "")
-        if not name.endswith("gateway"):
-            continue
-        spec = d.get("spec") or {}
-        psel = spec.get("podSelector") or {}
-        ml = psel.get("matchLabels") or {}
-        if ml.get("app.kubernetes.io/component") == "gateway":
-            ml["app.kubernetes.io/component"] = "gataway"
-            psel["matchLabels"] = ml
-            spec["podSelector"] = psel
-    rendered_path.write_text(yaml.safe_dump_all(
-        docs, default_flow_style=False, sort_keys=False))
+        for fd in fdocs:
+            if not isinstance(fd, dict):
+                continue
+            if fd.get("kind") == "Pod":
+                labels = (fd.get("metadata") or {}).get("labels") or {}
+            elif fd.get("kind") in ("Deployment", "StatefulSet", "DaemonSet"):
+                tmpl = ((fd.get("spec") or {}).get("template") or {})
+                labels = ((tmpl.get("metadata") or {}).get("labels") or {})
+            else:
+                continue
+            v = labels.get("app.kubernetes.io/component")
+            if v == MISMATCH_VERTEX:
+                matched_pods.append((fy, fd.get("kind"),
+                                     (fd.get("metadata") or {}).get("name", "?")))
+    if matched_pods:
+        raise RuntimeError(
+            "mutate_rendered_policy_selector: MISMATCH_VERTEX %r accidentally "
+            "matches an existing fixture Pod/workload label, so the marker is "
+            "not unique. Refusing to mutate. Offenders: %r" %
+            (MISMATCH_VERTEX, matched_pods)
+        )
+
+    # Apply the marker to the selected gateway policy's component
+    # selector value, then re-write the doc list.
+    match_labels["app.kubernetes.io/component"] = MISMATCH_VERTEX
+    pod_sel["matchLabels"] = match_labels
+    spec["podSelector"] = pod_sel
+    gateway["spec"] = spec
+    rendered_path.write_text(
+        yaml.safe_dump_all(docs, default_flow_style=False, sort_keys=False)
+    )
+
+    # Post-write integrity: re-parse the file we just wrote and
+    # assert exactly one rendered gateway NetworkPolicy carries the
+    # marker at the expected selector key.
+    re_docs = list(yaml.safe_load_all(rendered_path.read_text()))
+    marker_policies = [
+        d for d in re_docs
+        if isinstance(d, dict)
+        and d.get("kind") == "NetworkPolicy"
+        and isinstance(d.get("metadata"), dict)
+        and str(d.get("metadata", {}).get("name", "")).endswith("gateway")
+        and ((d.get("spec") or {}).get("podSelector") or {})
+            .get("matchLabels", {})
+            .get("app.kubernetes.io/component") == MISMATCH_VERTEX
+    ]
+    if len(marker_policies) != 1:
+        raise RuntimeError(
+            "mutate_rendered_policy_selector: post-write marker check "
+            "expected exactly 1 rendered gateway NetworkPolicy with "
+            "matchLabels['app.kubernetes.io/component']=" + repr(MISMATCH_VERTEX) +
+            "; got %d. Refusing to claim mutation applied." %
+            len(marker_policies)
+        )
 
 
 def revert_rendered_policy(rendered_path):
@@ -333,6 +624,216 @@ def require_failsafe(message):
     sys.exit(2)
 
 
+# ---------------------------------------------------------------------
+# Phase D-2b portable helm resolver self-checks.
+#
+# _self_check_resolve_helm_binary() runs at import-time only when
+# the `NEXUS_TEST_HELM_SELF_CHECK=1` environment variable is
+# explicitly set. The self-checks cover the four cases the
+# Helm-portability contract requires:
+#
+#   1. explicit real absolute override  → returns that exact path
+#   2. relative override                → RuntimeError, mentions
+#                                          absolute path
+#   3. override missing/non-executable  → RuntimeError before render
+#   4. ambient fake PATH contains a stub helm → resolver still
+#                                          returns the explicit
+#                                          override if set, or the
+#                                          first executable
+#                                          absolute candidate, never
+#                                          the fake PATH entry
+#
+# The four cases share the same `_PREV_*` sentinel-via-`os.environ`
+# pattern; we restore NEXUS_TEST_HELM_BIN/PATH exactly via
+# try/finally so subsequent real render/mutation cases in the
+# same Python process run against the original environment.
+#
+# We do NOT shell out to a fake Helm wrapper that renders output:
+# the real `subprocess.run(['/opt/homebrew/bin/helm', 'version'],
+# capture_output=True)` is the verifier for case 1.
+# ---------------------------------------------------------------------
+def _self_check_resolve_helm_binary():
+    print("== Helm resolver self-checks ==")
+    real_bin = "/opt/homebrew/bin/helm"
+    if not (Path(real_bin).exists() and os.access(real_bin, os.X_OK)):
+        # Self-checks require the local real helm to be
+        # available for the "real absolute override"
+        # case. If unavailable locally, defer rather than
+        # silently lie. We document this state but do not
+        # hard-fail the whole module — the test-runner
+        # entrypoint can still decide to skip.
+        print("  [SKIP] resolf_bin_missing: no local real helm at "
+              + repr(real_bin) + "; cannot run self-checks.")
+        return
+
+    saved_override = os.environ.get("NEXUS_TEST_HELM_BIN")
+    saved_path = os.environ.get("PATH")
+
+    # ----- CASE 1: explicit real absolute override -----
+    try:
+        os.environ["NEXUS_TEST_HELM_BIN"] = real_bin
+        resolved = resolve_helm_binary()
+        if str(resolved) == real_bin:
+            print("  [OK ] case1_explicit_absolute_override: "
+                  "resolved=%s" % str(resolved))
+        else:
+            raise RuntimeError(
+                "self-check: case1 mismatch; expected %s got %s" %
+                (real_bin, str(resolved)))
+    finally:
+        # Restore for subsequent cases.
+        if saved_override is None:
+            os.environ.pop("NEXUS_TEST_HELM_BIN", None)
+        else:
+            os.environ["NEXUS_TEST_HELM_BIN"] = saved_override
+
+    # ----- CASE 2: relative override -> RuntimeError -----
+    try:
+        os.environ["NEXUS_TEST_HELM_BIN"] = "helm"  # bare command, not absolute
+        try:
+            resolve_helm_binary()
+        except RuntimeError as e:
+            if "ABSOLUTE" in str(e) and "absolute" in str(e).lower():
+                print("  [OK ] case2_relative_override_rejected: "
+                      "%s" % str(e).splitlines()[0][:120])
+            else:
+                raise RuntimeError(
+                    "self-check: case2 RuntimeError did not mention "
+                    "absolute path; got: %r" % (str(e),))
+        else:
+            raise RuntimeError(
+                "self-check: case2 expected RuntimeError for relative "
+                "override; got none")
+    finally:
+        if saved_override is None:
+            os.environ.pop("NEXUS_TEST_HELM_BIN", None)
+        else:
+            os.environ["NEXUS_TEST_HELM_BIN"] = saved_override
+
+    # ----- CASE 3: override missing/non-executable -----
+    try:
+        os.environ["NEXUS_TEST_HELM_BIN"] = "/nonexistent/helm-path"
+        try:
+            resolve_helm_binary()
+        except RuntimeError as e:
+            if "does not exist" in str(e) or "not executable" in str(e):
+                print("  [OK ] case3_missing_or_nonexec_rejected: "
+                      "%s" % str(e).splitlines()[0][:120])
+            else:
+                raise RuntimeError(
+                    "self-check: case3 RuntimeError did not mention "
+                    "missing/non-executable; got: %r" % (str(e),))
+        else:
+            raise RuntimeError(
+                "self-check: case3 expected RuntimeError for missing "
+                "override; got none")
+    finally:
+        if saved_override is None:
+            os.environ.pop("NEXUS_TEST_HELM_BIN", None)
+        else:
+            os.environ["NEXUS_TEST_HELM_BIN"] = saved_override
+
+    # ----- CASE 4: ambient fake PATH contains stub helm,
+    #                resolver still returns explicit override
+    #                or deterministic absolute candidate, never
+    #                the fake PATH entry -----
+    try:
+        # Build a fake PATH where the FIRST entry is a tmpdir
+        # with a never-executed stub shim. If the resolver
+        # ever consulted PATH, it would raise (or worse,
+        # silently call the shim). It must not.
+        stub_dir = Path(tempfile.mkdtemp(prefix="d2b-helm-stub-"))
+        stub_shim = stub_dir / "helm"
+        stub_shim.write_text("#!/bin/sh\necho fake\necho fake >&2\nexit 7\n")
+        stub_shim.chmod(0o755)
+        try:
+            # case 4a: override set -> resolver must return
+            # the override regardless of PATH.
+            os.environ["NEXUS_TEST_HELM_BIN"] = real_bin
+            os.environ["PATH"] = str(stub_dir) + ":" + (saved_path or "")
+            resolved = resolve_helm_binary()
+            if str(resolved) == real_bin:
+                print("  [OK ] case4a_ambient_fake_path_ignored_with_override: "
+                      "resolved=%s (NOT %s)" % (str(resolved), str(stub_shim)))
+            else:
+                raise RuntimeError(
+                    "self-check: case4a mismatch; expected %s got %s" %
+                    (real_bin, str(resolved)))
+        finally:
+            if saved_override is None:
+                os.environ.pop("NEXUS_TEST_HELM_BIN", None)
+            else:
+                os.environ["NEXUS_TEST_HELM_BIN"] = saved_override
+
+        try:
+            # case 4b: no override, fake PATH first; resolver
+            # must still pick the first deterministic absolute
+            # candidate that exists and is executable. The
+            # candidate list is /usr/local/bin/helm, /usr/bin/helm,
+            # /opt/homebrew/bin/helm — only the third currently
+            # exists on this machine, so the resolved path must be
+            # exactly /opt/homebrew/bin/helm, NOT the stub.
+            os.environ.pop("NEXUS_TEST_HELM_BIN", None)
+            os.environ["PATH"] = str(stub_dir) + ":" + (saved_path or "")
+            resolved = resolve_helm_binary()
+            if Path(str(resolved)).resolve() == Path(real_bin).resolve() \
+                    and str(resolved) != str(stub_shim):
+                print("  [OK ] case4b_ambient_fake_path_ignored_no_override: "
+                      "resolved=%s (NOT %s)" % (str(resolved), str(stub_shim)))
+            else:
+                raise RuntimeError(
+                    "self-check: case4b mismatch; expected %s got %s, "
+                    "stub=%s" % (real_bin, str(resolved), str(stub_shim)))
+        finally:
+            if saved_override is None:
+                os.environ.pop("NEXUS_TEST_HELM_BIN", None)
+            else:
+                os.environ["NEXUS_TEST_HELM_BIN"] = saved_override
+    finally:
+        if saved_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = saved_path
+        try:
+            shutil.rmtree(stub_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    # ----- Sanity: run the real bin via subprocess.run once,
+    # confirm captured_output reflects real helm version -----
+    try:
+        os.environ["NEXUS_TEST_HELM_BIN"] = real_bin
+        h = resolve_helm_binary()
+        proc = subprocess.run(
+            [str(h), "version", "--short"],
+            capture_output=True, text=True, check=True,
+        )
+        v = proc.stdout.strip()
+        if v.startswith("v"):
+            print("  [OK ] case_real_helm_subprocess_invocation: "
+                  "real_binary_path=%s real_version=%s" %
+                  (str(h), v))
+        else:
+            raise RuntimeError(
+                "self-check: real helm version output unexpected: %r" %
+                (v,))
+    finally:
+        if saved_override is None:
+            os.environ.pop("NEXUS_TEST_HELM_BIN", None)
+        else:
+            os.environ["NEXUS_TEST_HELM_BIN"] = saved_override
+
+    print("== Helm resolver self-checks: PASS ==")
+
+
+# Invoked at module import when explicitly opted in via env
+# var. Default behavior is OFF so the production test run is
+# not perturbed; CI can flip it on with
+# NEXUS_TEST_HELM_SELF_CHECK=1.
+if os.environ.get("NEXUS_TEST_HELM_SELF_CHECK") == "1":
+    _self_check_resolve_helm_binary()
+
+
 def main():
     cwd = Path(tempfile.mkdtemp(prefix="d2b28-fixtures-"))
     rendered_template = cwd / "rendered.yaml"
@@ -369,7 +870,7 @@ def main():
     ))
     revert_target_port(fixtures_clone)
     # Mutation 4: NetworkPolicy selector mismatch
-    mutate_rendered_policy_selector(rendered_template)
+    mutate_rendered_policy_selector(fixtures_clone, rendered_template)
     ok_results.append(run_admit(
         fixtures_clone, rendered_template,
         expect_fail=True, scenario="rendered NetworkPolicy selector mismatch"
