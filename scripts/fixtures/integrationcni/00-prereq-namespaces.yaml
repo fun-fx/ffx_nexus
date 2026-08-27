@@ -16,6 +16,17 @@
 # in kube-system. cni-control namespace hosts
 # the L2 (cluster DNS) probe; it is intentionally
 # NOT selected by any rendered NetworkPolicy.
+#
+# Step B applies this file with `kubectl apply`
+# (not dry-run), persisting every Namespace in
+# the cluster before later steps validate
+# namespaced fixtures. Steps D/F only do
+# strict server dry-run on later fixture
+# files, so any Namespace declared inside
+# 03-control-pod.yaml or 04-control-service.yaml
+# is NOT created — cni-control therefore is
+# declared exactly once, here, and nowhere
+# else.
 ---
 apiVersion: v1
 kind: Namespace
@@ -65,3 +76,11 @@ metadata:
   name: cni-test-proxy
   labels:
     kubernetes.io/metadata.name: cni-test-proxy
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cni-control
+  labels:
+    kubernetes.io/metadata.name: cni-control
+    app.kubernetes.io/part-of: cni-control
