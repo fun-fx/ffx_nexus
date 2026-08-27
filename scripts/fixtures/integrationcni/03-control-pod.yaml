@@ -8,13 +8,15 @@
 # verdicts are inconclusive. The label-set is
 # deliberately identical to a fixture role so
 # the kubelet/cilium lifecycle is the same.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: cni-control
-  labels:
-    kubernetes.io/metadata.name: cni-control
----
+#
+# Namespace/cni-control is declared exactly
+# once in 00-prereq-namespaces.yaml and is
+# persisted via Step C's `kubectl apply`,
+# before this file is processed by Step D's
+# `kubectl apply --dry-run=server --validate=strict`
+# (dry-run does not persist Namespaces, so a
+# declaration here would NOT satisfy the
+# later dry-runs).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
