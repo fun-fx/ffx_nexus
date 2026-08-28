@@ -96,6 +96,97 @@ READINESS_LOG="$ARTIFACTS/readiness.log"
 READINESS_JSON="$ARTIFACTS/readiness.json"
 READINESS_SUMMARY="$ARTIFACTS/readiness.summary.txt"
 
+# Phase D-2b.46: explicit abort-classification
+# contract for install-nexus-test.sh::abort_as().
+# When abort_as passes the abort label through the
+# FIXED-NAME env INSTALL_ABORT_CLASSIFICATION, we
+# honour it before any kubectl/kind/docker call,
+# before the legacy FIXTURE_IMAGE_NOT_LOADED /
+# FIXTURE_INVALID env-token blocks below, and
+# before any GATE_PHASE / cluster probe. This is
+# the deterministic shortcut the install script's
+# abort path relies on; an unknown / mis-typed
+# label fails closed as CLUSTER_OR_CNI_NOT_READY
+# (10) with an explicit "unknown install abort
+# classification" detail so a downstream verifier
+# can correlate the abort with the install script
+# that issued it. An empty value preserves every
+# legacy behaviour: we fall through to the legacy
+# blocks and the GATE_PHASE orchestration below.
+#
+# Map (label -> exact exit code -> summary line):
+#   CLUSTER_OR_CNI_NOT_READY  10
+#   CHART_OR_POLICY_INVALID   11
+#   FIXTURE_NOT_READY         12
+#   FIXTURE_IMAGE_NOT_LOADED  14
+#   FIXTURE_INVALID           15
+if [[ -n "${INSTALL_ABORT_CLASSIFICATION:-}" ]]; then
+  REQ_LABEL="${INSTALL_ABORT_CLASSIFICATION}"
+  REQ_DETAIL="${INSTALL_ABORT_FAILURE_DETAIL:-unspecified}"
+  case "$REQ_LABEL" in
+    CLUSTER_OR_CNI_NOT_READY)
+      {
+        printf 'classification=%s (exit 10)\n' "$REQ_LABEL"
+        printf 'first_failed_step=00-install-abort\n'
+        printf 'failure_reason=%s\n' "$REQ_DETAIL"
+      } >> "$READINESS_LOG"
+      printf '%s\n' "$REQ_LABEL" > "$READINESS_SUMMARY"
+      exit 10
+      ;;
+    CHART_OR_POLICY_INVALID)
+      {
+        printf 'classification=%s (exit 11)\n' "$REQ_LABEL"
+        printf 'first_failed_step=00-install-abort\n'
+        printf 'failure_reason=%s\n' "$REQ_DETAIL"
+      } >> "$READINESS_LOG"
+      printf '%s\n' "$REQ_LABEL" > "$READINESS_SUMMARY"
+      exit 11
+      ;;
+    FIXTURE_NOT_READY)
+      {
+        printf 'classification=%s (exit 12)\n' "$REQ_LABEL"
+        printf 'first_failed_step=00-install-abort\n'
+        printf 'failure_reason=%s\n' "$REQ_DETAIL"
+      } >> "$READINESS_LOG"
+      printf '%s\n' "$REQ_LABEL" > "$READINESS_SUMMARY"
+      exit 12
+      ;;
+    FIXTURE_IMAGE_NOT_LOADED)
+      {
+        printf 'classification=%s (exit 14)\n' "$REQ_LABEL"
+        printf 'first_failed_step=00-install-abort\n'
+        printf 'failure_reason=%s\n' "$REQ_DETAIL"
+      } >> "$READINESS_LOG"
+      printf '%s\n' "$REQ_LABEL" > "$READINESS_SUMMARY"
+      exit 14
+      ;;
+    FIXTURE_INVALID)
+      {
+        printf 'classification=%s (exit 15)\n' "$REQ_LABEL"
+        printf 'first_failed_step=00-install-abort\n'
+        printf 'failure_reason=%s\n' "$REQ_DETAIL"
+      } >> "$READINESS_LOG"
+      printf '%s\n' "$REQ_LABEL" > "$READINESS_SUMMARY"
+      exit 15
+      ;;
+    *)
+      # Unknown non-empty label: fail closed as
+      # CLUSTER_OR_CNI_NOT_READY (10) with explicit
+      # redacted detail. We do NOT silently
+      # continue into cluster probes; that would
+      # mask a misclassification behind a
+      # pseudo-success fixture probe.
+      {
+        printf 'classification=%s (exit 10)\n' "CLUSTER_OR_CNI_NOT_READY"
+        printf 'first_failed_step=00-install-abort\n'
+        printf 'failure_reason=unknown install abort classification: %s\n' "$REQ_LABEL"
+      } >> "$READINESS_LOG"
+      printf 'CLUSTER_OR_CNI_NOT_READY\n' > "$READINESS_SUMMARY"
+      exit 10
+      ;;
+  esac
+fi
+
 # Phase-aware step range. pre-fixture = #1..#7,
 # post-fixture = #8..#9 (re-using the SAME
 # readiness.json envelope so the verifier reads

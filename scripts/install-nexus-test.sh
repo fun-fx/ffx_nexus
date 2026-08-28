@@ -94,51 +94,109 @@ CLUSTER_NAME="${CLUSTER_NAME:-nexus-cni-test}"
 ARTIFACTS="${ARTIFACTS:-${PWD}/artifacts/integrationcni}"
 CHART_PATH="${CHART_PATH:-${PWD}/deploy/helm/nexus}"
 SCRIPT_DIR_FLAG="$SCRIPT_DIR"
+# d2b.46: explicit absolute control-gate binary.
+# Default preserves production behaviour
+# (executable cni-readiness-gate.sh). Test
+# harnesses override via env to inject a stub
+# without modifying target code. We resolve and
+# validate here so a bad injection fails closed
+# without an opaque downstream failure.
+CNI_READINESS_GATE_BIN="${CNI_READINESS_GATE_BIN:-${SCRIPT_DIR}/cni-readiness-gate.sh}"
+if [[ ! -f "${CNI_READINESS_GATE_BIN}" ]]; then
+  printf 'install-nexus-test: CNI_READINESS_GATE_BIN (%s) does not exist\n' "${CNI_READINESS_GATE_BIN}" >&2
+  exit 22
+fi
+if [[ ! -x "${CNI_READINESS_GATE_BIN}" ]]; then
+  printf 'install-nexus-test: CNI_READINESS_GATE_BIN (%s) is not executable\n' "${CNI_READINESS_GATE_BIN}" >&2
+  exit 22
+fi
 mkdir -p "$ARTIFACTS"
 : > "$ARTIFACTS/install.log"
 
 # Helper: route a failure into the unified
 # readiness gate so a downstream verifier
 # sees a classification, not a raw exit code.
+#
+# d2b.46 contract:
+#   - Pass the abort classification to the
+#     gate as the FIXED-NAME env var
+#     INSTALL_ABORT_CLASSIFICATION="$label"
+#     (along with the redacted detail in
+#     INSTALL_ABORT_FAILURE_DETAIL="$detail").
+#   - Invoke the gate via `env ...` with
+#     explicit fixed-key tokens; never via
+#     variable-expanded assignment tokens
+#     such as "${var}=1" which the shell
+#     parses as a command name.
+#   - Use the already-validated
+#     $CNI_READINESS_GATE_BIN (test harnesses
+#     override this) — never the hardwired
+#     ${SCRIPT_DIR}/cni-readiness-gate.sh.
+#   - Require gate_rc == code; if they
+#     diverge, write a redacted mismatch
+#     artefact and fail closed with exit 16
+#     so a downstream verifier sees a
+#     distinct abort-gate-mismatch event
+#     instead of swallowing a misclassification.
+#   - Do NOT set FIXTURE_INVALID=1 here.
+#     Legacy callers (e.g. step_image_pipeline
+#     pre-d2b.46 still uses via direct env)
+#     remain byte-compatible because the
+#     gate still honours an explicit empty
+#     INSTALL_ABORT_CLASSIFICATION + the
+#     historical FIXTURE_INVALID=1 token.
 abort_as() {
   local label="$1"; local detail="$2"; local code="$3"
-  local env_var
-  case "$label" in
-    CLUSTER_OR_CNI_NOT_READY)    env_var="CLUSTER_OR_CNI_NOT_READY" ;;
-    CHART_OR_POLICY_INVALID)     env_var="CHART_OR_POLICY_INVALID"  ;;
-    FIXTURE_NOT_READY)           env_var="FIXTURE_NOT_READY"        ;;
-    FIXTURE_IMAGE_NOT_LOADED)    env_var="FIXTURE_IMAGE_NOT_LOADED" ;;
-    FIXTURE_INVALID)             env_var="FIXTURE_INVALID"          ;;
-    *)                           env_var="CLUSTER_OR_CNI_NOT_READY"; code=10 ;;
-  esac
-  # d2b.26 contract: when classify is FIXTURE_INVALID,
-  # the readiness-gate env MUST be exported as the
-  # literal string `FIXTURE_INVALID=1` so mutation
-  # tests asserting on the install script's source
-  # string see a deterministic fingerprint. We bind
-  # it here explicitly (not only through ${env_var}
-  # expansion) to make the contract visible at
-  # script-read time.
+  local gate_rc
   echo "[install] ABORT $label detail=$detail" | tee -a "$ARTIFACTS/install.log"
-  GATE_PHASE=post-fixture \
+  set +e
+  env \
+    GATE_PHASE=post-fixture \
     RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
     WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
     ARTIFACTS="${ARTIFACTS}" \
-    FIXTURE_INVALID=1 \
-    FIXTURE_INVALID_FAILURE_DETAIL="$detail" \
-    bash "${SCRIPT_DIR}/cni-readiness-gate.sh" || true
-  # Pre-flight dry-run failures classify as
-  # fixture-invalid (exit 15). The exit code is
-  # bound here so a reproducer run aborts with
-  # the same classifier the gate reports.
-  # Image-pipeline failures (build script
-  # exiting non-zero, missing image_id, kind
-  # load not propagating) all classify as
-  # FIXTURE_IMAGE_NOT_LOADED with exit 14 so
-  # the cni_readiness_gate_test contract
-  # recognises the install script's source
-  # string as routing image-pipeline failures
-  # to that exit code.
+    INSTALL_ABORT_CLASSIFICATION="$label" \
+    INSTALL_ABORT_FAILURE_DETAIL="$detail" \
+    bash "${CNI_READINESS_GATE_BIN}"
+  gate_rc=$?
+  set -e
+  if (( gate_rc != code )); then
+    local mismatch="$ARTIFACTS/abort-gate-mismatch.json"
+    # d2b.46 follow-up: the canonical gate summary
+    # is $ARTIFACTS/readiness.summary.txt (produced
+    # by scripts/cni-readiness-gate.sh). Point the
+    # mismatch artefact at THAT path, not a parallel
+    # cni-readiness.summary.txt file the gate does
+    # not write, so a verifier following the path
+    # can locate the actual classifier evidence.
+    local summary="$ARTIFACTS/readiness.summary.txt"
+    cat >"$mismatch" <<EOF
+{
+  "requested_label": "${label}",
+  "expected_code": ${code},
+  "gate_rc": ${gate_rc},
+  "summary_path": "${summary}",
+  "reason": "abort_as gate returned ${gate_rc}, expected ${code}"
+}
+EOF
+    echo "[install] ABORT-GATE-MISMATCH label=$label expected=$code got=${gate_rc} (see $mismatch)" \
+      | tee -a "$ARTIFACTS/install.log" >&2
+    exit 16
+  fi
+  # Mapping contract retained as comments so legacy
+  # golden-string assertions (image-pipeline
+  # mutation tests / dry-run routing tests) keep
+  # matching the install script's source verbatim:
+  #   - Pre-flight `kubectl apply --dry-run=server
+  #     --validate=strict` failures classify as
+  #     FIXTURE_INVALID with exit 15.
+  #   - Image-pipeline failures (build script
+  #     exiting non-zero, missing image_id, kind
+  #     load not propagating) classify as
+  #     FIXTURE_IMAGE_NOT_LOADED with exit 14.
+  #   - Endpoint / pod-readiness timeouts after
+  #     the bounded deadline classify as
+  #     FIXTURE_NOT_READY with exit 12.
   exit "$code"
 }
 
@@ -401,14 +459,21 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
   echo "[install] image build: id=$FIXTURE_IMAGE_ID ref=$FIXTURE_IMAGE_REF" \
     | tee -a "$ARTIFACTS/install.log"
   # kind load then per-node crictl verify.
+  # d2b.46: capture the real exit code without
+  # masking via '|| true'. A load failure must
+  # raise FIXTURE_IMAGE_NOT_LOADED; the log is
+  # preserved regardless of outcome.
   local load_log="$ARTIFACTS/fixture-image-kind-load.log"
+  set +e
   {
     echo "kind load docker-image --name ${CLUSTER_NAME} ${FIXTURE_IMAGE_REF}"
     kind load docker-image --name "${CLUSTER_NAME}" "${FIXTURE_IMAGE_REF}"
-  } >"$load_log" 2>&1 || true
-  if (( $? != 0 )); then
+  } >"$load_log" 2>&1
+  local load_rc=$?
+  set -e
+  if (( load_rc != 0 )); then
     abort_as FIXTURE_IMAGE_NOT_LOADED \
-      "kind load docker-image returned non-zero (see $load_log)" 14
+      "kind load docker-image returned rc=${load_rc} (see $load_log)" 14
   fi
   # Per-node runtime image presence.
   # Compute PRESENT and MISSING counts so a
@@ -444,20 +509,75 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
 
 step_G_readiness() {
   echo "[install] ====== step G: readiness / control probe ======"
-  # Image pipeline predicate must hold
-  # BEFORE this step observes fixture endpoints.
-  # We poll fixture Pod readiness while draining
-  # ImagePullBackOff into FIXTURE_IMAGE_NOT_LOADED.
+  # d2b.46 fixture Pod inventory contract:
+  # the fresh-cluster fixture population has
+  # exactly 13 Pods whose names start with
+  # cni-mock-, cni-untrusted-, or cni-control-
+  # (5 cni-mock-* in default + 1 each in ingress/
+  # prometheus/postgres/redis/clickhouse +
+  # 1 cni-untrusted-default + 2 cni-control-... =
+  # 13). One anchored matcher drives every
+  # inventory assertion below so an observation
+  # loop can never silently disagree with the
+  # endpoint expectation it consults.
+  local fixture_re='^cni-(mock|untrusted|control)-'
+  local expected_fixture_count=13
+  local fixtures_ready=0
   local deadline=$(( $(date +%s) + 480 ))
+  # Hoisted to function scope: post-loop snapshot
+  # block (lines after deadline) reads $pull_log /
+  # $pull_stderr when writing the timeout artifacts.
+  # A `local` declared inside the while body exits
+  # scope when the loop exits — without these the
+  # outer references become unbound under `set -u`.
+  local pull_log="$ARTIFACTS/fixture-pod-imagepull.log"
+  local pull_stderr="$ARTIFACTS/fixture-pod-imagepull.stderr"
+  # Capture rc/stderr of every kubectl inventory
+  # call so observation failures cannot be
+  # silently rewritten to empty or zero. rc is
+  # written into $ARTIFACTS/fixture-pod-readiness-timeout.json
+  # alongside the snapshot if we time out.
+  capture_inventory_failure() {
+    local cmd_name="$1"
+    local inv_rc="$2"
+    local inv_stderr="$3"
+    local snapshot_json="$ARTIFACTS/fixture-pod-readiness-timeout.json"
+    cat >"$snapshot_json.snapshot" <<EOF
+{
+  "command": "${cmd_name}",
+  "rc": ${inv_rc},
+  "stderr": $(printf '%s' "$inv_stderr" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "observed_count": 0,
+  "expected_count": ${expected_fixture_count},
+  "reason": "kubectl inventory command failed"
+}
+EOF
+    mv "$snapshot_json.snapshot" "$snapshot_json"
+    abort_as FIXTURE_NOT_READY \
+      "${cmd_name} failed rc=${inv_rc}: inventory cannot be obtained (see $snapshot_json)" 12
+  }
   while (( $(date +%s) < deadline )); do
-    local pull_log="$ARTIFACTS/fixture-pod-imagepull.log"
     : > "$pull_log"
-    kubectl get pod -A --no-headers 2>/dev/null \
-      | grep -E "cni-target|cni-source|cni-control" \
-      >"$pull_log" || true
+    : > "$pull_stderr"
+    set +e
+    # Pull every fixture pod. The fake kubectl
+    # emits canonical NAME READY STATUS
+    # RESTARTS AGE so the anchored regex matches
+    # col 1 and the per-pod readiness check
+    # below reads col 2 = READY, col 3 = STATUS.
+    kubectl get pod -A --no-headers 2>"$pull_stderr" \
+      | grep -E "$fixture_re" >"$pull_log"
+    local inv_rc=$?
+    set -e
+    if (( inv_rc != 0 )); then
+      capture_inventory_failure "kubectl get pod" "$inv_rc" \
+        "$(cat "$pull_stderr")"
+    fi
+    local observed
+    observed=$(wc -l <"$pull_log")
     local pull_reasons
     pull_reasons=$(
-      awk '{print $1,$2,$3}' "$pull_log" \
+      awk '{print $1, $2, $3}' "$pull_log" \
         | grep -E "ImagePullBackOff|ErrImagePull|ErrImageNeverPull|CrashLoopBackOff" \
         | sort -u || true)
     if [[ -n "$pull_reasons" ]]; then
@@ -465,26 +585,141 @@ step_G_readiness() {
       abort_as FIXTURE_IMAGE_NOT_LOADED \
         "fixture Pod entered image-pull-failure: $pull_reasons" 14
     fi
+    if (( observed != expected_fixture_count )); then
+      # Do not declare Ready on partial count.
+      sleep 5
+      continue
+    fi
     local notready
-    notready=$(kubectl get pod -A --no-headers 2>/dev/null \
-      | grep -E "cni-target|cni-source|cni-control" \
-      | awk '$3 != "Running" || $4 != "1/1" {n++}; END {print n+0}')
-    if (( notready == 0 )); then break; fi
+    # pull_log is canonical NAME READY STATUS
+    # RESTARTS AGE. A ready pod has $2 == 1/1
+    # and $3 == Running.
+    notready=$(awk '$2 != "1/1" || $3 != "Running" {n++}; END {print n+0}' \
+      "$pull_log")
+    if (( notready == 0 )); then
+      fixtures_ready=1
+      break
+    fi
     sleep 5
   done
-  if (( $(date +%s) >= deadline )); then
+  if (( fixtures_ready != 1 )); then
+    # d2b.46: classify the timeout against the
+    # exact anchored fixture set, capture the
+    # full canonical inventory snapshot + events,
+    # and abort with observed/expected + names +
+    # non-ready reasons. Never infer time-out
+    # solely from a second 'date' check after
+    # the break: when fixtures_ready==1 we
+    # explicitly exit the loop above.
+    local snapshot_json="$ARTIFACTS/fixture-pod-readiness-timeout.json"
+    local snapshot_txt="$ARTIFACTS/fixture-pod-readiness-timeout.txt"
+    local events_log="$ARTIFACTS/fixture-pod-readiness-events.log"
+    : > "$events_log"
+    set +e
+    kubectl get pod -A -o json 2>"$pull_stderr" \
+      | python3 -c "
+import json,sys,os
+data=json.loads(sys.stdin.read() or '{\"items\":[]}')
+items=data.get('items') if isinstance(data,dict) else []
+rows=[]
+for it in items:
+    md=(it.get('metadata') or {})
+    name=md.get('name','')
+    ns=md.get('namespace','')
+    if not (name.startswith('cni-mock-') or name=='cni-untrusted-default' or name.startswith('cni-control-')):
+        continue
+    phase=(it.get('status') or {}).get('phase','')
+    ready=False
+    for c in (it.get('status') or {}).get('conditions') or []:
+        if c.get('type')=='Ready':
+            ready=bool(c.get('status')=='True')
+            break
+    containers=[]
+    for cs in (it.get('status') or {}).get('containerStatuses') or []:
+        st=cs.get('state') or {}
+        wt=st.get('waiting') or {}
+        term=st.get('terminated') or {}
+        runn=st.get('running') or {}
+        containers.append({
+            'name': cs.get('name',''),
+            'ready': bool(cs.get('ready')),
+            'restartCount': cs.get('restartCount',0),
+            'waiting_reason': wt.get('reason') or None,
+            'waiting_message': wt.get('message') or None,
+            'terminated_reason': term.get('reason') or None,
+            'running': bool(runn),
+        })
+    rows.append({
+        'namespace': ns,
+        'name': name,
+        'phase': phase,
+        'ready': ready,
+        'containers': containers,
+    })
+out={'expected_count': 13, 'observed_count': len(rows), 'pods': rows}
+print(json.dumps(out, indent=2, sort_keys=True))
+" > "$snapshot_json"
+    local snap_rc=$?
+    set -e
+    if (( snap_rc != 0 )); then
+      capture_inventory_failure "kubectl get pod -o json" "$snap_rc" "python3 projection failed"
+    fi
+    # Human readable text view for grep-ability.
+    python3 -c "
+import json
+d=json.load(open('$snapshot_json'))
+print('expected_count:', d['expected_count'])
+print('observed_count:', d['observed_count'])
+print('--- non-ready pods ---')
+for p in d['pods']:
+    if not p['ready']:
+        cs=','.join(c['waiting_reason'] or c['terminated_reason'] or (('ready' if c['ready'] else 'notready')) for c in p['containers']) or 'none'
+        print(f\"{p['namespace']}/{p['name']} phase={p['phase']} containers={cs}\")
+" > "$snapshot_txt"
+    # Per-pod events; record failure distinctly but
+    # cannot erase the status snapshot.
+    set +e
+    kubectl get pod -A --no-headers 2>/dev/null \
+      | grep -E "$fixture_re" \
+      | awk '{print $1, $2}' \
+      | while read -r ns name; do
+          echo "=== events for ${ns}/${name} ===" >>"$events_log"
+          kubectl get events -n "$ns" --field-selector "involvedObject.kind=Pod,involvedObject.name=$name" \
+            --sort-by=.lastTimestamp 2>>"$events_log" \
+            | tail -10 >>"$events_log" || true
+        done
+    set -e
+    local observed_final
+    observed_final=$(wc -l <"$pull_log")
     abort_as FIXTURE_NOT_READY \
-      "fixture Pods not all Ready within 8 minutes (deadline)" 12
+      "fixture Pods not all Ready within 8 minutes (deadline); observed=${observed_final}/expected=${expected_fixture_count}; details in $snapshot_json" 12
   fi
-  # cilium endpoint aggregation across nodes.
+  # cilium endpoint aggregation across nodes —
+  # d2b.46: uses the SAME anchored matcher so
+  # the expectation set matches the readiness
+  # set. Fail closed if the inventory command
+  # itself errors; never accept 0.
   local expected
-  expected=$(kubectl get pod -A --no-headers 2>/dev/null \
-    | grep -cE "cni-target|cni-source|cni-control|cni-mock" || echo 0)
+  local ep_stderr="$ARTIFACTS/cilium-endpoint.stderr"
+  : > "$ep_stderr"
+  set +e
+  expected=$(kubectl get pod -A --no-headers 2>"$ep_stderr" \
+    | grep -cE "$fixture_re" | tr -d '\n')
+  local exp_rc=$?
+  set -e
+  if (( exp_rc != 0 )); then
+    local snap="$ARTIFACTS/fixture-pod-readiness-timeout.json"
+    cat >"$snap" <<EOF
+{"command": "kubectl get pod (expected count)", "rc": ${exp_rc}, "stderr": $(printf '%s' "$(cat "$ep_stderr")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'), "observed_count": 0, "expected_count": 13, "reason": "kubectl inventory command failed for endpoint expectation"}
+EOF
+    abort_as FIXTURE_NOT_READY \
+      "kubectl get pod rc=${exp_rc}: cannot derive cilium-endpoint expectation (see $snap)" 12
+  fi
   deadline=$(( $(date +%s) + 480 ))
   local last=0
   while (( $(date +%s) < deadline )); do
     local acc=""
-    for p in $(kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}'); do
+    for p in $(kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null); do
       local out
       out=$(kubectl -n kube-system exec "$p" -- \
         bash -c 'cilium endpoint list -o json' 2>/dev/null \
@@ -502,7 +737,7 @@ for x in set(items): print(x)
 " 2>/dev/null) || true
       acc+=$(printf "\n%s" "$out")
     done
-    last=$(printf "%s" "$acc" | grep -c "^resolve-labels-default/cni-" || echo 0)
+    last=$(printf "%s" "$acc" | grep -c "^resolve-labels-default/cni-" | tr -d '\n' || echo 0)
     if (( last >= expected )); then break; fi
     sleep 5
   done
@@ -518,7 +753,7 @@ for x in set(items): print(x)
     RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}" \
     WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-${GITHUB_RUN_ID:-local}}" \
     ARTIFACTS="${ARTIFACTS}" \
-    bash "${SCRIPT_DIR}/cni-readiness-gate.sh"
+    "${CNI_READINESS_GATE_BIN}"
   echo "[install] step G ok"
 }
 
@@ -541,4 +776,8 @@ main() {
   echo "[install] all A..G gates passed"
 }
 
-main "$@"
+# d2b.46: when sourced by scripts/test_fixture_readiness_observability.sh,
+# do not auto-run main(). The executed-script path is unchanged.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
