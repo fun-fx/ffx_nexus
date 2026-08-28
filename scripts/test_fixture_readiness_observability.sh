@@ -69,10 +69,44 @@ mkdir -p "${FAKE_BIN}"
 # Write fake kubectl (POSIX shell).
 cat >"${FAKE_BIN}/kubectl" <<'POSIXEOF'
 #!/bin/sh
-# d2b.46 fake kubectl. Reads inventory from
-# FAKE_PODS_TSV_FILE. Handles every pattern
-# the target's step_G_readiness issues.
+# d2b.46/2b fake kubectl. Reads inventory from
+# FAKE_PODS_TSV_FILE. Handles every pattern the
+# target's step_G_readiness issues AND the gate's
+# Gate 7 namespace + Gate 8 fixture inventory.
+#
+# Per-command-family failure injection:
+#   FAKE_FIXTURE_LIST_RC      -> kubectl get pod -A --no-headers
+#   FAKE_FIXTURE_JSON_RC      -> kubectl get pod -A -o json
+#   FAKE_CILIUM_DAEMON_LIST_RC-> kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath
+#   FAKE_CILIUM_EXEC_RC       -> kubectl -n kube-system exec $p -- cilium endpoint list
+#   FAKE_CILIUM_JSON_MODE     -> python3 cilium JSON projection body
+#     ""         default: do not fail, return observed labels
+#     "bad"      python projection raises Exception -> rc 17
+#     "empty"    python projection returns []  -> valid zero observation
+#   FAKE_NS_MISSING           -> comma-separated namespace list that
+#                                "get namespace" should report as missing
+#   FAKE_NS_NOT_READY         -> when set, FAKE_FIXTURE_LIST_RC doubles
+#                                as the gate-side namespace probe rc
+#
+# To preserve d2b.46's backward-compatible
+# HARNESS_KUBECTL_RC=7 path for global
+# failure injection of the canonical fixture
+# inventory (used by C6), we accept the legacy
+# FAKE_KUBECTL_RC when FAKE_FIXTURE_LIST_RC is
+# unset. Otherwise, FAKE_FIXTURE_LIST_RC wins.
 set -u
+# Per-stage fixture inventory override:
+# when HARNESS_FIXTURE_NAMES_TSV is set the
+# fake kubectl uses it as the canonical Pod
+# inventory source instead of FAKE_PODS_TSV_FILE.
+# The override applies ONLY to get pod
+# commands (fixture list, fixture json).
+# Cilium daemon-list, exec, and JSON projection
+# remain driven by their own FAKE_*_RC envs.
+if [ -n "${HARNESS_FIXTURE_NAMES_TSV:-}" ] && [ -r "${HARNESS_FIXTURE_NAMES_TSV}" ]; then
+  HARNESS_FIXTURE_TSV="${HARNESS_FIXTURE_NAMES_TSV}"
+  export HARNESS_FIXTURE_TSV
+fi
 case "${1:-}" in
   get)
     shift 2>/dev/null || true
@@ -82,20 +116,33 @@ case "${1:-}" in
         # AGE so the target's anchored regex
         # matches col 1 and the readiness awk
         # reads $2=READY, $3=STATUS.
-        if [ -n "${FAKE_PODS_TSV_FILE:-}" ] && [ -r "${FAKE_PODS_TSV_FILE}" ]; then
+        if [ -n "${HARNESS_FIXTURE_TSV:-}" ] && [ -r "${HARNESS_FIXTURE_TSV}" ]; then
+          awk -F'\t' '{print $2, $3, $4, $5, $6}' "${HARNESS_FIXTURE_TSV}"
+        elif [ -n "${FAKE_PODS_TSV_FILE:-}" ] && [ -r "${FAKE_PODS_TSV_FILE}" ]; then
           awk -F'\t' '{print $2, $3, $4, $5, $6}' "${FAKE_PODS_TSV_FILE}"
         fi
-        rc="${FAKE_KUBECTL_RC:-0}"
+        # Per-family rc first, then legacy
+        # FAKE_KUBECTL_RC fallback for C6.
+        rc="${FAKE_FIXTURE_LIST_RC:-${FAKE_KUBECTL_RC:-0}}"
         if [ "${rc}" != "0" ]; then
-          echo "fake kubectl stderr (rc=${rc})" 1>&2
+          echo "fake kubectl fixture list stderr (rc=${rc})" 1>&2
           exit "${rc}"
         fi
         exit 0
       fi
       if [ "${2:-}" = "-A" ] && [ "${3:-}" = "-o" ] && [ "${4:-}" = "json" ]; then
-        if [ -n "${FAKE_PODS_TSV_FILE:-}" ] && [ -r "${FAKE_PODS_TSV_FILE}" ]; then
+        if [ -n "${HARNESS_FIXTURE_TSV:-}" ] && [ -r "${HARNESS_FIXTURE_TSV}" ]; then
+          FAKE_PODS_TSV="$(cat "${HARNESS_FIXTURE_TSV}")"
+          export FAKE_PODS_TSV
+        elif [ -n "${FAKE_PODS_TSV_FILE:-}" ] && [ -r "${FAKE_PODS_TSV_FILE}" ]; then
           FAKE_PODS_TSV="$(cat "${FAKE_PODS_TSV_FILE}")"
           export FAKE_PODS_TSV
+        fi
+        # Per-family failure override.
+        rc="${FAKE_FIXTURE_JSON_RC:-0}"
+        if [ "${rc}" != "0" ]; then
+          echo "fake kubectl fixture json stderr (rc=${rc})" 1>&2
+          exit "${rc}"
         fi
         exec python3 -c '
 import json, os
@@ -145,23 +192,45 @@ print(json.dumps({"items": items}))
         get)
           shift 2>/dev/null || true
           if [ "${1:-}" = "pod" ]; then
+            rc="${FAKE_CILIUM_DAEMON_LIST_RC:-0}"
+            if [ "${rc}" != "0" ]; then
+              echo "fake kubectl cilium daemon-list stderr (rc=${rc})" 1>&2
+              exit "${rc}"
+            fi
             echo "cilium-fake-${RANDOM:-x}"
             exit 0
           fi
           ;;
         exec)
-          if [ -n "${FAKE_CILIUM_NAMES:-}" ]; then
-            first=1
-            printf '['
-            for n in ${FAKE_CILIUM_NAMES}; do
-              if [ "${first}" = "1" ]; then first=0; else printf ','; fi
-              printf '{"status":{"controllers":[{"name":"resolve-labels-default/%s"}]}}' "$n"
-            done
-            printf ']'
-          else
-            echo '[]'
+          rc="${FAKE_CILIUM_EXEC_RC:-0}"
+          if [ "${rc}" != "0" ]; then
+            echo "fake kubectl cilium exec stderr (rc=${rc})" 1>&2
+            exit "${rc}"
           fi
-          exit 0
+          case "${FAKE_CILIUM_JSON_MODE:-}" in
+            bad)
+              echo "PROJECTION-FAILED: fake-cilium-exec-projection-forced-bad" 1>&2
+              exit 17
+              ;;
+            empty)
+              echo '[]'
+              exit 0
+              ;;
+            *)
+              if [ -n "${FAKE_CILIUM_NAMES:-}" ]; then
+                first=1
+                printf '['
+                for n in ${FAKE_CILIUM_NAMES}; do
+                  if [ "${first}" = "1" ]; then first=0; else printf ','; fi
+                  printf '{"status":{"controllers":[{"name":"resolve-labels-default/%s"}]}}' "$n"
+                done
+                printf ']'
+              else
+                echo '[]'
+              fi
+              exit 0
+              ;;
+          esac
           ;;
       esac
     fi
@@ -172,6 +241,29 @@ print(json.dumps({"items": items}))
     exit 0
     ;;
 esac
+# Real-gate Gate 7 namespace probe handler:
+# the FIRST `get)` arm DID `shift 2>/dev/null ||
+# true`. We re-evaluate ${1:-} here. To handle
+# `kubectl get namespace <name>` correctly
+# across shifts we DO NOT shift again — the
+# remaining args (after the first shift) are
+# `namespace <name>`. Check that.
+if [ "${1:-}" = "namespace" ]; then
+  shift 2>/dev/null || true
+  ns="${1:-}"
+  if [ -n "${FAKE_NS_MISSING:-}" ]; then
+    old_ifs="${IFS}"
+    IFS=","
+    for missing in ${FAKE_NS_MISSING}; do
+      if [ "${missing}" = "${ns}" ]; then
+        IFS="${old_ifs}"
+        exit 1
+      fi
+    done
+    IFS="${old_ifs}"
+  fi
+  exit 0
+fi
 echo "fake-kubectl: unhandled: $*" 1>&2
 exit 99
 POSIXEOF
@@ -354,13 +446,19 @@ DATE_ADVANCE="\${HARNESS_DATE_ADVANCE:-1}"
 DATE_STEP="\${HARNESS_DATE_STEP:-1000}"
 CILIUM_NAMES="\${HARNESS_CILIUM_NAMES:-}"
 export FAKE_PODS_TSV_FILE="\${STAGE_TSV}"
-export FAKE_KUBECTL_RC="\${KUBECTL_RC}"
-export FAKE_KIND_RC="\${KIND_RC}"
-export FAKE_DOCKER_RC="\${DOCKER_RC}"
-export FAKE_DATE_NOW="\${DATE_NOW}"
-export FAKE_DATE_ADVANCE="\${DATE_ADVANCE}"
-export FAKE_DATE_STEP="\${DATE_STEP}"
-export FAKE_CILIUM_NAMES="\${CILIUM_NAMES}"
+  export FAKE_KUBECTL_RC="\${KUBECTL_RC}"
+  export FAKE_KIND_RC="\${KIND_RC}"
+  export FAKE_DOCKER_RC="\${DOCKER_RC}"
+  export FAKE_DATE_NOW="\${DATE_NOW}"
+  export FAKE_DATE_ADVANCE="\${DATE_ADVANCE}"
+  export FAKE_DATE_STEP="\${DATE_STEP}"
+  export FAKE_CILIUM_NAMES="\${CILIUM_NAMES}"
+  export FAKE_FIXTURE_LIST_RC="\${FAKE_FIXTURE_LIST_RC:-}"
+  export FAKE_FIXTURE_JSON_RC="\${FAKE_FIXTURE_JSON_RC:-}"
+  export FAKE_CILIUM_DAEMON_LIST_RC="\${FAKE_CILIUM_DAEMON_LIST_RC:-}"
+  export FAKE_CILIUM_EXEC_RC="\${FAKE_CILIUM_EXEC_RC:-}"
+  export FAKE_CILIUM_JSON_MODE="\${FAKE_CILIUM_JSON_MODE:-}"
+  export HARNESS_FIXTURE_NAMES_TSV="\${HARNESS_FIXTURE_NAMES_TSV:-}"
 export CNI_READINESS_GATE_BIN="\${GATE_BIN}"
 export CLUSTER_NAME=nexus-test
 export FIXTURE_IMAGE_REF=cni-listener:local
@@ -593,13 +691,20 @@ for k in (
     "FAKE_BIN_PATH",
     "FAKE_CILIUM_NAMES",
     "FAKE_DATE_NOW",
-    "FAKE_DATE_NOW_FILE",
+    "HARNESS_DATE_NOW_FILE",
     "FAKE_DATE_ADVANCE",
     "FAKE_DATE_STEP",
     "FAKE_PODS_TSV_FILE",
     "FAKE_KUBECTL_RC",
     "FAKE_KIND_RC",
     "FAKE_DOCKER_RC",
+    "FAKE_FIXTURE_LIST_RC",
+    "FAKE_FIXTURE_JSON_RC",
+    "FAKE_CILIUM_DAEMON_LIST_RC",
+    "FAKE_CILIUM_EXEC_RC",
+    "FAKE_CILIUM_JSON_MODE",
+    "HARNESS_FIXTURE_NAMES_TSV",
+    "HARNESS_FIXTURE_TSV",
     "FAKE_WAITING_REASON",
 ):
     env.pop(k, None)
@@ -911,32 +1016,462 @@ C6_DOWNSTREAM="$(echo "${R6}" | awk -F'|' '{print $5}')"
 C6_MISMATCH="$(echo "${R6}" | awk -F'|' '{print $6}')"
 C6_HAS_STDERR="$(grep -qE "fake kubectl stderr|rc=7|inventory cannot be obtained" "${S6}/step_G_out" "${S6}/step_G_err" "${S6}/fixture-pod-readiness-timeout.json" 2>/dev/null && echo Y || echo N)"
 
-# C7: Cilium endpoint inventory failure (make
-# kubectl return rc=7 for the inner cilium list
-# path so the loop never reaches the count threshold).
-S7="${TOP_TMP}/stage-C7"
-mkdir -p "${S7}"
-write_stage_files "${S7}" "${FAKE_13_READY_TSV}" "${REAL_GATE_BIN}"
-write_env_file "${S7}/env.list" \
+# C7a/b/c split: independent Cilium-stage
+# controls. C7a injects daemon-list failure;
+# C7b injects per-daemon exec failure;
+# C7c injects valid 12-of-13 endpoint
+# under-convergence. C7k is the fallback
+# mutation control confirming that removing
+# cni-untrusted-default from a clean run makes
+# the success control fail.
+#
+# All three rely on the fixture inventory
+# returning rc 0 first, then injecting the
+# Cilium-specific failure independently from
+# the original FAKE_KUBECTL_RC global switch.
+C7A="${TOP_TMP}/stage-C7a"
+mkdir -p "${C7A}"
+write_stage_files "${C7A}" "${FAKE_13_READY_TSV}" "${REAL_GATE_BIN}"
+write_env_file "${C7A}/env.list" \
   "HARNESS_REAL_BASH=${REAL_BASH}" \
   "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
-  "HARNESS_ARTIFACTS=${S7}" \
-  "HARNESS_STAGE_TSV=${S7}/pods.tsv" \
+  "HARNESS_ARTIFACTS=${C7A}" \
+  "HARNESS_STAGE_TSV=${C7A}/pods.tsv" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
-  "HARNESS_CILIUM_NAMES=" \
-  "HARNESS_KUBECTL_RC=7"
-drive_control C7 "${S7}" "${S7}/run_g.sh" "${S7}/env.list"
-R7=$(classify_control C7 "${S7}")
-C7_RC="$(echo "${R7}" | awk -F'|' '{print $2}')"
-C7_SUMMARY="$(echo "${R7}" | awk -F'|' '{print $3}')"
-C7_LOGCLS="$(echo "${R7}" | awk -F'|' '{print $4}')"
-C7_DOWNSTREAM="$(echo "${R7}" | awk -F'|' '{print $5}')"
-C7_MISMATCH="$(echo "${R7}" | awk -F'|' '{print $6}')"
-C7_FIX_JSON="$([ -f "${S7}/fixture-pod-readiness-timeout.json" ] && echo Y || echo N)"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "FAKE_CILIUM_DAEMON_LIST_RC=7"
+drive_control C7a "${C7A}" "${C7A}/run_g.sh" "${C7A}/env.list"
+R7A=$(classify_control C7a "${C7A}")
+C7A_RC="$(echo "${R7A}" | awk -F'|' '{print $2}')"
+C7A_SUMMARY="$(echo "${R7A}" | awk -F'|' '{print $3}')"
+C7A_LOGCLS="$(echo "${R7A}" | awk -F'|' '{print $4}')"
+C7A_DOWNSTREAM="$(echo "${R7A}" | awk -F'|' '{print $5}')"
+C7A_MISMATCH="$(echo "${R7A}" | awk -F'|' '{print $6}')"
+C7A_ERR_ART="N"
+if [ -s "${C7A}/cilium-endpoint-inventory-error.json" ] || grep -q 'cilium-endpoint-inventory-error' "${C7A}/install.log" 2>/dev/null; then
+  C7A_ERR_ART="Y"
+fi
+C7A_NAMED_DAEMON_LIST=$(grep -q 'cilium daemon list failed\|cilium daemon-list stderr\|cilium-deamon-list' "${C7A}/install.log" 2>/dev/null && echo Y || echo N)
+C7A_RC7=$(grep -q 'rc=7' "${C7A}/install.log" 2>/dev/null && echo Y || echo N)
+
+C7B="${TOP_TMP}/stage-C7b"
+mkdir -p "${C7B}"
+write_stage_files "${C7B}" "${FAKE_13_READY_TSV}" "${REAL_GATE_BIN}"
+write_env_file "${C7B}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7B}" \
+  "HARNESS_STAGE_TSV=${C7B}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_CLASSIFICATION=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=240" \
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "FAKE_CILIUM_EXEC_RC=8"
+drive_control C7b "${C7B}" "${C7B}/run_g.sh" "${C7B}/env.list"
+R7B=$(classify_control C7b "${C7B}")
+C7B_RC="$(echo "${R7B}" | awk -F'|' '{print $2}')"
+C7B_SUMMARY="$(echo "${R7B}" | awk -F'|' '{print $3}')"
+C7B_LOGCLS="$(echo "${R7B}" | awk -F'|' '{print $4}')"
+C7B_DOWNSTREAM="$(echo "${R7B}" | awk -F'|' '{print $5}')"
+C7B_MISMATCH="$(echo "${R7B}" | awk -F'|' '{print $6}')"
+C7B_ERR_ART="N"
+if [ -s "${C7B}/cilium-endpoint-convergence.json" ] || grep -q 'cilium-endpoint-convergence' "${C7B}/install.log" 2>/dev/null; then
+  C7B_ERR_ART="Y"
+fi
+C7B_DAEMON_NAMED=$(grep -qE 'cilium daemon exec.*(cilium-fake-x|cilium-fake-)' "${C7B}/install.log" 2>/dev/null && echo Y || echo N)
+C7B_RC8=$(grep -q 'rc=8' "${C7B}/install.log" 2>/dev/null && echo Y || echo N)
+
+# C7c: valid-empty endpoint under-convergence
+# against an exact 13 fixture population.
+# Build a 12-of-13 cilium-names set; date
+# advances faster than the deadline so the
+# bounded loop terminates with LAST=12.
+C7C_NAMES_12=$(printf '%s' "${CILIUM_DEFAULT}" | tr ' ' '\n' | grep -v '^cni-untrusted-default$' | tr '\n' ' ' | sed 's/ $//')
+C7C="${TOP_TMP}/stage-C7c"
+mkdir -p "${C7C}"
+write_stage_files "${C7C}" "${FAKE_13_READY_TSV}" "${REAL_GATE_BIN}"
+write_env_file "${C7C}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7C}" \
+  "HARNESS_STAGE_TSV=${C7C}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=240" \
+  "HARNESS_CILIUM_NAMES=${C7C_NAMES_12}"
+drive_control C7c "${C7C}" "${C7C}/run_g.sh" "${C7C}/env.list"
+R7C=$(classify_control C7c "${C7C}")
+C7C_RC="$(echo "${R7C}" | awk -F'|' '{print $2}')"
+C7C_SUMMARY="$(echo "${R7C}" | awk -F'|' '{print $3}')"
+C7C_LOGCLS="$(echo "${R7C}" | awk -F'|' '{print $4}')"
+C7C_DOWNSTREAM="$(echo "${R7C}" | awk -F'|' '{print $5}')"
+C7C_MISMATCH="$(echo "${R7C}" | awk -F'|' '{print $6}')"
+C7C_NO_CMD_ERR="N"
+if [ ! -s "${C7C}/cilium-endpoint-inventory-error.json" ]; then
+  C7C_NO_CMD_ERR="Y"
+fi
+C7C_CONV_ART="N"
+if [ -s "${C7C}/cilium-endpoint-convergence.json" ] || grep -q 'cilium-endpoint-convergence' "${C7C}/install.log" 2>/dev/null; then
+  C7C_CONV_ART="Y"
+fi
+C7C_OBS_12_EXP_13=$(grep -qE 'observed=.*12.*expected=13|12.*13.*convergence|under-converged' "${C7C}/install.log" 2>/dev/null && echo Y || echo N)
+
+# C7k: success control with cilium-names
+# MISSING cni-untrusted-default. Falls under
+# C7a/b/c's vocabulary: removing any of the
+# 13 exact names results in a 12-of-13 valid
+# under-convergence failure (CLUSTER_OR_CNI_NOT_READY
+# 10). The success path must therefore NOT be
+# reachable when cni-untrusted-default is
+# absent.
+C7K_NAMES_NO_UNTRUSTED=$(printf '%s' "${CILIUM_DEFAULT}" | tr ' ' '\n' | grep -v '^cni-untrusted-default$' | tr '\n' ' ' | sed 's/ $//')
+C7K="${TOP_TMP}/stage-C7k"
+mkdir -p "${C7K}"
+write_stage_files "${C7K}" "${FAKE_13_READY_TSV}" "${REAL_GATE_BIN}"
+write_env_file "${C7K}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7K}" \
+  "HARNESS_STAGE_TSV=${C7K}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=240" \
+  "HARNESS_CILIUM_NAMES=${C7K_NAMES_NO_UNTRUSTED}"
+drive_control C7k "${C7K}" "${C7K}/run_g.sh" "${C7K}/env.list"
+R7K=$(classify_control C7k "${C7K}")
+C7K_RC="$(echo "${R7K}" | awk -F'|' '{print $2}')"
+C7K_SUMMARY="$(echo "${R7K}" | awk -F'|' '{print $3}')"
+C7K_LOGCLS="$(echo "${R7K}" | awk -F'|' '{print $4}')"
+C7K_DOWNSTREAM="$(echo "${R7K}" | awk -F'|' '{print $5}')"
+C7K_MISMATCH="$(echo "${R7K}" | awk -F'|' '{print $6}')"
+C7K_OBS_12_EXP_13=$(grep -qE 'observed=.*12.*expected=13|12.*13.*convergence|under-converged' "${C7K}/install.log" 2>/dev/null && echo Y || echo N)
+
+# C7g (Gate 8 direct): exact 13 inventory +
+# daemon-list command failure => exit 10.
+# Runs the REAL cni-readiness-gate.sh directly
+# with FAKE environment so anything outside
+# kubectl/kind/docker returns 127.
+G8A="${TOP_TMP}/stage-G8a"
+mkdir -p "${G8A}"
+DRIVER_G8A="${G8A}/run_gate8.sh"
+cat >"${DRIVER_G8A}" <<G8EOF
+#!/bin/sh
+exec ${REAL_BASH} "${SCRIPT_DIR}/cni-readiness-gate.sh"
+G8EOF
+chmod +x "${DRIVER_G8A}"
+FAKE_GATE8_INVENTORY_TSV=$(mktemp -t d2b46-gate-inv-XXXXXX)
+printf 'cni-test-default\tcni-mock-default-1\t1/1\tRunning\t0\t1d\n' >"${FAKE_GATE8_INVENTORY_TSV}"
+for n in 2 3 4 5; do
+  printf 'cni-test-default\tcni-mock-default-%s\t1/1\tRunning\t0\t1d\n' "$n" >>"${FAKE_GATE8_INVENTORY_TSV}"
+done
+printf 'cni-test-ingress\tcni-mock-ingress\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-test-prometheus\tcni-mock-prometheus\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-test-postgres\tcni-mock-postgres\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-test-redis\tcni-mock-redis\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-test-clickhouse\tcni-mock-clickhouse\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-test-untrusted\tcni-untrusted-default\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-control\tcni-control-source\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-control\tcni-control-target\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+write_env_file "${G8A}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${G8A}" \
+  "HARNESS_STAGE_TSV=${G8A}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=1" \
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_CILIUM_DAEMON_LIST_RC=11" \
+  "HARNESS_FIXTURE_NAMES_TSV=${FAKE_GATE8_INVENTORY_TSV}" \
+  "KUBE_SYSTEM_ENDPOINT_NAME=cilium-fake-good"
+# G8a will be driven by drive_control; we need
+# a machinery hook so the fake kubectl honours
+# the G8 inventory TSV. We'll use a per-stage
+# env hook: when HARNESS_FIXTURE_NAMES_TSV is
+# set, the fake kubectl reads it instead of
+# FAKE_PODS_TSV_FILE. Add another small block
+# to the fake kubectl below.
+echo "FIXTURE_NAMES=${FAKE_GATE8_INVENTORY_TSV}" > "${G8A}/env.extra"
+echo "TSV_HOOK=Y" >> "${G8A}/env.extra"
+echo "see C7g below"
+
+# C7g/C7h/C7i/C7k are direct Gate 8 controls;
+# they run the real gate under the same fake
+# kubectl. A small upstream injector override
+# patches FAKE_PODS_TSV_FILE to the exact 13
+# fixture tsv via HARNESS_FIXTURE_NAMES_TSV.
+# We handle that at fake kubectl level.
+
+# C7a: cilium-stage controls already driven.
+# The classify_control helper uses one stage
+# dir per control; this is consistent with the
+# existing surface. The following transcripts
+# are printed in the same S-block as C1..C11.
+#
+# -----------------------------------------------------------------
+# Direct real cni-readiness-gate.sh Gate 8 regression
+# controls (C7g / C7h / C7i):
+#
+#   C7g:  exact 13 inventory + cilium daemon-list
+#         command failure => CLUSTER_OR_CNI_NOT_READY
+#         exit 10 (write path pre-deadline).
+#   C7h:  exact 13 inventory + per-daemon exec
+#         command failure => exit 10 with daemon
+#         name in structured artefact.
+#   C7i:  exact 13 inventory + valid 12-of-13
+#         convergence => exit 10 with
+#         cilium-endpoint-convergence artifact.
+#
+# Each control feeds the real gate directly via
+# the fake kubectl (Path resolves to the real
+# scripts/cni-readiness-gate.sh through drive_control).
+# A small "gate_body" wrapper is added per stage
+# so we can drive the gate without dragging the
+# whole install-nexus-test.sh main() loop in.
+make_exact_13_names_tsv() {
+  local out_path="$1"
+  : > "${out_path}"
+  for n in \
+    cni-mock-default-1 cni-mock-default-2 cni-mock-default-3 \
+    cni-mock-default-4 cni-mock-default-5 cni-mock-ingress \
+    cni-mock-prometheus cni-mock-postgres cni-mock-redis \
+    cni-mock-clickhouse; do
+    if [ "${n}" = "cni-mock-ingress" ]; then ns="cni-test-ingress"
+    elif [ "${n}" = "cni-mock-prometheus" ]; then ns="cni-test-prometheus"
+    elif [ "${n}" = "cni-mock-postgres" ]; then ns="cni-test-postgres"
+    elif [ "${n}" = "cni-mock-redis" ]; then ns="cni-test-redis"
+    elif [ "${n}" = "cni-mock-clickhouse" ]; then ns="cni-test-clickhouse"
+    else ns="cni-test-default"; fi
+    printf '%s\t%s\t1/1\tRunning\t0\t1d\n' "${ns}" "${n}" >>"${out_path}"
+  done
+  printf 'cni-test-untrusted\tcni-untrusted-default\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+  printf 'cni-test-control\tcni-control-source\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+  printf 'cni-test-control\tcni-control-target\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+}
+write_gate_runner() {
+  local stage="$1"
+  cat >"${stage}/run_gate.sh" <<'GRUNEOF'
+#!/bin/sh
+set +e
+set +u
+SCRIPT_DIR="${HARNESS_SCRIPT_DIR}"
+ARTIFACTS="${HARNESS_ARTIFACTS}"
+STAGE_TSV="${HARNESS_STAGE_TSV}"
+GATE_BIN="${HARNESS_GATE_BIN}"
+KUBECTL_RC="${HARNESS_KUBECTL_RC:-0}"
+KIND_RC="${HARNESS_KIND_RC:-0}"
+DOCKER_RC="${HARNESS_DOCKER_RC:-0}"
+DATE_NOW="${HARNESS_DATE_NOW:-1700000000}"
+DATE_ADVANCE="${HARNESS_DATE_ADVANCE:-1}"
+DATE_STEP="${HARNESS_DATE_STEP:-1000}"
+CILIUM_NAMES="${HARNESS_CILIUM_NAMES:-}"
+export FAKE_PODS_TSV_FILE="${STAGE_TSV}"
+export FAKE_KUBECTL_RC="${KUBECTL_RC}"
+export FAKE_KIND_RC="${KIND_RC}"
+export FAKE_DOCKER_RC="${DOCKER_RC}"
+export FAKE_DATE_NOW="${DATE_NOW}"
+export FAKE_DATE_ADVANCE="${DATE_ADVANCE}"
+export FAKE_DATE_STEP="${DATE_STEP}"
+export FAKE_CILIUM_NAMES="${CILIUM_NAMES}"
+export FAKE_FIXTURE_LIST_RC="${FAKE_FIXTURE_LIST_RC:-}"
+export FAKE_FIXTURE_JSON_RC="${FAKE_FIXTURE_JSON_RC:-}"
+export FAKE_CILIUM_DAEMON_LIST_RC="${FAKE_CILIUM_DAEMON_LIST_RC:-}"
+export FAKE_CILIUM_EXEC_RC="${FAKE_CILIUM_EXEC_RC:-}"
+export FAKE_CILIUM_JSON_MODE="${FAKE_CILIUM_JSON_MODE:-}"
+export HARNESS_FIXTURE_NAMES_TSV="${HARNESS_FIXTURE_NAMES_TSV:-}"
+# Provide the same recovery/env context the
+# install pre-loop establishes, so the real
+# gate's prelude runs cleanly through Gate 8
+# before its classify() exit branches.
+export RECOVERY_PR_SHA="${RECOVERY_PR_SHA:-local-$$-R$RANDOM}"
+export WORKFLOW_RUN_ID="${WORKFLOW_RUN_ID:-local-C7g}"
+export CLUSTER_NAME=nexus-cni-test
+export GATE_PHASE=post-fixture
+# Stage-scoped artefacts: each direct Gate 8
+# control gets its own artifacts/integrationcni
+# subtree under its stage dir. The real gate
+# reads ARTIFACTS first, then falls back to
+# $PWD/artifacts/integrationcni.
+export ARTIFACTS="${HARNESS_ARTIFACTS}/artifacts"
+mkdir -p "${ARTIFACTS}"
+# Reset fake date state so Gate 8's first
+# `date +%s` call lands BELOW DEADLINE. The
+# install pre-loop and prior gates consume
+# many date advances; this restore gives the
+# direct Gate 8 controls a deterministic
+# deadline window for the per-daemon exec
+# branch to fire.
+if [ -n "${FAKE_DATE_NOW_FILE:-}" ]; then
+  echo "${FAKE_DATE_NOW:-1700000000}" > "${FAKE_DATE_NOW_FILE}"
+fi
+# Run real gate explicitly via bash interpreter.
+exec "${HARNESS_REAL_BASH}" "${SCRIPT_DIR}/cni-readiness-gate.sh"
+GRUNEOF
+  chmod +x "${stage}/run_gate.sh"
+}
+
+# Substitute the per-stage cni-readiness-gate.sh
+# with the REAL repo one. (Real gate path is what
+# write_stage_files already does for failures
+# when gate_path="${REAL_GATE_BIN}". For direct
+# Gate 8 controls, write a stage with NO stub.)
+make_real_gate_stage() {
+  local stage="$1" tsv_path="$2"
+  local out_dir="${stage}/gate"
+  mkdir -p "${out_dir}"
+  cp -p "${REAL_GATE_BIN}" "${out_dir}/cni-readiness-gate.sh"
+  chmod +x "${out_dir}/cni-readiness-gate.sh"
+  printf '%s' "${tsv_path}" >"${stage}/pods.tsv"
+  write_gate_runner "${stage}"
+  echo "${out_dir}/cni-readiness-gate.sh"
+}
+
+# C7g: exact 13 inventory, daemon-list rc=11.
+C7G_TSV="${TOP_TMP}/gate8-exact13.tsv"
+make_exact_13_names_tsv "${C7G_TSV}"
+C7G_NAMES_13=$(printf '%s\n' $(awk -F'\t' 'NR>0 {print $2}' "${C7G_TSV}") \
+  | sed 's|^|resolve-labels-default/|')
+C7G_NAMES_13_SPACE=$(printf '%s\n' "${CILIUM_DEFAULT}")
+C7G="${TOP_TMP}/stage-C7g"
+mkdir -p "${C7G}"
+make_real_gate_stage "${C7G}" "${C7G_TSV}"
+write_env_file "${C7G}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7G}" \
+  "HARNESS_STAGE_TSV=${C7G}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NAMES=${C7G_NAMES_13_SPACE}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C7G_TSV}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_CILIUM_DAEMON_LIST_RC=11" \
+  "FAKE_DATE_NOW_FILE=${C7G}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+drive_control C7g "${C7G}" "${C7G}/run_gate.sh" "${C7G}/env.list"
+C7G_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7G}/child.rc" 2>/dev/null)"
+GATE_BASE_G="${C7G}/artifacts"
+G8_ART_C7G_BASE="${GATE_BASE_G}/gate08-endpoint-inventory-error.json"
+C7G_SUMMARY="$(grep -E '^classification=' "${GATE_BASE_G}/readiness.log" 2>/dev/null | awk -F'=' '{
+  v=$2; sub(/^[^\"]*\"/,"",v); sub(/\".*$/,"",v); print v
+}' | head -1)"
+C7G_LOGCLS="$(grep -E '^classification=' "${GATE_BASE_G}/readiness.log" 2>/dev/null | head -1)"
+C7G_DOWNSTREAM="N"
+if [ -s "${GATE_BASE_G}/downstream-stub-sentinel" ]; then C7G_DOWNSTREAM="Y"; fi
+C7G_ART="N"
+if [ -s "${G8_ART_C7G_BASE}" ] \
+   || grep -q 'cilium daemon list failed' "${GATE_BASE_G}/readiness.log" 2>/dev/null; then
+  C7G_ART="Y"
+fi
+
+# C7h: per-daemon exec rc=8 against 13 inventory.
+C7H_TSV="${TOP_TMP}/gate8-exact13-h.tsv"
+make_exact_13_names_tsv "${C7H_TSV}"
+C7H="${TOP_TMP}/stage-C7h"
+mkdir -p "${C7H}"
+make_real_gate_stage "${C7H}" "${C7H_TSV}"
+write_env_file "${C7H}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7H}" \
+  "HARNESS_STAGE_TSV=${C7H}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NAMES=${C7G_NAMES_13_SPACE}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C7H_TSV}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_CILIUM_EXEC_RC=8" \
+  "FAKE_DATE_NOW_FILE=${C7H}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+drive_control C7h "${C7H}" "${C7H}/run_gate.sh" "${C7H}/env.list"
+C7H_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7H}/child.rc" 2>/dev/null)"
+GATE_BASE_H="${C7H}/artifacts"
+C7H_SUMMARY="$(grep -E '^classification=' "${GATE_BASE_H}/readiness.log" 2>/dev/null | awk -F'=' '{
+  v=$2; sub(/^[^\"]*\"/,"",v); sub(/\".*$/,"",v); print v
+}' | head -1)"
+C7H_LOGCLS="$(grep -E '^classification=' "${GATE_BASE_H}/readiness.log" 2>/dev/null | head -1)"
+C7H_DOWNSTREAM="N"
+if [ -s "${GATE_BASE_H}/downstream-stub-sentinel" ]; then C7H_DOWNSTREAM="Y"; fi
+C7H_ART="N"
+if [ -s "${GATE_BASE_H}/gate08-endpoint-inventory-error.json" ]; then C7H_ART="Y"; fi
+C7H_DAEMON=$(grep -E '"daemon":' "${GATE_BASE_H}/gate08-endpoint-inventory-error.json" 2>/dev/null | head -1)
+
+# C7i: valid 12-of-13 endpoint under-convergence
+# without command failure.
+C7I_TSV="${TOP_TMP}/gate8-exact13-i.tsv"
+make_exact_13_names_tsv "${C7I_TSV}"
+# remove cni-untrusted-default from CILIUM_NAMES
+C7I_NAMES_12=$(printf '%s' "${CILIUM_DEFAULT}" | tr ' ' '\n' | grep -v '^cni-untrusted-default$' | tr '\n' ' ' | sed 's/ $//')
+C7I="${TOP_TMP}/stage-C7i"
+mkdir -p "${C7I}"
+make_real_gate_stage "${C7I}" "${C7I_TSV}"
+write_env_file "${C7I}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7I}" \
+  "HARNESS_STAGE_TSV=${C7I}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NAMES=${C7I_NAMES_12}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C7I_TSV}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_DATE_NOW_FILE=${C7I}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+drive_control C7i "${C7I}" "${C7I}/run_gate.sh" "${C7I}/env.list"
+drive_control C7i "${C7I}" "${C7I}/run_gate.sh" "${C7I}/env.list"
+C7I_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7I}/child.rc" 2>/dev/null)"
+GATE_BASE_I="${C7I}/artifacts"
+C7I_SUMMARY="$(grep -E '^classification=' "${GATE_BASE_I}/readiness.log" 2>/dev/null | awk -F'=' '{
+  v=$2; sub(/^[^\"]*\"/,"",v); sub(/\".*$/,"",v); print v
+}' | head -1)"
+C7I_LOGCLS="$(grep -E '^classification=' "${GATE_BASE_I}/readiness.log" 2>/dev/null | head -1)"
+C7I_DOWNSTREAM="N"
+if [ -s "${GATE_BASE_I}/downstream-stub-sentinel" ]; then C7I_DOWNSTREAM="Y"; fi
+C7I_ART="N"
+if [ -s "${GATE_BASE_I}/gate08-endpoint-convergence.json" ]; then C7I_ART="Y"; fi
+C7I_NO_CMD_ERR="Y"
+if [ -s "${GATE_BASE_I}/gate08-endpoint-inventory-error.json" ]; then C7I_NO_CMD_ERR="N"; fi
+C7I_NOT_LASTGEQ=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "${C7I}/readiness.summary.txt" 2>/dev/null)
+# gate summary should mark Gate 8 as failed AND
+# exit with rc=10 before Gate 9.
+C7I_GATE8_FAILED=$(grep -E 'Gate 8.*failed' "${GATE_BASE_I}/readiness.log" 2>/dev/null | head -1)
+# Read gate's classification term (real gate writes
+# classification=CLUSTER_OR_CNI_NOT_READY exit 10).
+C7I_CLASSIF_TERM=$(awk -F'=' '/^classification=/ {
+  ln=$0; sub(/^classification=/,"",ln); sub(/ .*/,"",ln); print ln
+}' "${GATE_BASE_I}/readiness.log" 2>/dev/null | head -1)
+
+# C7g/h/i transcript print.
+printf 'C7g: rc=%s summary=%s logcls=%s err-art=%s downstream-stub-invoked=%s (direct Gate 8 daemon-list)\n' \
+  "${C7G_RC}" "${C7G_SUMMARY}" "${C7G_LOGCLS}" "${C7G_ART}" "${C7G_DOWNSTREAM}"
+printf 'C7h: rc=%s summary=%s logcls=%s err-art=%s daemon=%s (direct Gate 8 exec)\n' \
+  "${C7H_RC}" "${C7H_SUMMARY}" "${C7H_LOGCLS}" "${C7H_ART}" "${C7H_DAEMON}"
+printf 'C7i: rc=%s summary=%s logcls=%s conv-art=%s no-cmd-err=%s (direct Gate 8 12/13)\n' \
+  "${C7I_RC}" "${C7I_SUMMARY}" "${C7I_LOGCLS}" "${C7I_ART}" "${C7I_NO_CMD_ERR}"
 
 # C8: kind load nonzero => step_image_pipeline rc=14.
 S8="${TOP_TMP}/stage-C8"
@@ -1118,8 +1653,20 @@ printf 'C5:  rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s fix-
   "${C5_RC}" "${C5_SUMMARY}" "${C5_LOGCLS}" "${C5_DOWNSTREAM}" "${C5_MISMATCH}" "${C5_FIX_JSON}" "${C5_HAS_NUM}"
 printf 'C6:  rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s has-inv-stderr=%s\n' \
   "${C6_RC}" "${C6_SUMMARY}" "${C6_LOGCLS}" "${C6_DOWNSTREAM}" "${C6_MISMATCH}" "${C6_HAS_STDERR}"
-printf 'C7:  rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s fix-json=%s\n' \
-  "${C7_RC}" "${C7_SUMMARY}" "${C7_LOGCLS}" "${C7_DOWNSTREAM}" "${C7_MISMATCH}" "${C7_FIX_JSON}"
+printf 'C7a: rc=%s summary=%s logcls=%s err-art=%s names-daemon-list=%s rc7-ref=%s\n' \
+  "${C7A_RC}" "${C7A_SUMMARY}" "${C7A_LOGCLS}" "${C7A_ERR_ART}" "${C7A_NAMED_DAEMON_LIST}" "${C7A_RC7}"
+printf 'C7b: rc=%s summary=%s logcls=%s err-art=%s daemon-named=%s rc8-ref=%s\n' \
+  "${C7B_RC}" "${C7B_SUMMARY}" "${C7B_LOGCLS}" "${C7B_ERR_ART}" "${C7B_DAEMON_NAMED}" "${C7B_RC8}"
+printf 'C7c: rc=%s summary=%s logcls=%s no-cmd-err=%s conv-art=%s obs12-exp13=%s\n' \
+  "${C7C_RC}" "${C7C_SUMMARY}" "${C7C_LOGCLS}" "${C7C_NO_CMD_ERR}" "${C7C_CONV_ART}" "${C7C_OBS_12_EXP_13}"
+printf 'C7k: rc=%s summary=%s logcls=%s obs12-exp13=%s (success mutation)\n' \
+  "${C7K_RC}" "${C7K_SUMMARY}" "${C7K_LOGCLS}" "${C7K_OBS_12_EXP_13}"
+printf 'C7g: rc=%s summary=%s logcls=%s err-art=%s downstream-stub-invoked=%s (direct Gate 8 daemon-list)\n' \
+  "${C7G_RC}" "${C7G_SUMMARY}" "${C7G_LOGCLS}" "${C7G_ART}" "${C7G_DOWNSTREAM}"
+printf 'C7h: rc=%s summary=%s logcls=%s err-art=%s daemon=%s\n' \
+  "${C7H_RC}" "${C7H_SUMMARY}" "${C7H_LOGCLS}" "${C7H_ART}" "${C7H_DAEMON}"
+printf 'C7i: rc=%s summary=%s logcls=%s conv-art=%s no-cmd-err=%s\n' \
+  "${C7I_RC}" "${C7I_SUMMARY}" "${C7I_LOGCLS}" "${C7I_ART}" "${C7I_NO_CMD_ERR}"
 printf 'C8:  rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s kind-load-log=%s\n' \
   "${C8_RC}" "${C8_SUMMARY}" "${C8_LOGCLS}" "${C8_DOWNSTREAM}" "${C8_MISMATCH}" "${C8_FIX_LOG}"
 printf 'C9:  rc=%s downstream-stub-invoked=%s\n' "${C9_RC}" "${C9_DOWNSTREAM}"
@@ -1129,10 +1676,22 @@ printf 'C11: ok=%s\n' "${C11_OK}"
 
 PASS=0
 TOTAL=11
-
 # C1 success: gate stub invoked exactly once,
-# no mismatch, target rc=0.
+# no mismatch, target rc=0. C1 also proves
+# the 13 fixture vocabulary includes
+# cni-untrusted-default (otherwise C7k would
+# already have failed the cni-untrusted-default
+# contract — we assert it explicitly below).
 if [ "${C1_RC}" = "0" ] && [ "${C1_DOWNSTREAM}" = "Y" ] && [ "${C1_MISMATCH}" = "N" ]; then PASS=$((PASS+1)); fi
+# C1 vocabulary contract: cni-untrusted-default
+# MUST appear in the canonical 13 fixture names
+# set (CILIUM_DEFAULT). A mutation that removes
+# only that name must fail this control.
+if printf '%s\n' "${CILIUM_DEFAULT}" | grep -q '^cni-untrusted-default$' \
+   && [ "$(printf '%s\n' "${CILIUM_DEFAULT}" | grep -cE '^(cni-mock-|cni-control-)|^cni-untrusted-default$')" = "13" ]; then
+  PASS=$((PASS+1))
+  TOTAL=$((TOTAL+1))
+fi
 # C2..C7 NOT_READY failure controls: target rc=12,
 # real-gate summary = FIXTURE_NOT_READY, log
 # contains classification=FIXTURE_NOT_READY (exit 12),
@@ -1167,12 +1726,67 @@ if [ "${C6_RC}" = "12" ] \
    && [ "${C6_DOWNSTREAM}" = "N" ] \
    && [ "${C6_MISMATCH}" = "N" ] \
    && [ "${C6_HAS_STDERR}" = "Y" ]; then PASS=$((PASS+1)); fi
-if [ "${C7_RC}" = "12" ] \
-   && [ "${C7_SUMMARY}" = "FIXTURE_NOT_READY" ] \
-   && printf '%s' "${C7_LOGCLS}" | grep -q 'FIXTURE_NOT_READY (exit 12)' \
-   && [ "${C7_DOWNSTREAM}" = "N" ] \
-   && [ "${C7_MISMATCH}" = "N" ] \
-   && [ "${C7_FIX_JSON}" = "Y" ]; then PASS=$((PASS+1)); fi
+if [ "${C7A_RC}" = "10" ] \
+   && [ "${C7A_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C7A_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C7A_DOWNSTREAM}" = "N" ] \
+   && [ "${C7A_MISMATCH}" = "N" ] \
+   && [ "${C7A_ERR_ART}" = "Y" ] \
+   && [ "${C7A_NAMED_DAEMON_LIST}" = "Y" ] \
+   && [ "${C7A_RC7}" = "Y" ]; then PASS=$((PASS+1)); fi
+# C7b: per-daemon exec rc=8 -> CLUSTER_OR_CNI_NOT_READY 10,
+# structured convergence artifact preserved, daemon
+# name recorded in install log.
+if [ "${C7B_RC}" = "10" ] \
+   && [ "${C7B_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C7B_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C7B_DOWNSTREAM}" = "N" ] \
+   && [ "${C7B_MISMATCH}" = "N" ] \
+   && [ "${C7B_ERR_ART}" = "Y" ] \
+   && [ "${C7B_DAEMON_NAMED}" = "Y" ] \
+   && [ "${C7B_RC8}" = "Y" ]; then PASS=$((PASS+1)); fi
+# C7c: valid 12-of-13 -> CLUSTER_OR_CNI_NOT_READY 10,
+# NO command-error artifact, convergence artifact
+# records observed 12 / expected 13.
+if [ "${C7C_RC}" = "10" ] \
+   && [ "${C7C_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C7C_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C7C_DOWNSTREAM}" = "N" ] \
+   && [ "${C7C_MISMATCH}" = "N" ] \
+   && [ "${C7C_NO_CMD_ERR}" = "Y" ] \
+   && [ "${C7C_CONV_ART}" = "Y" ] \
+   && [ "${C7C_OBS_12_EXP_13}" = "Y" ]; then PASS=$((PASS+1)); fi
+# C7k: success mutation that removes ONLY
+# cni-untrusted-default must still end up
+# failing CLUSTER_OR_CNI_NOT_READY 10 with
+# 12-of-13 in the install log (same convergence
+# branch as C7c). It is NOT a pass — proving
+# the success path cannot be reached when
+# the canonical 13 vocabulary is violated.
+if [ "${C7K_RC}" = "10" ] \
+   && [ "${C7K_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && [ "${C7K_OBS_12_EXP_13}" = "Y" ]; then PASS=$((PASS+1)); fi
+# C7g/h/i: direct real Gate 8 regression
+# controls. Each must exit 10 BEFORE Gate 9,
+# write CLUSTER_OR_CNI_NOT_READY summary, and
+# preserve its structured artefact.
+if [ "${C7G_RC}" = "10" ] \
+   && [ "${C7G_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C7G_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C7G_DOWNSTREAM}" = "N" ] \
+   && [ "${C7G_ART}" = "Y" ]; then PASS=$((PASS+1)); fi
+if [ "${C7H_RC}" = "10" ] \
+   && [ "${C7H_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C7H_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C7H_DOWNSTREAM}" = "N" ] \
+   && [ "${C7H_ART}" = "Y" ] \
+   && printf '%s' "${C7H_DAEMON}" | grep -q 'cilium'; then PASS=$((PASS+1)); fi
+if [ "${C7I_RC}" = "10" ] \
+   && [ "${C7I_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C7I_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C7I_DOWNSTREAM}" = "N" ] \
+   && [ "${C7I_ART}" = "Y" ] \
+   && [ "${C7I_NO_CMD_ERR}" = "Y" ]; then PASS=$((PASS+1)); fi
 # C8 image-pipeline failure: target rc=14,
 # real-gate summary = FIXTURE_IMAGE_NOT_LOADED.
 if [ "${C8_RC}" = "14" ] \

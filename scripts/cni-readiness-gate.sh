@@ -627,55 +627,228 @@ fi
 # races against identity publication can be
 # recorded as a regression. We wait for cilium's
 # `cilium endpoint list` to surface one entry
-# per fixture Pod (across all agents), which is
-# what scenario probes actually consult.
+# per fixture Pod (across all agents) using the
+# EXACT 13-Pod vocabulary contract: every name
+# starts with cni-mock-, every name equals
+# cni-untrusted-default, or every name starts
+# with cni-control-. We refuse partial /
+# under-converged endpoint publication: a valid
+# observation of LAST < EXPECTED at the deadline
+# fails closed here, NEVER proceeds to Gate 9.
 # -----------------------------------------------------------------
 step_name="08-fixture-endpoint-registered"
 step_no=8
 run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
 if run_in_phase; then
 
-EXPECTED_FIXTURE_LABEL_RE='cni-(target|source|mock|control)'
+# Exact 13-Pod vocabulary contract.
+# Three mutually-exclusive anchored matchers:
+#   * ^cni-mock-*       any cni-mock-<x> pod
+#   * cni-untrusted-default (exact)
+#   * ^cni-control-*    any cni-control-<x> pod
+# This is the SAME set the install pre-loop
+# published; Gate 8 enforces it independently.
+EXPECTED_FIXTURE_LABEL_RE='^(cni-mock-|cni-control-)|^(cni-mock-|cni-control-)|^cni-untrusted-default$|^cni-untrusted-default$|^cni-(mock|untrusted|control)-|^cni-(mock|untrusted|control)-(src|target|source|dest|destination)-'
+# Anchored name matcher (used both inline below
+# and for tighter re-validation of convergence):
+EXPECTED_FIXTURE_NAME_RE='^(cni-mock-[^[:space:]]+|cni-untrusted-default|cni-control-[^[:space:]]+)$'
+
 DEADLINE=$(( $(date +%s) + 360 ))
 LAST=0
+EXPECTED=0
+GATE8_ERR_ART="${ARTIFACTS}/gate08-endpoint-inventory-error.json"
+GATE8_CONV_ART="${ARTIFACTS}/gate08-endpoint-convergence.json"
+# Helper: write structured atomic error artefact
+# and classify as CLUSTER_OR_CNI_NOT_READY 10.
+# Any nonzero rc on (1) fixture inventory
+# (2) daemon list (3) per-daemon exec
+# (4) JSON projection terminates Gate 8.
+gate8_cmd_failure() {
+  local phase="$1"; local cmd="$2"; local rc="$3"; local stderr="$4"
+  local daemon="${5:-}"
+  cat >"$GATE8_ERR_ART.snapshot" <<EOF
+{
+  "command": "${cmd}",
+  "phase": "${phase}",
+  "daemon": "${daemon}",
+  "rc": ${rc},
+  "stderr": $(printf '%s' "$stderr" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "expected_count": ${EXPECTED},
+  "reason": "cilium endpoint inventory command failed"
+}
+EOF
+  mv "$GATE8_ERR_ART.snapshot" "$GATE8_ERR_ART"
+  record_step 8 "failed" "cilium endpoint inventory ${phase} command failed rc=${rc} (see $GATE8_ERR_ART)"
+  classify failed 10 CLUSTER_OR_CNI_NOT_READY
+}
+
+# (1) Fixture inventory: derive EXPECTED from
+# Pod NAME column anchored against the EXACT
+# 13-Pod vocabulary, NOT from incidental
+# namespace text. rc 0 with zero matches is a
+# valid observation (no fixture pods present);
+# only nonzero rc is a command failure that
+# MUST terminate Gate 8.
+set +e
+FIXTURE_NAMES_OUT="${ARTIFACTS}/gate08-fixture-names.out"
+FIXTURE_NAMES_ERR="${ARTIFACTS}/gate08-fixture-names.stderr"
+: > "$FIXTURE_NAMES_OUT"
+: > "$FIXTURE_NAMES_ERR"
+kubectl get pod -A -o json >"$FIXTURE_NAMES_OUT" 2>"$FIXTURE_NAMES_ERR"
+FIXTURE_INV_RC=$?
+set -e
+if (( FIXTURE_INV_RC != 0 )); then
+  gate8_cmd_failure "fixture_inventory" \
+    "kubectl get pod -A -o json" \
+    "$FIXTURE_INV_RC" \
+    "$(cat "$FIXTURE_NAMES_ERR")"
+fi
+EXPECTED=$(python3 -c "
+import json
+try:
+    data=json.loads(open('$FIXTURE_NAMES_OUT').read() or '{\"items\":[]}')
+except Exception:
+    data={'items':[]}
+items=data.get('items') if isinstance(data,dict) else []
+def match(name):
+    return (
+        name.startswith('cni-mock-')
+        or name == 'cni-untrusted-default'
+        or name.startswith('cni-control-')
+    )
+print(sum(1 for it in items if match((it.get('metadata') or {}).get('name',''))))")
+# exact 13 contract: an inventory below the
+# exact expected population already proves the
+# cluster is missing fixture identity; record
+# the convergence artefact and abort here too.
+if (( EXPECTED != 13 )); then
+  cat >"$GATE8_CONV_ART.snapshot" <<EOF
+{
+  "phase": "gate08_exact_population_undercount",
+  "expected_count": 13,
+  "observed_fixture_pod_count": ${EXPECTED},
+  "reason": "fixture vocabulary not exactly 13; Gate 8 cannot proceed"
+}
+EOF
+  mv "$GATE8_CONV_ART.snapshot" "$GATE8_CONV_ART"
+  record_step 8 "failed" "fixture population ${EXPECTED} != 13 (see $GATE8_CONV_ART)"
+  classify failed 10 CLUSTER_OR_CNI_NOT_READY
+fi
+record_step 8 "ok" "fixture population identified: 13"
+
+# (2) Daemon list. Valid-empty zero daemons is
+# NOT a command failure; only nonzero rc
+# classifies as CLUSTER_OR_CNI_NOT_READY 10.
+DAEMON_OUT="${ARTIFACTS}/gate08-daemon-list.out"
+DAEMON_ERR="${ARTIFACTS}/gate08-daemon-list.stderr"
+DAEMON_NAMES="${ARTIFACTS}/gate08-daemon-list.names"
+: > "$DAEMON_OUT"; : > "$DAEMON_ERR"; : > "$DAEMON_NAMES"
+set +e
+kubectl -n kube-system get pod -l k8s-app=cilium \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' \
+  >"$DAEMON_OUT" 2>"$DAEMON_ERR"
+DL_RC=$?
+set -e
+awk '{for(i=1;i<=NF;i++) print $i}' "$DAEMON_OUT" > "$DAEMON_NAMES"
+if (( DL_RC != 0 )); then
+  gate8_cmd_failure "cilium_daemon_list" \
+    "kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath" \
+    "$DL_RC" "$(cat "$DAEMON_ERR")"
+fi
+
+LAST=0
 while (( $(date +%s) < DEADLINE )); do
-  ACC=""
-  for p in $(kubectl -n kube-system get pod -l k8s-app=cilium \
-             -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null); do
-    OUT=$(kubectl -n kube-system exec "$p" -- \
-      bash -c 'cilium endpoint list -o json 2>/dev/null' \
-      2>/dev/null \
-      | python3 -c "
+  ACC_OUT="${ARTIFACTS}/gate08-endpoint.acc.out"
+  ACC_ERR="${ARTIFACTS}/gate08-endpoint.acc.stderr"
+  : > "$ACC_OUT"; : > "$ACC_ERR"
+  # (3)+(4) per-daemon exec and JSON projection.
+  # Either nonzero rc classifies immediately.
+  set +e
+  while read -r daemon; do
+    [ -z "$daemon" ] && continue
+    EXEC_OUT="${ARTIFACTS}/gate08-exec-${daemon}.out"
+    EXEC_ERR="${ARTIFACTS}/gate08-exec-${daemon}.stderr"
+    : > "$EXEC_OUT"; : > "$EXEC_ERR"
+    kubectl -n kube-system exec "$daemon" -- \
+      bash -c 'cilium endpoint list -o json' \
+      >"$EXEC_OUT" 2>"$EXEC_ERR"
+    EXEC_RC=$?
+    if (( EXEC_RC != 0 )); then
+      cat >>"$ACC_ERR" <<EOF
+DAEMON: ${daemon} EXEC_RC=${EXEC_RC}
+$(cat "$EXEC_ERR")
+EOF
+      gate8_cmd_failure "cilium_daemon_exec" \
+        "kubectl -n kube-system exec ${daemon} -- cilium endpoint list" \
+        "$EXEC_RC" "$(cat "$EXEC_ERR")" "$daemon"
+    fi
+    PROJ_OUT="${ARTIFACTS}/gate08-exec-${daemon}.proj.out"
+    PROJ_ERR="${ARTIFACTS}/gate08-exec-${daemon}.proj.stderr"
+    : > "$PROJ_OUT"; : > "$PROJ_ERR"
+    python3 -c "
 import json,sys
 try:
-    d = json.loads(sys.stdin.read())
-except Exception:
-    d = {}
-endpoints = d if isinstance(d, list) else (d.get('endpoint') or [])
-names = []
+    raw=open('${EXEC_OUT}').read()
+    data=json.loads(raw)
+except Exception as e:
+    print('PROJECTION-FAILED: ' + repr(e), file=sys.stderr)
+    sys.exit(17)
+endpoints=data if isinstance(data,list) else (data.get('endpoint') or [])
+names=[]
 for e in endpoints:
-    for c in e.get('status', {}).get('controllers', []):
-        nm = c.get('name', '')
+    for c in e.get('status',{}).get('controllers',[]):
+        nm=c.get('name','')
         if nm.startswith('resolve-labels-default/cni-'):
             names.append(nm)
 for x in sorted(set(names)):
-    print(x)" 2>/dev/null || true)
-    ACC+=$'\n'"$OUT"
-  done
-  LAST=$(printf '%s' "$ACC" \
-    | grep -c "^resolve-labels-default/cni-" || true)
-  EXPECTED=$(kubectl get pod -A --no-headers 2>/dev/null \
-    | grep -cE "$EXPECTED_FIXTURE_LABEL_RE" || true)
-  if (( LAST >= EXPECTED && LAST > 0 )); then
-    record_step 8 "ok" "cilium endpoints $LAST >= fixture pods $EXPECTED"
+    print(x)
+" >"$PROJ_OUT" 2>"$PROJ_ERR"
+    PROJ_RC=$?
+    if (( PROJ_RC != 0 )); then
+      cat >>"$ACC_ERR" <<EOF
+DAEMON: ${daemon} PROJ_RC=${PROJ_RC}
+$(cat "$PROJ_ERR")
+EOF
+      gate8_cmd_failure "cilium_json_projection" \
+        "python3 cilium JSON projection (daemon ${daemon})" \
+        "$PROJ_RC" "$(cat "$PROJ_ERR")" "$daemon"
+    fi
+    cat "$PROJ_OUT" >> "$ACC_OUT"
+  done < "$DAEMON_NAMES"
+  set -e
+  # Count pipeline: awk returns rc 0 on empty
+  # input; a valid zero observation is preserved.
+  LAST=$(awk 'BEGIN{n=0} {n++} END {print n}' "$ACC_OUT")
+  if (( LAST >= EXPECTED )); then
     break
   fi
   sleep 5
 done
-if (( LAST == 0 )); then
-  record_step 8 "failed" "cilium agents reported zero resolve-labels-default/cni-* endpoints"
+
+# AT-or-AFTER deadline: any partial convergence
+# fails closed. LAST < EXPECTED is the
+# canonical under-convergence condition; we do
+# NOT use the prior LAST==0 carve-out because
+# partial convergence (e.g. 11 of 13) was
+# previously let through to Gate 9.
+if (( LAST < EXPECTED )); then
+  cat >"$GATE8_CONV_ART.snapshot" <<EOF
+{
+  "phase": "gate08_underconverged",
+  "daemon_list": $(awk '{printf "%s\\n", $0}' "$DAEMON_NAMES" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().splitlines()))'),
+  "deadline_unix": ${DEADLINE},
+  "now_unix": $(date +%s),
+  "expected_count": ${EXPECTED},
+  "observed_endpoint_label_count": ${LAST},
+  "reason": "cilium endpoint under-convergence: LAST < EXPECTED at deadline"
+}
+EOF
+  mv "$GATE8_CONV_ART.snapshot" "$GATE8_CONV_ART"
+  record_step 8 "failed" "cilium under-converged: ${LAST} < ${EXPECTED} (see $GATE8_CONV_ART)"
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
+
+record_step 8 "ok" "cilium endpoints ${LAST} >= fixture pods ${EXPECTED}"
 fi
 
 # -----------------------------------------------------------------

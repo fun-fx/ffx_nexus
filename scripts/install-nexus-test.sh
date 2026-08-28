@@ -695,37 +695,109 @@ for p in d['pods']:
       "fixture Pods not all Ready within 8 minutes (deadline); observed=${observed_final}/expected=${expected_fixture_count}; details in $snapshot_json" 12
   fi
   # cilium endpoint aggregation across nodes —
-  # d2b.46: uses the SAME anchored matcher so
-  # the expectation set matches the readiness
-  # set. Fail closed if the inventory command
-  # itself errors; never accept 0.
-  local expected
-  local ep_stderr="$ARTIFACTS/cilium-endpoint.stderr"
-  : > "$ep_stderr"
+  # exact 13-Pod contract; per-command failure
+  # classifiers. Each loop iteration captures
+  # the explicit rc of (1) kubectl get pod
+  # daemon-list (2) kubectl exec on every
+  # daemon (3) python3 JSON projection (4) awk
+  # unique-label count. A nonzero rc on any
+  # of (1)/(2)/(3) writes a structured error
+  # artefact and aborts as CLUSTER_OR_CNI_NOT_READY
+  # exit 10. Valid empty output (rc 0, zero
+  # endpoints) is a convergence observation and
+  # only fails after the bounded deadline if
+  # LAST < EXPECTED. Per the existing readiness
+  # gate, Cilium endpoint publication is a
+  # cluster-side concern and never classifies
+  # as FIXTURE_NOT_READY 12.
+  local expected="$expected_fixture_count"
+  # Daemon-list command. Stderr captured, exact rc
+  # retained. Valid-empty zero daemons is NOT a
+  # command failure; only nonzero rc classifies.
+  local daemon_out="$ARTIFACTS/cilium-daemon-list.out"
+  local daemon_err="$ARTIFACTS/cilium-daemon-list.stderr"
+  local daemon_list="$ARTIFACTS/cilium-daemon-list.names"
+  : > "$daemon_out"
+  : > "$daemon_err"
+  : > "$daemon_list"
   set +e
-  expected=$(kubectl get pod -A --no-headers 2>"$ep_stderr" \
-    | grep -cE "$fixture_re" | tr -d '\n')
-  local exp_rc=$?
+  kubectl -n kube-system get pod -l k8s-app=cilium \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' \
+    >"$daemon_out" 2>"$daemon_err"
+  local dl_rc=$?
   set -e
-  if (( exp_rc != 0 )); then
-    local snap="$ARTIFACTS/fixture-pod-readiness-timeout.json"
-    cat >"$snap" <<EOF
-{"command": "kubectl get pod (expected count)", "rc": ${exp_rc}, "stderr": $(printf '%s' "$(cat "$ep_stderr")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'), "observed_count": 0, "expected_count": 13, "reason": "kubectl inventory command failed for endpoint expectation"}
+  awk '{
+    for (i = 1; i <= NF; i++) { print $i }
+  }' "$daemon_out" > "$daemon_list"
+  if (( dl_rc != 0 )); then
+    local daemon_err_art="$ARTIFACTS/cilium-endpoint-inventory-error.json"
+    cat >"$daemon_err_art.snapshot" <<EOF
+{
+  "command": "kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath",
+  "phase": "cilium_daemon_list",
+  "rc": ${dl_rc},
+  "stderr": $(printf '%s' "$(cat "$daemon_err")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "expected_count": ${expected},
+  "reason": "cilium daemon list command failed; endpoint inventory cannot be obtained"
+}
 EOF
-    abort_as FIXTURE_NOT_READY \
-      "kubectl get pod rc=${exp_rc}: cannot derive cilium-endpoint expectation (see $snap)" 12
+    mv "$daemon_err_art.snapshot" "$daemon_err_art"
+    abort_as CLUSTER_OR_CNI_NOT_READY \
+      "cilium daemon list failed rc=${dl_rc}: endpoint inventory cannot be obtained (see $daemon_err_art)" 10
   fi
+  echo "[install] cilium daemon count: $(wc -w <"$daemon_list")"
   deadline=$(( $(date +%s) + 480 ))
   local last=0
+  local convergence_art="$ARTIFACTS/cilium-endpoint-convergence.json"
   while (( $(date +%s) < deadline )); do
-    local acc=""
-    for p in $(kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null); do
-      local out
-      out=$(kubectl -n kube-system exec "$p" -- \
-        bash -c 'cilium endpoint list -o json' 2>/dev/null \
-        | python3 -c "
-import json,sys
-data=json.loads(sys.stdin.read())
+    local acc_names="$ARTIFACTS/cilium-endpoint.acc.out"
+    local acc_err="$ARTIFACTS/cilium-endpoint.acc.stderr"
+    : > "$acc_names"
+    : > "$acc_err"
+    # Iterate the validated daemon list. Each
+    # iteration captures daemon exec rc AND
+    # python3 JSON projection rc. Either nonzero
+    # writes a structured error artefact and
+    # aborts as CLUSTER_OR_CNI_NOT_READY 10.
+    set +e
+    while read -r daemon; do
+      [ -z "$daemon" ] && continue
+      local exec_out="$ARTIFACTS/cilium-exec-${daemon}.out"
+      local exec_err="$ARTIFACTS/cilium-exec-${daemon}.stderr"
+      : > "$exec_out"
+      : > "$exec_err"
+      kubectl -n kube-system exec "$daemon" -- \
+        bash -c 'cilium endpoint list -o json' \
+        >"$exec_out" 2>"$exec_err"
+      local exec_rc=$?
+      if (( exec_rc != 0 )); then
+        cat >"$convergence_art.snapshot" <<EOF
+{
+  "command": "kubectl -n kube-system exec ${daemon} -- cilium endpoint list",
+  "phase": "cilium_daemon_exec",
+  "daemon": "${daemon}",
+  "rc": ${exec_rc},
+  "stderr": $(printf '%s' "$(cat "$exec_err")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "expected_count": ${expected},
+  "reason": "cilium daemon exec failed; cannot read endpoint list"
+}
+EOF
+        mv "$convergence_art.snapshot" "$convergence_art"
+        abort_as CLUSTER_OR_CNI_NOT_READY \
+          "cilium daemon exec ${daemon} failed rc=${exec_rc}: cannot read endpoint list (see $convergence_art)" 10
+      fi
+      local proj_out="$ARTIFACTS/cilium-exec-${daemon}.json.proj.out"
+      local proj_err="$ARTIFACTS/cilium-exec-${daemon}.json.proj.stderr"
+      : > "$proj_out"
+      : > "$proj_err"
+      python3 -c "
+import json,sys,os
+try:
+    raw=open('${exec_out}').read()
+    data=json.loads(raw)
+except Exception as e:
+    print('PROJECTION-FAILED: ' + repr(e), file=sys.stderr)
+    sys.exit(17)
 endpoints=data if isinstance(data,list) else (data.get('endpoint') or [])
 items=[]
 for e in endpoints:
@@ -734,16 +806,60 @@ for e in endpoints:
         if nm.startswith('resolve-labels-default/cni-'):
             items.append(nm)
 for x in set(items): print(x)
-" 2>/dev/null) || true
-      acc+=$(printf "\n%s" "$out")
-    done
-    last=$(printf "%s" "$acc" | grep -c "^resolve-labels-default/cni-" | tr -d '\n' || echo 0)
-    if (( last >= expected )); then break; fi
+" \
+        >"$proj_out" 2>"$proj_err"
+      local proj_rc=$?
+      if (( proj_rc != 0 )); then
+        cat >"$convergence_art.snapshot" <<EOF
+{
+  "command": "python3 cilium JSON projection (daemon ${daemon})",
+  "phase": "cilium_json_projection",
+  "daemon": "${daemon}",
+  "rc": ${proj_rc},
+  "stderr": $(printf '%s' "$(cat "$proj_err" 2>/dev/null || true)" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "expected_count": ${expected},
+  "reason": "cilium JSON projection failed; cannot derive endpoint labels"
+}
+EOF
+        mv "$convergence_art.snapshot" "$convergence_art"
+        abort_as CLUSTER_OR_CNI_NOT_READY \
+          "cilium JSON projection on ${daemon} failed rc=${proj_rc}: cannot derive endpoint labels (see $convergence_art)" 10
+      fi
+      cat "$proj_out" >> "$acc_names"
+    done < "$daemon_list"
+    set -e
+    # Count pipeline: awk is rc 0 on empty input,
+    # so a valid zero observation is preserved.
+    last=$(awk 'BEGIN{n=0} {n++} END {print n}' "$acc_names")
+    # Convergence observation only — no command
+    # failure here. Real under-count failure is
+    # raised AFTER the deadline.
+    if (( last >= expected )); then
+      echo "[install] cilium endpoint labels reached ${last}/${expected}"
+      break
+    fi
     sleep 5
   done
   if (( last < expected )); then
-    abort_as FIXTURE_NOT_READY \
-      "cilium endpoint count ${last} < expected ${expected}" 12
+    # Convergence failure (NOT a command error):
+    # write under-convergence artefact and abort
+    # with CLUSTER_OR_CNI_NOT_READY 10.
+    cat >"$convergence_art.snapshot" <<EOF
+{
+  "command": "cilium endpoint convergence",
+  "phase": "cilium_convergence_undercount",
+  "daemon_list": $(awk '{printf "%s\\n", $0}' "$daemon_list" | python3 -c 'import sys; data=sys.stdin.read().splitlines(); import json; print(json.dumps(data))'),
+  "deadline_unix": ${deadline},
+  "now_unix": $(date +%s),
+  "expected_count": ${expected},
+  "observed_count": $(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/cilium-endpoint.acc.out" 2>/dev/null || echo 0),
+  "observed_labels": $(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/cilium-endpoint.acc.out" 2>/dev/null || echo 0 | awk '{print "[]"}'),
+  "reason": "cilium endpoint publication under-converged; every command succeeded but unique endpoint label count did not reach expected"
+}
+EOF
+    mv "$convergence_art.snapshot" "$convergence_art"
+    abort_as CLUSTER_OR_CNI_NOT_READY \
+      "cilium endpoint convergence under-converged: observed=${last}/${expected}; every command succeeded (see $convergence_art)" 10
   fi
   # Hand off to the readiness gate for the
   # remaining convergence assertions (steps
