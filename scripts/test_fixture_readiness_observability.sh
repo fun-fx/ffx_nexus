@@ -4994,7 +4994,7 @@ printf '\n# C1..C11 + C6p/C6q/C6r/C6s/C6t/C6u/C6v + C7s + C8s/C8t/C8u/C8v/C8w/C8
 # Per-control pass table. Lets the operator
 # attribute a regression to one control name
 # without re-greping the harness source.
-printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s\n' \
+printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s\n' \
   "${C1_PASS}" "${VOCAB_PASS}" "${C2_PASS}" "${C3_PASS}" "${C4_PASS}" "${C5_PASS}" "${C6_PASS}" \
   "${C6P_PASS}" "${C6Q_PASS}" "${C6R_PASS}" "${C6S_PASS}" "${C6T_PASS}" "${C6U_PASS}" "${C6V_PASS}" \
   "${C7A_PASS}" "${C7B_PASS}" "${C7C_PASS}" "${C7K_PASS}" "${C7R_PASS}" "${C7S_PASS}" "${C7D_PASS}" \
