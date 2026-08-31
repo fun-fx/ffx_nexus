@@ -3559,6 +3559,115 @@ fi
 C8V_GATE8_OK="N"
 grep -qE '^\[step 08\] 08-fixture-endpoint-registered : ok' "${G8V_BASE_S}/readiness.log" 2>/dev/null && C8V_GATE8_OK="Y"
 
+# --- C8w --- real Gate 8, malformed fixture
+# JSON. FAKE_FIXTURE_JSON_MALFORMED=1 makes
+# the fake kubectl (which the real Gate 8
+# calls for `get pod -A -o json`) write
+# literal non-JSON to stdout with rc 0, so
+# the fixture-vocabulary PY projection must
+# raise and the new errexit-boundary block
+# in cni-readiness-gate.sh must route it to
+# CLUSTER_OR_CNI_NOT_READY exit 10 with the
+# structured stderr artifact and stop before
+# the expected-label projection / Gate 9.
+C8W_TSV="${TOP_TMP}/gate8-C8w-valid.tsv"
+make_canonical_13_tsv "${C8W_TSV}" NORMAL
+C8W="${TOP_TMP}/stage-C8w"
+mkdir -p "${C8W}"
+make_real_gate_stage "${C8W}" "${C8W_TSV}"
+write_env_file "${C8W}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C8W}" \
+  "HARNESS_STAGE_TSV=${C8W}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C8W_TSV}" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_FIXTURE_JSON_MALFORMED=1" \
+  "FAKE_DATE_NOW_FILE=${C8W}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c8w"
+drive_control C8w "${C8W}" "${C8W}/run_gate.sh" "${C8W}/env.list"
+C8W_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8W}/child.rc" 2>/dev/null)"
+G8W_BASE_S="${C8W}/artifacts"
+C8W_SUMMARY="$(cat "${G8W_BASE_S}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G8W_BASE_S}/readiness.summary.txt" ] && C8W_SUMMARY="__MISSING__"
+C8W_LOGCLS="$(grep -E '^classification=' "${G8W_BASE_S}/readiness.log" 2>/dev/null | head -1)"
+C8W_FIXV_STERR="${G8W_BASE_S}/gate08-fixture-vocab.stderr"
+C8W_FIXV_ERR_CONTENTS="$(cat "${C8W_FIXV_STERR}" 2>/dev/null || echo '__MISSING__')"
+C8W_CMD_ERR="${G8W_BASE_S}/gate08-endpoint-inventory-error.json"
+C8W_CMD_ERR_CONTENTS="$(cat "${C8W_CMD_ERR}" 2>/dev/null || echo '__MISSING__')"
+C8W_PHASE="__MISSING__"
+C8W_RC_JSON="__MISSING__"
+C8W_LABEL_STERR="${G8W_BASE_S}/gate08-expected-labels.stderr"
+C8W_LABEL_STERR_PRESENT="N"
+[ -s "${C8W_LABEL_STERR}" ] && C8W_LABEL_STERR_PRESENT="Y"
+C8W_GATE9_OK="N"
+C8W_GATE8_OK="N"
+grep -qE '^\[step 09\] 09-control-path-validated : ok' "${G8W_BASE_S}/readiness.log" 2>/dev/null && C8W_GATE9_OK="Y"
+grep -qE '^\[step 08\] 08-fixture-endpoint-registered : ok' "${G8W_BASE_S}/readiness.log" 2>/dev/null && C8W_GATE8_OK="Y"
+if [ -s "${C8W_CMD_ERR}" ]; then
+  C8W_PHASE=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(d.get('phase','__MISSING__'))" "${C8W_CMD_ERR}" 2>/dev/null || echo '__MISSING__')
+  C8W_RC_JSON=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(d.get('rc','__MISSING__'))" "${C8W_CMD_ERR}" 2>/dev/null || echo '__MISSING__')
+fi
+
+# --- C8x --- real Gate 8, valid canonical
+# inventory, but pre-create the expected-
+# label output path AS A DIRECTORY so the
+# python projection's open(out, 'w') raises
+# IsADirectoryError. The new errexit barrier
+# in cni-readiness-gate.sh must route that
+# through gate08_expected_labels_projection
+# and classify exit 10 before Gate 8 success
+# / Gate 9 can run.
+C8X_TSV="${TOP_TMP}/gate8-C8x-valid.tsv"
+make_canonical_13_tsv "${C8X_TSV}" NORMAL
+C8X="${TOP_TMP}/stage-C8x"
+mkdir -p "${C8X}"
+make_real_gate_stage "${C8X}" "${C8X_TSV}"
+# pre-create the gate08-endpoint.expected.out
+# path as a DIRECTORY before the gate runs.
+mkdir -p "${C8X}/artifacts/gate08-endpoint.expected.out"
+write_env_file "${C8X}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C8X}" \
+  "HARNESS_STAGE_TSV=${C8X}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C8X_TSV}" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_DATE_NOW_FILE=${C8X}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c8x"
+drive_control C8x "${C8X}" "${C8X}/run_gate.sh" "${C8X}/env.list"
+C8X_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8X}/child.rc" 2>/dev/null)"
+G8X_BASE_S="${C8X}/artifacts"
+C8X_SUMMARY="$(cat "${G8X_BASE_S}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G8X_BASE_S}/readiness.summary.txt" ] && C8X_SUMMARY="__MISSING__"
+C8X_LOGCLS="$(grep -E '^classification=' "${G8X_BASE_S}/readiness.log" 2>/dev/null | head -1)"
+C8X_LABEL_STERR="${G8X_BASE_S}/gate08-expected-labels.stderr"
+C8X_LABEL_STERR_CONTENTS="$(cat "${C8X_LABEL_STERR}" 2>/dev/null || echo '__MISSING__')"
+C8X_CMD_ERR="${G8X_BASE_S}/gate08-endpoint-inventory-error.json"
+C8X_CMD_ERR_CONTENTS="$(cat "${C8X_CMD_ERR}" 2>/dev/null || echo '__MISSING__')"
+C8X_PHASE="__MISSING__"
+C8X_RC_JSON="__MISSING__"
+C8X_GATE9_OK="N"
+C8X_GATE8_OK="N"
+grep -qE '^\[step 09\] 09-control-path-validated : ok' "${G8X_BASE_S}/readiness.log" 2>/dev/null && C8X_GATE9_OK="Y"
+grep -qE '^\[step 08\] 08-fixture-endpoint-registered : ok' "${G8X_BASE_S}/readiness.log" 2>/dev/null && C8X_GATE8_OK="Y"
+if [ -s "${C8X_CMD_ERR}" ]; then
+  C8X_PHASE=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(d.get('phase','__MISSING__'))" "${C8X_CMD_ERR}" 2>/dev/null || echo '__MISSING__')
+  C8X_RC_JSON=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(d.get('rc','__MISSING__'))" "${C8X_CMD_ERR}" 2>/dev/null || echo '__MISSING__')
+fi
+
 printf 'C8t: rc=%s summary=%s logcls=%s missing-pair=%s unexpected-stale=%s gate9-ok=%s (real Gate 8 stale substitution)\n' \
   "${C8T_RC}" "${C8T_SUMMARY}" "${C8T_LOGCLS}" \
   "${C8T_MISSING_PAIR}" "${C8T_UNEXPECTED_STALE}" "${C8T_GATE9_OK}"
@@ -3595,6 +3704,16 @@ if [ -s "${S8}/downstream-stub-sentinel" ]; then C8_DOWNSTREAM="Y"; fi
 C8_MISMATCH="N"
 if [ -s "${S8}/abort-gate-mismatch.json" ]; then C8_MISMATCH="Y"; fi
 C8_FIX_LOG="$([ -s "${S8}/fixture-image-kind-load.log" ] && echo Y || echo N)"
+
+# Print C8w and C8x control transcripts.
+printf 'C8w: rc=%s summary=%s logcls=%s fixv-stderr=%s phase=%s rc-json=%s label-stderr-present=%s gate8-ok=%s gate9-ok=%s (real Gate 8 vocab projection failure)\n' \
+  "${C8W_RC}" "${C8W_SUMMARY}" "${C8W_LOGCLS}" \
+  "${C8W_FIXV_ERR_CONTENTS}" "${C8W_PHASE}" "${C8W_RC_JSON}" \
+  "${C8W_LABEL_STERR_PRESENT}" "${C8W_GATE8_OK}" "${C8W_GATE9_OK}"
+printf 'C8x: rc=%s summary=%s logcls=%s phase=%s rc-json=%s label-stderr=%s gate8-ok=%s gate9-ok=%s (real Gate 8 expected-labels open failure)\n' \
+  "${C8X_RC}" "${C8X_SUMMARY}" "${C8X_LOGCLS}" \
+  "${C8X_PHASE}" "${C8X_RC_JSON}" \
+  "${C8X_LABEL_STERR_CONTENTS}" "${C8X_GATE8_OK}" "${C8X_GATE9_OK}"
 
 # C9: deadline boundary. Date advances fast;
 # fixtures_ready=1 set on first 13-ready iteration;
@@ -3745,6 +3864,99 @@ if [ -n "${ANCHORED_PIPE_HITS}" ]; then
   printf 'C11-FAIL: anchored table pipeline regressed in target source:\n%s\n' "${ANCHORED_PIPE_HITS}" >&2
 fi
 
+# d2b.49: Gate 8 errexit-boundary static
+# guards. The two python projections must
+# be enclosed in `set +e` ... `set -e` and
+# capture rc; their stderr must go to a
+# named, initialized file the matching
+# handler then cats; and no projection may
+# be wrapped in `|| true`. C8w and C8x must
+# each execute the real gate exactly once.
+GATE="${REAL_GATE_BIN}"
+# 1. set +e immediately precedes each
+#    python projection; rc is captured;
+#    set -e follows.
+GATE_VOCAB_PYOPEN=$(grep -n "^python3 - .* <<'PYEOF'" "${GATE}" | head -2 || true)
+VOCAB_PY_LEN=$(printf '%s' "${GATE_VOCAB_PYOPEN}" | awk -F':' '{print $1}' | head -1 || true)
+WRONG_BOUNDARY="N"
+if [ -n "${VOCAB_PY_LEN}" ]; then
+  LEADOFF_LINES=$(sed -n "$((VOCAB_PY_LEN-15)),$((VOCAB_PY_LEN-1))p" "${GATE}")
+  if ! printf '%s' "${LEADOFF_LINES}" | grep -q '^set +e'; then
+    WRONG_BOUNDARY="Y"
+  fi
+  if ! sed -n "$((VOCAB_PY_LEN+1)),\$p" "${GATE}" | grep -m1 -n . >/dev/null 2>&1; then
+    : # noop, syntax already validated by bash -n
+  fi
+  POST_RC_LINE=$(awk '/^PYEOF$/{found=NR; exit} found && NR>found{print NR; exit 0}' "${GATE}")
+  if [ -n "${POST_RC_LINE}" ]; then
+    POST_LINES=$(sed -n "$((POST_RC_LINE+1)),$((POST_RC_LINE+3))p" "${GATE}")
+    if ! printf '%s' "${POST_LINES}" | grep -q '^set -e'; then
+      WRONG_BOUNDARY="Y"
+    fi
+  fi
+fi
+if [ "${WRONG_BOUNDARY}" = "Y" ]; then
+  C11_OK="N"
+  printf 'C11-FAIL: gate 8 python projection(s) not enclosed by set +e/rc/set -e\n' >&2
+fi
+# 2. both stderr files are initialized
+#    (: > "$...") before use and read by
+#    the matching handler.
+if ! grep -qF 'GATE8_FIXTURE_VOCAB_ERR=' "${GATE}" \
+   || ! grep -qF ': > "$GATE8_FIXTURE_VOCAB_ERR"' "${GATE}" \
+   || ! grep -qF 'cat "$GATE8_FIXTURE_VOCAB_ERR"' "${GATE}"; then
+  C11_OK="N"
+  printf 'C11-FAIL: gate 8 fixture-vocab stderr artifact not initialized+handler-bound\n' >&2
+fi
+if ! grep -qF 'GATE8_EXPECTED_LABELS_ERR=' "${GATE}" \
+   || ! grep -qF ': > "$GATE8_EXPECTED_LABELS_ERR"' "${GATE}" \
+   || ! grep -qF 'cat "$GATE8_EXPECTED_LABELS_ERR"' "${GATE}"; then
+  C11_OK="N"
+  printf 'C11-FAIL: gate 8 expected-labels stderr artifact not initialized+handler-bound\n' >&2
+fi
+# 3. no projection invocation may be wrapped
+#    in `|| true`.
+if grep -nE 'python3[[:space:]]+-.+<<.PYEOF.+[^|]\|\|[[:space:]]*true' "${GATE}" >/dev/null 2>&1 \
+   || grep -nE 'python3[[:space:]]+-.+python3.*[^|]\|\|[[:space:]]*true' "${GATE}" >/dev/null 2>&1; then
+  C11_OK="N"
+  printf 'C11-FAIL: gate 8 python projection uses `|| true`\n' >&2
+fi
+# 4. no handler cats a path that was never
+#    written. GATE08_ERR_ART, command-error
+#    path gate08-cmd-error.json must be
+#    produced by a `cat > $GATE8_ERR_ART.snapshot`
+#    move block. We require the snapshot-mv
+#    pair for both phases declared in the
+#    guard list.
+for PHASE in gate08_fixture_vocabulary_projection_failure gate08_expected_labels_projection_failure; do
+  if ! grep -qE "\"${PHASE}\"" "${GATE}"; then
+    C11_OK="N"
+    printf 'C11-FAIL: gate 8 phase %s not present in handler\n' "${PHASE}" >&2
+  fi
+done
+# 5. C8w and C8x drive_control sites each
+#    execute the real gate exactly once.
+SELF_HARNESS="${SCRIPT_DIR}/test_fixture_readiness_observability.sh"
+for CTRL in C8w C8x; do
+  DRIVES=$(grep -nE "^drive_control ${CTRL} " "${SELF_HARNESS}" 2>/dev/null | wc -l | awk '{print $1}')
+  if [ "${DRIVES}" != "1" ]; then
+    C11_OK="N"
+    printf 'C11-FAIL: %s drive_control count = %s (expected 1)\n' "${CTRL}" "${DRIVES}" >&2
+  fi
+  if [ "${CTRL}" = "C8w" ]; then
+    if ! grep -qE 'FAKE_FIXTURE_JSON_MALFORMED=1' "${SELF_HARNESS}"; then
+      C11_OK="N"
+      printf 'C11-FAIL: C8w FAKE_FIXTURE_JSON_MALFORMED injection missing\n' >&2
+    fi
+  fi
+  if [ "${CTRL}" = "C8x" ]; then
+    if ! grep -qE 'mkdir -p "\$\{C8X\}/artifacts/gate08-endpoint\.expected\.out"' "${SELF_HARNESS}"; then
+      C11_OK="N"
+      printf 'C11-FAIL: C8x dir-conflict precreate missing\n' >&2
+    fi
+  fi
+done
+
 # d2b.46-followup #3: static one-shot call-count
 # and stage-uniqueness assertion. Every direct
 # Gate 8 / Step-G recovery control must be
@@ -3753,7 +3965,7 @@ fi
 # over the harness source) so a regression that
 # adds a duplicate invocation breaks the test
 # at source time, not at run time.
-C11_ONE_SHOT_LIST="C7g C7h C7i C7d C7r C7s C8r C8d C8s C8t C8u C8v C6p C6q C6r C6s C6t C6u C6v"
+C11_ONE_SHOT_LIST="C7g C7h C7i C7d C7r C7s C8r C8d C8s C8t C8u C8v C8w C8x C6p C6q C6r C6s C6t C6u C6v"
 C11_ONE_SHOT_OK="Y"
 for ctrl in ${C11_ONE_SHOT_LIST}; do
   # Count exact literal drive_control invocations
@@ -3855,7 +4067,7 @@ printf 'C10: rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s fix-
 printf 'C11: ok=%s\n' "${C11_OK}"
 
 PASS=0
-TOTAL=37 # C1..C11 + C7a/b/c/k/g/h/i + C7d + C7r + C7s + C8r + C8d + C8s + C6p + C6q + C6r + C6s + C6t + C6u + C6v + M1 + M2a + M2b
+TOTAL=39 # C1..C11 + C7a/b/c/k/g/h/i + C7d + C7r + C7s + C8r + C8d + C8s + C8t + C8u + C8v + C8w + C8x + C6p + C6q + C6r + C6s + C6t + C6u + C6v + M1 + M2a + M2b
 # Per-control pass ledger (collects results so the
 # final summary can name which controls failed).
 # Bash 3.2 (macOS /bin/bash) does not support
@@ -3892,6 +4104,8 @@ C8D_PASS=N
 C8T_PASS=N
 C8U_PASS=N
 C8V_PASS=N
+C8W_PASS=N
+C8X_PASS=N
 C8_PASS=N
 C9_PASS=N
 C10_PASS=N
@@ -4149,6 +4363,38 @@ if [ "${C8V_RC}" = "10" ] \
    && [ "${C8V_MISSING_PAIR}" = "Y" ] \
    && [ "${C8V_PROBE_CARD}" = "2" ] \
    && [ "${C8V_GATE8_OK}" = "N" ]; then PASS=$((PASS+1)); C8V_PASS=Y; fi
+# C8w: Gate 8 fails fast on malformed-JSON
+# via the new errexit boundary, writes
+# gate08-fixture-vocab.stderr with the parse
+# error, the structured command-error phase
+# is gate08_fixture_vocabulary_projection_failure,
+# expected-label projection & Gate 9 must
+# not run, cmd-error rc=17.
+if [ "${C8W_RC}" = "10" ] \
+   && [ "${C8W_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C8W_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && printf '%s' "${C8W_FIXV_ERR_CONTENTS}" | grep -qE 'PROJ-FAILED|JSON|malformed|Expecting|json\.loads' \
+   && [ "${C8W_PHASE}" = "gate08_fixture_vocabulary_projection_failure" ] \
+   && [ "${C8W_RC_JSON}" = "17" ] \
+   && [ "${C8W_LABEL_STERR_PRESENT}" = "N" ] \
+   && [ "${C8W_GATE9_OK}" = "N" ] \
+   && [ "${C8W_GATE8_OK}" = "N" ]; then PASS=$((PASS+1)); C8W_PASS=Y; fi
+# C8x: Gate 8 fails fast on real-Python
+# IsADirectoryError open() failure, gate08-
+# expected-labels.stderr contains the
+# traceback, structured command-error phase
+# is gate08_expected_labels_projection_failure,
+# Gate 8 success / Gate 9 absent, cmd-error rc
+# nonzero.
+if [ "${C8X_RC}" = "10" ] \
+   && [ "${C8X_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C8X_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && printf '%s' "${C8X_LABEL_STERR_CONTENTS}" | grep -qE 'IsADirectoryError|Errno 21|expects/IsADirectoryError|gate08-endpoint\\.expected\\.out' \
+   && [ "${C8X_PHASE}" = "gate08_expected_labels_projection_failure" ] \
+   && [ "${C8X_RC_JSON}" != "__MISSING__" ] \
+   && [ "${C8X_RC_JSON}" != "0" ] \
+   && [ "${C8X_GATE9_OK}" = "N" ] \
+   && [ "${C8X_GATE8_OK}" = "N" ]; then PASS=$((PASS+1)); C8X_PASS=Y; fi
 
 if [ "${C7A_RC}" = "10" ] \
    && [ "${C7A_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
@@ -4546,7 +4792,7 @@ printf 'M1: summary_path_file_present=%s abort_log_line=%s log_label=%s log_expe
   "${M1_CANONICAL_PRESENT}"
 
 PASS=$((${PASS} + 0))
-TOTAL=37
+TOTAL=39
 if [ "${M1_RC}" = "16" ] \
    && [ "${M1_INVOKED}" = "Y" ] \
    && [ "${M1_JSON_PARSEABLE}" = "Y" ] \
@@ -4722,7 +4968,7 @@ printf 'M2b: rc=%s stderr-named-gate=%s stderr-named-nonexec=%s stub-sentinel-pr
   "${M2B_READINESS_LOG_PRESENT}" "${M2B_MISMATCH_JSON_PRESENT}" \
   "${M2B_BIT_FILE}"
 
-TOTAL=37
+TOTAL=39
 if [ "${M2A_RC}" = "22" ] \
    && [ "${M2A_STDERR_NAMED_GATE}" = "Y" ] \
    && [ "${M2A_STDERR_NAMED_MISSING}" = "Y" ] \
@@ -4744,7 +4990,7 @@ if [ "${M2B_RC}" = "22" ] \
   M2B_PASS=Y
 fi
 
-printf '\n# C1..C11 + C6p/C6q/C6r/C6s/C6t/C6u/C6v + C7s + C8s + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
+printf '\n# C1..C11 + C6p/C6q/C6r/C6s/C6t/C6u/C6v + C7s + C8s/C8t/C8u/C8v/C8w/C8x + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
 # Per-control pass table. Lets the operator
 # attribute a regression to one control name
 # without re-greping the harness source.
@@ -4753,7 +4999,8 @@ printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%
   "${C6P_PASS}" "${C6Q_PASS}" "${C6R_PASS}" "${C6S_PASS}" "${C6T_PASS}" "${C6U_PASS}" "${C6V_PASS}" \
   "${C7A_PASS}" "${C7B_PASS}" "${C7C_PASS}" "${C7K_PASS}" "${C7R_PASS}" "${C7S_PASS}" "${C7D_PASS}" \
   "${C7G_PASS}" "${C7H_PASS}" "${C7I_PASS}" "${C8R_PASS}" "${C8S_PASS}" "${C8D_PASS}" \
-  "${C8T_PASS}" "${C8U_PASS}" "${C8V_PASS}" "${C8_PASS}" "${C9_PASS}" "${C10_PASS}" "${C11_PASS}" \
+  "${C8T_PASS}" "${C8U_PASS}" "${C8V_PASS}" "${C8W_PASS}" "${C8X_PASS}" \
+  "${C8_PASS}" "${C9_PASS}" "${C10_PASS}" "${C11_PASS}" \
   "${M1_PASS}" "${M2A_PASS}" "${M2B_PASS}"
 if [ "${PASS}" = "${TOTAL}" ]; then
   if [ "${NEXUS_VOCAB_SELFCHECK:-0}" = "1" ] || [ "${1:-}" = "--selfcheck" ] || [ "${1:-}" = "--vocab-check" ]; then

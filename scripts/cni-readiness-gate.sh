@@ -746,10 +746,24 @@ GATE8_DYNAMIC_PROBE_NAMESPACE='cni-control'
 # loop and the deadline branch see the same
 # evidence.
 GATE8_FIXTURE_VOCAB="${ARTIFACTS}/gate08-fixture-vocab.json"
+# d2b.49 errexit boundary: set -e is in
+# effect by default; the python projection
+# MUST be enclosed in set +e ... rc capture
+# ... set -e so a non-zero python exit is
+# routed through gate8_cmd_failure rather
+# than terminating the shell before the rc
+# is read. Likewise, stderr is captured
+# into GATE8_FIXTURE_VOCAB_ERR (the file
+# the handler reads) — defined and truncated
+# here so the handler's `cat` cannot carry
+# a previous-run command's stderr forward.
+GATE8_FIXTURE_VOCAB_ERR="${ARTIFACTS}/gate08-fixture-vocab.stderr"
+: > "$GATE8_FIXTURE_VOCAB_ERR"
+set +e
 python3 - "${GATE8_CANONICAL_12_PAIRS[@]}" \
   "$FIXTURE_NAMES_OUT" "$GATE8_FIXTURE_VOCAB" \
   "$GATE8_DYNAMIC_PROBE_REGEX" "$GATE8_DYNAMIC_PROBE_NAMESPACE" \
-  "$EXACT_POPULATION_EXPECTED" >/dev/null 2>"$ARTIFACTS/gate08-fixture-vocab.stderr" <<'PYEOF'
+  "$EXACT_POPULATION_EXPECTED" >/dev/null 2>"$GATE8_FIXTURE_VOCAB_ERR" <<'PYEOF'
 import json, re, sys
 pairs_raw = sys.argv[1:-5]
 json_path, vocab_path, dyn_re_s, dyn_ns_s, expected_s = sys.argv[-5:]
@@ -818,13 +832,14 @@ obj = {
 open(vocab_path, 'w').write(json.dumps(obj, indent=2) + "\n")
 PYEOF
 VOCAB_PROJ_RC=$?
+set -e
 if (( VOCAB_PROJ_RC != 0 )); then
   cat >"$GATE8_ERR_ART.snapshot" <<EOF
 {
   "command": "python3 gate08 fixture vocabulary projection",
   "phase": "gate08_fixture_vocabulary_projection_failure",
   "rc": ${VOCAB_PROJ_RC},
-  "stderr": $(printf '%s' "$(cat "$ARTIFACTS/gate08-fixture-vocab.stderr")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "stderr": $(printf '%s' "$(cat "$GATE8_FIXTURE_VOCAB_ERR")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
   "expected_count": ${EXACT_POPULATION_EXPECTED},
   "reason": "gate08 vocabulary projection failed; cannot assert canonical 12+1"
 }
@@ -867,10 +882,23 @@ fi
 # so the file is a normalized set.
 GATE8_EXPECTED_LABELS="${ARTIFACTS}/gate08-endpoint.expected.out"
 GATE8_CANONICAL_NS_NAMES=$(printf '%s\n' "${GATE8_CANONICAL_12_PAIRS[@]}" | sort -u)
+# d2b.49 errexit boundary for the expected-
+# label projection. The handler at line ~907
+# reads $GATE8_EXPECTED_LABELS_ERR; we define
+# and truncate it here so it always carries
+# the stderr from THIS invocation rather than
+# a previous run's leftover. set +e around
+# the python command so non-zero exit is
+# captured into GATE8_EXPECTED_LABELS_RC and
+# routed through gate8_cmd_failure instead of
+# terminating the shell under set -e.
+GATE8_EXPECTED_LABELS_ERR="${ARTIFACTS}/gate08-expected-labels.stderr"
+: > "$GATE8_EXPECTED_LABELS_ERR"
+set +e
 python3 - "$FIXTURE_NAMES_OUT" "$GATE8_EXPECTED_LABELS" \
   "$GATE8_CANONICAL_NS_NAMES" \
   "$GATE8_DYNAMIC_PROBE_REGEX" "$GATE8_DYNAMIC_PROBE_NAMESPACE" \
-  <<'PYEOF'
+  2>"$GATE8_EXPECTED_LABELS_ERR" <<'PYEOF'
 import json, re, sys
 src, out, canonical_pairs_s, dyn_re_s, dyn_ns_s = sys.argv[1:6]
 dyn_re = re.compile(dyn_re_s)
@@ -901,11 +929,12 @@ for l in sorted(labels):
 open(out, 'w').write('\n'.join(uniq) + ('' if not uniq else '\n'))
 PYEOF
 GATE8_EXPECTED_LABELS_RC=$?
+set -e
 if (( GATE8_EXPECTED_LABELS_RC != 0 )); then
-  gate8_cmd_failure "gate08_expected_labels_projection" \
+  gate8_cmd_failure "gate08_expected_labels_projection_failure" \
     "python3 gate08 expected labels projection" \
     "$GATE8_EXPECTED_LABELS_RC" \
-    "$(cat "$ARTIFACTS/gate08-expected-labels.stderr")"
+    "$(cat "$GATE8_EXPECTED_LABELS_ERR")"
 fi
 # d2b.46 follow-up Block D: do NOT log
 # Step 8 "ok" yet. Step 8 only records "ok"
