@@ -197,6 +197,30 @@ print(json.dumps({"items": items}))
               echo "fake kubectl cilium daemon-list stderr (rc=${rc})" 1>&2
               exit "${rc}"
             fi
+            # d2b.46-followup: recovery control.
+            # When FAKE_CILIUM_DAEMON_LIST_RECOVERY=1
+            # AND FAKE_CILIUM_DAEMON_LIST_COUNTER_FILE
+            # points at a writable file, we count
+            # invocations: the FIRST call returns
+            # empty (rc 0, zero daemons = valid empty
+            # observation); the SECOND and later
+            # calls return the stable daemon name.
+            # This proves the production path can
+            # recover from a valid-empty first poll.
+            if [ "${FAKE_CILIUM_DAEMON_LIST_RECOVERY:-0}" = "1" ] \
+               && [ -n "${FAKE_CILIUM_DAEMON_LIST_COUNTER_FILE:-}" ]; then
+              c="${FAKE_CILIUM_DAEMON_LIST_COUNTER_FILE}"
+              cur=$(cat "${c}" 2>/dev/null || echo 0)
+              cur=$((cur + 1))
+              echo "${cur}" > "${c}"
+              if [ "${cur}" = "1" ]; then
+                # Valid empty observation on first
+                # poll. Per the production path we
+                # must NOT classify as a failure —
+                # we sleep-and-retry on a later poll.
+                exit 0
+              fi
+            fi
             echo "cilium-fake-${RANDOM:-x}"
             exit 0
           fi
@@ -217,18 +241,18 @@ print(json.dumps({"items": items}))
               exit 0
               ;;
             *)
-              if [ -n "${FAKE_CILIUM_NAMES:-}" ]; then
-                first=1
-                printf '['
-                for n in ${FAKE_CILIUM_NAMES}; do
-                  if [ "${first}" = "1" ]; then first=0; else printf ','; fi
-                  printf '{"status":{"controllers":[{"name":"resolve-labels-default/%s"}]}}' "$n"
-                done
-                printf ']'
-              else
-                echo '[]'
-              fi
-              exit 0
+          if [ -n "${FAKE_CILIUM_NAMES:-}" ]; then
+            first=1
+            printf '['
+            for n in ${FAKE_CILIUM_NAMES}; do
+              if [ "${first}" = "1" ]; then first=0; else printf ','; fi
+              printf '{"status":{"controllers":[{"name":"resolve-labels-default/%s"}]}}' "$n"
+            done
+            printf ']'
+          else
+            echo '[]'
+          fi
+          exit 0
               ;;
           esac
           ;;
@@ -321,6 +345,36 @@ cat >"${FAKE_BIN}/docker" <<'POSIXEOF'
 exit "${FAKE_DOCKER_RC:-0}"
 POSIXEOF
 chmod +x "${FAKE_BIN}/docker"
+
+# Fake comm: by default delegating to the absolute-real
+# comm on the host so production-path scripts see exactly
+# the same diff/sort behavior as a real cni cluster. A
+# per-stage injection (FAKE_COMM_FAIL_RC) makes the mock
+# exit rc=9 with a controlled stderr; that is the only
+# way the fixture subset CAN observe a comm failure
+# because /usr/bin/comm never fails non-zero for two
+# sorted files. We resolve and capture the absolute-real
+# binary at fakebin time so the path is stable under the
+# harness's PATH manipulation.
+REAL_COMM_PATH="$(command -v comm)"
+if [ -z "${REAL_COMM_PATH}" ] || [ ! -x "${REAL_COMM_PATH}" ]; then
+  printf 'FATAL: cannot resolve absolute comm on host (PATH=%s)\n' "${PATH}" >&2
+  exit 2
+fi
+cat >"${FAKE_BIN}/comm" <<COMMFAKEEOF
+#!/bin/sh
+# default = delegate to absolute-real comm so the
+# production path sees unmutated behavior. Stage-scoped
+# injection: FAKE_COMM_FAIL_RC makes mock exit rc=9 and
+# emits a controlled stderr line that the production
+# script captures verbatim.
+if [ -n "\${FAKE_COMM_FAIL_RC:-}" ]; then
+  printf 'fake comm: forced failure rc=%s op=%s args=%s\n' "\${FAKE_COMM_FAIL_RC}" "\${FAKE_COMM_FAIL_OP:-unset}" "\$*" 1>&2
+  exit "\${FAKE_COMM_FAIL_RC}"
+fi
+exec "${REAL_COMM_PATH}" "\$@"
+COMMFAKEEOF
+chmod +x "${FAKE_BIN}/comm"
 
 # Verify no bash, no env, no python3 in FAKE_BIN.
 for tool in bash env python3 sh bash.exe; do
@@ -446,13 +500,13 @@ DATE_ADVANCE="\${HARNESS_DATE_ADVANCE:-1}"
 DATE_STEP="\${HARNESS_DATE_STEP:-1000}"
 CILIUM_NAMES="\${HARNESS_CILIUM_NAMES:-}"
 export FAKE_PODS_TSV_FILE="\${STAGE_TSV}"
-  export FAKE_KUBECTL_RC="\${KUBECTL_RC}"
-  export FAKE_KIND_RC="\${KIND_RC}"
-  export FAKE_DOCKER_RC="\${DOCKER_RC}"
-  export FAKE_DATE_NOW="\${DATE_NOW}"
-  export FAKE_DATE_ADVANCE="\${DATE_ADVANCE}"
-  export FAKE_DATE_STEP="\${DATE_STEP}"
-  export FAKE_CILIUM_NAMES="\${CILIUM_NAMES}"
+export FAKE_KUBECTL_RC="\${KUBECTL_RC}"
+export FAKE_KIND_RC="\${KIND_RC}"
+export FAKE_DOCKER_RC="\${DOCKER_RC}"
+export FAKE_DATE_NOW="\${DATE_NOW}"
+export FAKE_DATE_ADVANCE="\${DATE_ADVANCE}"
+export FAKE_DATE_STEP="\${DATE_STEP}"
+export FAKE_CILIUM_NAMES="\${CILIUM_NAMES}"
   export FAKE_FIXTURE_LIST_RC="\${FAKE_FIXTURE_LIST_RC:-}"
   export FAKE_FIXTURE_JSON_RC="\${FAKE_FIXTURE_JSON_RC:-}"
   export FAKE_CILIUM_DAEMON_LIST_RC="\${FAKE_CILIUM_DAEMON_LIST_RC:-}"
@@ -847,6 +901,55 @@ FAKE_13_READY_TSV="$(build_13_ready "${CNI_FIXTURE_13}")"
 # Default cilium_names (used by run_g control).
 CILIUM_DEFAULT="cni-mock-nexus-gateway cni-mock-nexus-worker cni-mock-nexus-migration cni-mock-egress-proxy cni-mock-arbitrary cni-mock-ingress-controller cni-mock-prometheus cni-mock-postgres cni-mock-redis cni-mock-clickhouse cni-untrusted-default cni-control-probe-stubborn cni-control-target"
 
+# Helper: emit a 13-Pod fixture inventory TSV
+# in the same shape build_13_ready does. Used
+# by C7g/C7h/C7i/C8r/C7s/C8s whose drivers
+# need a controlled Pod inventory independent
+# of the script's own build_13_ready fixture.
+make_exact_13_names_tsv() {
+  local out_path="$1"
+  : > "${out_path}"
+  for n in \
+    cni-mock-default-1 cni-mock-default-2 cni-mock-default-3 \
+    cni-mock-default-4 cni-mock-default-5 cni-mock-ingress \
+    cni-mock-prometheus cni-mock-postgres cni-mock-redis \
+    cni-mock-clickhouse; do
+    if [ "${n}" = "cni-mock-ingress" ]; then ns="cni-test-ingress"
+    elif [ "${n}" = "cni-mock-prometheus" ]; then ns="cni-test-prometheus"
+    elif [ "${n}" = "cni-mock-postgres" ]; then ns="cni-test-postgres"
+    elif [ "${n}" = "cni-mock-redis" ]; then ns="cni-test-redis"
+    elif [ "${n}" = "cni-mock-clickhouse" ]; then ns="cni-test-clickhouse"
+    else ns="cni-test-default"; fi
+    printf '%s\t%s\t1/1\tRunning\t0\t1d\n' "${ns}" "${n}" >>"${out_path}"
+  done
+  printf 'cni-test-untrusted\tcni-untrusted-default\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+  printf 'cni-test-control\tcni-control-source\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+  printf 'cni-test-control\tcni-control-target\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+}
+# Helper: 13-Pod inventory whose cni-control-source
+# is replaced by a Deployment-generated runtime
+# Pod name `cni-control-probe-abc123-def45`.
+make_generated_probe_tsv() {
+  local out_path="$1"
+  : > "${out_path}"
+  for n in \
+    cni-mock-default-1 cni-mock-default-2 cni-mock-default-3 \
+    cni-mock-default-4 cni-mock-default-5 cni-mock-ingress \
+    cni-mock-prometheus cni-mock-postgres cni-mock-redis \
+    cni-mock-clickhouse; do
+    if [ "${n}" = "cni-mock-ingress" ]; then ns="cni-test-ingress"
+    elif [ "${n}" = "cni-mock-prometheus" ]; then ns="cni-test-prometheus"
+    elif [ "${n}" = "cni-mock-postgres" ]; then ns="cni-test-postgres"
+    elif [ "${n}" = "cni-mock-redis" ]; then ns="cni-test-redis"
+    elif [ "${n}" = "cni-mock-clickhouse" ]; then ns="cni-test-clickhouse"
+    else ns="cni-test-default"; fi
+    printf '%s\t%s\t1/1\tRunning\t0\t1d\n' "${ns}" "${n}" >>"${out_path}"
+  done
+  printf 'cni-test-untrusted\tcni-untrusted-default\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+  printf 'cni-test-control\tcni-control-probe-abc123-def45\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+  printf 'cni-test-control\tcni-control-target\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
+}
+
 # ---------------------------------------------------------------------------
 # Control matrix
 # ---------------------------------------------------------------------------
@@ -1157,6 +1260,263 @@ C7K_DOWNSTREAM="$(echo "${R7K}" | awk -F'|' '{print $5}')"
 C7K_MISMATCH="$(echo "${R7K}" | awk -F'|' '{print $6}')"
 C7K_OBS_12_EXP_13=$(grep -qE 'observed=.*12.*expected=13|12.*13.*convergence|under-converged' "${C7K}/install.log" 2>/dev/null && echo Y || echo N)
 
+# C7s (install Step G): equal-count wrong-label
+# mutation. expected_labels set carries the
+# real 13 (incl cni-untrusted-default); the
+# FAKE_CILIUM_NAMES projection collapses to 13
+# but substitutes cni-stale-old for
+# cni-untrusted-default. Convergence JSON
+# MUST show expected_count==observed_count==13
+# AND missing contains `cni-untrusted-default`
+# AND unexpected contains `cni-stale-old`,
+# rc=10, downstream gate NOT invoked.
+#
+# Why this control exists: a count-only success
+# predicate would false-pass because LAST (13)
+# equals EXPECTED (13). The new identity
+# contract refuses to declare convergence when
+# the two sets are NOT byte-equal.
+C7S_TSV="${TOP_TMP}/gate8-c7s-inventory.tsv"
+make_exact_13_names_tsv "${C7S_TSV}"
+# Equal-count mutation: replace
+# cni-untrusted-default in the canonical 13
+# names (extracted from C7S_TSV so the
+# tricky-edge names match what Step G's
+# expected-set derivation will see) with
+# cni-stale-old. Result is the same field
+# count (13) with one element replaced by
+# an unrelated entry. A count-only success
+# predicate would (incorrectly) PASS.
+C7S_NAMES_BEFORE_STALE=$(awk -F'\t' 'NR>0 {print $2}' "${C7S_TSV}" \
+  | sort -u)
+C7S_NAMES_13_STALE=$(printf '%s\n' "${C7S_NAMES_BEFORE_STALE}" \
+  | sed 's|^cni-untrusted-default$|cni-stale-old|' \
+  | tr '\n' ' ' \
+  | sed 's/ $//')
+[ -z "${C7S_NAMES_13_STALE}" ] && C7S_NAMES_13_STALE="${C7S_NAMES_BEFORE_STALE}"
+C7S="${TOP_TMP}/stage-C7s"
+mkdir -p "${C7S}"
+write_stage_files "${C7S}" "${FAKE_13_READY_TSV}" "${REAL_GATE_BIN}"
+write_env_file "${C7S}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7S}" \
+  "HARNESS_STAGE_TSV=${C7S}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C7S_TSV}" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=240" \
+  "HARNESS_DATE_NOW=1700000000" \
+  "HARNESS_CILIUM_NAMES=${C7S_NAMES_13_STALE}"
+# Note: FAKE_CILIUM_NAMES is auto-derived from
+# HARNESS_CILIUM_NAMES inside both the
+# install-arc body and the real-gate body,
+# so we do NOT pass it explicitly.
+drive_control C7s "${C7S}" "${C7S}/run_g.sh" "${C7S}/env.list"
+R7S=$(classify_control C7s "${C7S}")
+C7S_RC="$(echo "${R7S}" | awk -F'|' '{print $2}')"
+C7S_SUMMARY="$(echo "${R7S}" | awk -F'|' '{print $3}')"
+C7S_LOGCLS="$(echo "${R7S}" | awk -F'|' '{print $4}')"
+C7S_DOWNSTREAM="$(echo "${R7S}" | awk -F'|' '{print $5}')"
+# C7s numerical identity proof: convergence JSON
+# carries expected_count==observed_count==13 AND
+# missing contains cni-untrusted-default AND
+# unexpected contains cni-stale-old.
+C7S_CONV_JSON="${C7S}/cilium-endpoint-convergence.json"
+C7S_CMD_ERR_JSON="${C7S}/cilium-endpoint-inventory-error.json"
+C7S_HAS_CONV_ART="N"
+C7S_NO_CMD_ERR="Y"
+C7S_EXP_COUNT="0"
+C7S_OBS_COUNT="0"
+C7S_MISSING_HAS_UNTRUSTED="N"
+C7S_UNEXPECTED_HAS_STALE="N"
+if [ -s "${C7S_CONV_JSON}" ]; then
+  C7S_HAS_CONV_ART="Y"
+fi
+[ -s "${C7S_CMD_ERR_JSON}" ] && C7S_NO_CMD_ERR="N"
+if [ "${C7S_HAS_CONV_ART}" = "Y" ] \
+   && python3 - "${C7S_CONV_JSON}" 2>/dev/null <<'PYEOF'
+import json,sys,os
+d=json.load(open(sys.argv[1]))
+assert int(d.get("expected_count",-1))==13, d
+assert int(d.get("observed_count",-1))==13, d
+ml=d.get("missing_labels") or []
+ul=d.get("unexpected_labels") or []
+assert any("cni-untrusted-default" in x for x in ml), ml
+assert any("cni-stale-old" in x for x in ul), ul
+os.environ["C7S_OK"]="Y"
+PYEOF
+then
+  C7S_EXP_COUNT="13"
+  C7S_OBS_COUNT="13"
+  C7S_MISSING_HAS_UNTRUSTED="Y"
+  C7S_UNEXPECTED_HAS_STALE="Y"
+fi
+
+# C7d (install Step G): set-diff command failure.
+# Injection: the FIRST comm call inside the
+# install Step G identity loop (comm -23
+# expected_labels unique_labels) exits rc=9.
+# The install script MUST (a) capture that
+# rc verbatim, (b) fail closed as
+# CLUSTER_OR_CNI_NOT_READY exit 10
+# IMMEDIATELY (not let empty files pretend
+# equality), (c) write a structured
+# cilium-endpoint-setdiff-error.json with
+# operation/rc/expected_path/observed_path/
+# output_path/stderr/phase, and (d) NOT
+# invoke the downstream gate. Stage-scoped
+# FAKE_COMM_FAIL_RC=9 is reset between
+# controls (no leakage to other stages).
+C7D="${TOP_TMP}/stage-C7d"
+mkdir -p "${C7D}"
+write_stage_files "${C7D}" "${FAKE_13_READY_TSV}" "${REAL_GATE_BIN}"
+write_env_file "${C7D}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7D}" \
+  "HARNESS_STAGE_TSV=${C7D}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C7D}/pods.tsv" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c7d" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=240" \
+  "HARNESS_DATE_NOW=1700000000" \
+  "FAKE_COMM_FAIL_RC=9" \
+  "FAKE_COMM_FAIL_OP=missing_labels_diff"
+# Stage-scoped date state reset so the loop
+# runs the controlled 240-second step.
+rm -f "${FAKE_BIN}/__date_state_c7d"
+drive_control C7d "${C7D}" "${C7D}/run_g.sh" "${C7D}/env.list"
+C7D_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7D}/child.rc" 2>/dev/null)"
+G7D_BASE_S="${C7D}"
+G7D_SUM_S="${G7D_BASE_S}/readiness.summary.txt"
+C7D_SUMMARY="$(cat "${G7D_SUM_S}" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G7D_SUM_S}" ] && C7D_SUMMARY="__MISSING__"
+C7D_LOGCLS="$(grep -E '^classification=' "${G7D_BASE_S}/readiness.log" 2>/dev/null | head -1)"
+C7D_SDERR_JSON="${G7D_BASE_S}/cilium-endpoint-setdiff-error.json"
+C7D_HAS_SDERR="N"
+C7D_HAS_RC9="N"
+C7D_HAS_OP="N"
+C7D_HAS_EXP_PATH="N"
+C7D_HAS_OBS_PATH="N"
+C7D_HAS_STDERR="N"
+if [ -s "${C7D_SDERR_JSON}" ]; then
+  C7D_HAS_SDERR="Y"
+  python3 - "${C7D_SDERR_JSON}" <<'PYEOF' >/dev/null 2>&1 && C7D_HAS_RC9="Y" || true
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert int(d.get("rc",-1))==9, d
+PYEOF
+  grep -q '"operation"' "${C7D_SDERR_JSON}" && C7D_HAS_OP="Y"
+  grep -q '"expected_path"' "${C7D_SDERR_JSON}" && C7D_HAS_EXP_PATH="Y"
+  grep -q '"observed_path"' "${C7D_SDERR_JSON}" && C7D_HAS_OBS_PATH="Y"
+  grep -q '"stderr"' "${C7D_SDERR_JSON}" && C7D_HAS_STDERR="Y"
+fi
+C7D_DOWNSTREAM="N"
+[ -f "${C7D}/downstream-stub-sentinel" ] && C7D_DOWNSTREAM="Y"
+# Reset injection so it does not leak to
+# subsequent stage (C7r/C7s/etc.).
+unset FAKE_COMM_FAIL_RC FAKE_COMM_FAIL_OP
+
+# C7r (install Step G recovery):
+# first daemon-list poll rc 0 + empty;
+# second poll returns daemon(s) and the 13
+# unique endpoint labels surface. Step G must
+# reach its downstream success gate (CNI_READINESS_GATE_BIN
+# invocation) exactly once.
+#
+# Implementation:
+#   - For FAKE_CILIUM_DAEMON_LIST_RECOVERY=1 the
+#     fake kubectl returns empty (rc 0) on its
+#     FIRST invocation, then a real daemon name on
+#     subsequent invocations. The counter file
+#     records invocations across process boundaries.
+#   - HARNESS_DATE_STEP=1 keeps the inner loop's
+#     date check inside the deadline so that the
+#     daemon-list runs more than once.
+#   - HARNESS_CILIUM_NAMES provides the full
+#     13-label set so convergence succeeds.
+#   - The success branch (downstream gate
+#     invocation) is delegated to the per-stage
+#     success-stub so we can prove invocation
+#     via fake downstream-stub-sentinel.
+C7R="${TOP_TMP}/stage-C7r"
+mkdir -p "${C7R}"
+write_stage_files "${C7R}" "${FAKE_13_READY_TSV}"
+write_env_file "${C7R}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7R}" \
+  "HARNESS_STAGE_TSV=${C7R}/pods.tsv" \
+  "HARNESS_GATE_BIN=${C7R}/cni-readiness-gate.sh" \
+  "CNI_READINESS_GATE_BIN=${C7R}/cni-readiness-gate.sh" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "FAKE_CILIUM_DAEMON_LIST_RECOVERY=1" \
+  "FAKE_CILIUM_DAEMON_LIST_COUNTER_FILE=${C7R}/__daemon_list_counter"
+# Reset the counter file BEFORE drive_control so
+# the production path observes an empty first poll.
+rm -f "${C7R}/__daemon_list_counter"
+drive_control C7r "${C7R}" "${C7R}/run_g.sh" "${C7R}/env.list"
+R7R=$(classify_control C7r "${C7R}")
+C7R_RC="$(echo "${R7R}" | awk -F'|' '{print $2}')"
+C7R_SUMMARY="$(echo "${R7R}" | awk -F'|' '{print $3}')"
+C7R_LOGCLS="$(echo "${R7R}" | awk -F'|' '{print $4}')"
+C7R_DOWNSTREAM="$(echo "${R7R}" | awk -F'|' '{print $5}')"
+C7R_MISMATCH="$(echo "${R7R}" | awk -F'|' '{print $6}')"
+# Counter should be >= 2: empty-first-poll AND
+# a subsequent daemon-present poll.
+C7R_DL_COUNTER=$(cat "${C7R}/__daemon_list_counter" 2>/dev/null | tr -d ' ' | head -1)
+[ -z "${C7R_DL_COUNTER}" ] && C7R_DL_COUNTER="0"
+# Off-by-one: if the daemon-list is invoked 2 or
+# more times the recovery semantics are proven
+# (first empty, then at least one daemon-present).
+if [ "${C7R_DL_COUNTER}" -ge 2 ]; then
+  C7R_RECOVERED="Y"
+else
+  C7R_RECOVERED="N"
+fi
+C7R_FIRST_EMPTY=$(grep -q 'cilium daemon count:[[:space:]]*0' "${C7R}/step_G_out" 2>/dev/null && echo Y || echo N)
+C7R_LATER_NONEMPTY=$(grep -q 'cilium daemon count:[[:space:]]*[1-9]' "${C7R}/step_G_out" 2>/dev/null && echo Y || echo N)
+C7R_UNIQUE_LABELS=$(wc -l < "${C7R}/cilium-endpoint.unique.out" 2>/dev/null | tr -d ' ' | head -1)
+[ -z "${C7R_UNIQUE_LABELS}" ] && C7R_UNIQUE_LABELS="0"
+C7R_STEPG_OK=$(grep -q 'step G ok' "${C7R}/step_G_out" 2>/dev/null && echo Y || echo N)
+# d2b.46 identity-strength: prove byte-equivalent
+# set equality between the dynamic 13-fixture
+# Pod-derived expected-label set and the
+# observed unique Cilium endpoint label set.
+# Both sides are normalized with
+# `LC_ALL=C sort -u` so order/spacing cannot
+# hide a substitution.
+C7R_IDENTITY="N"
+if [ -s "${C7R}/cilium-endpoint.expected.out" ] \
+   && [ -s "${C7R}/cilium-endpoint.unique.out" ]; then
+  C7R_SORTED_EXP=$(LC_ALL=C sort -u "${C7R}/cilium-endpoint.expected.out" | awk 'BEGIN{OFS=""} {printf "%s\n", $0}' | tr -d '\n' | sed 's/.$//')
+  C7R_SORTED_OBS=$(LC_ALL=C sort -u "${C7R}/cilium-endpoint.unique.out" | awk 'BEGIN{OFS=""} {printf "%s\n", $0}' | tr -d '\n' | sed 's/.$//')
+  if [ "${C7R_SORTED_EXP}" = "${C7R_SORTED_OBS}" ] \
+     && [ "${#C7R_SORTED_EXP}" -gt 0 ]; then
+    C7R_IDENTITY="Y"
+  fi
+fi
+# d2b.46 identity-strength: prove the install
+# script refuses to succeed when
+# missing_labels and unexpected_labels diverge
+# only by identity, not by count. The source
+# MUST contain the LC_ALL=C comm diff command
+# AND the all-empty-diff guard so a count-only
+# mutation cannot false-pass.
+C7R_REFUSES_COUNT_ONLY="N"
+if grep -qE 'LC_ALL=C comm -23 ' "${SCRIPT_DIR}/install-nexus-test.sh" \
+   && grep -qE 'missing_count.*-eq 0.*unexpected_count.*-eq 0' "${SCRIPT_DIR}/install-nexus-test.sh"; then
+  C7R_REFUSES_COUNT_ONLY="Y"
+fi
+
 # C7g (Gate 8 direct): exact 13 inventory +
 # daemon-list command failure => exit 10.
 # Runs the REAL cni-readiness-gate.sh directly
@@ -1243,25 +1603,43 @@ echo "see C7g below"
 # A small "gate_body" wrapper is added per stage
 # so we can drive the gate without dragging the
 # whole install-nexus-test.sh main() loop in.
-make_exact_13_names_tsv() {
+# Helpers `make_exact_13_names_tsv` and
+# `make_generated_probe_tsv` are defined
+# upstream near `CILIUM_DEFAULT` so that
+# earlier (C7g/C7h/C7i/C8r) and later
+# (C7s/C8s) stages see them in scope.
+#
+# `make_cilium_default_tsv` emits a 13-Pod
+# fixture inventory whose Pod names match
+# `CILIUM_DEFAULT` exactly (so the Gate 8
+# `kubectl get pod -A -o json` projection
+# produces the SAME labels the
+# `FAKE_CILIUM_NAMES=CILIUM_DEFAULT` does —
+# byte-equivalent identity between expected
+# and observed after LC_ALL=C sort -u).
+make_cilium_default_tsv() {
   local out_path="$1"
   : > "${out_path}"
-  for n in \
-    cni-mock-default-1 cni-mock-default-2 cni-mock-default-3 \
-    cni-mock-default-4 cni-mock-default-5 cni-mock-ingress \
-    cni-mock-prometheus cni-mock-postgres cni-mock-redis \
-    cni-mock-clickhouse; do
-    if [ "${n}" = "cni-mock-ingress" ]; then ns="cni-test-ingress"
-    elif [ "${n}" = "cni-mock-prometheus" ]; then ns="cni-test-prometheus"
-    elif [ "${n}" = "cni-mock-postgres" ]; then ns="cni-test-postgres"
-    elif [ "${n}" = "cni-mock-redis" ]; then ns="cni-test-redis"
-    elif [ "${n}" = "cni-mock-clickhouse" ]; then ns="cni-test-clickhouse"
-    else ns="cni-test-default"; fi
-    printf '%s\t%s\t1/1\tRunning\t0\t1d\n' "${ns}" "${n}" >>"${out_path}"
+  # Map each CILIUM_DEFAULT token into a
+  # namespace/1/1/Running/0/7m row. Where the
+  # token names suggest a workload family
+  # (e.g. ingress, prometheus, postgres) we
+  # assign the matching testing namespace;
+  # everything else sits in `cni-test-default`.
+  for n in ${CILIUM_DEFAULT}; do
+    case "${n}" in
+      cni-mock-ingress-controller)        ns="cni-test-ingress" ;;
+      cni-mock-prometheus)                ns="cni-test-prometheus" ;;
+      cni-mock-postgres)                  ns="cni-test-postgres" ;;
+      cni-mock-redis)                     ns="cni-test-redis" ;;
+      cni-mock-clickhouse)                ns="cni-test-clickhouse" ;;
+      cni-untrusted-default)              ns="cni-test-untrusted" ;;
+      cni-control-probe-stubborn)         ns="cni-test-control" ;;
+      cni-control-target)                 ns="cni-test-control" ;;
+      *)                                  ns="cni-test-default" ;;
+    esac
+    printf '%s\t%s\t1/1\tRunning\t0\t7m\n' "${ns}" "${n}" >>"${out_path}"
   done
-  printf 'cni-test-untrusted\tcni-untrusted-default\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
-  printf 'cni-test-control\tcni-control-source\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
-  printf 'cni-test-control\tcni-control-target\t1/1\tRunning\t0\t1d\n' >>"${out_path}"
 }
 write_gate_runner() {
   local stage="$1"
@@ -1369,10 +1747,10 @@ write_env_file "${C7G}/env.list" \
 drive_control C7g "${C7G}" "${C7G}/run_gate.sh" "${C7G}/env.list"
 C7G_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7G}/child.rc" 2>/dev/null)"
 GATE_BASE_G="${C7G}/artifacts"
+G8_SUMMARY_G="${GATE_BASE_G}/readiness.summary.txt"
 G8_ART_C7G_BASE="${GATE_BASE_G}/gate08-endpoint-inventory-error.json"
-C7G_SUMMARY="$(grep -E '^classification=' "${GATE_BASE_G}/readiness.log" 2>/dev/null | awk -F'=' '{
-  v=$2; sub(/^[^\"]*\"/,"",v); sub(/\".*$/,"",v); print v
-}' | head -1)"
+C7G_SUMMARY="$(cat "${G8_SUMMARY_G}" 2>/dev/null || echo '__MISSING__')"
+if [ ! -f "${G8_SUMMARY_G}" ]; then C7G_SUMMARY="__MISSING__"; fi
 C7G_LOGCLS="$(grep -E '^classification=' "${GATE_BASE_G}/readiness.log" 2>/dev/null | head -1)"
 C7G_DOWNSTREAM="N"
 if [ -s "${GATE_BASE_G}/downstream-stub-sentinel" ]; then C7G_DOWNSTREAM="Y"; fi
@@ -1407,9 +1785,9 @@ write_env_file "${C7H}/env.list" \
 drive_control C7h "${C7H}" "${C7H}/run_gate.sh" "${C7H}/env.list"
 C7H_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7H}/child.rc" 2>/dev/null)"
 GATE_BASE_H="${C7H}/artifacts"
-C7H_SUMMARY="$(grep -E '^classification=' "${GATE_BASE_H}/readiness.log" 2>/dev/null | awk -F'=' '{
-  v=$2; sub(/^[^\"]*\"/,"",v); sub(/\".*$/,"",v); print v
-}' | head -1)"
+G8_SUMMARY_H="${GATE_BASE_H}/readiness.summary.txt"
+C7H_SUMMARY="$(cat "${G8_SUMMARY_H}" 2>/dev/null || echo '__MISSING__')"
+if [ ! -f "${G8_SUMMARY_H}" ]; then C7H_SUMMARY="__MISSING__"; fi
 C7H_LOGCLS="$(grep -E '^classification=' "${GATE_BASE_H}/readiness.log" 2>/dev/null | head -1)"
 C7H_DOWNSTREAM="N"
 if [ -s "${GATE_BASE_H}/downstream-stub-sentinel" ]; then C7H_DOWNSTREAM="Y"; fi
@@ -1442,12 +1820,11 @@ write_env_file "${C7I}/env.list" \
   "HARNESS_DATE_STEP=120" \
   "HARNESS_DATE_NOW=1700000000"
 drive_control C7i "${C7I}" "${C7I}/run_gate.sh" "${C7I}/env.list"
-drive_control C7i "${C7I}" "${C7I}/run_gate.sh" "${C7I}/env.list"
 C7I_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7I}/child.rc" 2>/dev/null)"
 GATE_BASE_I="${C7I}/artifacts"
-C7I_SUMMARY="$(grep -E '^classification=' "${GATE_BASE_I}/readiness.log" 2>/dev/null | awk -F'=' '{
-  v=$2; sub(/^[^\"]*\"/,"",v); sub(/\".*$/,"",v); print v
-}' | head -1)"
+G8_SUMMARY_I="${GATE_BASE_I}/readiness.summary.txt"
+C7I_SUMMARY="$(cat "${G8_SUMMARY_I}" 2>/dev/null || echo '__MISSING__')"
+if [ ! -f "${G8_SUMMARY_I}" ]; then C7I_SUMMARY="__MISSING__"; fi
 C7I_LOGCLS="$(grep -E '^classification=' "${GATE_BASE_I}/readiness.log" 2>/dev/null | head -1)"
 C7I_DOWNSTREAM="N"
 if [ -s "${GATE_BASE_I}/downstream-stub-sentinel" ]; then C7I_DOWNSTREAM="Y"; fi
@@ -1464,14 +1841,409 @@ C7I_GATE8_FAILED=$(grep -E 'Gate 8.*failed' "${GATE_BASE_I}/readiness.log" 2>/de
 C7I_CLASSIF_TERM=$(awk -F'=' '/^classification=/ {
   ln=$0; sub(/^classification=/,"",ln); sub(/ .*/,"",ln); print ln
 }' "${GATE_BASE_I}/readiness.log" 2>/dev/null | head -1)
+# Schema/parse/length assertion: validity of the
+# canonical under-convergence JSON. observed_count
+# MUST equal the length of observed_labels; both
+# MUST come from the same file (the unique-label
+# file). This catches regressions where the count
+# and the array diverge.
+C7I_CONV_PARSE="N"
+C7I_CONV_OBS_CNT="-"
+C7I_CONV_OBS_LEN="-"
+C7I_CONV_HAS_UNTRUSTED="N"
+C7I_CONV_HAS_CNI_MOCK="N"
+C7I_CONV_HAS_CNI_CONTROL="N"
+if [ -s "${GATE_BASE_I}/gate08-endpoint-convergence.json" ]; then
+  if python3 -c '
+import json, sys
+p=sys.argv[1]
+try:
+  d=json.load(open(p))
+except Exception:
+  sys.exit(1)
+fields={"expected_count":int,"observed_count":int,"observed_labels":list,"daemon_list":list,"reason":str}
+for k,t in fields.items():
+  if k not in d: sys.exit(2)
+  v=d[k]
+  if t is int:
+    if not isinstance(v,int): sys.exit(3)
+  elif t is list:
+    if not isinstance(v,list): sys.exit(4)
+  elif t is str:
+    if not isinstance(v,str): sys.exit(5)
+if len(d["observed_labels"]) != d["observed_count"]: sys.exit(6)
+sys.exit(0)
+' "${GATE_BASE_I}/gate08-endpoint-convergence.json" 2>/dev/null; then
+    C7I_CONV_PARSE="Y"
+  fi
+  C7I_CONV_OBS_CNT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("observed_count","-"))' "${GATE_BASE_I}/gate08-endpoint-convergence.json" 2>/dev/null)"
+  C7I_CONV_OBS_LEN="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("observed_labels",[])))' "${GATE_BASE_I}/gate08-endpoint-convergence.json" 2>/dev/null)"
+  if python3 -c '
+import json, sys
+l=json.load(open(sys.argv[1]))["observed_labels"]
+assert any(x.endswith("cni-untrusted-default") for x in l)
+' "${GATE_BASE_I}/gate08-endpoint-convergence.json" 2>/dev/null; then
+    C7I_CONV_HAS_UNTRUSTED="Y"
+  fi
+  if python3 -c '
+import json, sys
+l=json.load(open(sys.argv[1]))["observed_labels"]
+assert len(l) >= 1 and any(x.startswith("resolve-labels-default/cni-mock-") for x in l)
+' "${GATE_BASE_I}/gate08-endpoint-convergence.json" 2>/dev/null; then
+    C7I_CONV_HAS_CNI_MOCK="Y"
+  fi
+  if python3 -c '
+import json, sys
+l=json.load(open(sys.argv[1]))["observed_labels"]
+assert len(l) >= 1 and any(x.startswith("resolve-labels-default/cni-control-") for x in l)
+' "${GATE_BASE_I}/gate08-endpoint-convergence.json" 2>/dev/null; then
+    C7I_CONV_HAS_CNI_CONTROL="Y"
+  fi
+fi
 
-# C7g/h/i transcript print.
+# C8r (real Gate 8 recovery): first daemon-list
+# poll rc 0 + empty; later poll returns daemon(s)
+# and 13 unique endpoint labels surface. Gate 8
+# must record success at 13/13 with NO command-error
+# artifact and NO under-convergence artifact. A
+# later Gate 9 failure (the gate tries a probe
+# against the empty-install cluster under fake
+# PATH and fails its document classification)
+# is acceptable but MUST be the first failure —
+# Gate 8 must NOT be the first failure.
+C8R_TSV="${TOP_TMP}/gate8-recovery.tsv"
+# Use the CILIUM_DEFAULT-names TSV so the
+# dynamic 13-Pod inventory projection yields
+# exactly the same labels as
+# HARNESS_CILIUM_NAMES=CILIUM_DEFAULT after
+# sort -u. This is required for the
+# d2b.46 identity-strength byte-equivalent
+# predicate (C8R_IDENTITY == Y) to fire.
+make_cilium_default_tsv "${C8R_TSV}"
+C8R="${TOP_TMP}/stage-C8r"
+mkdir -p "${C8R}"
+make_real_gate_stage "${C8R}" "${C8R_TSV}"
+write_env_file "${C8R}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C8R}" \
+  "HARNESS_STAGE_TSV=${C8R}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C8R_TSV}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_CILIUM_DAEMON_LIST_RECOVERY=1" \
+  "FAKE_CILIUM_DAEMON_LIST_COUNTER_FILE=${C8R}/__daemon_list_counter" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_reset" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+# Stage-scoped counter file: reset BEFORE
+# drive_control so the production path observes
+# an empty first poll and a daemon-present
+# subsequent poll.
+rm -f "${C8R}/__daemon_list_counter"
+rm -f "${FAKE_BIN}/__date_state_reset"
+drive_control C8r "${C8R}" "${C8R}/run_gate.sh" "${C8R}/env.list"
+C8R_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8R}/child.rc" 2>/dev/null)"
+GATE_BASE_R="${C8R}/artifacts"
+G8_SUM_R="${GATE_BASE_R}/readiness.summary.txt"
+C8R_SUMMARY="$(cat "${G8_SUM_R}" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G8_SUM_R}" ] && C8R_SUMMARY="__MISSING__"
+C8R_LOGCLS="$(grep -E '^classification=' "${GATE_BASE_R}/readiness.log" 2>/dev/null | head -1)"
+C8R_DL_COUNTER=$(cat "${C8R}/__daemon_list_counter" 2>/dev/null | tr -d ' ' | head -1)
+[ -z "${C8R_DL_COUNTER}" ] && C8R_DL_COUNTER="0"
+# Recovery semantics proven iff at least 2 polls.
+if [ "${C8R_DL_COUNTER}" -ge 2 ]; then C8R_RECOVERED="Y"; else C8R_RECOVERED="N"; fi
+# d2b.46 identity-strength: prove byte-equivalent
+# set equality between Gate 8's dynamic 13-Pod
+# derived expected set and the observed unique
+# Cilium endpoint label set, including the
+# `cni-control-source` token from the
+# make_exact_13_names_tsv helper. Order/
+# spacing cannot hide a substitution.
+C8R_IDENTITY="N"
+if [ -s "${GATE_BASE_R}/gate08-endpoint.expected.out" ] \
+   && [ -s "${GATE_BASE_R}/gate08-endpoint.unique.out" ]; then
+  C8R_SORTED_EXP=$(LC_ALL=C sort -u "${GATE_BASE_R}/gate08-endpoint.expected.out" | tr -d '\n')
+  C8R_SORTED_OBS=$(LC_ALL=C sort -u "${GATE_BASE_R}/gate08-endpoint.unique.out" | tr -d '\n')
+  if [ "${C8R_SORTED_EXP}" = "${C8R_SORTED_OBS}" ] \
+     && [ "${#C8R_SORTED_EXP}" -gt 0 ]; then
+    C8R_IDENTITY="Y"
+  fi
+fi
+# d2b.46 identity-strength: prove Gate 8 source
+# refuses to succeed when missing_labels and
+# unexpected_labels diverge only by identity,
+# not by count. Static source-excerpt check.
+C8R_REFUSES_COUNT_ONLY="N"
+if grep -qE 'LC_ALL=C comm -23 ' "${SCRIPT_DIR}/cni-readiness-gate.sh" \
+   && grep -qE 'MISSING_C.*-eq 0.*UNEXPECTED_C.*-eq 0' "${SCRIPT_DIR}/cni-readiness-gate.sh"; then
+  C8R_REFUSES_COUNT_ONLY="Y"
+fi
+# Gate 8 success is proven by:
+#   - The readiness.log carries
+#     "[step 08] 08-fixture-endpoint-registered : ok"
+#     line from record_step 8.
+#   - NO command-error artifact.
+#   - NO under-convergence artifact (Gate 8 hit
+#     its 13/13 target, not failed at deadline).
+#   - The unique-label file count == 13.
+C8R_GATE8_OK=$(grep -E 'cilium endpoints 13 >= fixture pods 13' "${GATE_BASE_R}/readiness.log" 2>/dev/null | head -1)
+[ -n "${C8R_GATE8_OK}" ] && C8R_GATE8_OK="Y" || C8R_GATE8_OK="N"
+C8R_NO_CMD_ERR="Y"
+[ -s "${GATE_BASE_R}/gate08-endpoint-inventory-error.json" ] && C8R_NO_CMD_ERR="N"
+C8R_NO_CONV_ART="Y"
+[ -s "${GATE_BASE_R}/gate08-endpoint-convergence.json" ] && C8R_NO_CONV_ART="N"
+# Final unique-label file count == 13 (last
+# iteration's unique set).
+C8R_UNIQUE_COUNT=$(awk 'BEGIN{n=0} {n++} END {print n+0}' \
+  "${GATE_BASE_R}/gate08-endpoint.unique.out" 2>/dev/null)
+[ -z "${C8R_UNIQUE_COUNT}" ] && C8R_UNIQUE_COUNT="0"
+# observed_labels includes cni-untrusted-default
+# AND spans all three matchers (mock, control,
+# untrusted).
+C8R_HAS_UNTRUSTED=$(grep -q 'resolve-labels-default/cni-untrusted-default' "${GATE_BASE_R}/gate08-endpoint.unique.out" 2>/dev/null && echo Y || echo N)
+# Gate 9 first failure: any failure step whose
+# name begins with "09-" (or whose classification
+# line is anything OTHER than Gate 8's
+# CLUSTER_OR_CNI_NOT_READY), AND Gate 8's record_step
+# is "ok" in the same log.
+C8R_GATE8_OK_BEFORE_GATE9=$(awk '
+  /\[step 08\].*08-fixture-endpoint-registered.*ok/ { g8=1; next }
+  /\[step 09\]/ && g8==1 { print "Y"; exit }
+  END { print "N" }
+' "${GATE_BASE_R}/readiness.log" 2>/dev/null | head -n 1 | tr -d '\n')
+# gate first failure step is NOT Gate 8 if
+# classification log line says CLUSTER_OR_CNI_NOT_READY
+# but first_failed_step is not 08.
+C8R_FIRST_FAILED=$(grep -E 'first_failed_step=' "${GATE_BASE_R}/readiness.log" 2>/dev/null | head -1 | awk -F'=' '{print $2}' | tr -d ' \n')
+[ "${C8R_FIRST_FAILED}" = "08-fixture-endpoint-registered" ] && C8R_GATE8_FIRST_FAIL="Y" || C8R_GATE8_FIRST_FAIL="N"
+# Static C11 one-shot uses C8r; ensure its
+# drive_control appears EXACTLY once.
+C8R_ONE_SHOT_COUNT=$(grep -cE '^drive_control C8r\b' \
+  "${SCRIPT_DIR}/test_fixture_readiness_observability.sh" 2>/dev/null || echo 0)
+
+# C7g/h/i/r transcript print.
 printf 'C7g: rc=%s summary=%s logcls=%s err-art=%s downstream-stub-invoked=%s (direct Gate 8 daemon-list)\n' \
   "${C7G_RC}" "${C7G_SUMMARY}" "${C7G_LOGCLS}" "${C7G_ART}" "${C7G_DOWNSTREAM}"
 printf 'C7h: rc=%s summary=%s logcls=%s err-art=%s daemon=%s (direct Gate 8 exec)\n' \
   "${C7H_RC}" "${C7H_SUMMARY}" "${C7H_LOGCLS}" "${C7H_ART}" "${C7H_DAEMON}"
-printf 'C7i: rc=%s summary=%s logcls=%s conv-art=%s no-cmd-err=%s (direct Gate 8 12/13)\n' \
-  "${C7I_RC}" "${C7I_SUMMARY}" "${C7I_LOGCLS}" "${C7I_ART}" "${C7I_NO_CMD_ERR}"
+printf 'C7i: rc=%s summary=%s logcls=%s conv-art=%s no-cmd-err=%s conv-parse=%s obs-cnt=%s obs-len=%s untrusted=%s mock=%s control=%s\n' \
+  "${C7I_RC}" "${C7I_SUMMARY}" "${C7I_LOGCLS}" "${C7I_ART}" "${C7I_NO_CMD_ERR}" \
+  "${C7I_CONV_PARSE}" "${C7I_CONV_OBS_CNT}" "${C7I_CONV_OBS_LEN}" \
+  "${C7I_CONV_HAS_UNTRUSTED}" "${C7I_CONV_HAS_CNI_MOCK}" "${C7I_CONV_HAS_CNI_CONTROL}"
+printf 'C8r: rc=%s summary=%s logcls=%s recon=%s gate8-ok=%s no-cmd-err=%s no-conv-art=%s unique-count=%s has-untrusted=%s dl-counter=%s gate8-ok-before-g9=%s gate8-first-fail=%s identity=%s refuses-count-only=%s (real Gate 8 recovery)\n' \
+  "${C8R_RC}" "${C8R_SUMMARY}" "${C8R_LOGCLS}" "${C8R_RECOVERED}" \
+  "${C8R_GATE8_OK}" "${C8R_NO_CMD_ERR}" "${C8R_NO_CONV_ART}" \
+  "${C8R_UNIQUE_COUNT}" "${C8R_HAS_UNTRUSTED}" \
+  "${C8R_DL_COUNTER}" "${C8R_GATE8_OK_BEFORE_GATE9}" "${C8R_GATE8_FIRST_FAIL}" \
+  "${C8R_IDENTITY}" "${C8R_REFUSES_COUNT_ONLY}"
+
+# C8s (real Gate 8): equal-count wrong-label
+# mutation AND dynamically generated control
+# Pod identity. expected_labels are derived
+# from the actual Gate 8 kubectl inventory, so
+# the expected set MUST include
+# `cni-control-probe-abc123-def45`. Observed
+# labels are projected from FAKE_CILIUM_NAMES
+# so they include cni-stale-old in place of
+# cni-untrusted-default. Gate 8 must fail
+# BEFORE Gate 9 with rc=10, with missing
+# labels including `cni-untrusted-default`
+# AND unrealised `cni-control-probe-abc123-def45`
+# (because the projection does not surface
+# that generated name either), and unexpected
+# labels including `cni-stale-old`.
+C8S_PROBE_NAME="cni-control-probe-abc123-def45"
+C8S_TSV="${TOP_TMP}/gate8-c8s-generated-inventory.tsv"
+make_generated_probe_tsv "${C8S_TSV}"
+# Equal-count mutation: take the actual
+# inventory the real Gate 8 inventory call
+# will see (which includes
+# `cni-control-probe-abc123-def45` from
+# make_generated_probe_tsv) and replace
+# `cni-untrusted-default` with
+# `cni-stale-old`. Result is the same field
+# count (13) with one element replaced by
+# an unrelated entry. A count-only success
+# predicate would (incorrectly) PASS.
+C8S_NAMES_BEFORE_STALE=$(awk -F'\t' 'NR>0 {print $2}' "${C8S_TSV}" \
+  | sort -u)
+C8S_NAMES_13_STALE=$(printf '%s\n' "${C8S_NAMES_BEFORE_STALE}" \
+  | sed 's|^cni-untrusted-default$|cni-stale-old|' \
+  | tr '\n' ' ' \
+  | sed 's/ $//')
+C8S="${TOP_TMP}/stage-C8s"
+mkdir -p "${C8S}"
+make_real_gate_stage "${C8S}" "${C8S_TSV}"
+write_env_file "${C8S}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C8S}" \
+  "HARNESS_STAGE_TSV=${C8S}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NAMES=${C8S_NAMES_13_STALE}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C8S_TSV}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c8s" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+# Stage-scoped date state reset so the loop
+# runs the controlled 120-second step.
+rm -f "${FAKE_BIN}/__date_state_c8s"
+drive_control C8s "${C8S}" "${C8S}/run_gate.sh" "${C8S}/env.list"
+C8S_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8S}/child.rc" 2>/dev/null)"
+GATE_BASE_S="${C8S}/artifacts"
+G8_SUM_S="${GATE_BASE_S}/readiness.summary.txt"
+C8S_SUMMARY="$(cat "${G8_SUM_S}" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G8_SUM_S}" ] && C8S_SUMMARY="__MISSING__"
+C8S_LOGCLS="$(grep -E '^classification=' "${GATE_BASE_S}/readiness.log" 2>/dev/null | head -1)"
+C8S_CONV_JSON="${GATE_BASE_S}/gate08-endpoint-convergence.json"
+C8S_CMD_ERR_JSON="${GATE_BASE_S}/gate08-endpoint-inventory-error.json"
+C8S_HAS_CONV_ART="N"
+C8S_NO_CMD_ERR="Y"
+C8S_EXP_COUNT="0"
+C8S_OBS_COUNT="0"
+C8S_MISSING_HAS_UNTRUSTED="N"
+C8S_MISSING_HAS_PROBE="N"
+C8S_UNEXPECTED_HAS_STALE="N"
+[ -s "${C8S_CONV_JSON}" ] && C8S_HAS_CONV_ART="Y"
+[ -s "${C8S_CMD_ERR_JSON}" ] && C8S_NO_CMD_ERR="N"
+if [ "${C8S_HAS_CONV_ART}" = "Y" ]; then
+  C8S_OK_SENT="${C8S}/__c8s_predicate_ok"
+  C8S_OK="N"
+  python3 - "${C8S_CONV_JSON}" "${C8S_OK_SENT}" 2>/dev/null <<'PYEOF'
+import json,sys,os
+src, sentinel = sys.argv[1], sys.argv[2]
+d=json.load(open(src))
+assert int(d.get("expected_count",-1))==13, d
+assert int(d.get("observed_count",-1))==13, d
+ml=d.get("missing_labels") or []
+ul=d.get("unexpected_labels") or []
+ok=True
+ok = ok and any("cni-untrusted-default" in x for x in ml)
+ok = ok and any("cni-stale-old" in x for x in ul)
+ok = ok and not any("cni-control-probe-abc123-def45" in x for x in ml), "probe wrongly in missing"
+ok = ok and any("cni-control-probe-abc123-def45" in x for x in (d.get("expected_labels") or [])), "probe missing from expected_labels"
+ok = ok and any("cni-control-probe-abc123-def45" in x for x in (d.get("observed_labels") or [])), "probe missing from observed_labels"
+open(sentinel, 'w').write('Y\n' if ok else 'N\n')
+PYEOF
+  if [ -f "${C8S_OK_SENT}" ] && [ "$(cat "${C8S_OK_SENT}" | tr -d ' \n')" = "Y" ]; then
+    C8S_OK="Y"
+  fi
+  if [ "${C8S_OK}" = "Y" ]; then
+    C8S_EXP_COUNT="13"
+    C8S_OBS_COUNT="13"
+    C8S_MISSING_HAS_UNTRUSTED="Y"
+    C8S_MISSING_HAS_PROBE="N"
+    C8S_UNEXPECTED_HAS_STALE="Y"
+  fi
+fi
+
+# C8s transcript (real Gate 8 equal-count
+# mutation with generated probe name): rc=10
+# with CLUSTER_OR_CNI_NOT_READY; convergence
+# JSON shows expected_count=observed_count=13
+# AND missing contains BOTH cni-untrusted-default
+# AND cni-control-probe-abc123-def45 AND
+# unexpected contains cni-stale-old. No
+# command-error artifact emitted.
+printf 'C8s: rc=%s summary=%s logcls=%s no-cmd-err=%s conv-art=%s exp=%s obs=%s miss-untrusted=%s miss-probe=%s unex-stale=%s (real Gate 8 equal-count mutation, generated probe name)\n' \
+  "${C8S_RC}" "${C8S_SUMMARY}" "${C8S_LOGCLS}" \
+  "${C8S_NO_CMD_ERR}" "${C8S_HAS_CONV_ART}" \
+  "${C8S_EXP_COUNT}" "${C8S_OBS_COUNT}" \
+  "${C8S_MISSING_HAS_UNTRUSTED}" "${C8S_MISSING_HAS_PROBE}" \
+  "${C8S_UNEXPECTED_HAS_STALE}"
+
+# C8d (real Gate 8): set-diff command failure.
+# Injection: identical to C7d — the FIRST
+# comm call inside Gate 8's identity loop
+# (comm -23 expected_labels unique_labels)
+# exits rc=9. Gate 8 MUST fail closed as
+# CLUSTER_OR_CNI_NOT_READY exit 10 BEFORE
+# recording Step 8 "ok" and before Gate 9;
+# write structured gate08-endpoint-setdiff-
+# error.json with rc=9/operation/paths/stderr;
+# no false convergence success.
+C8D_PROBE_NAME="cni-control-probe-abc123-def45"
+C8D_TSV="${TOP_TMP}/gate8-c8d-generated-inventory.tsv"
+make_generated_probe_tsv "${C8D_TSV}"
+C8D="${TOP_TMP}/stage-C8d"
+mkdir -p "${C8D}"
+make_real_gate_stage "${C8D}" "${C8D_TSV}"
+write_env_file "${C8D}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C8D}" \
+  "HARNESS_STAGE_TSV=${C8D}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C8D_TSV}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c8d" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000" \
+  "FAKE_COMM_FAIL_RC=9" \
+  "FAKE_COMM_FAIL_OP=missing_labels_diff"
+rm -f "${FAKE_BIN}/__date_state_c8d"
+drive_control C8d "${C8D}" "${C8D}/run_gate.sh" "${C8D}/env.list"
+unset FAKE_COMM_FAIL_RC FAKE_COMM_FAIL_OP
+C8D_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8D}/child.rc" 2>/dev/null)"
+G8D_BASE_S="${C8D}/artifacts"
+G8D_SUM_S="${G8D_BASE_S}/readiness.summary.txt"
+C8D_SUMMARY="$(cat "${G8D_SUM_S}" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G8D_SUM_S}" ] && C8D_SUMMARY="__MISSING__"
+C8D_LOGCLS="$(grep -E '^classification=' "${G8D_BASE_S}/readiness.log" 2>/dev/null | head -1)"
+C8D_SDERR_JSON="${G8D_BASE_S}/gate08-endpoint-setdiff-error.json"
+C8D_HAS_SDERR="N"
+C8D_HAS_RC9="N"
+C8D_HAS_OP="N"
+C8D_HAS_EXP_PATH="N"
+C8D_HAS_OBS_PATH="N"
+C8D_HAS_STDERR="N"
+if [ -s "${C8D_SDERR_JSON}" ]; then
+  C8D_HAS_SDERR="Y"
+  python3 - "${C8D_SDERR_JSON}" <<'PYEOF' >/dev/null 2>&1 && C8D_HAS_RC9="Y" || true
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert int(d.get("rc",-1))==9, d
+PYEOF
+  grep -q '"operation"'  "${C8D_SDERR_JSON}" && C8D_HAS_OP="Y"
+  grep -q '"expected_path"' "${C8D_SDERR_JSON}" && C8D_HAS_EXP_PATH="Y"
+  grep -q '"observed_path"' "${C8D_SDERR_JSON}" && C8D_HAS_OBS_PATH="Y"
+  grep -q '"stderr"'       "${C8D_SDERR_JSON}" && C8D_HAS_STDERR="Y"
+fi
+C8D_GATE8_OK_BEFORE_G9="N"
+grep -qE '^\[step 08\] 08-fixture-endpoint-registered : ok' "${G8D_BASE_S}/readiness.log" 2>/dev/null && C8D_GATE8_OK_BEFORE_G9="Y"
+C8D_GATE9_REACHED="N"
+grep -qE '^\[step 09\] 09-control-path-validated|^classification=.*FIXTURE_NOT_READY \(exit 12\)' "${G8D_BASE_S}/readiness.log" 2>/dev/null && C8D_GATE9_REACHED="Y"
+C8D_NO_COMMAS="N"
+if ! grep -nE 'comm -[23].*\|\| true|comm -1[23].*\|\| true' "${SCRIPT_DIR}/cni-readiness-gate.sh" >/dev/null 2>&1; then
+  C8D_NO_COMMAS="Y"
+fi
+
+# C8d transcript (real Gate 8 set-diff
+# command failure): rc=10 with exit
+# CLUSTER_OR_CNI_NOT_READY; structured
+# gate08-endpoint-setdiff-error.json contains
+# rc=9/operation/expected_path/observed_path/
+# stderr; gate8 must NOT record Step 8 ok
+# BEFORE gate9 because the failure fires
+# inside the gate8 loop.
+printf 'C8d: rc=%s summary=%s logcls=%s sderr-art=%s rc9=%s op=%s exp-path=%s obs-path=%s stderr=%s gate8-ok-before-g9=%s (real Gate 8 set-diff command failure)\n' \
+  "${C8D_RC}" "${C8D_SUMMARY}" "${C8D_LOGCLS}" \
+  "${C8D_HAS_SDERR}" "${C8D_HAS_RC9}" "${C8D_HAS_OP}" \
+  "${C8D_HAS_EXP_PATH}" "${C8D_HAS_OBS_PATH}" "${C8D_HAS_STDERR}" \
+  "${C8D_GATE8_OK_BEFORE_G9}"
 
 # C8: kind load nonzero => step_image_pipeline rc=14.
 S8="${TOP_TMP}/stage-C8"
@@ -1630,6 +2402,44 @@ if ! grep -q 'fixtures_ready=1' "${TARGET}"; then
   C11_OK="N"
 fi
 
+# d2b.46-followup #3: static one-shot call-count
+# and stage-uniqueness assertion. Every direct
+# Gate 8 / Step-G recovery control must be
+# invoked EXACTLY ONCE against a UNIQUE stage
+# directory. The check is static (a simple grep
+# over the harness source) so a regression that
+# adds a duplicate invocation breaks the test
+# at source time, not at run time.
+C11_ONE_SHOT_LIST="C7g C7h C7i C7d C7r C7s C8r C8d C8s"
+C11_ONE_SHOT_OK="Y"
+for ctrl in ${C11_ONE_SHOT_LIST}; do
+  # Count exact literal drive_control invocations
+  # that name this control token in the source.
+  # Each occurrence must match "drive_control <token>"
+  # as a prefix (no leading whitespace that would
+  # indicate a duplicate from a derivative script).
+  count=$(grep -nE "^drive_control ${ctrl}\b" "${SCRIPT_DIR}/test_fixture_readiness_observability.sh" \
+            2>/dev/null | wc -l | tr -d ' ')
+  if [ "${count}" -gt 1 ]; then
+    C11_OK="N"
+    C11_ONE_SHOT_OK="N"
+    printf 'C11-FAIL: drive_control %s invoked %s times in harness source\n' \
+      "${ctrl}" "${count}" >&2
+  fi
+done
+
+# d2b.46-followup uniqueness assertion: no
+# TOP_TMP stage directory is reused by more than
+# one drive_control call. Each control must
+# own exactly one child.rc observation.
+STAGE_DIRS=$(grep -nE '^drive_control ' "${SCRIPT_DIR}/test_fixture_readiness_observability.sh" \
+  2>/dev/null | awk -F'"' '{print $2}')
+DUPED=$(printf '%s\n' "${STAGE_DIRS}" | sort | uniq -d)
+if [ -n "${DUPED}" ]; then
+  C11_OK="N"
+  printf 'C11-FAIL: drive_control stages reused across controls:\n%s\n' "${DUPED}" >&2
+fi
+
 # ---------------------------------------------------------------------------
 # Reporting
 #
@@ -1675,22 +2485,65 @@ printf 'C10: rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s fix-
 printf 'C11: ok=%s\n' "${C11_OK}"
 
 PASS=0
-TOTAL=11
+TOTAL=27 # C1..C11 + C7a/b/c/k/g/h/i + C7d + C7r + C7s + C8r + C8d + C8s + M1 + M2a + M2b
+# Per-control pass ledger (collects results so the
+# final summary can name which controls failed).
+# Bash 3.2 (macOS /bin/bash) does not support
+# `declare -A`, so we use one named variable per
+# control key. Each is initialized to N and set
+# to Y by the corresponding PASS predicate.
+C1_PASS=N
+VOCAB_PASS=N
+C2_PASS=N
+C3_PASS=N
+C4_PASS=N
+C5_PASS=N
+C6_PASS=N
+C7A_PASS=N
+C7B_PASS=N
+C7C_PASS=N
+C7K_PASS=N
+C7R_PASS=N
+C7S_PASS=N
+C7G_PASS=N
+C7H_PASS=N
+C7I_PASS=N
+C7D_PASS=N
+C8R_PASS=N
+C8S_PASS=N
+C8D_PASS=N
+C8_PASS=N
+C9_PASS=N
+C10_PASS=N
+C11_PASS=N
+M1_PASS=N
+M2A_PASS=N
+M2B_PASS=N
 # C1 success: gate stub invoked exactly once,
 # no mismatch, target rc=0. C1 also proves
 # the 13 fixture vocabulary includes
 # cni-untrusted-default (otherwise C7k would
 # already have failed the cni-untrusted-default
 # contract — we assert it explicitly below).
-if [ "${C1_RC}" = "0" ] && [ "${C1_DOWNSTREAM}" = "Y" ] && [ "${C1_MISMATCH}" = "N" ]; then PASS=$((PASS+1)); fi
+if [ "${C1_RC}" = "0" ] && [ "${C1_DOWNSTREAM}" = "Y" ] && [ "${C1_MISMATCH}" = "N" ]; then PASS=$((PASS+1)); C1_PASS=Y; fi
 # C1 vocabulary contract: cni-untrusted-default
 # MUST appear in the canonical 13 fixture names
 # set (CILIUM_DEFAULT). A mutation that removes
-# only that name must fail this control.
-if printf '%s\n' "${CILIUM_DEFAULT}" | grep -q '^cni-untrusted-default$' \
-   && [ "$(printf '%s\n' "${CILIUM_DEFAULT}" | grep -cE '^(cni-mock-|cni-control-)|^cni-untrusted-default$')" = "13" ]; then
+# only that name must fail this control. The
+# canonical 13 are space-separated, not newline,
+# so we iterate by word.
+VOCAB_HAS_UNTRUSTED="N"
+VOCAB_COUNT=0
+for n in ${CILIUM_DEFAULT}; do
+  VOCAB_COUNT=$((VOCAB_COUNT+1))
+  case "${n}" in
+    cni-untrusted-default) VOCAB_HAS_UNTRUSTED=Y ;;
+  esac
+done
+if [ "${VOCAB_HAS_UNTRUSTED}" = "Y" ] && [ "${VOCAB_COUNT}" = "13" ]; then
   PASS=$((PASS+1))
   TOTAL=$((TOTAL+1))
+  VOCAB_PASS=Y
 fi
 # C2..C7 NOT_READY failure controls: target rc=12,
 # real-gate summary = FIXTURE_NOT_READY, log
@@ -1701,31 +2554,31 @@ if [ "${C2_RC}" = "12" ] \
    && printf '%s' "${C2_LOGCLS}" | grep -q 'FIXTURE_NOT_READY (exit 12)' \
    && [ "${C2_DOWNSTREAM}" = "N" ] \
    && [ "${C2_MISMATCH}" = "N" ] \
-   && [ "${C2_HAS_NAME}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C2_HAS_NAME}" = "Y" ]; then PASS=$((PASS+1)); C2_PASS=Y; fi
 if [ "${C3_RC}" = "12" ] \
    && [ "${C3_SUMMARY}" = "FIXTURE_NOT_READY" ] \
    && printf '%s' "${C3_LOGCLS}" | grep -q 'FIXTURE_NOT_READY (exit 12)' \
    && [ "${C3_DOWNSTREAM}" = "N" ] \
    && [ "${C3_MISMATCH}" = "N" ] \
-   && [ "${C3_HAS_NAME}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C3_HAS_NAME}" = "Y" ]; then PASS=$((PASS+1)); C3_PASS=Y; fi
 if [ "${C4_RC}" = "14" ] \
    && [ "${C4_SUMMARY}" = "FIXTURE_IMAGE_NOT_LOADED" ] \
    && printf '%s' "${C4_LOGCLS}" | grep -q 'FIXTURE_IMAGE_NOT_LOADED (exit 14)' \
    && [ "${C4_DOWNSTREAM}" = "N" ] \
-   && [ "${C4_MISMATCH}" = "N" ]; then PASS=$((PASS+1)); fi
+   && [ "${C4_MISMATCH}" = "N" ]; then PASS=$((PASS+1)); C4_PASS=Y; fi
 if [ "${C5_RC}" = "12" ] \
    && [ "${C5_SUMMARY}" = "FIXTURE_NOT_READY" ] \
    && printf '%s' "${C5_LOGCLS}" | grep -q 'FIXTURE_NOT_READY (exit 12)' \
    && [ "${C5_DOWNSTREAM}" = "N" ] \
    && [ "${C5_MISMATCH}" = "N" ] \
    && [ "${C5_HAS_NUM}" = "Y" ] \
-   && [ "${C5_FIX_JSON}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C5_FIX_JSON}" = "Y" ]; then PASS=$((PASS+1)); C5_PASS=Y; fi
 if [ "${C6_RC}" = "12" ] \
    && [ "${C6_SUMMARY}" = "FIXTURE_NOT_READY" ] \
    && printf '%s' "${C6_LOGCLS}" | grep -q 'FIXTURE_NOT_READY (exit 12)' \
    && [ "${C6_DOWNSTREAM}" = "N" ] \
    && [ "${C6_MISMATCH}" = "N" ] \
-   && [ "${C6_HAS_STDERR}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C6_HAS_STDERR}" = "Y" ]; then PASS=$((PASS+1)); C6_PASS=Y; fi
 if [ "${C7A_RC}" = "10" ] \
    && [ "${C7A_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
    && printf '%s' "${C7A_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
@@ -1733,7 +2586,7 @@ if [ "${C7A_RC}" = "10" ] \
    && [ "${C7A_MISMATCH}" = "N" ] \
    && [ "${C7A_ERR_ART}" = "Y" ] \
    && [ "${C7A_NAMED_DAEMON_LIST}" = "Y" ] \
-   && [ "${C7A_RC7}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C7A_RC7}" = "Y" ]; then PASS=$((PASS+1)); C7A_PASS=Y; fi
 # C7b: per-daemon exec rc=8 -> CLUSTER_OR_CNI_NOT_READY 10,
 # structured convergence artifact preserved, daemon
 # name recorded in install log.
@@ -1744,7 +2597,7 @@ if [ "${C7B_RC}" = "10" ] \
    && [ "${C7B_MISMATCH}" = "N" ] \
    && [ "${C7B_ERR_ART}" = "Y" ] \
    && [ "${C7B_DAEMON_NAMED}" = "Y" ] \
-   && [ "${C7B_RC8}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C7B_RC8}" = "Y" ]; then PASS=$((PASS+1)); C7B_PASS=Y; fi
 # C7c: valid 12-of-13 -> CLUSTER_OR_CNI_NOT_READY 10,
 # NO command-error artifact, convergence artifact
 # records observed 12 / expected 13.
@@ -1755,7 +2608,7 @@ if [ "${C7C_RC}" = "10" ] \
    && [ "${C7C_MISMATCH}" = "N" ] \
    && [ "${C7C_NO_CMD_ERR}" = "Y" ] \
    && [ "${C7C_CONV_ART}" = "Y" ] \
-   && [ "${C7C_OBS_12_EXP_13}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C7C_OBS_12_EXP_13}" = "Y" ]; then PASS=$((PASS+1)); C7C_PASS=Y; fi
 # C7k: success mutation that removes ONLY
 # cni-untrusted-default must still end up
 # failing CLUSTER_OR_CNI_NOT_READY 10 with
@@ -1765,28 +2618,196 @@ if [ "${C7C_RC}" = "10" ] \
 # the canonical 13 vocabulary is violated.
 if [ "${C7K_RC}" = "10" ] \
    && [ "${C7K_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
-   && [ "${C7K_OBS_12_EXP_13}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C7K_OBS_12_EXP_13}" = "Y" ]; then PASS=$((PASS+1)); C7K_PASS=Y; fi
+printf 'C7r: rc=%s summary=%s logcls=%s downstream=%s recon=%s first-empty=%s later-non-empty=%s unique-labels=%s identity=%s refuses-count-only=%s (install Step G recovery)\n' \
+  "${C7R_RC}" "${C7R_SUMMARY}" "${C7R_LOGCLS}" "${C7R_DOWNSTREAM}" \
+  "${C7R_RECOVERED}" "${C7R_FIRST_EMPTY}" "${C7R_LATER_NONEMPTY}" "${C7R_UNIQUE_LABELS}" \
+  "${C7R_IDENTITY}" "${C7R_REFUSES_COUNT_ONLY}"
+
+# C7s (install Step G equal-count wrong-label
+# mutation): rc=10 with exit=CLUSTER_OR_CNI_NOT_READY;
+# convergence JSON has expected_count=observed_count=13
+# AND missing contains cni-untrusted-default
+# AND unexpected contains cni-stale-old;
+# downstream gate NOT invoked.
+printf 'C7s: rc=%s summary=%s logcls=%s downstream=%s no-cmd-err=%s conv-art=%s exp=%s obs=%s miss-untrusted=%s unex-stale=%s (install Step G equal-count mutation)\n' \
+  "${C7S_RC}" "${C7S_SUMMARY}" "${C7S_LOGCLS}" "${C7S_DOWNSTREAM}" \
+  "${C7S_NO_CMD_ERR}" "${C7S_HAS_CONV_ART}" \
+  "${C7S_EXP_COUNT}" "${C7S_OBS_COUNT}" \
+  "${C7S_MISSING_HAS_UNTRUSTED}" "${C7S_UNEXPECTED_HAS_STALE}"
+
+# C7d (install Step G set-diff command failure):
+# rc=10 with CLUSTER_OR_CNI_NOT_READY; structured
+# cilium-endpoint-setdiff-error.json contains
+# rc=9, operation, expected/observed paths,
+# captured stderr; downstream gate NOT invoked.
+printf 'C7d: rc=%s summary=%s logcls=%s downstream=%s sd-err-art=%s rc9=%s op=%s exp-path=%s obs-path=%s stderr=%s (install Step G set-diff command failure)\n' \
+  "${C7D_RC}" "${C7D_SUMMARY}" "${C7D_LOGCLS}" "${C7D_DOWNSTREAM}" \
+  "${C7D_HAS_SDERR}" "${C7D_HAS_RC9}" "${C7D_HAS_OP}" "${C7D_HAS_EXP_PATH}" \
+  "${C7D_HAS_OBS_PATH}" "${C7D_HAS_STDERR}"
+
+# C7r (install Step G recovery): rc=0,
+# downstream-stub-sentinel invoked exactly once,
+# daemon-list counter >= 2 (first empty, second
+# non-empty), daemon count log shows BOTH an
+# empty poll (count=0) AND a non-empty poll,
+# and the unique-label file has all 13 rows.
+if [ "${C7R_RC}" = "0" ] \
+   && [ "${C7R_DOWNSTREAM}" = "Y" ] \
+   && [ "${C7R_MISMATCH}" = "N" ] \
+   && [ "${C7R_RECOVERED}" = "Y" ] \
+   && [ "${C7R_FIRST_EMPTY}" = "Y" ] \
+   && [ "${C7R_LATER_NONEMPTY}" = "Y" ] \
+   && [ "${C7R_UNIQUE_LABELS}" = "13" ] \
+   && [ "${C7R_IDENTITY}" = "Y" ] \
+   && [ "${C7R_REFUSES_COUNT_ONLY}" = "Y" ]; then PASS=$((PASS+1)); C7R_PASS=Y; fi
+# C7s equal-count wrong-label mutation:
+# install path produces 13 unique labels but
+# with cni-stale-old substituting for
+# cni-untrusted-default. Convergence JSON
+# MUST show missing contains untrusted AND
+# unexpected contains stale; both counts
+# must be 13; rc=10; downstream stub NOT
+# invoked.
+if [ "${C7S_RC}" = "10" ] \
+   && [ "${C7S_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C7S_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C7S_DOWNSTREAM}" = "N" ] \
+   && [ "${C7S_NO_CMD_ERR}" = "Y" ] \
+   && [ "${C7S_HAS_CONV_ART}" = "Y" ] \
+   && [ "${C7S_EXP_COUNT}" = "13" ] \
+   && [ "${C7S_OBS_COUNT}" = "13" ] \
+   && [ "${C7S_MISSING_HAS_UNTRUSTED}" = "Y" ] \
+   && [ "${C7S_UNEXPECTED_HAS_STALE}" = "Y" ]; then PASS=$((PASS+1)); C7S_PASS=Y; fi
+
+# C7d (install Step G set-diff command failure):
+# rc=10 (CLUSTER_OR_CNI_NOT_READY); structured
+# cilium-endpoint-setdiff-error.json must be
+# present with rc=9 captured verbatim, operation
+# label, expected/observed/output paths,
+# captured stderr; downstream gate must NOT be
+# invoked. We also statically verify the source
+# has no `comm ... || true` masking on either
+# set-diff operation.
+if [ "${C7D_RC}" = "10" ] \
+   && [ "${C7D_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C7D_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C7D_DOWNSTREAM}" = "N" ] \
+   && [ "${C7D_HAS_SDERR}" = "Y" ] \
+   && [ "${C7D_HAS_RC9}" = "Y" ] \
+   && [ "${C7D_HAS_OP}" = "Y" ] \
+   && [ "${C7D_HAS_EXP_PATH}" = "Y" ] \
+   && [ "${C7D_HAS_OBS_PATH}" = "Y" ] \
+   && [ "${C7D_HAS_STDERR}" = "Y" ]; then PASS=$((PASS+1)); C7D_PASS=Y; fi
+C7D_NO_COMMAS="N"
+if ! grep -nE 'comm -[23].*\|\| true|comm -1[23].*\|\| true' "${SCRIPT_DIR}/install-nexus-test.sh" >/dev/null 2>&1; then
+  C7D_NO_COMMAS="Y"
+fi
+
 # C7g/h/i: direct real Gate 8 regression
 # controls. Each must exit 10 BEFORE Gate 9,
-# write CLUSTER_OR_CNI_NOT_READY summary, and
-# preserve its structured artefact.
+# write the EXACT content 'CLUSTER_OR_CNI_NOT_READY'
+# in the canonical readiness.summary.txt (NOT a
+# log line), and preserve its structured
+# artefact.
 if [ "${C7G_RC}" = "10" ] \
    && [ "${C7G_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
    && printf '%s' "${C7G_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
    && [ "${C7G_DOWNSTREAM}" = "N" ] \
-   && [ "${C7G_ART}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C7G_ART}" = "Y" ]; then PASS=$((PASS+1)); C7G_PASS=Y; fi
 if [ "${C7H_RC}" = "10" ] \
    && [ "${C7H_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
    && printf '%s' "${C7H_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
    && [ "${C7H_DOWNSTREAM}" = "N" ] \
    && [ "${C7H_ART}" = "Y" ] \
-   && printf '%s' "${C7H_DAEMON}" | grep -q 'cilium'; then PASS=$((PASS+1)); fi
+   && printf '%s' "${C7H_DAEMON}" | grep -q 'cilium'; then PASS=$((PASS+1)); C7H_PASS=Y; fi
+# C7i: 12-of-13 valid convergence. PASS requires:
+#   - canonical summary EXACTLY 'CLUSTER_OR_CNI_NOT_READY'
+#   - convergence JSON parses; observed_count
+#     equals len(observed_labels); both come
+#     from the same unique-label file (the
+#     observed file on disk validates too).
+#   - observed_labels contains at least one
+#     cni-mock AND at least one cni-control
+#     (the canonical C7i case is missing
+#     cni-untrusted-default, so we ONLY check
+#     the two categories that ARE present).
 if [ "${C7I_RC}" = "10" ] \
    && [ "${C7I_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
    && printf '%s' "${C7I_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
    && [ "${C7I_DOWNSTREAM}" = "N" ] \
    && [ "${C7I_ART}" = "Y" ] \
-   && [ "${C7I_NO_CMD_ERR}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C7I_NO_CMD_ERR}" = "Y" ] \
+   && [ "${C7I_CONV_PARSE}" = "Y" ] \
+   && [ "${C7I_CONV_OBS_CNT}" = "${C7I_CONV_OBS_LEN}" ] \
+   && [ "${C7I_CONV_HAS_CNI_MOCK}" = "Y" ] \
+   && [ "${C7I_CONV_HAS_CNI_CONTROL}" = "Y" ]; then PASS=$((PASS+1)); C7I_PASS=Y; fi
+# C8r: real Gate 8 recovery. PASS requires:
+#   - daemon-list counter >= 2 (first empty,
+#     then non-empty)
+#   - Gate 8 ok logged BEFORE any Gate 9 step
+#   - NO command-error artifact
+#   - NO under-convergence artifact (Gate 8 hit
+#     13/13 exactly)
+#   - observed/unique labels include
+#     cni-untrusted-default (the exact 13-Pod
+#     vocabulary contract)
+#   - final unique-label count = 13
+#   - Gate 8 was NOT the first_failed_step
+#     (Gate 9 may legitimately fail first
+#     under a fake PATH; that's allowed)
+#   - exactly one drive_control C8r invocation
+#     in the harness source
+if [ "${C8R_DL_COUNTER}" -ge 2 ] \
+   && [ "${C8R_RECOVERED}" = "Y" ] \
+   && [ "${C8R_GATE8_OK_BEFORE_GATE9}" = "Y" ] \
+   && [ "${C8R_GATE8_FIRST_FAIL}" = "N" ] \
+   && [ "${C8R_NO_CMD_ERR}" = "Y" ] \
+   && [ "${C8R_NO_CONV_ART}" = "Y" ] \
+   && [ "${C8R_HAS_UNTRUSTED}" = "Y" ] \
+   && [ "${C8R_UNIQUE_COUNT}" = "13" ] \
+   && [ "${C8R_ONE_SHOT_COUNT}" = "1" ] \
+   && [ "${C8R_IDENTITY}" = "Y" ] \
+   && [ "${C8R_REFUSES_COUNT_ONLY}" = "Y" ]; then PASS=$((PASS+1)); C8R_PASS=Y; fi
+# C8s: real Gate 8 fails exit 10 BEFORE Gate 9
+# on the equal-count wrong-label mutation
+# with a Deployment-generated
+# cni-control-probe-abc123-def45 Pod name.
+# The convergence JSON must show
+# expected_count==observed_count==13,
+# missing includes BOTH cni-untrusted-default
+# AND the generated probe name, and
+# unexpected includes cni-stale-old; rc=10;
+# canonical summary exact; no command-error
+# artifact.
+if [ "${C8S_RC}" = "10" ] \
+   && [ "${C8S_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C8S_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C8S_NO_CMD_ERR}" = "Y" ] \
+   && [ "${C8S_HAS_CONV_ART}" = "Y" ] \
+   && [ "${C8S_EXP_COUNT}" = "13" ] \
+   && [ "${C8S_OBS_COUNT}" = "13" ] \
+   && [ "${C8S_MISSING_HAS_UNTRUSTED}" = "Y" ] \
+   && [ "${C8S_UNEXPECTED_HAS_STALE}" = "Y" ] \
+   && [ "${C8S_MISSING_HAS_PROBE}" = "N" ]; then PASS=$((PASS+1)); C8S_PASS=Y; fi
+# C8d (real Gate 8 set-diff command failure):
+# rc=10 (CLUSTER_OR_CNI_NOT_READY); structured
+# gate08-endpoint-setdiff-error.json contains
+# rc=9 captured verbatim, operation,
+# expected/observed paths, captured stderr;
+# Gate 8 must NOT record Step 8 "ok" BEFORE
+# the deadline fires (otherwise convergence
+# success was faked on a simulated diff exit).
+if [ "${C8D_RC}" = "10" ] \
+   && [ "${C8D_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
+   && printf '%s' "${C8D_LOGCLS}" | grep -q 'CLUSTER_OR_CNI_NOT_READY (exit 10)' \
+   && [ "${C8D_HAS_SDERR}" = "Y" ] \
+   && [ "${C8D_HAS_RC9}" = "Y" ] \
+   && [ "${C8D_HAS_OP}" = "Y" ] \
+   && [ "${C8D_HAS_EXP_PATH}" = "Y" ] \
+   && [ "${C8D_HAS_OBS_PATH}" = "Y" ] \
+   && [ "${C8D_HAS_STDERR}" = "Y" ] \
+   && [ "${C8D_GATE8_OK_BEFORE_G9}" = "N" ]; then PASS=$((PASS+1)); C8D_PASS=Y; fi
 # C8 image-pipeline failure: target rc=14,
 # real-gate summary = FIXTURE_IMAGE_NOT_LOADED.
 if [ "${C8_RC}" = "14" ] \
@@ -1794,9 +2815,9 @@ if [ "${C8_RC}" = "14" ] \
    && printf '%s' "${C8_LOGCLS}" | grep -q 'FIXTURE_IMAGE_NOT_LOADED (exit 14)' \
    && [ "${C8_DOWNSTREAM}" = "N" ] \
    && [ "${C8_MISMATCH}" = "N" ] \
-   && [ "${C8_FIX_LOG}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C8_FIX_LOG}" = "Y" ]; then PASS=$((PASS+1)); C8_PASS=Y; fi
 # C9 success: gate stub invoked exactly once.
-if [ "${C9_RC}" = "0" ] && [ "${C9_DOWNSTREAM}" = "Y" ] && [ "${C9_MISMATCH}" = "N" ]; then PASS=$((PASS+1)); fi
+if [ "${C9_RC}" = "0" ] && [ "${C9_DOWNSTREAM}" = "Y" ] && [ "${C9_MISMATCH}" = "N" ]; then PASS=$((PASS+1)); C9_PASS=Y; fi
 # C10 real timeout: rc=12, summary FIXTURE_NOT_READY,
 # 3 timeout artefacts, real gate, no stub, no mismatch.
 if [ "${C10_RC}" = "12" ] \
@@ -1806,8 +2827,8 @@ if [ "${C10_RC}" = "12" ] \
    && [ "${C10_MISMATCH}" = "N" ] \
    && [ "${C10_FIX_JSON}" = "Y" ] \
    && [ "${C10_FIX_TXT}"  = "Y" ] \
-   && [ "${C10_FIX_LOG}"  = "Y" ]; then PASS=$((PASS+1)); fi
-if [ "${C11_OK}" = "Y" ]; then PASS=$((PASS+1)); fi
+   && [ "${C10_FIX_LOG}"  = "Y" ]; then PASS=$((PASS+1)); C10_PASS=Y; fi
+if [ "${C11_OK}" = "Y" ]; then PASS=$((PASS+1)); C11_PASS=Y; fi
 
 # ---------------------------------------------------------------------------
 # M1 — d2b.46 follow-up: prove abort_as's actual
@@ -1953,7 +2974,7 @@ printf 'M1: summary_path_file_present=%s abort_log_line=%s log_label=%s log_expe
   "${M1_CANONICAL_PRESENT}"
 
 PASS=$((${PASS} + 0))
-TOTAL=12
+TOTAL=27
 if [ "${M1_RC}" = "16" ] \
    && [ "${M1_INVOKED}" = "Y" ] \
    && [ "${M1_JSON_PARSEABLE}" = "Y" ] \
@@ -1969,6 +2990,7 @@ if [ "${M1_RC}" = "16" ] \
    && [ "${M1_SUCCESS_STUB_INVOKED_TEXT}" = "N" ] \
    && [ "${M1_SUCCESS_STUB_PREDICATE_OK}" = "Y" ]; then
   PASS=$((PASS+1))
+  M1_PASS=Y
 fi
 
 # ---------------------------------------------------------------------------
@@ -2128,7 +3150,7 @@ printf 'M2b: rc=%s stderr-named-gate=%s stderr-named-nonexec=%s stub-sentinel-pr
   "${M2B_READINESS_LOG_PRESENT}" "${M2B_MISMATCH_JSON_PRESENT}" \
   "${M2B_BIT_FILE}"
 
-TOTAL=14
+TOTAL=27
 if [ "${M2A_RC}" = "22" ] \
    && [ "${M2A_STDERR_NAMED_GATE}" = "Y" ] \
    && [ "${M2A_STDERR_NAMED_MISSING}" = "Y" ] \
@@ -2137,6 +3159,7 @@ if [ "${M2A_RC}" = "22" ] \
    && [ "${M2A_READINESS_LOG_PRESENT}" = "N" ] \
    && [ "${M2A_MISMATCH_JSON_PRESENT}" = "N" ]; then
   PASS=$((PASS+1))
+  M2A_PASS=Y
 fi
 if [ "${M2B_RC}" = "22" ] \
    && [ "${M2B_STDERR_NAMED_GATE}" = "Y" ] \
@@ -2146,9 +3169,19 @@ if [ "${M2B_RC}" = "22" ] \
    && [ "${M2B_READINESS_LOG_PRESENT}" = "N" ] \
    && [ "${M2B_MISMATCH_JSON_PRESENT}" = "N" ]; then
   PASS=$((PASS+1))
+  M2B_PASS=Y
 fi
 
-printf '\n# C1..C11 + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
+printf '\n# C1..C11 + C7s + C8s + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
+# Per-control pass table. Lets the operator
+# attribute a regression to one control name
+# without re-greping the harness source.
+printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s\n' \
+  "${C1_PASS}" "${VOCAB_PASS}" "${C2_PASS}" "${C3_PASS}" "${C4_PASS}" "${C5_PASS}" "${C6_PASS}" \
+  "${C7A_PASS}" "${C7B_PASS}" "${C7C_PASS}" "${C7K_PASS}" "${C7R_PASS}" "${C7S_PASS}" "${C7D_PASS}" \
+  "${C7G_PASS}" "${C7H_PASS}" "${C7I_PASS}" "${C8R_PASS}" "${C8S_PASS}" "${C8D_PASS}" \
+  "${C8_PASS}" "${C9_PASS}" "${C10_PASS}" "${C11_PASS}" \
+  "${M1_PASS}" "${M2A_PASS}" "${M2B_PASS}"
 if [ "${PASS}" = "${TOTAL}" ]; then
   exit 0
 fi

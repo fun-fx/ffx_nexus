@@ -641,23 +641,35 @@ step_no=8
 run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
 if run_in_phase; then
 
-# Exact 13-Pod vocabulary contract.
-# Three mutually-exclusive anchored matchers:
-#   * ^cni-mock-*       any cni-mock-<x> pod
-#   * cni-untrusted-default (exact)
-#   * ^cni-control-*    any cni-control-<x> pod
-# This is the SAME set the install pre-loop
-# published; Gate 8 enforces it independently.
-EXPECTED_FIXTURE_LABEL_RE='^(cni-mock-|cni-control-)|^(cni-mock-|cni-control-)|^cni-untrusted-default$|^cni-untrusted-default$|^cni-(mock|untrusted|control)-|^cni-(mock|untrusted|control)-(src|target|source|dest|destination)-'
-# Anchored name matcher (used both inline below
-# and for tighter re-validation of convergence):
-EXPECTED_FIXTURE_NAME_RE='^(cni-mock-[^[:space:]]+|cni-untrusted-default|cni-control-[^[:space:]]+)$'
+# Anchored vocabulary contract for fixture Pod
+# names is enforced inline by the python3 matcher
+# inside EXPECTED: any name starting with
+# cni-mock-, the literal cni-untrusted-default,
+# or any name starting with cni-control- counts
+# toward the 13 exact population. No regex
+# variable is exposed; only this single inline
+# matcher is the source of truth.
 
 DEADLINE=$(( $(date +%s) + 360 ))
 LAST=0
 EXPECTED=0
 GATE8_ERR_ART="${ARTIFACTS}/gate08-endpoint-inventory-error.json"
 GATE8_CONV_ART="${ARTIFACTS}/gate08-endpoint-convergence.json"
+GATE8_SETDIFF_ERR_ART="${ARTIFACTS}/gate08-endpoint-setdiff-error.json"
+GATE8_DAEMON_LIST="${ARTIFACTS}/gate08-daemon-list.out"
+GATE8_DAEMON_ERR="${ARTIFACTS}/gate08-daemon-list.stderr"
+GATE8_DAEMON_NAMES="${ARTIFACTS}/gate08-daemon-list.names"
+GATE8_ACC_OUT="${ARTIFACTS}/gate08-endpoint.acc.out"
+GATE8_UNIQ_OUT="${ARTIFACTS}/gate08-endpoint.unique.out"
+# Default identity-equality proof counters BEFORE
+# we enter the poll loop so the post-loop success
+# record_step has every value in scope. The poll
+# loop's break path will re-assign them when the
+# convergence carries an identity match; the
+# deadline-failure arm ignores them.
+EXPECTED_UNIQUE=0
+MISSING_C=0
+UNEXPECTED_C=0
 # Helper: write structured atomic error artefact
 # and classify as CLUSTER_OR_CNI_NOT_READY 10.
 # Any nonzero rc on (1) fixture inventory
@@ -703,6 +715,7 @@ if (( FIXTURE_INV_RC != 0 )); then
     "$FIXTURE_INV_RC" \
     "$(cat "$FIXTURE_NAMES_ERR")"
 fi
+EXACT_POPULATION_EXPECTED=13
 EXPECTED=$(python3 -c "
 import json
 try:
@@ -721,48 +734,93 @@ print(sum(1 for it in items if match((it.get('metadata') or {}).get('name','')))
 # exact expected population already proves the
 # cluster is missing fixture identity; record
 # the convergence artefact and abort here too.
-if (( EXPECTED != 13 )); then
+if (( EXPECTED != EXACT_POPULATION_EXPECTED )); then
   cat >"$GATE8_CONV_ART.snapshot" <<EOF
 {
   "phase": "gate08_exact_population_undercount",
-  "expected_count": 13,
+  "expected_count": ${EXACT_POPULATION_EXPECTED},
   "observed_fixture_pod_count": ${EXPECTED},
   "reason": "fixture vocabulary not exactly 13; Gate 8 cannot proceed"
 }
 EOF
   mv "$GATE8_CONV_ART.snapshot" "$GATE8_CONV_ART"
-  record_step 8 "failed" "fixture population ${EXPECTED} != 13 (see $GATE8_CONV_ART)"
+  record_step 8 "failed" "fixture population ${EXPECTED} != ${EXACT_POPULATION_EXPECTED} (see $GATE8_CONV_ART)"
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
-record_step 8 "ok" "fixture population identified: 13"
-
-# (2) Daemon list. Valid-empty zero daemons is
-# NOT a command failure; only nonzero rc
-# classifies as CLUSTER_OR_CNI_NOT_READY 10.
-DAEMON_OUT="${ARTIFACTS}/gate08-daemon-list.out"
-DAEMON_ERR="${ARTIFACTS}/gate08-daemon-list.stderr"
-DAEMON_NAMES="${ARTIFACTS}/gate08-daemon-list.names"
-: > "$DAEMON_OUT"; : > "$DAEMON_ERR"; : > "$DAEMON_NAMES"
-set +e
-kubectl -n kube-system get pod -l k8s-app=cilium \
-  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' \
-  >"$DAEMON_OUT" 2>"$DAEMON_ERR"
-DL_RC=$?
-set -e
-awk '{for(i=1;i<=NF;i++) print $i}' "$DAEMON_OUT" > "$DAEMON_NAMES"
-if (( DL_RC != 0 )); then
-  gate8_cmd_failure "cilium_daemon_list" \
-    "kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath" \
-    "$DL_RC" "$(cat "$DAEMON_ERR")"
-fi
+# d2b.46 Block B: derive EXPECTED_LABELS_FILE
+# from the SAME inventory we already passed RC
+# on, by projecting each Pod.metadata.name to
+# `resolve-labels-default/<name>`. This is
+# how a Deployment-generated
+# cni-control-probe-<rs>-<pod> identity enters
+# the contract: the inventory owns the names,
+# not a hard-coded control token. Sort+uniq
+# once so the file is a normalized set.
+GATE8_EXPECTED_LABELS="${ARTIFACTS}/gate08-endpoint.expected.out"
+python3 - "$FIXTURE_NAMES_OUT" "$GATE8_EXPECTED_LABELS" >/dev/null <<'PYEOF'
+import json, sys, re
+src, out = sys.argv[1], sys.argv[2]
+mock_re    = re.compile(r'^cni-mock-')
+control_re = re.compile(r'^cni-control-')
+try:
+    data = json.loads(open(src).read() or '{"items":[]}')
+except Exception:
+    data = {'items':[]}
+items = data.get('items') if isinstance(data, dict) else []
+labels = []
+for it in items:
+    md   = it.get('metadata') or {}
+    name = md.get('name') or ''
+    if not (mock_re.match(name) or name == 'cni-untrusted-default' or control_re.match(name)):
+        continue
+    labels.append(f"resolve-labels-default/{name}")
+seen = set()
+uniq = []
+for l in sorted(labels):
+    if l in seen: continue
+    seen.add(l); uniq.append(l)
+open(out, 'w').write('\n'.join(uniq) + ('' if not uniq else '\n'))
+PYEOF
+# d2b.46 follow-up Block D: do NOT log
+# Step 8 "ok" yet. Step 8 only records "ok"
+# after the bounded poll loop converges with
+# exact dynamic expected-set identity equality.
+# We log "in-flight" sentinel so the readiness
+# log shows progress without falsely claiming
+# convergence when the set-diff has not yet
+# completed successfully.
+record_step 8 "in_flight" "fixture population identified: ${EXPECTED} pod(s) -> $(awk 'END{print NR}' "$GATE8_EXPECTED_LABELS") endpoint label(s); awaiting identity-equality convergence"
 
 LAST=0
+# Bounded poll loop. Every iteration:
+#   (2) RE-FETCH the Cilium daemon Pod list
+#       (rc-check, stderr-capture, names-project).
+#   (3)+(4) for each daemon, exec + JSON
+#       projection with explicit rc capture.
+#   (5) normalize labels via LC_ALL=C sort -u
+#       so duplicate publications across daemons
+#       collapse before counting.
+# A nonzero rc on (2)/(3)/(4) fails closed
+# instantly. A valid empty rc-0 daemon list is
+# a convergence observation: we sleep and retry.
 while (( $(date +%s) < DEADLINE )); do
-  ACC_OUT="${ARTIFACTS}/gate08-endpoint.acc.out"
-  ACC_ERR="${ARTIFACTS}/gate08-endpoint.acc.stderr"
-  : > "$ACC_OUT"; : > "$ACC_ERR"
-  # (3)+(4) per-daemon exec and JSON projection.
-  # Either nonzero rc classifies immediately.
+  : > "$GATE8_DAEMON_LIST"
+  : > "$GATE8_DAEMON_ERR"
+  : > "$GATE8_DAEMON_NAMES"
+  : > "$GATE8_ACC_OUT"
+  : > "$GATE8_UNIQ_OUT"
+  set +e
+  kubectl -n kube-system get pod -l k8s-app=cilium \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' \
+    >"$GATE8_DAEMON_LIST" 2>"$GATE8_DAEMON_ERR"
+  DL_RC=$?
+  set -e
+  awk '{for(i=1;i<=NF;i++) print $i}' "$GATE8_DAEMON_LIST" > "$GATE8_DAEMON_NAMES"
+  if (( DL_RC != 0 )); then
+    gate8_cmd_failure "cilium_daemon_list" \
+      "kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath" \
+      "$DL_RC" "$(cat "$GATE8_DAEMON_ERR")"
+  fi
   set +e
   while read -r daemon; do
     [ -z "$daemon" ] && continue
@@ -774,7 +832,7 @@ while (( $(date +%s) < DEADLINE )); do
       >"$EXEC_OUT" 2>"$EXEC_ERR"
     EXEC_RC=$?
     if (( EXEC_RC != 0 )); then
-      cat >>"$ACC_ERR" <<EOF
+      cat >>"$GATE8_DAEMON_ERR" <<EOF
 DAEMON: ${daemon} EXEC_RC=${EXEC_RC}
 $(cat "$EXEC_ERR")
 EOF
@@ -805,7 +863,7 @@ for x in sorted(set(names)):
 " >"$PROJ_OUT" 2>"$PROJ_ERR"
     PROJ_RC=$?
     if (( PROJ_RC != 0 )); then
-      cat >>"$ACC_ERR" <<EOF
+      cat >>"$GATE8_DAEMON_ERR" <<EOF
 DAEMON: ${daemon} PROJ_RC=${PROJ_RC}
 $(cat "$PROJ_ERR")
 EOF
@@ -813,42 +871,189 @@ EOF
         "python3 cilium JSON projection (daemon ${daemon})" \
         "$PROJ_RC" "$(cat "$PROJ_ERR")" "$daemon"
     fi
-    cat "$PROJ_OUT" >> "$ACC_OUT"
-  done < "$DAEMON_NAMES"
+    cat "$PROJ_OUT" >> "$GATE8_ACC_OUT"
+  done < "$GATE8_DAEMON_NAMES"
   set -e
-  # Count pipeline: awk returns rc 0 on empty
-  # input; a valid zero observation is preserved.
-  LAST=$(awk 'BEGIN{n=0} {n++} END {print n}' "$ACC_OUT")
-  if (( LAST >= EXPECTED )); then
+  # Unique-label normalization: LC_ALL=C sort -u
+  # collapses duplicate publications across
+  # daemons; awk then counts so the count is
+  # exactly the length of the file.
+  if [ -s "$GATE8_ACC_OUT" ]; then
+    LC_ALL=C sort -u "$GATE8_ACC_OUT" > "$GATE8_UNIQ_OUT"
+  fi
+  # Compute the identity diff once at the END of
+# every iteration so the deadline branch can
+# read the SAME files the loop just wrote.
+# This is the single source of truth: both
+# the loop-break check below and the
+# post-deadline branch read GATE8_MISSING_OUT
+# / GATE8_UNEXPECTED_OUT from disk.
+GATE8_MISSING_OUT="${ARTIFACTS}/gate08-endpoint.missing.out"
+GATE8_UNEXPECTED_OUT="${ARTIFACTS}/gate08-endpoint.unexpected.out"
+GATE8_MISSING_ERR="${ARTIFACTS}/gate08-endpoint.missing.stderr"
+GATE8_UNEXPECTED_ERR="${ARTIFACTS}/gate08-endpoint.unexpected.stderr"
+: > "$GATE8_MISSING_OUT"; : > "$GATE8_MISSING_ERR"
+: > "$GATE8_UNEXPECTED_OUT"; : > "$GATE8_UNEXPECTED_ERR"
+# d2b.46 Block D follow-up: fail closed on
+# any set-diff command failure. Run each comm
+# separately under set +e and capture exact
+# rc + stderr; only rc 0 is treated as a valid
+# computed identity diff. Any non-zero rc
+# writes an atomic structured JSON artifact
+# and aborts as CLUSTER_OR_CNI_NOT_READY 10
+# BEFORE we let empty files masquerade as a
+# successful equality check. We deliberately
+# do NOT use `|| true` here — a comm exit >0
+# (missing input, I/O error, unsorted input,
+# comm-not-exec'd) must be fail-closed, not
+# silently swallowed.
+set +e
+LC_ALL=C comm -23 "$GATE8_EXPECTED_LABELS" "$GATE8_UNIQ_OUT" \
+  >"$GATE8_MISSING_OUT" 2>"$GATE8_MISSING_ERR"
+GATE8_MISSING_DIFF_RC=$?
+set -e
+if (( GATE8_MISSING_DIFF_RC != 0 )); then
+  cat >"$GATE8_SETDIFF_ERR_ART.snapshot" <<EOF
+{
+  "command": "LC_ALL=C comm -23 expected_labels unique_labels",
+  "operation": "missing_labels_diff",
+  "rc": ${GATE8_MISSING_DIFF_RC},
+  "expected_path": "${GATE8_EXPECTED_LABELS}",
+  "observed_path": "${GATE8_UNIQ_OUT}",
+  "output_path": "${GATE8_MISSING_OUT}",
+  "stderr": $(printf '%s' "$(cat "$GATE8_MISSING_ERR")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "phase": "gate08_setdiff_failed",
+  "reason": "set-diff comm -23 exited non-zero; empty output would falsely count as set equality"
+}
+EOF
+  mv "$GATE8_SETDIFF_ERR_ART.snapshot" "$GATE8_SETDIFF_ERR_ART"
+  record_step 8 "failed" "cilium endpoint set-diff (missing) failed rc=${GATE8_MISSING_DIFF_RC} (see $GATE8_SETDIFF_ERR_ART)"
+  classify failed 10 CLUSTER_OR_CNI_NOT_READY
+fi
+set +e
+LC_ALL=C comm -13 "$GATE8_EXPECTED_LABELS" "$GATE8_UNIQ_OUT" \
+  >"$GATE8_UNEXPECTED_OUT" 2>"$GATE8_UNEXPECTED_ERR"
+GATE8_UNEXPECTED_DIFF_RC=$?
+set -e
+if (( GATE8_UNEXPECTED_DIFF_RC != 0 )); then
+  cat >"$GATE8_SETDIFF_ERR_ART.snapshot" <<EOF
+{
+  "command": "LC_ALL=C comm -13 expected_labels unique_labels",
+  "operation": "unexpected_labels_diff",
+  "rc": ${GATE8_UNEXPECTED_DIFF_RC},
+  "expected_path": "${GATE8_EXPECTED_LABELS}",
+  "observed_path": "${GATE8_UNIQ_OUT}",
+  "output_path": "${GATE8_UNEXPECTED_OUT}",
+  "stderr": $(printf '%s' "$(cat "$GATE8_UNEXPECTED_ERR")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "phase": "gate08_setdiff_failed",
+  "reason": "set-diff comm -13 exited non-zero; empty output would falsely count as set equality"
+}
+EOF
+  mv "$GATE8_SETDIFF_ERR_ART.snapshot" "$GATE8_SETDIFF_ERR_ART"
+  record_step 8 "failed" "cilium endpoint set-diff (unexpected) failed rc=${GATE8_UNEXPECTED_DIFF_RC} (see $GATE8_SETDIFF_ERR_ART)"
+  classify failed 10 CLUSTER_OR_CNI_NOT_READY
+fi
+EXPECTED_UNIQUE=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$GATE8_EXPECTED_LABELS")
+MISSING_C=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$GATE8_MISSING_OUT")
+UNEXPECTED_C=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$GATE8_UNEXPECTED_OUT")
+LAST=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$GATE8_UNIQ_OUT")
+  if (( LAST < EXPECTED )); then
+    # Strict identity equality is the real
+    # contract, but a count-only failure here is
+    # ALSO a fail-loud observation: we cannot
+    # claim we have 13 labels if LAST < 13 yet.
+    # Sleep and let the deadline compute the
+    # full identity diff for the artefact.
+    sleep 5
+    continue
+  fi
+  # The missing/unexpected diffs were already
+  # computed at END of last iteration by the
+  # post-iteration block above. Reuse them:
+  # convergence breaks ONLY when both diffs
+  # are empty AND the dynamic expected set has
+  # EXACTLY EXPECTED entries.
+  if [ "${MISSING_C}" -eq 0 ] && [ "${UNEXPECTED_C}" -eq 0 ] && [ "${EXPECTED_UNIQUE}" -eq "${EXPECTED}" ]; then
+    record_step 8 "ok" "converged with exact set identity equality: expected ${EXPECTED}, observed ${EXPECTED}, missing 0, unexpected 0"
     break
   fi
   sleep 5
 done
 
-# AT-or-AFTER deadline: any partial convergence
-# fails closed. LAST < EXPECTED is the
-# canonical under-convergence condition; we do
-# NOT use the prior LAST==0 carve-out because
+# AT-or-AFTER deadline: any count failure OR
+# identity mismatch fails closed. We do NOT
+# use the prior LAST==0 carve-out because
 # partial convergence (e.g. 11 of 13) was
-# previously let through to Gate 9.
-if (( LAST < EXPECTED )); then
-  cat >"$GATE8_CONV_ART.snapshot" <<EOF
-{
-  "phase": "gate08_underconverged",
-  "daemon_list": $(awk '{printf "%s\\n", $0}' "$DAEMON_NAMES" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().splitlines()))'),
-  "deadline_unix": ${DEADLINE},
-  "now_unix": $(date +%s),
-  "expected_count": ${EXPECTED},
-  "observed_endpoint_label_count": ${LAST},
-  "reason": "cilium endpoint under-convergence: LAST < EXPECTED at deadline"
+# previously let through to Gate 9. We do NOT
+# use LAST < EXPECTED alone because a count
+# match with a wrong identity (replace
+# expected by stale) would ALSO let through
+# to Gate 9 under the old contract.
+# Build observed_labels / daemon_list /
+# expected_labels / missing_labels /
+# unexpected_labels as STRICT JSON arrays via
+# a small inline python stage that reads the
+# source-of-truth files (unique-label file for
+# observed_labels; expected-labels file;
+# missing labels file; unexpected labels
+# file; daemon-names file for daemon_list).
+# The counts on disk ALSO come from those
+# files via `len(...)` in the same python
+# invocation, so they cannot diverge.
+GATE8_IDENTITY_MISMATCH="N"
+if [ -s "$ARTIFACTS/gate08-endpoint.missing.out" ] \
+   && [ "$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/gate08-endpoint.missing.out")" -ne 0 ]; then
+  GATE8_IDENTITY_MISMATCH="Y"
+fi
+if [ -s "$ARTIFACTS/gate08-endpoint.unexpected.out" ] \
+   && [ "$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/gate08-endpoint.unexpected.out")" -ne 0 ]; then
+  GATE8_IDENTITY_MISMATCH="Y"
+fi
+if (( LAST < EXPECTED )) || [ "${GATE8_IDENTITY_MISMATCH}" = "Y" ]; then
+  python3 - "$GATE8_DAEMON_NAMES" "$GATE8_UNIQ_OUT" \
+    "$GATE8_EXPECTED_LABELS" \
+    "$ARTIFACTS/gate08-endpoint.missing.out" \
+    "$ARTIFACTS/gate08-endpoint.unexpected.out" \
+    "$LAST" "$DEADLINE" "$(date +%s)" "$EXPECTED" \
+    >"$GATE8_CONV_ART.snapshot" <<'PYEOF'
+import json, sys
+daemon_p, uniq_p, exp_p, miss_p, une_p, last_s, dl_s, now_s, exp_s = sys.argv[1:10]
+def reads(p):
+    return [l for l in open(p).read().splitlines() if l.strip()]
+daemons    = reads(daemon_p)
+observed   = reads(uniq_p)
+expected   = reads(exp_p)
+missing    = reads(miss_p)
+unexpected = reads(une_p)
+obj = {
+  "command": "cilium endpoint convergence",
+  "phase": "gate08_underconverged_or_mismatch",
+  "daemon_list": daemons,
+  "deadline_unix": int(dl_s),
+  "now_unix": int(now_s),
+  "expected_labels": expected,
+  "observed_labels": observed,
+  "missing_labels": missing,
+  "unexpected_labels": unexpected,
+  "expected_count": len(expected),
+  "observed_count": len(observed),
+  "reason": "cilium endpoint publication did not identity-match the dynamic expected label set; LAST >= EXPECTED is NOT sufficient, set diffs must be empty"
 }
-EOF
+assert obj["expected_count"] == len(obj["expected_labels"]), \
+  "expected_count and expected_labels must come from the same file"
+assert obj["observed_count"] == len(obj["observed_labels"]), \
+  "observed_count and observed_labels must come from the same file"
+assert obj["expected_count"] == int(exp_s), \
+  "expected_count must equal the canonical EXACT_POPULATION_EXPECTED"
+sys.stdout.write(json.dumps(obj, indent=2))
+sys.stdout.write("\n")
+PYEOF
   mv "$GATE8_CONV_ART.snapshot" "$GATE8_CONV_ART"
-  record_step 8 "failed" "cilium under-converged: ${LAST} < ${EXPECTED} (see $GATE8_CONV_ART)"
+  record_step 8 "failed" "cilium under-converged or identity-mismatch: ${LAST} < ${EXPECTED} (see $GATE8_CONV_ART)"
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
 
-record_step 8 "ok" "cilium endpoints ${LAST} >= fixture pods ${EXPECTED}"
+record_step 8 "ok" "cilium endpoints identity-matched fixture pods (EXPECTED_UNIQUE=${EXPECTED_UNIQUE} MISSING=${MISSING_C} UNEXPECTED=${UNEXPECTED_C}; labels ${LAST} unique)"
 fi
 
 # -----------------------------------------------------------------

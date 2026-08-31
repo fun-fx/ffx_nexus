@@ -522,6 +522,129 @@ step_G_readiness() {
   # endpoint expectation it consults.
   local fixture_re='^cni-(mock|untrusted|control)-'
   local expected_fixture_count=13
+  # -----------------------------------------------------------------
+  # d2b.46 Block A: dynamic expected-set derivation.
+  # Step F has already produced the canonical fixture
+  # Pod inventory (Pod/N READY/R ESTARTS/A) via
+  # `kubectl get pod -A -o json` (its timeout-snapshot
+  # block writes the same JSON). Here we capture a
+  # second snapshot to anchor Gate 8 expectations,
+  # because Step G must consult the actual runtime
+  # Pod NAME for every fixture, including the
+  # Deployment-generated `cni-control-probe-<rs>-<pod>`
+  # identity that is NOT knowable from any static
+  # control name.
+  # -----------------------------------------------------------------
+  local expected_labels_file="$ARTIFACTS/cilium-endpoint.expected.out"
+  local inv_json="$ARTIFACTS/fixture-inventory.json"
+  local inv_err="$ARTIFACTS/fixture-inventory.stderr"
+  : > "$expected_labels_file"
+  : > "$inv_err"
+  set +e
+  kubectl get pod -A -o json 2>"$inv_err" >"$inv_json"
+  local inv_rc=$?
+  set -e
+  if (( inv_rc != 0 )); then
+    local inv_err_art="$ARTIFACTS/fixture-inventory-error.json"
+    cat >"$inv_err_art.snapshot" <<EOF
+{
+  "command": "kubectl get pod -A -o json",
+  "phase": "fixture_inventory_snap",
+  "rc": ${inv_rc},
+  "stderr": $(printf '%s' "$(cat "$inv_err")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "expected_count": ${expected_fixture_count},
+  "reason": "fixture inventory capture failed; cannot derive dynamic expected label set"
+}
+EOF
+    mv "$inv_err_art.snapshot" "$inv_err_art"
+    abort_as CLUSTER_OR_CNI_NOT_READY \
+      "fixture inventory capture failed rc=${inv_rc}: cannot derive dynamic expected label set (see $inv_err_art)" 10
+  fi
+  # Derive expected labels from Pod metadata.name.
+  # This is where generated names like
+  # cni-control-probe-<rs>-<pod> enter the
+  # contract: the username never types them,
+  # the inventory provides them. Fail closed if
+  # the dynamic set is non-13 because the
+  # upstream fixture drift would mean our
+  # convergence check is meaningless.
+  python3 - "$inv_json" "$expected_labels_file" >/dev/null <<'PYEOF'
+import json, sys, re
+inv_path, out_path = sys.argv[1], sys.argv[2]
+mock_re    = re.compile(r'^cni-mock-')
+control_re = re.compile(r'^cni-control-')
+data = json.load(open(inv_path))
+items = data.get('items') if isinstance(data, dict) else []
+labels = []
+for it in items:
+    md = it.get('metadata') or {}
+    name = md.get('name') or ''
+    if not (mock_re.match(name) or name == 'cni-untrusted-default' or control_re.match(name)):
+        continue
+    labels.append(f"resolve-labels-default/{name}")
+seen = set()
+uniq = []
+for l in sorted(labels):
+    if l in seen: continue
+    seen.add(l)
+    uniq.append(l)
+open(out_path, 'w').write('\n'.join(uniq) + ('' if not uniq else '\n'))
+# Note: we deliberately do NOT raise on
+# empty/short inventory here; the caller checks
+# length against expected_fixture_count so the
+# downstream convergence classifier owns the
+# exit decision.
+PYEOF
+  local expected_unique_count
+  expected_unique_count=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$expected_labels_file")
+  if (( expected_unique_count != expected_fixture_count )); then
+    local fix_art="$ARTIFACTS/fixture-pod-readiness-timeout.json"
+    cat >"$fix_art.snapshot" <<EOF
+{
+  "command": "kubectl get pod -A -o json dynamic-set derivation",
+  "phase": "fixture_inventory_set_mismatch",
+  "rc": 0,
+  "observed_count": ${expected_unique_count},
+  "expected_count": ${expected_fixture_count},
+  "expected_labels_file": "${expected_labels_file}",
+  "reason": "dynamic expected label set derived from inventory observed=${expected_unique_count} unique entries; canonical 13-fixture vocabulary contract requires ${expected_fixture_count}"
+}
+EOF
+    mv "$fix_art.snapshot" "$fix_art"
+    printf '[install] FAIL expected=%s observed=%s\n' "${expected_fixture_count}" "${expected_unique_count}" >>"$ARTIFACTS/fixture-pod-readiness-timeout.txt"
+    # Write the canonical events log so downstream
+    # controls (C10 in particular) still see the
+    # pre-loop inventory surface they historically
+    # validated. We name the same file the
+    # deadline branch writes.
+    python3 - "$inv_json" "$ARTIFACTS/fixture-pod-readiness-events.log" >/dev/null <<'PYEOF'
+import json, sys
+inv_path, events_path = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(inv_path))
+except Exception:
+    data = {}
+items = data.get('items') if isinstance(data, dict) else []
+rows = []
+for it in items:
+    md = it.get('metadata') or {}
+    name = md.get('name','')
+    if not (name.startswith('cni-mock-') or name == 'cni-untrusted-default' or name.startswith('cni-control-')):
+        continue
+    phase = (it.get('status') or {}).get('phase','')
+    rows.append({'namespace': md.get('namespace',''), 'name': name, 'phase': phase})
+import os, datetime
+ts = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+with open(events_path, 'w') as out:
+    out.write(f"# fixture-pod-readiness-events {ts} phase=fixture_inventory_set_mismatch\n")
+    for r in rows:
+        out.write(f"{r['namespace']}/{r['name']}\t{r['phase']}\n")
+PYEOF
+    abort_as FIXTURE_NOT_READY \
+      "fixture inventory observed=${expected_unique_count} unique expected=${expected_fixture_count}; canonical 13-fixture vocabulary contract (see $fix_art)" 12
+  fi
+  echo "[install] cilium expected label set size: ${expected_unique_count}/${expected_fixture_count}"
+  # End Block A prelude.
   local fixtures_ready=0
   local deadline=$(( $(date +%s) + 480 ))
   # Hoisted to function scope: post-loop snapshot
@@ -696,42 +819,50 @@ for p in d['pods']:
   fi
   # cilium endpoint aggregation across nodes —
   # exact 13-Pod contract; per-command failure
-  # classifiers. Each loop iteration captures
-  # the explicit rc of (1) kubectl get pod
-  # daemon-list (2) kubectl exec on every
-  # daemon (3) python3 JSON projection (4) awk
-  # unique-label count. A nonzero rc on any
-  # of (1)/(2)/(3) writes a structured error
-  # artefact and aborts as CLUSTER_OR_CNI_NOT_READY
-  # exit 10. Valid empty output (rc 0, zero
-  # endpoints) is a convergence observation and
-  # only fails after the bounded deadline if
-  # LAST < EXPECTED. Per the existing readiness
-  # gate, Cilium endpoint publication is a
-  # cluster-side concern and never classifies
-  # as FIXTURE_NOT_READY 12.
+  # classifiers + observable convergence evidence.
+  #
+  # Loop structure (this block):
+  #   1) on every iteration, RE-FETCH the Cilium
+  #      daemon Pod list. A failed cmd
+  #      (nonzero rc) writes a structured
+  #      error artefact and aborts as
+  #      CLUSTER_OR_CNI_NOT_READY 10. A valid
+  #      empty list is a convergence observation,
+  #      not a failure; we sleep and retry.
+  #   2) for each daemon, capture explicit rc
+  #      AND stderr for (a) kubectl exec
+  #      (b) python3 JSON projection.
+  #   3) project a per-iteration label set, run
+  #      LC_ALL=C sort -u to produce unique
+  #      labels, then count via awk.
+  #   4) break on LAST >= EXPECTED.
+  #   5) under-converged: emit a parseable
+  #      convergence JSON whose observed_count
+  #      equals the length of observed_labels.
   local expected="$expected_fixture_count"
-  # Daemon-list command. Stderr captured, exact rc
-  # retained. Valid-empty zero daemons is NOT a
-  # command failure; only nonzero rc classifies.
   local daemon_out="$ARTIFACTS/cilium-daemon-list.out"
   local daemon_err="$ARTIFACTS/cilium-daemon-list.stderr"
   local daemon_list="$ARTIFACTS/cilium-daemon-list.names"
-  : > "$daemon_out"
-  : > "$daemon_err"
-  : > "$daemon_list"
-  set +e
-  kubectl -n kube-system get pod -l k8s-app=cilium \
-    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' \
-    >"$daemon_out" 2>"$daemon_err"
-  local dl_rc=$?
-  set -e
-  awk '{
-    for (i = 1; i <= NF; i++) { print $i }
-  }' "$daemon_out" > "$daemon_list"
-  if (( dl_rc != 0 )); then
-    local daemon_err_art="$ARTIFACTS/cilium-endpoint-inventory-error.json"
-    cat >"$daemon_err_art.snapshot" <<EOF
+  deadline=$(( $(date +%s) + 480 ))
+  local last=0
+  local convergence_art="$ARTIFACTS/cilium-endpoint-convergence.json"
+  local got_daemon_at_least_once=0
+  while (( $(date +%s) < deadline )); do
+    : > "$daemon_out"
+    : > "$daemon_err"
+    : > "$daemon_list"
+    set +e
+    kubectl -n kube-system get pod -l k8s-app=cilium \
+      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' \
+      >"$daemon_out" 2>"$daemon_err"
+    local dl_rc=$?
+    set -e
+    awk '{
+      for (i = 1; i <= NF; i++) { print $i }
+    }' "$daemon_out" > "$daemon_list"
+    if (( dl_rc != 0 )); then
+      local daemon_err_art="$ARTIFACTS/cilium-endpoint-inventory-error.json"
+      cat >"$daemon_err_art.snapshot" <<EOF
 {
   "command": "kubectl -n kube-system get pod -l k8s-app=cilium -o jsonpath",
   "phase": "cilium_daemon_list",
@@ -741,15 +872,16 @@ for p in d['pods']:
   "reason": "cilium daemon list command failed; endpoint inventory cannot be obtained"
 }
 EOF
-    mv "$daemon_err_art.snapshot" "$daemon_err_art"
-    abort_as CLUSTER_OR_CNI_NOT_READY \
-      "cilium daemon list failed rc=${dl_rc}: endpoint inventory cannot be obtained (see $daemon_err_art)" 10
-  fi
-  echo "[install] cilium daemon count: $(wc -w <"$daemon_list")"
-  deadline=$(( $(date +%s) + 480 ))
-  local last=0
-  local convergence_art="$ARTIFACTS/cilium-endpoint-convergence.json"
-  while (( $(date +%s) < deadline )); do
+      mv "$daemon_err_art.snapshot" "$daemon_err_art"
+      abort_as CLUSTER_OR_CNI_NOT_READY \
+        "cilium daemon list failed rc=${dl_rc}: endpoint inventory cannot be obtained (see $daemon_err_art)" 10
+    fi
+    local dl_count
+    dl_count=$(wc -w <"$daemon_list")
+    if (( dl_count > 0 )); then
+      got_daemon_at_least_once=1
+    fi
+    echo "[install] cilium daemon count: ${dl_count}"
     local acc_names="$ARTIFACTS/cilium-endpoint.acc.out"
     local acc_err="$ARTIFACTS/cilium-endpoint.acc.stderr"
     : > "$acc_names"
@@ -805,7 +937,8 @@ for e in endpoints:
         nm=c.get('name','')
         if nm.startswith('resolve-labels-default/cni-'):
             items.append(nm)
-for x in set(items): print(x)
+for x in sorted(set(items)):
+    print(x)
 " \
         >"$proj_out" 2>"$proj_err"
       local proj_rc=$?
@@ -828,38 +961,192 @@ EOF
       cat "$proj_out" >> "$acc_names"
     done < "$daemon_list"
     set -e
-    # Count pipeline: awk is rc 0 on empty input,
-    # so a valid zero observation is preserved.
-    last=$(awk 'BEGIN{n=0} {n++} END {print n}' "$acc_names")
+    # Unique-label normalization: LC_ALL=C sort -u
+    # collapses duplicate labels across daemons.
+    # awk then counts the unique labels so the
+    # count == file length is provable from disk.
+    local unique_labels="$ARTIFACTS/cilium-endpoint.unique.out"
+    : > "$unique_labels"
+    if [ -s "$acc_names" ]; then
+      LC_ALL=C sort -u "$acc_names" > "$unique_labels"
+    fi
+    # Compute the identity diff once at the END
+    # of every iteration so the deadline branch
+    # reads the SAME files the loop just wrote
+    # (single source of truth for expected/
+    # observed/missing/unexpected).
+    local missing_labels_file="$ARTIFACTS/cilium-endpoint.missing.out"
+    local unexpected_labels_file="$ARTIFACTS/cilium-endpoint.unexpected.out"
+    # d2b.46 Block D follow-up: fail closed on
+    # any set-diff command failure. We run each
+    # comm separately under set +e and capture
+    # exact rc + stderr. Only rc 0 is treated as
+    # a valid identity diff; any non-zero rc
+    # writes an atomic structured JSON artifact
+    # and aborts as CLUSTER_OR_CNI_NOT_READY 10
+    # BEFORE we let empty files masquerade as a
+    # successful equality check. We deliberately
+    # do NOT use `|| true` here — a comm exit
+    # >0 (missing input, I/O error, unsorted
+    # input, comm-not-exec'd) must be fail-closed,
+    # not silently swallowed.
+    local missing_diff_err="$ARTIFACTS/cilium-endpoint.missing.stderr"
+    local unexpected_diff_err="$ARTIFACTS/cilium-endpoint.unexpected.stderr"
+    : > "$missing_labels_file"; : > "$missing_diff_err"
+    : > "$unexpected_labels_file"; : > "$unexpected_diff_err"
+    set +e
+    LC_ALL=C comm -23 "$expected_labels_file" "$unique_labels" \
+      >"$missing_labels_file" 2>"$missing_diff_err"
+    local missing_diff_rc=$?
+    set -e
+    if (( missing_diff_rc != 0 )); then
+      local sd_err_art="$ARTIFACTS/cilium-endpoint-setdiff-error.json"
+      cat >"$sd_err_art.snapshot" <<EOF
+{
+  "command": "LC_ALL=C comm -23 expected_labels unique_labels",
+  "operation": "missing_labels_diff",
+  "rc": ${missing_diff_rc},
+  "expected_path": "${expected_labels_file}",
+  "observed_path": "${unique_labels}",
+  "output_path": "${missing_labels_file}",
+  "stderr": $(printf '%s' "$(cat "$missing_diff_err")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "phase": "cilium_setdiff_failed",
+  "reason": "set-diff comm -23 exited non-zero; relying on empty output would falsely count as set equality"
+}
+EOF
+      mv "$sd_err_art.snapshot" "$sd_err_art"
+      abort_as CLUSTER_OR_CNI_NOT_READY \
+        "cilium endpoint set-diff (missing) failed rc=${missing_diff_rc} (see $sd_err_art)" 10
+    fi
+    set +e
+    LC_ALL=C comm -13 "$expected_labels_file" "$unique_labels" \
+      >"$unexpected_labels_file" 2>"$unexpected_diff_err"
+    local unexpected_diff_rc=$?
+    set -e
+    if (( unexpected_diff_rc != 0 )); then
+      local sd_err_art="$ARTIFACTS/cilium-endpoint-setdiff-error.json"
+      cat >"$sd_err_art.snapshot" <<EOF
+{
+  "command": "LC_ALL=C comm -13 expected_labels unique_labels",
+  "operation": "unexpected_labels_diff",
+  "rc": ${unexpected_diff_rc},
+  "expected_path": "${expected_labels_file}",
+  "observed_path": "${unique_labels}",
+  "output_path": "${unexpected_labels_file}",
+  "stderr": $(printf '%s' "$(cat "$unexpected_diff_err")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "phase": "cilium_setdiff_failed",
+  "reason": "set-diff comm -13 exited non-zero; relying on empty output would falsely count as set equality"
+}
+EOF
+      mv "$sd_err_art.snapshot" "$sd_err_art"
+      abort_as CLUSTER_OR_CNI_NOT_READY \
+        "cilium endpoint set-diff (unexpected) failed rc=${unexpected_diff_rc} (see $sd_err_art)" 10
+    fi
+    last=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$unique_labels")
+    local missing_count
+    local unexpected_count
+    missing_count=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$missing_labels_file")
+    unexpected_count=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$unexpected_labels_file")
     # Convergence observation only — no command
     # failure here. Real under-count failure is
     # raised AFTER the deadline.
-    if (( last >= expected )); then
-      echo "[install] cilium endpoint labels reached ${last}/${expected}"
+    if (( last < expected )); then
+      # Still under by count. We don't break; we
+      # ALSO do not raise yet — there might be
+      # more cluster updates. Sleep and retry so
+      # the deadline path captures the final
+      # state.
+      sleep 5
+      continue
+    fi
+    # Count-only is no longer sufficient: must
+    # also reject identity mismatch using the
+    # diffs just computed. Convergence breaks
+    # when AND ONLY WHEN both diffs are empty.
+    if [ "${missing_count}" -eq 0 ] && [ "${unexpected_count}" -eq 0 ]; then
+      echo "[install] cilium endpoint labels reached ${last}/${expected_unique_count} (identity)"
       break
     fi
+    echo "[install] cilium identity mismatch: missing=${missing_count} unexpected=${unexpected_count}; last=${last}/${expected_unique_count}"
     sleep 5
   done
-  if (( last < expected )); then
+  # d2b.46 Block A deadline failure guard fires
+  # on count failure OR identity failure: a
+  # stale-label/expected-label mismatch must
+  # not escape as `step G ok`. We capture
+  # missing_count/unexpected_count from the
+  # LAST iteration's disk artifacts (single
+  # source of truth) so the abort branch sees
+  # the same numbers the loop just computed.
+  local install_identity_mismatch="N"
+  if [ -s "$ARTIFACTS/cilium-endpoint.missing.out" ] \
+     && [ "$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/cilium-endpoint.missing.out")" -ne 0 ]; then
+    install_identity_mismatch="Y"
+  fi
+  if [ -s "$ARTIFACTS/cilium-endpoint.unexpected.out" ] \
+     && [ "$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/cilium-endpoint.unexpected.out")" -ne 0 ]; then
+    install_identity_mismatch="Y"
+  fi
+  if (( last < expected_unique_count )) || [ "${install_identity_mismatch}" = "Y" ]; then
     # Convergence failure (NOT a command error):
     # write under-convergence artefact and abort
     # with CLUSTER_OR_CNI_NOT_READY 10.
-    cat >"$convergence_art.snapshot" <<EOF
-{
+    # All four arrays and their counts are
+    # derived in one python invocation: opening
+    # the same files the loop just wrote and
+    # using only the file contents to compute
+    # counts prevents observed_count and
+    # expected_count from diverging from their
+    # arrays.
+    local exp_file="$expected_labels_file"
+    local obs_file="$ARTIFACTS/cilium-endpoint.unique.out"
+    local missing_file="$ARTIFACTS/cilium-endpoint.missing.out"
+    local unexpected_file="$ARTIFACTS/cilium-endpoint.unexpected.out"
+    python3 - "$exp_file" "$obs_file" "$missing_file" "$unexpected_file" \
+             "$daemon_list" "$deadline" "$(date +%s)" \
+             "$expected_unique_count" \
+             >"$convergence_art.snapshot" <<'PYEOF'
+import json, sys
+exp_p, obs_p, miss_p, une_p, daemon_p, dl_s, now_s, exp_s = sys.argv[1:9]
+def reads(p):
+    return [l for l in open(p).read().splitlines() if l.strip()]
+daemons   = reads(daemon_p)
+expected  = reads(exp_p)
+observed  = reads(obs_p)
+missing   = reads(miss_p)
+unexpected= reads(une_p)
+obj = {
   "command": "cilium endpoint convergence",
-  "phase": "cilium_convergence_undercount",
-  "daemon_list": $(awk '{printf "%s\\n", $0}' "$daemon_list" | python3 -c 'import sys; data=sys.stdin.read().splitlines(); import json; print(json.dumps(data))'),
-  "deadline_unix": ${deadline},
-  "now_unix": $(date +%s),
-  "expected_count": ${expected},
-  "observed_count": $(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/cilium-endpoint.acc.out" 2>/dev/null || echo 0),
-  "observed_labels": $(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/cilium-endpoint.acc.out" 2>/dev/null || echo 0 | awk '{print "[]"}'),
-  "reason": "cilium endpoint publication under-converged; every command succeeded but unique endpoint label count did not reach expected"
+  "phase": "cilium_convergence_undercount_or_mismatch",
+  "daemon_list": daemons,
+  "deadline_unix": int(dl_s),
+  "now_unix": int(now_s),
+  "expected_labels": expected,
+  "observed_labels": observed,
+  "missing_labels": missing,
+  "unexpected_labels": unexpected,
+  "expected_count": len(expected),
+  "observed_count": len(observed),
+  "reason": "cilium endpoint publication did not identity-match the dynamic 13-Pod vocabulary contract; expected_count == observed_count is NOT sufficient, set diffs must be empty"
 }
-EOF
+# Every count must equal the length of its
+# array AND must be derived from disk in one
+# python invocation so they cannot diverge.
+assert obj["expected_count"] == len(obj["expected_labels"])
+assert obj["observed_count"] == len(obj["observed_labels"])
+assert obj["expected_count"] == int(exp_s)
+sys.stdout.write(json.dumps(obj, indent=2))
+sys.stdout.write("\n")
+PYEOF
     mv "$convergence_art.snapshot" "$convergence_art"
+    local exp_count
+    exp_count=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$expected_labels_file")
+    local miss_c
+    local unex_c
+    miss_c=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/cilium-endpoint.missing.out")
+    unex_c=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$ARTIFACTS/cilium-endpoint.unexpected.out")
     abort_as CLUSTER_OR_CNI_NOT_READY \
-      "cilium endpoint convergence under-converged: observed=${last}/${expected}; every command succeeded (see $convergence_art)" 10
+      "cilium endpoint convergence did not identity-match: observed=${last}/${exp_count}; missing=${miss_c} unexpected=${unex_c}; see $convergence_art" 10
   fi
   # Hand off to the readiness gate for the
   # remaining convergence assertions (steps
