@@ -648,6 +648,57 @@ ok.append(assert_eq(
     True,
 ))
 
+# Helpers used by both d2b.46 source-of-truth
+# checks and the legacy image-pipeline / dry-run
+# routing assertions below.
+def _extract_abort_as_body(target_path):
+    """Return the body lines of abort_as() up to
+    the matching closing brace (one nested levels).
+    Used by the d2b.46 static guards that need to
+    distinguish conditional from unconditional
+    env assignments inside the function body."""
+    with open(target_path) as f:
+        src_lines = f.readlines()
+    start = None
+    for i, ln in enumerate(src_lines):
+        if ln.lstrip().startswith("abort_as()"):
+            start = i
+            break
+    if start is None:
+        return []
+    end = None
+    for j in range(start + 1, len(src_lines)):
+        if src_lines[j].rstrip("\n") == "}":
+            end = j
+            break
+    if end is None:
+        return src_lines[start:]
+    return src_lines[start:end + 1]
+
+def _abort_as_body_contains_assignment(target_path, token):
+    body = _extract_abort_as_body(target_path)
+    for ln in body:
+        s = ln.strip()
+        if s.startswith("#"):
+            continue
+        if token in ln:
+            return True
+    return False
+
+def _has_abort_as_exit(target_path, label, code):
+    """Return True if at least one call site of
+    abort_as() in install-nexus-test.sh writes the
+    requested label and the requested exit code on
+    a single invocation (whitespace-tolerant)."""
+    import re
+    with open(target_path) as f:
+        text = f.read()
+    pattern = re.compile(
+        r"abort_as\s+%s\s*\\\s*[\s\S]{0,200}?\s%s\b"
+        % (re.escape(label), r"%d" % code),
+    )
+    return bool(pattern.search(text))
+
 # Install script must classify image-pipeline
 # failures as exit 14, NOT exit 2 or 12. Verify
 # the source strings live in scripts/.
@@ -656,15 +707,16 @@ install_src_path = (
     / "scripts" / "install-nexus-test.sh"
 )
 install_src = install_src_path.read_text() if install_src_path.exists() else ""
+TARGET_PATH = str(install_src_path)
 
 ok.append(assert_eq(
     "install-nexus-test.sh routes image-pipeline failures to exit 14",
-    "exit 14" in install_src,
+    _has_abort_as_exit(TARGET_PATH, "FIXTURE_IMAGE_NOT_LOADED", 14),
     True,
 ))
 ok.append(assert_eq(
     "install-nexus-test.sh routes pre-flight fixture dry-run failure to exit 15",
-    "exit 15" in install_src,
+    _has_abort_as_exit(TARGET_PATH, "FIXTURE_INVALID", 15),
     True,
 ))
 ok.append(assert_eq(
@@ -774,6 +826,236 @@ ok.append(assert_eq(
     "BUILD_FAILED_NO_IMAGE_ID" in build_src and "exit 11" in build_src,
     True,
 ))
+
+# ---- 7. d2b.46 direct-gate run matrix -------------------------------------
+#
+# The install script's abort path now passes the
+# classifier through a FIXED-NAME env var
+# INSTALL_ABORT_CLASSIFICATION. The real gate must:
+#   - honour that fixed-name token BEFORE any
+#     kubectl/kind/docker call (an early-block
+#     written specifically for d2b.46);
+#   - map the label to the documented exact exit
+#     code (10/11/12/14/15);
+#   - write the expected READINESS_SUMMARY line
+#     AND the READINESS_LOG classification line;
+#   - never run kubectl/kind/docker in those
+#     code paths.
+#
+# We exercise the REAL gate process directly (not
+# a stub) with PATH intentionally stripped of
+# kubectl/kind/docker so any kubectl/kind call
+# inside the gate's abort classification block
+# would fail loudly with command-not-found.
+#
+# Without cluster tools, the only way the gate
+# may exit with the expected code is through the
+# d2b.46 fixed-name early classifier. This
+# proves the install script's abort path
+# reaches the right classification WITHOUT
+# surfacing a real git/cluster command.
+GATE_MATRIX_PATH = GATE_SCRIPT
+INSTALL_TARGET = str(ffx_nexus_root / "scripts" / "install-nexus-test.sh")
+
+# Helpers (_extract_abort_as_body, _abort_as_body_contains_assignment,
+# _has_abort_as_exit, TARGET_PATH) are defined ABOVE so the
+# legacy image-pipeline / dry-run assertions can also
+# call them.
+
+EXPECTED_INSTALL_ABORT_PAIRS = [
+    # (label_in_env, expected_label_in_summary, expected_exit_code, expected_first_failed_step)
+    ("CLUSTER_OR_CNI_NOT_READY",  "CLUSTER_OR_CNI_NOT_READY",  10, "00-install-abort"),
+    ("CHART_OR_POLICY_INVALID",   "CHART_OR_POLICY_INVALID",   11, "00-install-abort"),
+    ("FIXTURE_NOT_READY",         "FIXTURE_NOT_READY",         12, "00-install-abort"),
+    ("FIXTURE_IMAGE_NOT_LOADED",  "FIXTURE_IMAGE_NOT_LOADED",  14, "00-install-abort"),
+    ("FIXTURE_INVALID",           "FIXTURE_INVALID",           15, "00-install-abort"),
+]
+
+# Verify install-nexus-test.sh no longer uses the
+# dynamic token (regression guard). The d2b.46
+# contract requires a fixed-name assignment;
+# revisiting this in source must fail the test.
+with open(INSTALL_TARGET) as f:
+    install_src_after = f.read()
+ok.append(assert_eq(
+    "install-nexus-test.sh no longer references dynamic '${env_var}=1' token",
+    '"${env_var}=1"' not in install_src_after,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh no longer sets FIXTURE_INVALID=1 unconditionally in abort_as",
+    # We accept the literal token inside comments
+    # for documentation/compatibility purposes.
+    # The body of abort_as() must NOT set it as
+    # an env assignment.
+    not _body_contains_unconditional(env=os.environ.copy()) if False
+    else not _abort_as_body_contains_assignment(TARGET_PATH, "FIXTURE_INVALID=1"),
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh no longer hardcodes ${SCRIPT_DIR}/cni-readiness-gate.sh in abort_as",
+    not (
+        'abort_as' in install_src_after
+        and '"${SCRIPT_DIR}/cni-readiness-gate.sh"' in install_src_after
+    ),
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh carries explicit fixed-name INSTALL_ABORT_CLASSIFICATION env",
+    'INSTALL_ABORT_CLASSIFICATION="$label"' in install_src_after,
+    True,
+))
+
+# Verify the gate source contains the explicit
+# fixed-name early classifier block before any
+# kubectl call.
+ok.append(assert_eq(
+    "cni-readiness-gate.sh has explicit fixed-name INSTALL_ABORT_CLASSIFICATION early block",
+    "INSTALL_ABORT_CLASSIFICATION:-}" in src
+    and "first_failed_step=00-install-abort" in src,
+    True,
+))
+ok.append(assert_eq(
+    "cni-readiness-gate.sh maps every required d2b.46 label in early classifier",
+    all(
+        lab in src
+        for lab in (
+            "CLUSTER_OR_CNI_NOT_READY",
+            "CHART_OR_POLICY_INVALID",
+            "FIXTURE_NOT_READY",
+            "FIXTURE_IMAGE_NOT_LOADED",
+            "FIXTURE_INVALID",
+        )
+    ),
+    True,
+))
+
+# Run the real gate for each label with PATH
+# stripped of kubectl/kind/docker. If the gate's
+# d2b.46 early classifier fires, it MUST exit
+# before any kubectl command — so we strip those
+# binaries and assert they are never called.
+for label, want_summary, want_code, want_first in EXPECTED_INSTALL_ABORT_PAIRS:
+    with tempfile.TemporaryDirectory() as tmp:
+        art = os.path.join(tmp, "artifacts")
+        os.makedirs(art, exist_ok=True)
+        env = {
+            "PATH": "/usr/bin:/bin",  # no kubectl/kind/docker
+            "ARTIFACTS": art,
+            "GATE_PHASE": "post-fixture",
+            "RECOVERY_PR_SHA": "deadbeef" + "0" * 32,
+            "WORKFLOW_RUN_ID": "unit-test",
+            "INSTALL_ABORT_CLASSIFICATION": label,
+            "INSTALL_ABORT_FAILURE_DETAIL": f"unit-test {label}",
+        }
+        rc = subprocess.call(
+            ["bash", GATE_MATRIX_PATH],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        ok.append(assert_eq(
+            f"gate exit code for INSTALL_ABORT_CLASSIFICATION={label}",
+            rc, want_code,
+        ))
+        summary_path = os.path.join(art, "readiness.summary.txt")
+        summary_val = ""
+        if os.path.isfile(summary_path):
+            with open(summary_path) as fh:
+                summary_val = fh.read().strip()
+        ok.append(assert_eq(
+            f"gate summary line for INSTALL_ABORT_CLASSIFICATION={label}",
+            summary_val, want_summary,
+        ))
+        log_path = os.path.join(art, "readiness.log")
+        log_text = open(log_path).read() if os.path.isfile(log_path) else ""
+        ok.append(assert_eq(
+            f"gate log 'classification=' line for {label}",
+            f"classification={want_summary} (exit {want_code})" in log_text,
+            True,
+        ))
+        ok.append(assert_eq(
+            f"gate log 'first_failed_step=' line for {label}",
+            f"first_failed_step={want_first}" in log_text,
+            True,
+        ))
+        ok.append(assert_eq(
+            f"gate log carries the supplied detail for {label}",
+            f"unit-test {label}" in log_text,
+            True,
+        ))
+
+# Unknown non-empty INSTALL_ABORT_CLASSIFICATION
+# fails closed as CLUSTER_OR_CNI_NOT_READY (10)
+# with an explicit "unknown install abort
+# classification" detail.
+with tempfile.TemporaryDirectory() as tmp:
+    art = os.path.join(tmp, "artifacts")
+    os.makedirs(art, exist_ok=True)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "ARTIFACTS": art,
+        "GATE_PHASE": "post-fixture",
+        "RECOVERY_PR_SHA": "cafef00d" + "0" * 32,
+        "WORKFLOW_RUN_ID": "unit-test-unknown",
+        "INSTALL_ABORT_CLASSIFICATION": "FROBNOBBED_BANANAS",
+        "INSTALL_ABORT_FAILURE_DETAIL": "should be ignored",
+    }
+    rc = subprocess.call(
+        ["bash", GATE_MATRIX_PATH],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    ok.append(assert_eq(
+        "unknown INSTALL_ABORT_CLASSIFICATION fails closed as 10",
+        rc, 10,
+    ))
+    summary_val = ""
+    if os.path.isfile(os.path.join(art, "readiness.summary.txt")):
+        summary_val = open(os.path.join(art, "readiness.summary.txt")).read().strip()
+    ok.append(assert_eq(
+        "unknown INSTALL_ABORT_CLASSIFICATION summary line is CLUSTER_OR_CNI_NOT_READY",
+        summary_val, "CLUSTER_OR_CNI_NOT_READY",
+    ))
+    log_text = ""
+    log_path = os.path.join(art, "readiness.log")
+    if os.path.isfile(log_path):
+        log_text = open(log_path).read()
+    ok.append(assert_eq(
+        "unknown classification logs 'unknown install abort classification'",
+        "unknown install abort classification" in log_text,
+        True,
+    ))
+
+# Empty INSTALL_ABORT_CLASSIFICATION preserves
+# legacy behavior. We do not assert which code;
+# only that the gate is NOT short-circuiting on
+# the early classifier. Strip PATH of kubectl so
+# the gate hits cluster probes and either exits
+# non-zero with classification != SUCCESS, or hits
+# a tooling missing failure that is non-zero.
+with tempfile.TemporaryDirectory() as tmp:
+    art = os.path.join(tmp, "artifacts")
+    os.makedirs(art, exist_ok=True)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "ARTIFACTS": art,
+        "GATE_PHASE": "post-fixture",
+        "RECOVERY_PR_SHA": "0" * 40,
+        "WORKFLOW_RUN_ID": "unit-test-empty",
+        # Deliberately do NOT set INSTALL_ABORT_CLASSIFICATION
+    }
+    rc = subprocess.call(
+        ["bash", GATE_MATRIX_PATH],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    ok.append(assert_eq(
+        "empty INSTALL_ABORT_CLASSIFICATION does NOT exit 0 (no kubectl/kind)",
+        rc != 0, True,
+    ))
 
 # ---- final verdict -------------------------------------------------------
 
