@@ -912,15 +912,23 @@ try:
 except Exception as e:
     print(f"EXPECTED-FAILED: {e!r}", file=sys.stderr); sys.exit(17)
 items = data.get('items') if isinstance(data, dict) else []
+# d2b.49 namespace-aware expected projection.
+# Use the fixture's actual (namespace, name) pair
+# so a Pod located in `cni-test-ingress` is
+# expected as
+# `resolve-labels-cni-test-ingress/<pod>` rather
+# than the silently flattened
+# `resolve-labels-default/<pod>` that hid every
+# non-default fixture in run 33391341225.
 labels = []
 for it in items:
     md = it.get('metadata') or {}
     name = md.get('name') or ''
     ns = md.get('namespace') or ''
     if (ns, name) in canonical_set:
-        labels.append(f"resolve-labels-default/{name}")
+        labels.append(f"resolve-labels-{ns}/{name}")
     elif dyn_re.match(name) and ns == dyn_ns_s:
-        labels.append(f"resolve-labels-default/{name}")
+        labels.append(f"resolve-labels-{ns}/{name}")
 seen = set()
 uniq = []
 for l in sorted(labels):
@@ -999,7 +1007,7 @@ EOF
     PROJ_ERR="${ARTIFACTS}/gate08-exec-${daemon}.proj.stderr"
     : > "$PROJ_OUT"; : > "$PROJ_ERR"
     python3 -c "
-import json,sys
+import json,sys,re
 try:
     raw=open('${EXEC_OUT}').read()
     data=json.loads(raw)
@@ -1007,11 +1015,16 @@ except Exception as e:
     print('PROJECTION-FAILED: ' + repr(e), file=sys.stderr)
     sys.exit(17)
 endpoints=data if isinstance(data,list) else (data.get('endpoint') or [])
+# d2b.49 namespace-aware observed projection.
+# Accept ANY `resolve-labels-<real-namespace>/cni-*`
+# controller name so the projection matches the
+# Cilium daemon's actual publication.
+ctrl_re=re.compile(r'^resolve-labels-[^/]+/cni-.+')
 names=[]
 for e in endpoints:
     for c in e.get('status',{}).get('controllers',[]):
         nm=c.get('name','')
-        if nm.startswith('resolve-labels-default/cni-'):
+        if ctrl_re.match(nm):
             names.append(nm)
 for x in sorted(set(names)):
     print(x)

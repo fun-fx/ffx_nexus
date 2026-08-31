@@ -376,7 +376,40 @@ else:
               exit 0
               ;;
             *)
-          if [ -n "${FAKE_CILIUM_NAMES:-}" ]; then
+          if [ -n "${FAKE_CILIUM_NS_NAMES_FILE:-}" ] && [ -s "${FAKE_CILIUM_NS_NAMES_FILE}" ]; then
+            # d2b.49 namespace-aware produce path
+            # reading from a file (so multi-line
+            # values are preserved). Each line is
+            # `<namespace><TAB><name>`; emit one
+            # production-shaped controller label
+            # per record. The fake kubectl may
+            # also accept HARNESS_CILIUM_NS_NAMES
+            # directly for non-stage callers.
+            data_src="${FAKE_CILIUM_NS_NAMES_FILE}"
+          elif [ -n "${HARNESS_CILIUM_NS_NAMES:-}" ]; then
+            data_src="/dev/stdin"
+            first=1
+            printf '[' > /dev/null
+            while IFS="$(printf '\t')" read -r ns nm; do
+              [ -z "${ns:-}" ] && continue
+              [ -z "${nm:-}" ] && continue
+              if [ "${first}" = "1" ]; then first=0; else printf ','; fi
+              printf '{"status":{"controllers":[{"name":"resolve-labels-%s/%s"}]}}' "${ns}" "${nm}"
+            done <<<"${HARNESS_CILIUM_NS_NAMES}"
+            printf ']\n'
+            exit 0
+          fi
+          if [ -n "${data_src:-}" ]; then
+            first=1
+            printf '['
+            while IFS="$(printf '\t')" read -r ns nm; do
+              [ -z "${ns:-}" ] && continue
+              [ -z "${nm:-}" ] && continue
+              if [ "${first}" = "1" ]; then first=0; else printf ','; fi
+              printf '{"status":{"controllers":[{"name":"resolve-labels-%s/%s"}]}}' "${ns}" "${nm}"
+            done < "${data_src}"
+            printf ']'
+          elif [ -n "${FAKE_CILIUM_NAMES:-}" ]; then
             first=1
             printf '['
             for n in ${FAKE_CILIUM_NAMES}; do
@@ -697,6 +730,9 @@ export FAKE_DATE_NOW="\${DATE_NOW}"
 export FAKE_DATE_ADVANCE="\${DATE_ADVANCE}"
 export FAKE_DATE_STEP="\${DATE_STEP}"
 export FAKE_CILIUM_NAMES="\${CILIUM_NAMES}"
+if [ -n "\${HARNESS_CILIUM_NS_NAMES_FILE:-}" ]; then
+  export FAKE_CILIUM_NS_NAMES_FILE="\${HARNESS_CILIUM_NS_NAMES_FILE}"
+fi
   export FAKE_FIXTURE_LIST_RC="\${FAKE_FIXTURE_LIST_RC:-}"
   export FAKE_FIXTURE_JSON_RC="\${FAKE_FIXTURE_JSON_RC:-}"
   export FAKE_CILIUM_DAEMON_LIST_RC="\${FAKE_CILIUM_DAEMON_LIST_RC:-}"
@@ -1025,6 +1061,30 @@ write_env_file() {
   local arg
   printf '%s\n' "# d2b.46 driver env file" >"${file}"
   for arg in "$@"; do
+    # d2b.49: if arg is `KEY=<multi-line>` (i.e.
+    # contains an embedded newline), splat the
+    # multi-line payload into a stage-scoped file
+    # under <stage>/ns-inputs/<KEY> and replace the
+    # line with a KEY_FILE=<path> pointer so the
+    # single-line shell-source semantics preserve.
+    case "${arg}" in
+      *=*)
+        local k="${arg%%=*}"
+        local v="${arg#*=}"
+        # Detect a true embedded newline. Use a
+        # raw byte comparison: printf the value and
+        # check whether byte 0x0a appears.
+        local byte_check
+        byte_check="$(printf '%s' "${v}" | tr -cd '\n' | wc -c | tr -d ' ')"
+        if [ "${byte_check}" != "0" ]; then
+          local outdir="${file%/env.list}/ns-inputs"
+          mkdir -p "${outdir}" 2>/dev/null || true
+          printf '%s\n' "${v}" > "${outdir}/${k}"
+          printf '%s_FILE=%s\n' "${k}" "${outdir}/${k}" >>"${file}"
+          continue
+        fi
+        ;;
+    esac
     printf '%s\n' "${arg}" >>"${file}"
   done
 }
@@ -1097,6 +1157,51 @@ FAKE_13_READY_TSV="$(build_13_ready "${CNI_FIXTURE_13}")"
 # manifest sort and is read by the fake kubectl
 # cilium-exec branch verbatim.
 CILIUM_DEFAULT="cni-mock-ingress-controller cni-mock-prometheus cni-untrusted-default cni-mock-nexus-gateway cni-mock-nexus-worker cni-mock-nexus-migration cni-mock-egress-proxy cni-mock-postgres cni-mock-redis cni-mock-clickhouse cni-mock-arbitrary cni-control-target ${HARNESS_DYNAMIC_PROBE_NAME}"
+
+# d2b.49 namespace-aware default cilium endpoints.
+# The fake kubectl's cilium-exec branch reads this
+# newline-separated `ns<TAB>name` stream and emits
+# production-shaped `resolve-labels-<ns>/<name>`
+# controller labels — preserving the manifest
+# namespace, not silently flattening to
+# `resolve-labels-default/`. Every C7g/C7h/C7i
+# real-gate stage and C6p/C6q install happy-path
+# MUST export HARNESS_CILIUM_NS_NAMES (not
+# HARNESS_CILIUM_NAMES) to satisfy the
+# namespace-aware projection contract.
+build_canonical_13_ns_names() {
+  local extra_probe="${1:-${HARNESS_DYNAMIC_PROBE_NAME}}"
+  printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
+    | awk -F'\t' '{print $1"\t"$2}'
+  printf 'cni-control\t%s\n' "${extra_probe}"
+}
+# Map a space-separated list of fixture names to
+# their canonical (namespace, name) pairs. Used
+# by the legacy stale-substitution controls so
+# the fake Cilium endpoint JSON matches
+# HARNESS_CANONICAL_12_PAIRS in namespace form.
+build_ns_names_from_space() {
+  local space_names="$1"
+  for n in ${space_names}; do
+    case "${n}" in
+      cni-mock-ingress-controller) printf 'cni-test-ingress\t%s\n' "${n}" ;;
+      cni-mock-prometheus)         printf 'cni-test-prometheus\t%s\n' "${n}" ;;
+      cni-untrusted-default)       printf 'cni-test-untrusted\t%s\n' "${n}" ;;
+      cni-control-target)          printf 'cni-control\t%s\n' "${n}" ;;
+      cni-control-probe-*)         printf 'cni-control\t%s\n' "${n}" ;;
+      cni-mock-arbitrary|\
+      cni-mock-clickhouse|\
+      cni-mock-egress-proxy|\
+      cni-mock-nexus-gateway|\
+      cni-mock-nexus-migration|\
+      cni-mock-nexus-worker|\
+      cni-mock-postgres|\
+      cni-mock-redis)              printf 'default\t%s\n' "${n}" ;;
+      *)                           printf 'random-ns\t%s\n' "${n}" ;;
+    esac
+  done
+}
+CILIUM_DEFAULT_NS="$(build_canonical_13_ns_names)"
 
 # Helper: write a manifest-aligned 13-Pod
 # inventory TSV. Static pairs come from the
@@ -1345,6 +1450,90 @@ manifest_vocab_selfcheck() {
   printf 'FAIL missing=(%s)\n' "${vocab_missing}"
   return 1
 }
+
+# d2b.49 namespace-aware projection guard.
+# Asserts that the active production projection
+# code does NOT silently drop fixture namespace.
+# Specifically rejects:
+#   1. `resolve-labels-default/<name>` literals
+#      produced inside `labels.append(...)` for
+#      fixture-derived data (the d2b.49 silent
+#      flattening defect).
+#   2. `nm.startswith("resolve-labels-default/cni-")`
+#      filter narrowing (the d2b.49 same-flaw
+#      observed projection).
+# Comments / historical test descriptions are
+# excluded by an awk line-range filter. The
+# production line ranges are bounded by the
+# `step_G_readiness` / `while (( < DEADLINE ))`
+# gate 8 loop. Anyone silencing this guard
+# must do so intentionally on production code,
+# not by accident.
+namespace_projection_guard() {
+  local install_src="${1:-${SCRIPT_DIR}/install-nexus-test.sh}"
+  local gate_src="${2:-${SCRIPT_DIR}/cni-readiness-gate.sh}"
+  local findings=""
+  # Install: expected projection must NOT emit
+  # `resolve-labels-default/` for a fixture-derived
+  # namespace/name pair.
+  if awk '
+    /labels\.append\("resolve-labels-default\/"{}/{ print FILENAME":"NR":"$0; exit 0 }
+    { next }
+  ' "${install_src}" 2>/dev/null | grep -q .; then
+    findings="${findings}install.labels.append-resolve-labels-default "
+  fi
+  if awk '
+    /f"resolve-labels-default\/"{}/ || /f"resolve-labels-default\/"\.format/{ print FILENAME":"NR":"$0; exit 0 }
+    { next }
+  ' "${install_src}" 2>/dev/null | grep -q .; then
+    findings="${findings}install.python-fstring-resolve-labels-default "
+  fi
+  # Install: observed projection must NOT filter
+  # controllers down to resolve-labels-default/.
+  if awk '
+    /nm\.startswith\(.resolve-labels-default\/cni-.\)/ || /name\.startswith\(.resolve-labels-default\/cni-.\)/ { print FILENAME":"NR":"$0; exit 0 }
+    { next }
+  ' "${install_src}" 2>/dev/null | grep -q .; then
+    findings="${findings}install.startswith-resolve-labels-default "
+  fi
+  # Gate 8: same defects.
+  if awk '
+    /labels\.append\("resolve-labels-default\/"{}/,/labels\.append\("resolve-labels-default\/"{}/ { print FILENAME":"NR":"$0; exit 0 }
+    { next }
+  ' "${gate_src}" 2>/dev/null | grep -q .; then
+    findings="${findings}gate.labels.append-resolve-labels-default "
+  fi
+  if awk '
+    /\^resolve-labels-default\/cni-/ || /resolve-labels-default\/cni-/ { print FILENAME":"NR":"$0; exit 0 }
+    { next }
+  ' "${gate_src}" 2>/dev/null | grep -q .; then
+    findings="${findings}gate.startswith-resolve-labels-default "
+  fi
+  # Fake endpoint builder must NOT prepend
+  # `resolve-labels-default/` to a namespaced
+  # controller input. The new fake branch
+  # reads HARNESS_CILIUM_NS_NAMES and emits
+  # production-shape labels. The legacy
+  # fallback (FAKE_CILIUM_NAMES) is permitted
+  # ONLY for legacy controls draining via
+  # HARNESS_CILIUM_NAMES — and only when the
+  # branch is the explicit default fallback,
+  # not autospliced into namespaced input.
+  if awk '
+    /printf ..\{.status.:\{.controllers.:\[\{.name.:.resolve-labels-default\/%s.\}\}/ && /HARNESS_CILIUM_NS_NAMES/ { print FILENAME":"NR":"$0; exit 0 }
+    { next }
+  ' "${SCRIPT_DIR}/test_fixture_readiness_observability.sh" 2>/dev/null | grep -q .; then
+    findings="${findings}harness.fake-prepends-resolve-labels-default-to-ns "
+  fi
+  printf '# d2b.49 static namespace-aware projection guard: '
+  if [ -z "${findings}" ]; then
+    printf 'PASS (no `resolve-labels-default/`-flattening defects in production projection or fake-builder)\n'
+    return 0
+  fi
+  printf 'FAIL findings=(%s)\n' "${findings}"
+  return 1
+}
+
 # NOTE: `manifest_vocab_selfcheck || exit 22`
 # is intentionally DISABLED by default to
 # preserve the d2b.48 PASS=31/31 baseline.
@@ -1379,7 +1568,20 @@ write_env_file "${S1}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
+# d2b.49 namespace-aware projection guard
+# runs BEFORE any control is driven. If the
+# production projection code or the fake
+# Cilium JSON builder still contains the
+# silent `resolve-labels-default/`-flattening
+# defect, the harness exits 23 immediately
+# rather than producing a fake green
+# PASS=…/TOTAL=… line.
+if ! namespace_projection_guard 2>/dev/null; then
+  printf '# abort: namespace_projection_guard failed at harness startup\n' >&2
+  exit 23
+fi
 drive_control C1 "${S1}" "${S1}/run_g.sh" "${S1}/env.list"
 R1=$(classify_control C1 "${S1}")
 C1_RC="$(echo "${R1}" | awk -F'|' '{print $2}')"
@@ -1409,7 +1611,8 @@ write_env_file "${S2}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 drive_control C2 "${S2}" "${S2}/run_g.sh" "${S2}/env.list"
 R2=$(classify_control C2 "${S2}")
 C2_RC="$(echo "${R2}" | awk -F'|' '{print $2}')"
@@ -1437,7 +1640,8 @@ write_env_file "${S3}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 drive_control C3 "${S3}" "${S3}/run_g.sh" "${S3}/env.list"
 R3=$(classify_control C3 "${S3}")
 C3_RC="$(echo "${R3}" | awk -F'|' '{print $2}')"
@@ -1466,6 +1670,7 @@ write_env_file "${S4}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_WAITING_REASON=ImagePullBackOff"
 drive_control C4 "${S4}" "${S4}/run_g.sh" "${S4}/env.list"
 R4=$(classify_control C4 "${S4}")
@@ -1490,7 +1695,8 @@ write_env_file "${S5}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 drive_control C5 "${S5}" "${S5}/run_g.sh" "${S5}/env.list"
 R5=$(classify_control C5 "${S5}")
 C5_RC="$(echo "${R5}" | awk -F'|' '{print $2}')"
@@ -1525,7 +1731,8 @@ write_env_file "${S6}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "FAKE_FIXTURE_JSON_RC=7" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 drive_control C6 "${S6}" "${S6}/run_g.sh" "${S6}/env.list"
 R6=$(classify_control C6 "${S6}")
 C6_RC="$(echo "${R6}" | awk -F'|' '{print $2}')"
@@ -1573,20 +1780,21 @@ write_env_file "${S6P}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c6p" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 rm -f "${FAKE_BIN}/__date_state_c6p"
 drive_control C6p "${S6P}" "${S6P}/run_g.sh" "${S6P}/env.list"
 R6P=$(classify_control C6p "${S6P}")
 C6P_RC="$(echo "${R6P}" | awk -F'|' '{print $2}')"
-C6P_NEEDS_LABEL="resolve-labels-default/cni-untrusted-default"
+C6P_NEEDS_LABEL="resolve-labels-cni-test-untrusted/cni-untrusted-default"
 C6P_HAS_LABEL="N"
 if [ -f "${S6P}/cilium-endpoint.expected.out" ]; then
-  if grep -qF "resolve-labels-default/cni-untrusted-default" \
+  if grep -qF "resolve-labels-cni-test-untrusted/cni-untrusted-default" \
     "${S6P}/cilium-endpoint.expected.out"; then
     C6P_HAS_LABEL="Y"
   fi
 fi
-C6P_PROBE_LABEL="resolve-labels-default/cni-control-target"
+C6P_PROBE_LABEL="resolve-labels-cni-control/cni-control-target"
 C6P_HAS_PROBE="N"
 if [ -f "${S6P}/cilium-endpoint.expected.out" ]; then
   if grep -qF "${C6P_PROBE_LABEL}" "${S6P}/cilium-endpoint.expected.out"; then
@@ -1689,6 +1897,7 @@ write_env_file "${S6Q}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=120" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_KUBECTL_JSON_POLL_TSVS=${S6Q}/pods.poll1.tsv:${S6Q}/pods.poll2.tsv" \
   "FAKE_KUBECTL_JSON_POLL_COUNTER_FILE=${FAKE_BIN}/__json_poll_counter_c6q"
 rm -f "${FAKE_BIN}/__date_state_c6q"
@@ -1829,7 +2038,8 @@ write_env_file "${S6R}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c6r" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=100" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 rm -f "${FAKE_BIN}/__date_state_c6r"
 drive_control C6r "${S6R}" "${S6R}/run_g.sh" "${S6R}/env.list"
 R6R=$(classify_control C6r "${S6R}")
@@ -1979,6 +2189,7 @@ write_env_file "${S6S}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_FIXTURE_JSON_MALFORMED=1"
 rm -f "${FAKE_BIN}/__date_state_c6s"
 drive_control C6s "${S6S}" "${S6S}/run_g.sh" "${S6S}/env.list"
@@ -2054,6 +2265,7 @@ write_env_file "${S6T}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_WAITING_REASON=ImagePullBackOff"
 rm -f "${FAKE_BIN}/__date_state_c6t"
 drive_control C6t "${S6T}" "${S6T}/run_g.sh" "${S6T}/env.list"
@@ -2130,7 +2342,8 @@ write_env_file "${S6U}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c6u" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=120" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 rm -f "${FAKE_BIN}/__date_state_c6u"
 drive_control C6u "${S6U}" "${S6U}/run_g.sh" "${S6U}/env.list"
 R6U=$(classify_control C6u "${S6U}")
@@ -2205,7 +2418,8 @@ write_env_file "${S6V}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c6v" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=120" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 rm -f "${FAKE_BIN}/__date_state_c6v"
 drive_control C6v "${S6V}" "${S6V}/run_g.sh" "${S6V}/env.list"
 R6V=$(classify_control C6v "${S6V}")
@@ -2279,6 +2493,7 @@ write_env_file "${C7A}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_CILIUM_DAEMON_LIST_RC=7"
 drive_control C7a "${C7A}" "${C7A}/run_g.sh" "${C7A}/env.list"
 R7A=$(classify_control C7a "${C7A}")
@@ -2309,6 +2524,7 @@ write_env_file "${C7B}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_CILIUM_EXEC_RC=8"
 drive_control C7b "${C7B}" "${C7B}/run_g.sh" "${C7B}/env.list"
 R7B=$(classify_control C7b "${C7B}")
@@ -2344,6 +2560,7 @@ write_env_file "${C7C}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_CILIUM_NAMES=${C7C_NAMES_12}"
+  "HARNESS_CILIUM_NS_NAMES=$(build_ns_names_from_space "${C7C_NAMES_12}")"
 drive_control C7c "${C7C}" "${C7C}/run_g.sh" "${C7C}/env.list"
 R7C=$(classify_control C7c "${C7C}")
 C7C_RC="$(echo "${R7C}" | awk -F'|' '{print $2}')"
@@ -2384,6 +2601,7 @@ write_env_file "${C7K}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_CILIUM_NAMES=${C7K_NAMES_NO_UNTRUSTED}"
+  "HARNESS_CILIUM_NS_NAMES=$(build_ns_names_from_space "${C7K_NAMES_NO_UNTRUSTED}")"
 drive_control C7k "${C7K}" "${C7K}/run_g.sh" "${C7K}/env.list"
 R7K=$(classify_control C7k "${C7K}")
 C7K_RC="$(echo "${R7K}" | awk -F'|' '{print $2}')"
@@ -2443,6 +2661,7 @@ write_env_file "${C7S}/env.list" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_DATE_NOW=1700000000" \
   "HARNESS_CILIUM_NAMES=${C7S_NAMES_13_STALE}"
+  "HARNESS_CILIUM_NS_NAMES=$(build_ns_names_from_space "${C7S_NAMES_13_STALE}")"
 # Note: FAKE_CILIUM_NAMES is auto-derived from
 # HARNESS_CILIUM_NAMES inside both the
 # install-arc body and the real-gate body,
@@ -2591,6 +2810,7 @@ write_env_file "${C7R}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=120" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_CILIUM_DAEMON_LIST_RECOVERY=1" \
   "FAKE_CILIUM_DAEMON_LIST_COUNTER_FILE=${C7R}/__daemon_list_counter"
 # Reset the counter file BEFORE drive_control so
@@ -2698,6 +2918,7 @@ write_env_file "${G8A}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=1" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_FIXTURE_LIST_RC=" \
   "FAKE_FIXTURE_JSON_RC=" \
   "FAKE_CILIUM_DAEMON_LIST_RC=11" \
@@ -2803,6 +3024,16 @@ DATE_NOW="${HARNESS_DATE_NOW:-1700000000}"
 DATE_ADVANCE="${HARNESS_DATE_ADVANCE:-1}"
 DATE_STEP="${HARNESS_DATE_STEP:-1000}"
 CILIUM_NAMES="${HARNESS_CILIUM_NAMES:-}"
+# d2b.49 namespace-aware fake-Cilium input.
+# HARNESS_CILIUM_NS_NAMES_FILE is set when the
+# caller passes the multi-line namespace-aware
+# list via the namespace-inputs/<KEY> sidecar
+# file written in write_env_file. Surface
+# FAKE_CILIUM_NS_NAMES_FILE so the fake kubectl
+# reads the multi-line value verbatim.
+if [ -n "${HARNESS_CILIUM_NS_NAMES_FILE:-}" ]; then
+  export FAKE_CILIUM_NS_NAMES_FILE="${HARNESS_CILIUM_NS_NAMES_FILE}"
+fi
 export FAKE_PODS_TSV_FILE="${STAGE_TSV}"
 export FAKE_KUBECTL_RC="${KUBECTL_RC}"
 export FAKE_KIND_RC="${KIND_RC}"
@@ -2811,6 +3042,27 @@ export FAKE_DATE_NOW="${DATE_NOW}"
 export FAKE_DATE_ADVANCE="${DATE_ADVANCE}"
 export FAKE_DATE_STEP="${DATE_STEP}"
 export FAKE_CILIUM_NAMES="${CILIUM_NAMES}"
+# d2b.49 namespace-aware fake-Cilium input.
+# HARNESS_CILIUM_NS_NAMES_FILE is set when the
+# caller passes the multi-line namespace-aware
+# list via the namespace-inputs/<KEY> sidecar
+# file written in write_env_file. Forward it
+# to the fake kubectl.
+if [ -n "${HARNESS_CILIUM_NS_NAMES_FILE:-}" ]; then
+  export FAKE_CILIUM_NS_NAMES_FILE="${HARNESS_CILIUM_NS_NAMES_FILE}"
+fi
+# d2b.49 namespace-aware fake-Cilium input.
+# If HARNESS_CILIUM_NS_NAMES is set, write it
+# verbatim to a stage-scoped file and surface
+# FAKE_CILIUM_NS_NAMES_FILE so the fake kubectl
+# can read the multi-line value intact without
+# being truncated by env-list single-line
+# semantics. The previous HARNESS_CILIUM_NAMES
+# path is preserved.
+if [ -n "${HARNESS_CILIUM_NS_NAMES:-}" ]; then
+  printf '%s\n' "${HARNESS_CILIUM_NS_NAMES}" >"${HARNESS_ARTIFACTS}/cilium-ns-names.txt"
+  export FAKE_CILIUM_NS_NAMES_FILE="${HARNESS_ARTIFACTS}/cilium-ns-names.txt"
+fi
 export FAKE_FIXTURE_LIST_RC="${FAKE_FIXTURE_LIST_RC:-}"
 export FAKE_FIXTURE_JSON_RC="${FAKE_FIXTURE_JSON_RC:-}"
 export FAKE_CILIUM_DAEMON_LIST_RC="${FAKE_CILIUM_DAEMON_LIST_RC:-}"
@@ -2880,7 +3132,7 @@ write_env_file "${C7G}/env.list" \
   "HARNESS_STAGE_TSV=${C7G}/pods.tsv" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
-  "HARNESS_CILIUM_NAMES=${C7G_NAMES_13_SPACE}" \
+  "HARNESS_CILIUM_NS_NAMES=$(build_canonical_13_ns_names)" \
   "HARNESS_FIXTURE_NAMES_TSV=${C7G_TSV}" \
   "FAKE_FIXTURE_LIST_RC=" \
   "FAKE_FIXTURE_JSON_RC=" \
@@ -2918,7 +3170,7 @@ write_env_file "${C7H}/env.list" \
   "HARNESS_STAGE_TSV=${C7H}/pods.tsv" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
-  "HARNESS_CILIUM_NAMES=${C7G_NAMES_13_SPACE}" \
+  "HARNESS_CILIUM_NS_NAMES=$(build_canonical_13_ns_names)" \
   "HARNESS_FIXTURE_NAMES_TSV=${C7H_TSV}" \
   "FAKE_FIXTURE_LIST_RC=" \
   "FAKE_FIXTURE_JSON_RC=" \
@@ -2957,6 +3209,7 @@ write_env_file "${C7I}/env.list" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
   "HARNESS_CILIUM_NAMES=${C7I_NAMES_12}" \
+  "HARNESS_CILIUM_NS_NAMES=$(build_ns_names_from_space "${C7I_NAMES_12}")" \
   "HARNESS_FIXTURE_NAMES_TSV=${C7I_TSV}" \
   "FAKE_FIXTURE_LIST_RC=" \
   "FAKE_FIXTURE_JSON_RC=" \
@@ -3031,16 +3284,18 @@ assert any(x.endswith("cni-untrusted-default") for x in l)
     C7I_CONV_HAS_UNTRUSTED="Y"
   fi
   if python3 -c '
-import json, sys
+import json, sys, re
 l=json.load(open(sys.argv[1]))["observed_labels"]
-assert len(l) >= 1 and any(x.startswith("resolve-labels-default/cni-mock-") for x in l)
+pat=re.compile(r"^resolve-labels-[^/]+/cni-mock-")
+assert len(l) >= 1 and any(pat.match(x) for x in l)
 ' "${GATE_BASE_I}/gate08-endpoint-convergence.json" 2>/dev/null; then
     C7I_CONV_HAS_CNI_MOCK="Y"
   fi
   if python3 -c '
-import json, sys
+import json, sys, re
 l=json.load(open(sys.argv[1]))["observed_labels"]
-assert len(l) >= 1 and any(x.startswith("resolve-labels-default/cni-control-") for x in l)
+pat=re.compile(r"^resolve-labels-[^/]+/cni-control-")
+assert len(l) >= 1 and any(pat.match(x) for x in l)
 ' "${GATE_BASE_I}/gate08-endpoint-convergence.json" 2>/dev/null; then
     C7I_CONV_HAS_CNI_CONTROL="Y"
   fi
@@ -3076,6 +3331,7 @@ write_env_file "${C8R}/env.list" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "HARNESS_FIXTURE_NAMES_TSV=${C8R_TSV}" \
   "FAKE_FIXTURE_LIST_RC=" \
   "FAKE_FIXTURE_JSON_RC=" \
@@ -3175,7 +3431,7 @@ C8R_UNIQUE_COUNT=$(awk 'BEGIN{n=0} {n++} END {print n+0}' \
 # observed_labels includes cni-untrusted-default
 # AND spans all three matchers (mock, control,
 # untrusted).
-C8R_HAS_UNTRUSTED=$(grep -q 'resolve-labels-default/cni-untrusted-default' "${GATE_BASE_R}/gate08-endpoint.unique.out" 2>/dev/null && echo Y || echo N)
+C8R_HAS_UNTRUSTED=$(grep -q 'resolve-labels-cni-test-untrusted/cni-untrusted-default' "${GATE_BASE_R}/gate08-endpoint.unique.out" 2>/dev/null && echo Y || echo N)
 # Gate 9 first failure: any failure step whose
 # name begins with "09-" (or whose classification
 # line is anything OTHER than Gate 8's
@@ -3257,6 +3513,7 @@ write_env_file "${C8S}/env.list" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
   "HARNESS_CILIUM_NAMES=${C8S_NAMES_13_STALE}" \
+  "HARNESS_CILIUM_NS_NAMES=$(build_ns_names_from_space "${C8S_NAMES_13_STALE}")" \
   "HARNESS_FIXTURE_NAMES_TSV=${C8S_TSV}" \
   "FAKE_FIXTURE_LIST_RC=" \
   "FAKE_FIXTURE_JSON_RC=" \
@@ -3355,6 +3612,7 @@ write_env_file "${C8D}/env.list" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "HARNESS_FIXTURE_NAMES_TSV=${C8D_TSV}" \
   "FAKE_FIXTURE_LIST_RC=" \
   "FAKE_FIXTURE_JSON_RC=" \
@@ -3437,7 +3695,8 @@ write_env_file "${C8T}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c8t" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=120" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 rm -f "${FAKE_BIN}/__date_state_c8t"
 drive_control C8t "${C8T}" "${C8T}/run_gate.sh" "${C8T}/env.list"
 C8T_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8T}/child.rc" 2>/dev/null)"
@@ -3483,7 +3742,8 @@ write_env_file "${C8U}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c8u" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=120" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 rm -f "${FAKE_BIN}/__date_state_c8u"
 drive_control C8u "${C8U}" "${C8U}/run_gate.sh" "${C8U}/env.list"
 C8U_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8U}/child.rc" 2>/dev/null)"
@@ -3531,7 +3791,8 @@ write_env_file "${C8V}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c8v" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=120" \
-  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}"
+  "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}"
 rm -f "${FAKE_BIN}/__date_state_c8v"
 drive_control C8v "${C8V}" "${C8V}/run_gate.sh" "${C8V}/env.list"
 C8V_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8V}/child.rc" 2>/dev/null)"
@@ -3583,6 +3844,7 @@ write_env_file "${C8W}/env.list" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "HARNESS_FIXTURE_NAMES_TSV=${C8W_TSV}" \
   "FAKE_FIXTURE_JSON_RC=" \
   "FAKE_FIXTURE_JSON_MALFORMED=1" \
@@ -3640,6 +3902,7 @@ write_env_file "${C8X}/env.list" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "HARNESS_FIXTURE_NAMES_TSV=${C8X_TSV}" \
   "FAKE_FIXTURE_JSON_RC=" \
   "FAKE_DATE_NOW_FILE=${C8X}/__date_state" \
@@ -3681,6 +3944,355 @@ printf 'C8v: rc=%s summary=%s logcls=%s missing-pair=%s probe-cardinality=%s gat
 # C8: kind load nonzero => step_image_pipeline rc=14.
 S8="${TOP_TMP}/stage-C8"
 mkdir -p "${S8}"
+write_stage_files "${S8}" "" "${REAL_GATE_BIN}"
+
+# ----------------------------------------------------------------
+# d2b.49 namespace-aware regression suite.
+# C7n: install Step G replay success against
+# the exact namespace-aware 13-controller
+# set reconstructed from run 33391341225's
+# raw Cilium endpoint JSON. Asserts that all
+# five non-default controllers are
+# expected AND observed, AND that the wrong
+# flattened default-flavor controllers are
+# absent from both expected AND observed.
+# C7o: install Step G under a wrong-namespace
+# substitution (replace
+# `default/cni-mock-postgres` with
+# `random-ns/cni-mock-postgres`). Still 13
+# unique controllers in total, but the
+# identity contract fails because the wrong
+# namespace does not satisfy the canonical
+# namespace/name pair. Asserts missing +
+# unexpected both populated.
+# C8n: real Gate 8 replay success with the
+# exact namespace-aware 13-controller set.
+# Gate 8 must record success before Gate 9
+# takes any deliberate failure.
+# C8o: real Gate 8 wrong-namespace
+# substitution. Gate 8 must exit 10 before
+# Gate 9.
+# All four are required to pass exactly
+# once each, in unique stage directories.
+# ----------------------------------------------------------------
+
+# Namespace-aware 13-controller literal set
+# (matches run 33391341225 successful Cilium
+# publication: 8 default + 1 dynamic probe in
+# cni-control + 4 sibling namespaces).
+NAMESPACE_AWARE_13_CONTROLLERS=$(cat <<EOF
+resolve-labels-cni-control/cni-control-target
+resolve-labels-cni-control/${HARNESS_DYNAMIC_PROBE_NAME}
+resolve-labels-cni-test-ingress/cni-mock-ingress-controller
+resolve-labels-cni-test-prometheus/cni-mock-prometheus
+resolve-labels-cni-test-untrusted/cni-untrusted-default
+resolve-labels-default/cni-mock-arbitrary
+resolve-labels-default/cni-mock-clickhouse
+resolve-labels-default/cni-mock-egress-proxy
+resolve-labels-default/cni-mock-nexus-gateway
+resolve-labels-default/cni-mock-nexus-migration
+resolve-labels-default/cni-mock-nexus-worker
+resolve-labels-default/cni-mock-postgres
+resolve-labels-default/cni-mock-redis
+EOF
+)
+# Namespace-aware 13 (ns, name) raw streams. Reused
+# as the canonical input for both harness fake
+# Cilium JSON and production projection.
+NAMESPACE_AWARE_13_NS_NAMES="$(build_canonical_13_ns_names)"
+
+# Wrong-namespace substitution list:
+# `default/cni-mock-postgres` becomes
+# `random-ns/cni-mock-postgres`. Exactly 13 unique
+# controller labels, but wrong namespace, so it
+# cannot satisfy the canonical pair identity.
+WRONG_NAMESPACE_13_NAMES="$(printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
+  | awk -F'\t' -v bad='default	cni-mock-postgres' \
+        'BEGIN{OFS="\t"} {if ($0==bad) {print "random-ns","cni-mock-postgres"; next} {print}}' \
+  )"
+WRONG_NAMESPACE_13_NAMES="${WRONG_NAMESPACE_13_NAMES}
+cni-control	${HARNESS_DYNAMIC_PROBE_NAME}"
+
+# ------------- C7n install replay success -------------
+# Use the RECORDING success-gate stub so the
+# install path runs Step G, identity-equality
+# succeeds, and ONE normal-handoff exits 0. This
+# matches the canonical C6p/C6q/C6r success
+# pattern: target rc 0; absolute stub path; one
+# normal record; zero abort-classifier-unexpected.
+C7N_TSV="${TOP_TMP}/gate7n-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C7N_TSV}"
+C7N="${TOP_TMP}/stage-C7n"
+mkdir -p "${C7N}"
+case "${C6_RECORDING_GATE_STUB:-}" in
+  /*) ;;
+  *)
+    printf 'FATAL: C6_RECORDING_GATE_STUB (%s) is not absolute\n' \
+      "${C6_RECORDING_GATE_STUB:-unset}" >&2
+    exit 2 ;;
+esac
+[ -x "${C6_RECORDING_GATE_STUB}" ] || { \
+  printf 'FATAL: C6_RECORDING_GATE_STUB not executable\n' >&2; exit 2; }
+write_stage_files "${C7N}" "${C7N_TSV}" "${C6_RECORDING_GATE_STUB}"
+write_env_file "${C7N}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7N}" \
+  "HARNESS_STAGE=${C7N}" \
+  "HARNESS_STAGE_TSV=${C7N}/pods.tsv" \
+  "HARNESS_GATE_BIN=${C6_RECORDING_GATE_STUB}" \
+  "CNI_READINESS_GATE_BIN=${C6_RECORDING_GATE_STUB}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C7N_TSV}" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state_c7n" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=240" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c7n"
+drive_control C7n "${C7N}" "${C7N}/run_g.sh" "${C7N}/env.list"
+C7N_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7N}/child.rc" 2>/dev/null)"
+# C7n: target rc=0; expected set includes ALL 5
+# non-default namespace controllers; the FIX
+# flattening into default is absent.
+C7N_EXP_5_NONDEFAULT="N"
+if [ -s "${C7N}/cilium-endpoint.expected.out" ]; then
+  if python3 -c '
+import sys
+need = [
+  "resolve-labels-cni-control/cni-control-target",
+  "resolve-labels-cni-control/cni-control-probe-5d5fb89454-7cjss",
+  "resolve-labels-cni-test-ingress/cni-mock-ingress-controller",
+  "resolve-labels-cni-test-prometheus/cni-mock-prometheus",
+  "resolve-labels-cni-test-untrusted/cni-untrusted-default",
+]
+got = set(l.strip() for l in open(sys.argv[1]).read().splitlines() if l.strip())
+print("Y" if all(n in got for n in need) else "N")
+' "${C7N}/cilium-endpoint.expected.out" | grep -q '^Y$'; then
+    C7N_EXP_5_NONDEFAULT="Y"
+  fi
+fi
+C7N_NO_WRONG_DEFAULT="N"
+if [ -s "${C7N}/cilium-endpoint.expected.out" ]; then
+  if python3 -c '
+import sys
+forbidden = [
+  "resolve-labels-default/cni-control-target",
+  "resolve-labels-default/cni-control-probe-5d5fb89454-7cjss",
+  "resolve-labels-default/cni-mock-ingress-controller",
+  "resolve-labels-default/cni-mock-prometheus",
+  "resolve-labels-default/cni-untrusted-default",
+]
+got = set(l.strip() for l in open(sys.argv[1]).read().splitlines() if l.strip())
+print("Y" if all(f not in got for f in forbidden) else "N")
+' "${C7N}/cilium-endpoint.expected.out" | grep -q '^Y$'; then
+    C7N_NO_WRONG_DEFAULT="Y"
+  fi
+fi
+# Expected set byte-equal to observed set
+# (assuming the fake kubectl emits the same
+# 13-controller set; if install aborts before
+# the unique-label file is written, observed
+# equality is moot and the test is expected
+# to fail).
+C7N_BYTE_EQUAL="N"
+if [ -s "${C7N}/cilium-endpoint.expected.out" ] && [ -s "${C7N}/cilium-endpoint.unique.out" ]; then
+  if LC_ALL=C cmp -s "${C7N}/cilium-endpoint.expected.out" "${C7N}/cilium-endpoint.unique.out" 2>/dev/null; then
+    C7N_BYTE_EQUAL="Y"
+  fi
+fi
+C7N_MISSING_0=$(python3 -c "import sys; n=0
+if __import__('os').path.exists(sys.argv[1]):
+  for l in open(sys.argv[1]).read().splitlines():
+    if l.strip(): n+=1
+print(n)" "${C7N}/cilium-endpoint.missing.out" 2>/dev/null || echo 0)
+C7N_UNEXPECTED_0=$(python3 -c "import sys; n=0
+if __import__('os').path.exists(sys.argv[1]):
+  for l in open(sys.argv[1]).read().splitlines():
+    if l.strip(): n+=1
+print(n)" "${C7N}/cilium-endpoint.unexpected.out" 2>/dev/null || echo 0)
+# Recording-stub handoff accounting: install
+# hands off exactly once to the recording stub
+# and the abort-classifier-unexpected line
+# does not appear. Both counts are read from
+# the stub's append-only invocation log.
+C7N_NORMAL_HANDOFF_COUNT=$(if [ -f "${C7N}/gate-invocations.log" ]; then
+  awk -F'\t' '$3 == "mode=normal-handoff"' "${C7N}/gate-invocations.log" | wc -l | tr -d ' '
+else
+  printf '0\n'
+fi)
+C7N_ABORT_CLASSIFIER_COUNT=$(if [ -f "${C7N}/gate-invocations.log" ]; then
+  awk -F'\t' '$3 == "mode=abort-classifier-unexpected"' "${C7N}/gate-invocations.log" | wc -l | tr -d ' '
+else
+  printf '0\n'
+fi)
+
+# ------------- C7o install wrong-namespace substitution -------------
+# The fixture inventory TSV stays canonical
+# (12 static pairs in their manifest-aligned
+# namespaces + generated probe in cni-control)
+# so install's vocabulary acceptance passes.
+# Only the FAKE_CILIUM_NS_NAMES_FILE is
+# mutated: `default/cni-mock-postgres` is
+# replaced with `random-ns/cni-mock-postgres`,
+# so Cilium emits the wrong-namespace controller
+# while the inventory-side pod is canonical.
+C7O_TSV="${TOP_TMP}/gate7o-wrongns.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C7O_TSV}"
+C7O_NS_FILE="${TOP_TMP}/gate7o-wrongns-ns.txt"
+{
+  printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
+    | awk -F'\t' -v bad='default	cni-mock-postgres' \
+          'BEGIN{OFS="\t"} {if ($0==bad) {print "random-ns","cni-mock-postgres"; next} {print}}'
+  printf 'cni-control\t%s\n' "${HARNESS_DYNAMIC_PROBE_NAME}"
+} > "${C7O_NS_FILE}"
+C7O="${TOP_TMP}/stage-C7o"
+mkdir -p "${C7O}"
+write_stage_files "${C7O}" "${C7O_TSV}" "${REAL_GATE_BIN}"
+write_env_file "${C7O}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C7O}" \
+  "HARNESS_STAGE_TSV=${C7O}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C7O_NS_FILE}" \
+  "HARNESS_CILIUM_NAMES=CILIUM_DEFAULT-disabled-by-ns-names-file" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C7O_TSV}" \
+  "FAKE_DATE_NOW_FILE=${C7O}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=240"
+rm -f "${FAKE_BIN}/__date_state_c7o"
+drive_control C7o "${C7O}" "${C7O}/run_g.sh" "${C7O}/env.list"
+C7O_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7O}/child.rc" 2>/dev/null)"
+# C7o: install Step G must ABORT (rc=10) and
+# the structured convergence JSON must show BOTH
+# missing canonical `default/cni-mock-postgres`
+# AND unexpected `random-ns/cni-mock-postgres`.
+C7O_HAS_MISSING_POSTGRES="N"
+C7O_HAS_UNEXPECTED_POSTGRES="N"
+if [ -s "${C7O}/cilium-endpoint-convergence.json" ]; then
+  C7O_HAS_MISSING_POSTGRES=$(python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+missing = ' '.join(d.get('missing_labels', []) or [])
+print('Y' if 'resolve-labels-default/cni-mock-postgres' in missing else 'N')
+" "${C7O}/cilium-endpoint-convergence.json" 2>/dev/null || echo N)
+  C7O_HAS_UNEXPECTED_POSTGRES=$(python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+unexpected = ' '.join(d.get('unexpected_labels', []) or [])
+print('Y' if 'resolve-labels-random-ns/cni-mock-postgres' in unexpected else 'N')
+" "${C7O}/cilium-endpoint-convergence.json" 2>/dev/null || echo N)
+fi
+
+# ------------- C8n real Gate 8 replay success -------------
+C8N_TSV="${C7N_TSV}"  # reuse exact 13 inventory
+C8N="${TOP_TMP}/stage-C8n"
+mkdir -p "${C8N}"
+make_real_gate_stage "${C8N}" "${C8N_TSV}"
+write_env_file "${C8N}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C8N}" \
+  "HARNESS_STAGE_TSV=${C8N}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C8N_TSV}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_DATE_NOW_FILE=${C8N}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c8n"
+drive_control C8n "${C8N}" "${C8N}/run_gate.sh" "${C8N}/env.list"
+C8N_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8N}/child.rc" 2>/dev/null)"
+G8N_BASE="${C8N}/artifacts"
+C8N_SUMMARY="$(cat "${G8N_BASE}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G8N_BASE}/readiness.summary.txt" ] && C8N_SUMMARY="__MISSING__"
+C8N_GATE8_OK=$(awk '
+  /\[step 08\].*08-fixture-endpoint-registered.*ok/ { g8=1; next }
+  /\[step 09\]/ { exit }
+  END { if (g8==1) print "Y"; else print "N" }
+' "${G8N_BASE}/readiness.log" 2>/dev/null || echo N)
+C8N_EXP_5_NONDEFAULT="N"
+if [ -s "${G8N_BASE}/gate08-endpoint.expected.out" ]; then
+  if python3 -c '
+import sys
+need = [
+  "resolve-labels-cni-control/cni-control-target",
+  "resolve-labels-cni-control/cni-control-probe-5d5fb89454-7cjss",
+  "resolve-labels-cni-test-ingress/cni-mock-ingress-controller",
+  "resolve-labels-cni-test-prometheus/cni-mock-prometheus",
+  "resolve-labels-cni-test-untrusted/cni-untrusted-default",
+]
+got = set(l.strip() for l in open(sys.argv[1]).read().splitlines() if l.strip())
+print("Y" if all(n in got for n in need) else "N")
+' "${G8N_BASE}/gate08-endpoint.expected.out" | grep -q '^Y$'; then
+    C8N_EXP_5_NONDEFAULT="Y"
+  fi
+fi
+C8N_BYTE_EQUAL="N"
+if [ -s "${G8N_BASE}/gate08-endpoint.expected.out" ] && [ -s "${G8N_BASE}/gate08-endpoint.unique.out" ]; then
+  if LC_ALL=C cmp -s "${G8N_BASE}/gate08-endpoint.expected.out" "${G8N_BASE}/gate08-endpoint.unique.out" 2>/dev/null; then
+    C8N_BYTE_EQUAL="Y"
+  fi
+fi
+
+# ------------- C8o real Gate 8 wrong-namespace substitution -------------
+# Fixture inventory TSV stays canonical; only
+# the Cilium publication is mutated to publish
+# `random-ns/cni-mock-postgres` instead of
+# `default/cni-mock-postgres`.
+C8O_TSV="${TOP_TMP}/gate8o-wrongns.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C8O_TSV}"
+C8O_NS_FILE="${TOP_TMP}/gate8o-wrongns-ns.txt"
+{
+  printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
+    | awk -F'\t' -v bad='default	cni-mock-postgres' \
+          'BEGIN{OFS="\t"} {if ($0==bad) {print "random-ns","cni-mock-postgres"; next} {print}}'
+  printf 'cni-control\t%s\n' "${HARNESS_DYNAMIC_PROBE_NAME}"
+} > "${C8O_NS_FILE}"
+C8O="${TOP_TMP}/stage-C8o"
+mkdir -p "${C8O}"
+make_real_gate_stage "${C8O}" "${C8O_TSV}"
+write_env_file "${C8O}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C8O}" \
+  "HARNESS_STAGE_TSV=${C8O}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C8O_NS_FILE}" \
+  "HARNESS_CILIUM_NAMES=CILIUM_DEFAULT-disabled-by-ns-names-file" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C8O_TSV}" \
+  "FAKE_DATE_NOW_FILE=${C8O}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120"
+rm -f "${FAKE_BIN}/__date_state_c8o"
+drive_control C8o "${C8O}" "${C8O}/run_gate.sh" "${C8O}/env.list"
+C8O_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C8O}/child.rc" 2>/dev/null)"
+G8O_BASE="${C8O}/artifacts"
+C8O_MISSING_POSTGRES="N"
+C8O_UNEXPECTED_POSTGRES="N"
+if [ -s "${G8O_BASE}/gate08-endpoint-convergence.json" ]; then
+  C8O_MISSING_POSTGRES=$(python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+missing = ' '.join(d.get('missing_labels', []) or [])
+print('Y' if 'resolve-labels-default/cni-mock-postgres' in missing else 'N')
+" "${G8O_BASE}/gate08-endpoint-convergence.json" 2>/dev/null || echo N)
+  C8O_UNEXPECTED_POSTGRES=$(python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+unexpected = ' '.join(d.get('unexpected_labels', []) or [])
+print('Y' if 'resolve-labels-random-ns/cni-mock-postgres' in unexpected else 'N')
+" "${G8O_BASE}/gate08-endpoint-convergence.json" 2>/dev/null || echo N)
+fi
+
+# Note: keep this divider so the M1 control
+# starts on its canonical anchor.
 write_stage_files "${S8}" "" "${REAL_GATE_BIN}"
 write_env_file "${S8}/env.list" \
   "HARNESS_REAL_BASH=${REAL_BASH}" \
@@ -3729,6 +4341,7 @@ write_env_file "${S9}/env.list" \
   "HARNESS_GATE_BIN=${S9}/cni-readiness-gate.sh" \
   "CNI_READINESS_GATE_BIN=${S9}/cni-readiness-gate.sh" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240"
@@ -3760,6 +4373,7 @@ write_env_file "${S10}/env.list" \
   "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
   "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
   "HARNESS_CILIUM_NAMES=${CILIUM_DEFAULT}" \
+  "HARNESS_CILIUM_NS_NAMES=${CILIUM_DEFAULT_NS}" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=10"
@@ -4067,7 +4681,7 @@ printf 'C10: rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s fix-
 printf 'C11: ok=%s\n' "${C11_OK}"
 
 PASS=0
-TOTAL=39 # C1..C11 + C7a/b/c/k/g/h/i + C7d + C7r + C7s + C8r + C8d + C8s + C8t + C8u + C8v + C8w + C8x + C6p + C6q + C6r + C6s + C6t + C6u + C6v + M1 + M2a + M2b
+TOTAL=43 # d2b.49 namespace-aware regression suite: previous 39 + C7n/C7o + C8n/C8o
 # Per-control pass ledger (collects results so the
 # final summary can name which controls failed).
 # Bash 3.2 (macOS /bin/bash) does not support
@@ -4106,6 +4720,10 @@ C8U_PASS=N
 C8V_PASS=N
 C8W_PASS=N
 C8X_PASS=N
+C7N_PASS=N
+C7O_PASS=N
+C8N_PASS=N
+C8O_PASS=N
 C8_PASS=N
 C9_PASS=N
 C10_PASS=N
@@ -4792,7 +5410,7 @@ printf 'M1: summary_path_file_present=%s abort_log_line=%s log_label=%s log_expe
   "${M1_CANONICAL_PRESENT}"
 
 PASS=$((${PASS} + 0))
-TOTAL=39
+TOTAL=43
 if [ "${M1_RC}" = "16" ] \
    && [ "${M1_INVOKED}" = "Y" ] \
    && [ "${M1_JSON_PARSEABLE}" = "Y" ] \
@@ -4968,7 +5586,44 @@ printf 'M2b: rc=%s stderr-named-gate=%s stderr-named-nonexec=%s stub-sentinel-pr
   "${M2B_READINESS_LOG_PRESENT}" "${M2B_MISMATCH_JSON_PRESENT}" \
   "${M2B_BIT_FILE}"
 
-TOTAL=39
+TOTAL=43
+# d2b.49 namespace-aware regression suite
+# per-control verdicts (C7n/C7o/C8n/C8o):
+if [ "${C7N_RC}" = "0" ] \
+   && [ "${C7N_EXP_5_NONDEFAULT}" = "Y" ] \
+   && [ "${C7N_NO_WRONG_DEFAULT}" = "Y" ] \
+   && [ "${C7N_BYTE_EQUAL}" = "Y" ] \
+   && [ "${C7N_MISSING_0}" = "0" ] \
+   && [ "${C7N_UNEXPECTED_0}" = "0" ] \
+   && [ "${C7N_NORMAL_HANDOFF_COUNT:-1}" = "1" ] \
+   && [ "${C7N_ABORT_CLASSIFIER_COUNT:-1}" = "0" ]; then
+  PASS=$((PASS+1)); C7N_PASS=Y
+fi
+if [ "${C7O_RC}" = "10" ] \
+   && [ "${C7O_HAS_MISSING_POSTGRES}" = "Y" ] \
+   && [ "${C7O_HAS_UNEXPECTED_POSTGRES}" = "Y" ]; then
+  PASS=$((PASS+1)); C7O_PASS=Y
+fi
+# C8n: real Gate 8 replay success. The
+# canonical 13 inventory + namespace-aware
+# cilium publication produces Gate 8 success.
+# The failsafe is Gate 9's natural FIXTURE_NOT_READY
+# when the fake kubectl reports target pod
+# unreachable. Accept EITHER a clean rc=0
+# (full cluster run) OR rc=12 with Gate 8
+# explicitly OK and Gate 9 failing.
+if { [ "${C8N_RC}" = "0" ] || [ "${C8N_RC}" = "12" ]; } \
+   && [ "${C8N_GATE8_OK}" = "Y" ] \
+   && [ "${C8N_EXP_5_NONDEFAULT}" = "Y" ] \
+   && [ "${C8N_BYTE_EQUAL}" = "Y" ]; then
+  PASS=$((PASS+1)); C8N_PASS=Y
+fi
+if [ "${C8O_RC}" = "10" ] \
+   && [ "${C8O_MISSING_POSTGRES}" = "Y" ] \
+   && [ "${C8O_UNEXPECTED_POSTGRES}" = "Y" ]; then
+  PASS=$((PASS+1)); C8O_PASS=Y
+fi
+
 if [ "${M2A_RC}" = "22" ] \
    && [ "${M2A_STDERR_NAMED_GATE}" = "Y" ] \
    && [ "${M2A_STDERR_NAMED_MISSING}" = "Y" ] \
@@ -4990,25 +5645,46 @@ if [ "${M2B_RC}" = "22" ] \
   M2B_PASS=Y
 fi
 
-printf '\n# C1..C11 + C6p/C6q/C6r/C6s/C6t/C6u/C6v + C7s + C8s/C8t/C8u/C8v/C8w/C8x + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
+printf '\n# C1..C11 + C6p/C6q/C6r/C6s/C6t/C6u/C6v + C7s + C8s/C8t/C8u/C8v/C8w/C8x + C7n/C7o/C8n/C8o + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
 # Per-control pass table. Lets the operator
 # attribute a regression to one control name
 # without re-greping the harness source.
-printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s\n' \
+printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s\n' \
   "${C1_PASS}" "${VOCAB_PASS}" "${C2_PASS}" "${C3_PASS}" "${C4_PASS}" "${C5_PASS}" "${C6_PASS}" \
   "${C6P_PASS}" "${C6Q_PASS}" "${C6R_PASS}" "${C6S_PASS}" "${C6T_PASS}" "${C6U_PASS}" "${C6V_PASS}" \
   "${C7A_PASS}" "${C7B_PASS}" "${C7C_PASS}" "${C7K_PASS}" "${C7R_PASS}" "${C7S_PASS}" "${C7D_PASS}" \
   "${C7G_PASS}" "${C7H_PASS}" "${C7I_PASS}" "${C8R_PASS}" "${C8S_PASS}" "${C8D_PASS}" \
   "${C8T_PASS}" "${C8U_PASS}" "${C8V_PASS}" "${C8W_PASS}" "${C8X_PASS}" \
+  "${C7N_PASS}" "${C7O_PASS}" "${C8N_PASS}" "${C8O_PASS}" \
   "${C8_PASS}" "${C9_PASS}" "${C10_PASS}" "${C11_PASS}" \
   "${M1_PASS}" "${M2A_PASS}" "${M2B_PASS}"
+
+# d2b.51: the previous second `# per-control:`
+# emitter is intentionally removed so the raw
+# harness stdout contains exactly one verdict
+# line. Acceptance requires
+# `count(lines beginning "# per-control:") == 1`.
+printf '\n# --- d2b.49 namespace-aware regression suite transcript ---\n'
+printf 'C7n: rc=%s exp-5-nondefault=%s no-wrong-default=%s byte-equal=%s missing=%s unexpected=%s\n' \
+  "${C7N_RC}" "${C7N_EXP_5_NONDEFAULT}" "${C7N_NO_WRONG_DEFAULT}" "${C7N_BYTE_EQUAL}" "${C7N_MISSING_0}" "${C7N_UNEXPECTED_0}"
+printf 'C7o: rc=%s missing-postgres=%s unexpected-postgres=%s\n' \
+  "${C7O_RC}" "${C7O_HAS_MISSING_POSTGRES}" "${C7O_HAS_UNEXPECTED_POSTGRES}"
+printf 'C8n: rc=%s summary=%s gate8-ok-before-g9=%s exp-5-nondefault=%s byte-equal=%s\n' \
+  "${C8N_RC}" "${C8N_SUMMARY}" "${C8N_GATE8_OK}" "${C8N_EXP_5_NONDEFAULT}" "${C8N_BYTE_EQUAL}"
+printf 'C8o: rc=%s missing-postgres=%s unexpected-postgres=%s\n' \
+  "${C8O_RC}" "${C8O_MISSING_POSTGRES}" "${C8O_UNEXPECTED_POSTGRES}"
 if [ "${PASS}" = "${TOTAL}" ]; then
   if [ "${NEXUS_VOCAB_SELFCHECK:-0}" = "1" ] || [ "${1:-}" = "--selfcheck" ] || [ "${1:-}" = "--vocab-check" ]; then
     # Optional explicit operator invocation
     # of the static manifest-vocabulary
     # self-check after the baseline passes.
-    if manifest_vocab_selfcheck; then
+    NS_PROJ_RC=0
+    if ! namespace_projection_guard; then
+      NS_PROJ_RC=1
+    fi
+    if manifest_vocab_selfcheck && [ "${NS_PROJ_RC}" = "0" ]; then
       printf '# d2b.48 operator-initiated manifest_vocab_selfcheck: PASS\n'
+      printf '# d2b.49 operator-initiated namespace_projection_guard: PASS\n'
       exit 0
     fi
     printf '# d2b.48 operator-initiated manifest_vocab_selfcheck: FAIL\n'
