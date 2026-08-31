@@ -695,12 +695,16 @@ EOF
 }
 
 # (1) Fixture inventory: derive EXPECTED from
-# Pod NAME column anchored against the EXACT
-# 13-Pod vocabulary, NOT from incidental
-# namespace text. rc 0 with zero matches is a
-# valid observation (no fixture pods present);
-# only nonzero rc is a command failure that
-# MUST terminate Gate 8.
+# the canonical 12 static namespace/name
+# pairs plus EXACTLY ONE Deployment-generated
+# cni-control-probe Pod. Selector is by
+# {namespace, name} pair; a same-name in the
+# wrong namespace does NOT satisfy. The
+# canonical contract is sourced from
+# scripts/fixtures/integrationcni/
+# {01,02,03,04}*.yaml and must be kept in
+# sync between install-nexus-test.sh and
+# cni-readiness-gate.sh.
 set +e
 FIXTURE_NAMES_OUT="${ARTIFACTS}/gate08-fixture-names.out"
 FIXTURE_NAMES_ERR="${ARTIFACTS}/gate08-fixture-names.stderr"
@@ -716,64 +720,179 @@ if (( FIXTURE_INV_RC != 0 )); then
     "$(cat "$FIXTURE_NAMES_ERR")"
 fi
 EXACT_POPULATION_EXPECTED=13
-EXPECTED=$(python3 -c "
-import json
+# Canonical 12 static namespace/name pairs
+# derived from the tracked fixture manifests.
+# MUST match install-nexus-test.sh.
+GATE8_CANONICAL_12_PAIRS=(
+  "cni-test-ingress|cni-mock-ingress-controller"
+  "cni-test-prometheus|cni-mock-prometheus"
+  "cni-test-untrusted|cni-untrusted-default"
+  "default|cni-mock-nexus-gateway"
+  "default|cni-mock-nexus-worker"
+  "default|cni-mock-nexus-migration"
+  "default|cni-mock-egress-proxy"
+  "default|cni-mock-postgres"
+  "default|cni-mock-redis"
+  "default|cni-mock-clickhouse"
+  "default|cni-mock-arbitrary"
+  "cni-control|cni-control-target"
+)
+GATE8_DYNAMIC_PROBE_REGEX='^cni-control-probe-[a-z0-9]+-[a-z0-9]+$'
+GATE8_DYNAMIC_PROBE_NAMESPACE='cni-control'
+
+# Vocabulary projection: analyse the fixture
+# inventory against the canonical contract.
+# Writes gate08-fixture-vocab.json so the
+# loop and the deadline branch see the same
+# evidence.
+GATE8_FIXTURE_VOCAB="${ARTIFACTS}/gate08-fixture-vocab.json"
+python3 - "${GATE8_CANONICAL_12_PAIRS[@]}" \
+  "$FIXTURE_NAMES_OUT" "$GATE8_FIXTURE_VOCAB" \
+  "$GATE8_DYNAMIC_PROBE_REGEX" "$GATE8_DYNAMIC_PROBE_NAMESPACE" \
+  "$EXACT_POPULATION_EXPECTED" >/dev/null 2>"$ARTIFACTS/gate08-fixture-vocab.stderr" <<'PYEOF'
+import json, re, sys
+pairs_raw = sys.argv[1:-5]
+json_path, vocab_path, dyn_re_s, dyn_ns_s, expected_s = sys.argv[-5:]
+canonical_set = {(p.split('|')[0], p.split('|')[1]) for p in pairs_raw}
+canonical_list = sorted(
+    [{"namespace": ns, "name": n} for ns, n in canonical_set],
+    key=lambda d: (d["namespace"], d["name"]),
+)
+dynamic_probe_re = re.compile(dyn_re_s)
 try:
-    data=json.loads(open('$FIXTURE_NAMES_OUT').read() or '{\"items\":[]}')
-except Exception:
-    data={'items':[]}
-items=data.get('items') if isinstance(data,dict) else []
-def match(name):
-    return (
-        name.startswith('cni-mock-')
-        or name == 'cni-untrusted-default'
-        or name.startswith('cni-control-')
-    )
-print(sum(1 for it in items if match((it.get('metadata') or {}).get('name',''))))")
-# exact 13 contract: an inventory below the
-# exact expected population already proves the
-# cluster is missing fixture identity; record
-# the convergence artefact and abort here too.
-if (( EXPECTED != EXACT_POPULATION_EXPECTED )); then
+    data = json.loads(open(json_path).read() or '{"items": []}')
+except Exception as e:
+    print(f"PROJ-FAILED: {e!r}", file=sys.stderr); sys.exit(17)
+items = data.get('items') if isinstance(data, dict) else []
+vocab_prefix = re.compile(r'^cni-(mock|untrusted|control)-')
+dynamic_probe_pairs = []
+unexpected_fixture_like_pairs = []
+duplicate_pairs = []
+seen = set()
+for it in items:
+    md = it.get('metadata') or {}
+    ns = md.get('namespace','') or ''
+    name = md.get('name','') or ''
+    if (ns, name) in canonical_set:
+        if (ns, name) in seen:
+            duplicate_pairs.append({"namespace": ns, "name": name, "reason": "duplicate"})
+        seen.add((ns, name))
+    elif dynamic_probe_re.match(name) and ns == dyn_ns_s:
+        if (ns, name) in seen:
+            duplicate_pairs.append({"namespace": ns, "name": name, "reason": "duplicate_probe"})
+        seen.add((ns, name))
+        dynamic_probe_pairs.append({"namespace": ns, "name": name})
+    elif vocab_prefix.match(name):
+        unexpected_fixture_like_pairs.append({"namespace": ns, "name": name, "reason": "extra_fixture_like"})
+observed_static_pairs = sorted(
+    [{"namespace": ns, "name": n} for ns, n in canonical_set & seen],
+    key=lambda d: (d["namespace"], d["name"]),
+)
+missing_static_pairs = sorted([
+    {
+        "namespace": p["namespace"],
+        "name": p["name"],
+    }
+    for p in canonical_list
+    if (p["namespace"], p["name"]) not in seen
+], key=lambda d: (d["namespace"], d["name"]))
+canonical_population_ready = (
+    not missing_static_pairs
+    and len(dynamic_probe_pairs) == 1
+    and not duplicate_pairs
+    and not unexpected_fixture_like_pairs
+)
+obj = {
+    "command": "gate08 canonical fixture vocabulary projection",
+    "phase": "gate08_fixture_vocabulary",
+    "expected_static_pairs": canonical_list,
+    "observed_static_pairs": observed_static_pairs,
+    "missing_static_pairs": missing_static_pairs,
+    "unexpected_fixture_like_pairs": unexpected_fixture_like_pairs,
+    "dynamic_probe_pairs": dynamic_probe_pairs,
+    "duplicate_pairs": duplicate_pairs,
+    "expected_count": int(expected_s),
+    "canonical_population_ready": bool(canonical_population_ready),
+    "dynamic_probe_cardinality": len(dynamic_probe_pairs),
+}
+open(vocab_path, 'w').write(json.dumps(obj, indent=2) + "\n")
+PYEOF
+VOCAB_PROJ_RC=$?
+if (( VOCAB_PROJ_RC != 0 )); then
+  cat >"$GATE8_ERR_ART.snapshot" <<EOF
+{
+  "command": "python3 gate08 fixture vocabulary projection",
+  "phase": "gate08_fixture_vocabulary_projection_failure",
+  "rc": ${VOCAB_PROJ_RC},
+  "stderr": $(printf '%s' "$(cat "$ARTIFACTS/gate08-fixture-vocab.stderr")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "expected_count": ${EXACT_POPULATION_EXPECTED},
+  "reason": "gate08 vocabulary projection failed; cannot assert canonical 12+1"
+}
+EOF
+  mv "$GATE8_ERR_ART.snapshot" "$GATE8_ERR_ART"
+  record_step 8 "failed" "gate08 vocabulary projection failed rc=${VOCAB_PROJ_RC} (see $GATE8_ERR_ART)"
+  classify failed 10 CLUSTER_OR_CNI_NOT_READY
+fi
+EXPECTED=$(python3 -c "import json;d=json.load(open('$GATE8_FIXTURE_VOCAB'));print(d['expected_count'])")
+# exact 13 contract: an inventory that does
+# NOT satisfy the canonical 12+1 vocabulary
+# (including stale-name substitutions,
+# wrong-namespace, extra probe, or
+# duplicates) cannot proceed to endpoint
+# comparison. We classify the failure and
+# record vocabulary evidence before Gate 9 so
+# a downstream verifier can correlate the
+# missing piece.
+if [ "$(python3 -c "import json;d=json.load(open('$GATE8_FIXTURE_VOCAB'));print('Y' if d['canonical_population_ready'] else 'N')")" != "Y" ]; then
   cat >"$GATE8_CONV_ART.snapshot" <<EOF
 {
-  "phase": "gate08_exact_population_undercount",
+  "phase": "gate08_vocabulary_mismatch",
+  "vocab_artifact": "${GATE8_FIXTURE_VOCAB}",
+  "command": "kubectl get pod -A -o json",
   "expected_count": ${EXACT_POPULATION_EXPECTED},
-  "observed_fixture_pod_count": ${EXPECTED},
-  "reason": "fixture vocabulary not exactly 13; Gate 8 cannot proceed"
+  "reason": "canonical 12+1 fixture vocabulary not exact; gate 8 must not pass with arbitrary prefix-shaped 13"
 }
 EOF
   mv "$GATE8_CONV_ART.snapshot" "$GATE8_CONV_ART"
-  record_step 8 "failed" "fixture population ${EXPECTED} != ${EXACT_POPULATION_EXPECTED} (see $GATE8_CONV_ART)"
+  record_step 8 "failed" "gate08 canonical vocabulary mismatch (see $GATE8_FIXTURE_VOCAB and $GATE8_CONV_ART)"
   classify failed 10 CLUSTER_OR_CNI_NOT_READY
 fi
-# d2b.46 Block B: derive EXPECTED_LABELS_FILE
-# from the SAME inventory we already passed RC
-# on, by projecting each Pod.metadata.name to
-# `resolve-labels-default/<name>`. This is
-# how a Deployment-generated
-# cni-control-probe-<rs>-<pod> identity enters
-# the contract: the inventory owns the names,
-# not a hard-coded control token. Sort+uniq
-# once so the file is a normalized set.
+# d2b.48 Block A: derive EXPECTED_LABELS_FILE
+# from the SAME canonical vocabulary
+# projection. Labels are names-only because
+# cilium endpoint list emits the bare pod
+# name in controller labels; the canonical
+# {namespace, name} contract is preserved in
+# gate08-fixture-vocab.json. Sort+uniq once
+# so the file is a normalized set.
 GATE8_EXPECTED_LABELS="${ARTIFACTS}/gate08-endpoint.expected.out"
-python3 - "$FIXTURE_NAMES_OUT" "$GATE8_EXPECTED_LABELS" >/dev/null <<'PYEOF'
-import json, sys, re
-src, out = sys.argv[1], sys.argv[2]
-mock_re    = re.compile(r'^cni-mock-')
-control_re = re.compile(r'^cni-control-')
+GATE8_CANONICAL_NS_NAMES=$(printf '%s\n' "${GATE8_CANONICAL_12_PAIRS[@]}" | sort -u)
+python3 - "$FIXTURE_NAMES_OUT" "$GATE8_EXPECTED_LABELS" \
+  "$GATE8_CANONICAL_NS_NAMES" \
+  "$GATE8_DYNAMIC_PROBE_REGEX" "$GATE8_DYNAMIC_PROBE_NAMESPACE" \
+  <<'PYEOF'
+import json, re, sys
+src, out, canonical_pairs_s, dyn_re_s, dyn_ns_s = sys.argv[1:6]
+dyn_re = re.compile(dyn_re_s)
+canonical_set = set()
+for ln in canonical_pairs_s.splitlines():
+    if '|' in ln:
+        ns, name = ln.split('|', 1)
+        canonical_set.add((ns, name))
 try:
-    data = json.loads(open(src).read() or '{"items":[]}')
-except Exception:
-    data = {'items':[]}
+    data = json.loads(open(src).read() or '{"items": []}')
+except Exception as e:
+    print(f"EXPECTED-FAILED: {e!r}", file=sys.stderr); sys.exit(17)
 items = data.get('items') if isinstance(data, dict) else []
 labels = []
 for it in items:
-    md   = it.get('metadata') or {}
+    md = it.get('metadata') or {}
     name = md.get('name') or ''
-    if not (mock_re.match(name) or name == 'cni-untrusted-default' or control_re.match(name)):
-        continue
-    labels.append(f"resolve-labels-default/{name}")
+    ns = md.get('namespace') or ''
+    if (ns, name) in canonical_set:
+        labels.append(f"resolve-labels-default/{name}")
+    elif dyn_re.match(name) and ns == dyn_ns_s:
+        labels.append(f"resolve-labels-default/{name}")
 seen = set()
 uniq = []
 for l in sorted(labels):
@@ -781,6 +900,13 @@ for l in sorted(labels):
     seen.add(l); uniq.append(l)
 open(out, 'w').write('\n'.join(uniq) + ('' if not uniq else '\n'))
 PYEOF
+GATE8_EXPECTED_LABELS_RC=$?
+if (( GATE8_EXPECTED_LABELS_RC != 0 )); then
+  gate8_cmd_failure "gate08_expected_labels_projection" \
+    "python3 gate08 expected labels projection" \
+    "$GATE8_EXPECTED_LABELS_RC" \
+    "$(cat "$ARTIFACTS/gate08-expected-labels.stderr")"
+fi
 # d2b.46 follow-up Block D: do NOT log
 # Step 8 "ok" yet. Step 8 only records "ok"
 # after the bounded poll loop converges with
@@ -1015,9 +1141,10 @@ if (( LAST < EXPECTED )) || [ "${GATE8_IDENTITY_MISMATCH}" = "Y" ]; then
     "$ARTIFACTS/gate08-endpoint.missing.out" \
     "$ARTIFACTS/gate08-endpoint.unexpected.out" \
     "$LAST" "$DEADLINE" "$(date +%s)" "$EXPECTED" \
+    "$GATE8_FIXTURE_VOCAB" \
     >"$GATE8_CONV_ART.snapshot" <<'PYEOF'
 import json, sys
-daemon_p, uniq_p, exp_p, miss_p, une_p, last_s, dl_s, now_s, exp_s = sys.argv[1:10]
+daemon_p, uniq_p, exp_p, miss_p, une_p, last_s, dl_s, now_s, exp_s, vocab_p = sys.argv[1:11]
 def reads(p):
     return [l for l in open(p).read().splitlines() if l.strip()]
 daemons    = reads(daemon_p)
@@ -1025,6 +1152,7 @@ observed   = reads(uniq_p)
 expected   = reads(exp_p)
 missing    = reads(miss_p)
 unexpected = reads(une_p)
+vocab = json.load(open(vocab_p))
 obj = {
   "command": "cilium endpoint convergence",
   "phase": "gate08_underconverged_or_mismatch",
@@ -1037,7 +1165,15 @@ obj = {
   "unexpected_labels": unexpected,
   "expected_count": len(expected),
   "observed_count": len(observed),
-  "reason": "cilium endpoint publication did not identity-match the dynamic expected label set; LAST >= EXPECTED is NOT sufficient, set diffs must be empty"
+  "expected_static_pairs": vocab.get("expected_static_pairs", []),
+  "observed_static_pairs": vocab.get("observed_static_pairs", []),
+  "missing_static_pairs": vocab.get("missing_static_pairs", []),
+  "unexpected_fixture_like_pairs": vocab.get("unexpected_fixture_like_pairs", []),
+  "dynamic_probe_pairs": vocab.get("dynamic_probe_pairs", []),
+  "duplicate_pairs": vocab.get("duplicate_pairs", []),
+  "canonical_population_ready": bool(vocab.get("canonical_population_ready", False)),
+  "dynamic_probe_cardinality": vocab.get("dynamic_probe_cardinality", 0),
+  "reason": "cilium endpoint publication did not identity-match the canonical 12+1 vocabulary; LAST >= EXPECTED is NOT sufficient; vocab arrays preserved in this artefact"
 }
 assert obj["expected_count"] == len(obj["expected_labels"]), \
   "expected_count and expected_labels must come from the same file"

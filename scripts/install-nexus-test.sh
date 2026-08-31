@@ -509,336 +509,708 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
 
 step_G_readiness() {
   echo "[install] ====== step G: readiness / control probe ======"
-  # d2b.46 fixture Pod inventory contract:
-  # the fresh-cluster fixture population has
-  # exactly 13 Pods whose names start with
-  # cni-mock-, cni-untrusted-, or cni-control-
-  # (5 cni-mock-* in default + 1 each in ingress/
-  # prometheus/postgres/redis/clickhouse +
-  # 1 cni-untrusted-default + 2 cni-control-... =
-  # 13). One anchored matcher drives every
-  # inventory assertion below so an observation
-  # loop can never silently disagree with the
-  # endpoint expectation it consults.
-  local fixture_re='^cni-(mock|untrusted|control)-'
-  local expected_fixture_count=13
+  # d2b.48 canonical fixture vocabulary.
+  # The tracked fixture manifests in
+  # scripts/fixtures/integrationcni/
+  # {01-test-pods,02-stub-deps,03-control-pod,
+  # 04-control-service}.yaml define exactly
+  # 12 static namespace/name pairs plus one
+  # Deployment-generated cni-control-probe-<rs>-<pod>
+  # Pod. The fresh-cluster fixture population
+  # has exactly that population. Selection is
+  # by {namespace, name} pair; a same-name in
+  # the wrong namespace does NOT satisfy the
+  # expected pair; an extra prefix-shaped Pod
+  # (e.g. cni-mock-old) is a vocabulary drift
+  # and fails closed. The Python projection
+  # below reads these constants from argv so
+  # the install script and real Gate 8 can share
+  # the same vocabulary with a single source.
+  CANONICAL_12_PAIRS=(
+    "cni-test-ingress|cni-mock-ingress-controller"
+    "cni-test-prometheus|cni-mock-prometheus"
+    "cni-test-untrusted|cni-untrusted-default"
+    "default|cni-mock-nexus-gateway"
+    "default|cni-mock-nexus-worker"
+    "default|cni-mock-nexus-migration"
+    "default|cni-mock-egress-proxy"
+    "default|cni-mock-postgres"
+    "default|cni-mock-redis"
+    "default|cni-mock-clickhouse"
+    "default|cni-mock-arbitrary"
+    "cni-control|cni-control-target"
+  )
+  DYNAMIC_PROBE_REGEX='^cni-control-probe-[a-z0-9]+-[a-z0-9]+$'
+  DYNAMIC_PROBE_NAMESPACE='cni-control'
+  CANONICAL_POPULATION_SIZE=13
   # -----------------------------------------------------------------
-  # d2b.46 Block A: dynamic expected-set derivation.
-  # Step F has already produced the canonical fixture
-  # Pod inventory (Pod/N READY/R ESTARTS/A) via
-  # `kubectl get pod -A -o json` (its timeout-snapshot
-  # block writes the same JSON). Here we capture a
-  # second snapshot to anchor Gate 8 expectations,
-  # because Step G must consult the actual runtime
-  # Pod NAME for every fixture, including the
-  # Deployment-generated `cni-control-probe-<rs>-<pod>`
-  # identity that is NOT knowable from any static
-  # control name.
+  # The fresh-cluster fixture Pod inventory
+  # is read from `kubectl get pod -A -o json`
+  # and projected per-Pod by a single python
+  # invocation. The historical
+  # `kubectl get pod -A --no-headers | grep`
+  # pipeline is REMOVED entirely because the
+  # fake fixture pods.tsv in the harness
+  # historically omitted the namespace column
+  # while real `kubectl get pod -A --no-headers`
+  # emits NAMESPACE first, causing the
+  # anchored regex to apply to the WRONG
+  # column in production.
+  #
+  # Selection is by {namespace, name} pair,
+  # not by metadata.name prefix. The 12
+  # static pairs + 1 dynamic probe are the
+  # ONLY accepted vocabulary; any extra
+  # ^cni-(mock|untrusted|control)- Pod is a
+  # vocabulary drift and fails closed.
+  local expected_fixture_count="$CANONICAL_POPULATION_SIZE"
+  # -----------------------------------------------------------------
+  # d2b.48 Block A: dynamic expected-set derivation.
+  # expected_labels_file is NO LONGER written
+  # from a pre-poll invariant-13 capture. The
+  # very first `kubectl get pod -A -o json`
+  # poll may legitimately return <13 selected
+  # fixtures (e.g. the Deployment-generated
+  # cni-control-probe-<rs>-<pod> has not yet
+  # been admitted). The derivation happens AT
+  # THE MOMENT OF READINESS SUCCESS, against
+  # the same JSON snapshot whose projection
+  # identified exactly 13 Ready fixtures. The
+  # generated cni-control-probe-* identity
+  # thus enters the contract from disk, not
+  # from a hard-coded control token.
   # -----------------------------------------------------------------
   local expected_labels_file="$ARTIFACTS/cilium-endpoint.expected.out"
-  local inv_json="$ARTIFACTS/fixture-inventory.json"
-  local inv_err="$ARTIFACTS/fixture-inventory.stderr"
   : > "$expected_labels_file"
-  : > "$inv_err"
-  set +e
-  kubectl get pod -A -o json 2>"$inv_err" >"$inv_json"
-  local inv_rc=$?
-  set -e
-  if (( inv_rc != 0 )); then
-    local inv_err_art="$ARTIFACTS/fixture-inventory-error.json"
-    cat >"$inv_err_art.snapshot" <<EOF
+  # Per-poll artifact paths: every JSON capture
+  # and every projection is recorded to disk so
+  # the deadline branch reads the FINAL state.
+  local poll_json="$ARTIFACTS/fixture-pod-readiness.poll.json"
+  local poll_err="$ARTIFACTS/fixture-pod-readiness.poll.stderr"
+  local poll_summary="$ARTIFACTS/fixture-pod-readiness.poll.summary.json"
+  local poll_proj_err="$ARTIFACTS/fixture-pod-readiness.poll.proj.stderr"
+  local poll_tsv="$ARTIFACTS/fixture-pod-imagepull.log"
+  local poll_stderr="$ARTIFACTS/fixture-pod-imagepull.stderr"
+  local successful_poll_json="$ARTIFACTS/fixture-pod-readiness.success.json"
+  # Pre-loop refs (JSON-based deadline branch
+  # reads the same paths).
+  local snapshot_json="$ARTIFACTS/fixture-pod-readiness-timeout.json"
+  local snapshot_txt="$ARTIFACTS/fixture-pod-readiness-timeout.txt"
+  local events_log="$ARTIFACTS/fixture-pod-readiness-events.log"
+  # Set-diff files are downstream of
+  # expected_labels_file; hoisted so the
+  # deadline branch can read the LAST
+  # iteration when needed.
+  local unique_labels="$ARTIFACTS/cilium-endpoint.unique.out"
+  local missing_labels_file="$ARTIFACTS/cilium-endpoint.missing.out"
+  local unexpected_labels_file="$ARTIFACTS/cilium-endpoint.unexpected.out"
+  local missing_diff_err="$ARTIFACTS/cilium-endpoint.missing.stderr"
+  local unexpected_diff_err="$ARTIFACTS/cilium-endpoint.unexpected.stderr"
+  # d2b.47 fixtures_ready SENTINEL: the bounded
+  # loop only sets fixtures_ready=1 when both
+  # (a) the JSON projection reports exactly 13
+  # selected Pods from metadata.name, AND
+  # (b) every selected Pod is Ready
+  # (status.conditions[type=Ready].status == True
+  # && status.phase == Running) under the JSON
+  # contract. This ignores the legacy
+  # --no-headers awk column selectors
+  # entirely.
+  local fixtures_ready=0
+  local deadline=$(( $(date +%s) + 480 ))
+  local poll_count=0
+  # -----------------------------------------------------------------
+  # capture_kctl_failure: kubectl command
+  # produced nonzero rc. Write a structured
+  # inventory-error artifact and abort as
+  # FIXTURE_NOT_READY 12. Distinct from the
+  # python projection failure path so the
+  # artifacts separate cluster-touch from
+  # parser-touch.
+  # -----------------------------------------------------------------
+  capture_kctl_failure() {
+    local cmd_name="$1"
+    local rc="$2"
+    local stderr_content="$3"
+    cat >"$snapshot_json.snapshot" <<EOF
 {
-  "command": "kubectl get pod -A -o json",
-  "phase": "fixture_inventory_snap",
-  "rc": ${inv_rc},
-  "stderr": $(printf '%s' "$(cat "$inv_err")" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "command": "${cmd_name}",
+  "phase": "fixture_inventory_kctl_failure",
+  "rc": ${rc},
+  "stderr": $(printf '%s' "${stderr_content}" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "observed_count": 0,
   "expected_count": ${expected_fixture_count},
-  "reason": "fixture inventory capture failed; cannot derive dynamic expected label set"
+  "reason": "kubectl inventory command failed; ready-state cannot be observed"
 }
 EOF
-    mv "$inv_err_art.snapshot" "$inv_err_art"
-    abort_as CLUSTER_OR_CNI_NOT_READY \
-      "fixture inventory capture failed rc=${inv_rc}: cannot derive dynamic expected label set (see $inv_err_art)" 10
-  fi
-  # Derive expected labels from Pod metadata.name.
-  # This is where generated names like
-  # cni-control-probe-<rs>-<pod> enter the
-  # contract: the username never types them,
-  # the inventory provides them. Fail closed if
-  # the dynamic set is non-13 because the
-  # upstream fixture drift would mean our
-  # convergence check is meaningless.
-  python3 - "$inv_json" "$expected_labels_file" >/dev/null <<'PYEOF'
-import json, sys, re
-inv_path, out_path = sys.argv[1], sys.argv[2]
-mock_re    = re.compile(r'^cni-mock-')
-control_re = re.compile(r'^cni-control-')
-data = json.load(open(inv_path))
+    mv "$snapshot_json.snapshot" "$snapshot_json"
+    abort_as FIXTURE_NOT_READY \
+      "${cmd_name} failed rc=${rc}: inventory cannot be obtained (see $snapshot_json)" 12
+  }
+  # -----------------------------------------------------------------
+  # capture_projection_failure: python
+  # projection exited non-zero (e.g. malformed
+  # JSON, projection internal exception).
+  # Distinct from a kubectl command failure so
+  # the diff between cluster reachability and
+  # payload parsability is always traceable
+  # from disk.
+  # -----------------------------------------------------------------
+  capture_projection_failure() {
+    local proj_rc="$1"
+    local proj_stderr="$2"
+    cat >"$snapshot_json.snapshot" <<EOF
+{
+  "command": "python3 fixture JSON projection",
+  "phase": "fixture_inventory_projection_failure",
+  "rc": ${proj_rc},
+  "stderr": $(printf '%s' "${proj_stderr}" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
+  "expected_count": ${expected_fixture_count},
+  "reason": "fixture JSON projection failed; cannot parse pod inventory"
+}
+EOF
+    mv "$snapshot_json.snapshot" "$snapshot_json"
+    abort_as FIXTURE_NOT_READY \
+      "fixture JSON projection failed rc=${proj_rc}: cannot parse inventory (see $snapshot_json)" 12
+  }
+  # -----------------------------------------------------------------
+  # capture_image_failure: at least one selected
+  # Pod has a waiting or terminated reason in
+  # {ImagePullBackOff, ErrImagePull,
+  # ErrImageNeverPull, CrashLoopBackOff}.
+  # Image failures must classify as
+  # FIXTURE_IMAGE_NOT_LOADED 14, never as a
+  # readiness-timeout (FIXTURE_NOT_READY 12).
+  # The classifier inspects JSON
+  # containerStatuses[*].state.{waiting,
+  # terminated}.reason — NOT positional
+  # table grep.
+  # -----------------------------------------------------------------
+  capture_image_failure() {
+    local reason_summary="$1"
+    cat >"$snapshot_json.snapshot" <<EOF
+{
+  "command": "fixture containerStatuses image-failure classification",
+  "phase": "fixture_image_not_loaded",
+  "image_reasons_seen": ${reason_summary},
+  "expected_count": ${expected_fixture_count},
+  "reason": "fixture Pod entered image-pull-failure state; classifier routes to FIXTURE_IMAGE_NOT_LOADED 14"
+}
+EOF
+    mv "$snapshot_json.snapshot" "$snapshot_json"
+    abort_as FIXTURE_IMAGE_NOT_LOADED \
+      "fixture Pod entered image-pull-failure: ${reason_summary}" 14
+  }
+  # -----------------------------------------------------------------
+  # Bounded poll loop. Every iteration:
+  #   (1) kubectl get pod -A -o json, with rc
+  #       + stderr captured separately from
+  #       the JSON projection.
+  #   (2) python3 projection on the captured
+  #       JSON. Selection by metadata.name
+  #       ONLY. Image-failure detection by
+  #       containerStatuses[*].state.{waiting,
+  #       terminated}.reason.
+  #   (3) If image-failure: abort as
+  #       FIXTURE_IMAGE_NOT_LOADED 14.
+  #   (4) If selected_pod_count != 13 OR
+  #       any_NotReady: sleep + retry (does
+  #       NOT abort just for partial population).
+  #   (5) When EXACTLY 13 are Ready: derive
+  #       expected_labels_file from the SAME
+  #       JSON snapshot, preserve it to
+  #       successful_poll_json, set
+  #       fixtures_ready=1, break.
+  # -----------------------------------------------------------------
+  while (( $(date +%s) < deadline )); do
+    : > "$poll_err"
+    : > "$poll_proj_err"
+    : > "$poll_tsv"
+    : > "$poll_stderr"
+    poll_count=$((poll_count+1))
+    set +e
+    kubectl get pod -A -o json 2>"$poll_err" >"$poll_json"
+    local kc_rc=$?
+    set -e
+    if (( kc_rc != 0 )); then
+      capture_kctl_failure "kubectl get pod -A -o json" \
+        "$kc_rc" "$(cat "$poll_err")"
+    fi
+    # Projection: parse the actual JSON, select
+    # by metadata.name (NOT namespace text),
+    # surface ready/phase plus waiting/terminated
+    # reasons for image-classification. Emit
+    # both a structured JSON summary and a
+    # human-readable TSV row stream keyed to
+    # spec point 5 (NAMESPACE NAME READY STATUS
+    # RESTARTS). Image reasons are detected from
+    # JSON containerStatuses state, never from
+    # positional grep.
+    # d2b.48 vocabulary projection.
+    # Drives selection by {namespace, name}
+    # pair, not by metadata.name prefix. The
+    # canonical 12 static namespace/name pairs
+    # come from scripts/fixtures/integrationcni/
+    # {01,02,03,04}*.yaml and are written by
+    # bash to a small JSON file before invoking
+    # the python heredoc. The python heredoc
+    # also accepts the dynamic probe regex and
+    # its required namespace. Anything outside
+    # this vocabulary is classified as a
+    # vocabulary drift and surfaces in
+    # `unexpected_fixture_like_pairs` so the
+    # deadline branch can produce actionable
+    # artefacts.
+    local vocab_json="$ARTIFACTS/fixture-pod-readiness.vocab.json"
+    python3 - "${CANONICAL_12_PAIRS[@]}" <<'VOCABEOF' >"$vocab_json"
+import json, sys
+pairs = sys.argv[1:]
+canonical_list = sorted(
+    [{"namespace": p.split('|')[0], "name": p.split('|')[1]} for p in pairs],
+    key=lambda d: (d["namespace"], d["name"]),
+)
+out = {
+    "canonical_static_pairs": canonical_list,
+    "dynamic_probe_regex": "^cni-control-probe-[a-z0-9]+-[a-z0-9]+$",
+    "dynamic_probe_namespace": "cni-control",
+    "canonical_population_size": 13,
+}
+sys.stdout.write(json.dumps(out, indent=2) + "\n")
+VOCABEOF
+    set -e
+    # Proj input now: json_path tsv_path summary_json_path vocab_json_path
+    set +e
+    python3 - "$poll_json" "$poll_tsv" "$poll_summary" "$vocab_json" \
+      >"$poll_proj_err" 2>&1 <<'PYEOF'
+import json, os, re, sys
+json_path, tsv_path, summary_path, vocab_path = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+try:
+    with open(json_path) as fh:
+        raw = fh.read()
+    data = json.loads(raw) if raw.strip() else {}
+except Exception as e:
+    print(f"PROJECTION-FAILED: {e!r}", file=sys.stderr); sys.exit(17)
+try:
+    with open(vocab_path) as fh:
+        vocab = json.load(fh)
+except Exception as e:
+    print(f"PROJECTION-FAILED: vocab unreadable: {e!r}", file=sys.stderr); sys.exit(17)
+canonical_pairs = vocab["canonical_static_pairs"]
+canonical_pair_set = {(p["namespace"], p["name"]) for p in canonical_pairs}
+dynamic_probe_re = re.compile(vocab["dynamic_probe_regex"])
+dynamic_probe_ns = vocab["dynamic_probe_namespace"]
+expected_count = int(vocab["canonical_population_size"])
+IMAGE_RC = {"ImagePullBackOff","ErrImagePull","ErrImageNeverPull","CrashLoopBackOff"}
+VOCAB_PREFIX_RE = re.compile(r'^cni-(mock|untrusted|control)-')
 items = data.get('items') if isinstance(data, dict) else []
+# Canonical vocabulary fields.
+selected = []          # accepted canonical Pods that passed ready predicate
+notready = []          # canonical Pods whose Ready condition is False
+image_fail_pods = []   # canonical Pods whose containerStatuses are waiting on images
+image_reasons_seen = set()
+dynamic_probe_pairs = []
+duplicate_pairs = []
+unexpected_fixture_like_pairs = []
+seen_pairs = set()
+with open(tsv_path, 'w') as tsv:
+    for it in items:
+        md = it.get('metadata') or {}
+        ns = md.get('namespace','') or ''
+        name = md.get('name','') or ''
+        st = it.get('status') or {}
+        phase = st.get('phase','') or ''
+        # Always emit any fixture-like
+        # vocabulary-shaped Pod to the human
+        # TSV with a synthetic ready column so
+        # post-mortem tooling can see what was
+        # rejected. Ready column for rejected
+        # rows encodes the rejection reason in
+        # RESTARTS so analysis tooling can grep
+        # /REJECTED/(unexpected|duplicate|wrong-ns|extra-probe).
+        ready = any(c.get('type')=='Ready' and c.get('status')=='True' for c in (st.get('conditions') or []))
+        waiting = []
+        terminated = []
+        image_reason = None
+        for cs in (st.get('containerStatuses') or []):
+            csst = cs.get('state') or {}
+            wt = csst.get('waiting') or {}
+            tr = csst.get('terminated') or {}
+            wr = wt.get('reason') or None
+            trr = tr.get('reason') or None
+            if wr: waiting.append(wr)
+            if trr: terminated.append(trr)
+            for r in (wr, trr):
+                if r in IMAGE_RC:
+                    image_reason = r
+                    image_reasons_seen.add(r)
+                    break
+            if image_reason:
+                break
+        restarts_s = "0"
+        for cs in (st.get('containerStatuses') or []):
+            if cs.get('restartCount') is not None:
+                restarts_s = str(cs.get('restartCount'))
+                break
+        # Vocabulary classification. The
+        # four buckets:
+        #   - canonical static pair
+        #   - dynamic probe in cni-control
+        #   - duplicate of an already-seen pair
+        #   - fixture-like rejection (extra /
+        #     wrong-namespace / extra probe)
+        if (ns, name) in canonical_pair_set:
+            rejection = None
+        elif dynamic_probe_re.match(name) and ns == dynamic_probe_ns:
+            rejection = None
+        elif VOCAB_PREFIX_RE.match(name):
+            rejection = "unexpected_fixture_like"
+        else:
+            # Not even fixture-shaped: not
+            # vocabulary-sensitive. Skip without
+            # adding to TSV; the rest are
+            # uninteresting (kube-system pods,
+            # unrelated test pods, etc).
+            continue
+        # Duplicate detection: only applies
+        # to canonical pairs. Two Pods with the
+        # same {ns, name} both being canonical
+        # is a vocabulary drift and must be
+        # surfaced.
+        if rejection is None and (ns, name) in seen_pairs \
+                and (ns, name) in canonical_pair_set:
+            rejection = "duplicate"
+        if rejection is None and dynamic_probe_re.match(name) and ns == dynamic_probe_ns \
+                and (ns, name) in seen_pairs:
+            rejection = "duplicate"
+        # Track which "canonical" Pods we saw.
+        if rejection is None:
+            seen_pairs.add((ns, name))
+        # TSV row + population tracker.
+        if rejection is None:
+            if (ns, name) in canonical_pair_set:
+                ready_s = "1/1" if (ready and phase == "Running") else "0/1"
+            else:
+                # dynamic probe contributes to
+                # population but ready IS measured.
+                ready_s = "1/1" if (ready and phase == "Running") else "0/1"
+            tsv.write(f"{ns}\t{name}\t{ready_s}\t{phase or 'Unknown'}\t{restarts_s}\t7m\n")
+            row = {
+                "namespace": ns,
+                "name": name,
+                "phase": phase,
+                "ready": bool(ready and phase == "Running"),
+                "waiting_reasons": waiting,
+                "terminated_reasons": terminated,
+            }
+            if image_reason:
+                image_fail_pods.append({"namespace": ns, "name": name, "reason": image_reason})
+            else:
+                selected.append(row)
+                if not row["ready"]:
+                    notready.append(row)
+                if (ns, name) == ("cni-control", "cni-control-target") or \
+                   not (ns, name) in canonical_pair_set:
+                    # dynamic probe bucket
+                    if dynamic_probe_re.match(name):
+                        dynamic_probe_pairs.append({"namespace": ns, "name": name})
+        else:
+            ready_s = f"REJECTED/{rejection}"
+            tsv.write(f"{ns}\t{name}\t{ready_s}\t{phase or 'Unknown'}\t{restarts_s}\t7m\n")
+            if rejection == "duplicate":
+                duplicate_pairs.append({"namespace": ns, "name": name, "reason": "duplicate_pair"})
+            elif rejection == "unexpected_fixture_like":
+                unexpected_fixture_like_pairs.append({"namespace": ns, "name": name, "reason": "extra_fixture_like"})
+            elif rejection == "wrong_namespace":
+                unexpected_fixture_like_pairs.append({"namespace": ns, "name": name, "reason": "wrong_namespace"})
+            elif rejection == "extra_probe":
+                unexpected_fixture_like_pairs.append({"namespace": ns, "name": name, "reason": "extra_dynamic_probe"})
+# Compute canonical vocabulary fields the
+# install Step G and real Gate 8 contract
+# depend on.
+selected_pairs = sorted([(p["namespace"], p["name"]) for p in selected
+                          if (p["namespace"], p["name"]) in canonical_pair_set
+                          and not dynamic_probe_re.match(p["name"])])
+expected_static_pairs = sorted(canonical_pair_set)
+observed_static_pairs = sorted([(p["namespace"], p["name"]) for p in selected
+                                 if (p["namespace"], p["name"]) in canonical_pair_set
+                                 and not dynamic_probe_re.match(p["name"])])
+missing_static_pairs = sorted(set(expected_static_pairs) - set(observed_static_pairs))
+unexpected_pair_objs = list({(p["namespace"], p["name"]): p for p in unexpected_fixture_like_pairs}.values())
+duplicate_pair_objs = list({(p["namespace"], p["name"]): p for p in duplicate_pairs}.values())
+# Final canonical-population predicate:
+#   - 12 static pairs all present
+#   - exactly 1 dynamic probe form
+#   - 0 duplicates
+#   - 0 unexpected fixture-like Pods
+#   - 0 image-failed Pods
+#   - all canonical Pods Ready/Running.
+canonical_population_ready = (
+    not missing_static_pairs
+    and len(dynamic_probe_pairs) == 1
+    and not duplicate_pair_objs
+    and not unexpected_pair_objs
+    and not image_fail_pods
+    and not notready
+)
+summary = {
+    "expected_count": expected_count,
+    "observed_pod_count": len(selected),
+    "expected_static_pairs": [{"namespace": ns, "name": n} for ns, n in expected_static_pairs],
+    "observed_static_pairs": [{"namespace": ns, "name": n} for ns, n in observed_static_pairs],
+    "missing_static_pairs": [{"namespace": ns, "name": n} for ns, n in missing_static_pairs],
+    "unexpected_fixture_like_pairs": unexpected_pair_objs,
+    "dynamic_probe_pairs": dynamic_probe_pairs,
+    "duplicate_pairs": duplicate_pair_objs,
+    "selected": selected,
+    "not_ready": notready,
+    "image_fail_count": len(image_fail_pods),
+    "image_fail_pods": image_fail_pods,
+    "image_reasons_seen": sorted(image_reasons_seen),
+    "canonical_population_ready": bool(canonical_population_ready),
+}
+with open(summary_path, 'w') as fh:
+    fh.write(json.dumps(summary, indent=2, sort_keys=True))
+    fh.write("\n")
+PYEOF
+    local proj_rc=$?
+    set -e
+    if (( proj_rc != 0 )); then
+      capture_projection_failure "$proj_rc" "$(cat "$poll_proj_err" 2>/dev/null || true)"
+    fi
+    # Read the JSON projection summary written
+    # by python. We keep the classifier on disk
+    # so the deadline branch sees the LAST
+    # observed state without ambiguity.
+    local observed_count
+    local image_fail_count
+    local image_reasons_json
+    observed_count=$(python3 -c "import json;d=json.load(open('$poll_summary'));print(d['observed_pod_count'])")
+    image_fail_count=$(python3 -c "import json;d=json.load(open('$poll_summary'));print(d['image_fail_count'])")
+    image_reasons_json=$(python3 -c "import json;d=json.load(open('$poll_summary'));print(json.dumps(d['image_reasons_seen']))")
+    # Image failure: any selected Pod has
+    # ImagePullBackOff/ErrImagePull/ErrImageNeverPull/
+    # CrashLoopBackOff. Aborts as
+    # FIXTURE_IMAGE_NOT_LOADED 14 (DISTINCT
+    # from the readiness-timeout 12 path).
+    if (( image_fail_count > 0 )); then
+      capture_image_failure "${image_reasons_json}"
+    fi
+    # Convergence predicates: we do NOT exit
+    # the loop on partial population. Continue
+    # polling until the bounded 480s deadline
+    # expires OR canonical_population_ready
+    # is True. canonical_population_ready is
+    # a single boolean emitted by the python
+    # projection. A YES selects 12 static pairs
+    # + exactly 1 dynamic probe + 0 duplicates
+    # + 0 unexpected fixture-like + 0
+    # image-failed + 0 not-ready; prefix-only
+    # 13 cannot satisfy this and forces a
+    # deadline-time vocabulary mismatch
+    # artifact.
+    local canonical_population_ready
+    canonical_population_ready=$(python3 -c "import json;d=json.load(open('$poll_summary'));print('Y' if d.get('canonical_population_ready') else 'N')")
+    if [ "${canonical_population_ready}" != "Y" ]; then
+      # Emit a one-line human-readable verdict
+      # so the loop log tells a verifier WHY
+      # we kept polling. We do NOT abort while
+      # the deadline is in the future; the
+      # deadline branch below retains full
+      # vocabulary evidence.
+      local miss_count
+      miss_count=$(python3 -c "import json;d=json.load(open('$poll_summary'));print(len(d.get('missing_static_pairs', [])))")
+      local dyn_count
+      dyn_count=$(python3 -c "import json;d=json.load(open('$poll_summary'));print(len(d.get('dynamic_probe_pairs', [])))")
+      local dup_count
+      dup_count=$(python3 -c "import json;d=json.load(open('$poll_summary'));print(len(d.get('duplicate_pairs', [])))")
+      local unex_count
+      unex_count=$(python3 -c "import json;d=json.load(open('$poll_summary'));print(len(d.get('unexpected_fixture_like_pairs', [])))")
+      echo "[install] poll=${poll_count} selected=${observed_count}/${expected_fixture_count} missing=${miss_count} dynamic-probes=${dyn_count} dup=${dup_count} unex=${unex_count}"
+      sleep 5
+      continue
+    fi
+    # canonical_population_ready == Y. Derive
+    # expected_labels_file from the SAME
+    # successful JSON snapshot so the
+    # generated cni-control-probe-<rs>-<pod>
+    # identity is preserved. Expected labels
+    # carry resolve-labels-default/<name>
+    # because Cilium's `cilium endpoint list`
+    # only emits the bare pod name in its
+    # controller labels; the canonical
+    # namespace/name contract is preserved in
+    # cilium-endpoint-convergence.json (below).
+    cp -p "$poll_json" "$successful_poll_json"
+    python3 - "$poll_summary" "$expected_labels_file" <<'PYEOF'
+import json, sys
+summary_path, out_path = sys.argv[1], sys.argv[2]
+data = json.load(open(summary_path))
 labels = []
-for it in items:
-    md = it.get('metadata') or {}
-    name = md.get('name') or ''
-    if not (mock_re.match(name) or name == 'cni-untrusted-default' or control_re.match(name)):
-        continue
-    labels.append(f"resolve-labels-default/{name}")
+for p in data["selected"]:
+    labels.append(f"resolve-labels-default/{p['name']}")
 seen = set()
 uniq = []
 for l in sorted(labels):
     if l in seen: continue
     seen.add(l)
     uniq.append(l)
-open(out_path, 'w').write('\n'.join(uniq) + ('' if not uniq else '\n'))
-# Note: we deliberately do NOT raise on
-# empty/short inventory here; the caller checks
-# length against expected_fixture_count so the
-# downstream convergence classifier owns the
-# exit decision.
+with open(out_path, 'w') as fh:
+    fh.write('\n'.join(uniq) + ('' if not uniq else '\n'))
 PYEOF
-  local expected_unique_count
-  expected_unique_count=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$expected_labels_file")
-  if (( expected_unique_count != expected_fixture_count )); then
-    local fix_art="$ARTIFACTS/fixture-pod-readiness-timeout.json"
-    cat >"$fix_art.snapshot" <<EOF
-{
-  "command": "kubectl get pod -A -o json dynamic-set derivation",
-  "phase": "fixture_inventory_set_mismatch",
-  "rc": 0,
-  "observed_count": ${expected_unique_count},
-  "expected_count": ${expected_fixture_count},
-  "expected_labels_file": "${expected_labels_file}",
-  "reason": "dynamic expected label set derived from inventory observed=${expected_unique_count} unique entries; canonical 13-fixture vocabulary contract requires ${expected_fixture_count}"
-}
-EOF
-    mv "$fix_art.snapshot" "$fix_art"
-    printf '[install] FAIL expected=%s observed=%s\n' "${expected_fixture_count}" "${expected_unique_count}" >>"$ARTIFACTS/fixture-pod-readiness-timeout.txt"
-    # Write the canonical events log so downstream
-    # controls (C10 in particular) still see the
-    # pre-loop inventory surface they historically
-    # validated. We name the same file the
-    # deadline branch writes.
-    python3 - "$inv_json" "$ARTIFACTS/fixture-pod-readiness-events.log" >/dev/null <<'PYEOF'
-import json, sys
-inv_path, events_path = sys.argv[1], sys.argv[2]
-try:
-    data = json.load(open(inv_path))
-except Exception:
-    data = {}
-items = data.get('items') if isinstance(data, dict) else []
-rows = []
-for it in items:
-    md = it.get('metadata') or {}
-    name = md.get('name','')
-    if not (name.startswith('cni-mock-') or name == 'cni-untrusted-default' or name.startswith('cni-control-')):
-        continue
-    phase = (it.get('status') or {}).get('phase','')
-    rows.append({'namespace': md.get('namespace',''), 'name': name, 'phase': phase})
-import os, datetime
-ts = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-with open(events_path, 'w') as out:
-    out.write(f"# fixture-pod-readiness-events {ts} phase=fixture_inventory_set_mismatch\n")
-    for r in rows:
-        out.write(f"{r['namespace']}/{r['name']}\t{r['phase']}\n")
-PYEOF
-    abort_as FIXTURE_NOT_READY \
-      "fixture inventory observed=${expected_unique_count} unique expected=${expected_fixture_count}; canonical 13-fixture vocabulary contract (see $fix_art)" 12
-  fi
-  echo "[install] cilium expected label set size: ${expected_unique_count}/${expected_fixture_count}"
-  # End Block A prelude.
-  local fixtures_ready=0
-  local deadline=$(( $(date +%s) + 480 ))
-  # Hoisted to function scope: post-loop snapshot
-  # block (lines after deadline) reads $pull_log /
-  # $pull_stderr when writing the timeout artifacts.
-  # A `local` declared inside the while body exits
-  # scope when the loop exits — without these the
-  # outer references become unbound under `set -u`.
-  local pull_log="$ARTIFACTS/fixture-pod-imagepull.log"
-  local pull_stderr="$ARTIFACTS/fixture-pod-imagepull.stderr"
-  # Capture rc/stderr of every kubectl inventory
-  # call so observation failures cannot be
-  # silently rewritten to empty or zero. rc is
-  # written into $ARTIFACTS/fixture-pod-readiness-timeout.json
-  # alongside the snapshot if we time out.
-  capture_inventory_failure() {
-    local cmd_name="$1"
-    local inv_rc="$2"
-    local inv_stderr="$3"
-    local snapshot_json="$ARTIFACTS/fixture-pod-readiness-timeout.json"
+    expected_unique_count=$(awk 'BEGIN{n=0} {n++} END {print n+0}' "$expected_labels_file")
+    echo "[install] poll=${poll_count} canonical population Ready at ${observed_count}/${expected_unique_count}"
+    fixtures_ready=1
+    break
+  done
+  # End Block A readiness loop.
+  if (( fixtures_ready != 1 )); then
+    # d2b.48 deadline: capture the LAST poll's
+    # JSON + summary + human-readable text view
+    # to disk so the verifier can correlate
+    # against the FINAL state, not some early
+    # snapshot. The classification routes
+    # FIXTURE_NOT_READY (12). Vocabulary evidence
+    # (expected_static_pairs, missing, dynamic,
+    # duplicate, unexpected) is preserved in full
+    # so that a stale or wrong-namespace Pod can
+    # be diagnosed from disk.
+    local last_summary="$poll_summary"
+    local last_poll_json="$poll_json"
+    local last_tsv="$poll_tsv"
+    local observed_final
+    observed_final=$(python3 -c "import json;d=json.load(open('$last_summary'));print(d['observed_pod_count'])")
+    local image_fail_final
+    image_fail_final=$(python3 -c "import json;d=json.load(open('$last_summary'));print(d['image_fail_count'])")
+    local notready_names=""
+    if [ -s "$last_summary" ]; then
+      notready_names=$(python3 -c "
+import json
+d=json.load(open('$last_summary'))
+parts=[]
+for p in d['not_ready']:
+    parts.append(f\"{p['namespace']}/{p['name']} phase={p['phase']}\")
+print(' '.join(parts))")
+    fi
+    # Human-readable text view of the last poll.
+    : > "$snapshot_txt"
+    printf 'expected_count: %s\n' "$expected_fixture_count" >"$snapshot_txt"
+    printf 'observed_count: %s\n' "$observed_final" >"$snapshot_txt"
+    printf 'image_fail_count: %s\n' "$image_fail_final" >>"$snapshot_txt"
+    printf 'not_ready_names: %s\n' "${notready_names:-none}" >>"$snapshot_txt"
+    printf 'poll_count: %s\n' "$poll_count" >>"$snapshot_txt"
     cat >"$snapshot_json.snapshot" <<EOF
 {
-  "command": "${cmd_name}",
-  "rc": ${inv_rc},
-  "stderr": $(printf '%s' "$inv_stderr" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),
-  "observed_count": 0,
+  "command": "JSON-based bounded readiness poll",
+  "phase": "fixture_pod_readiness_timeout",
   "expected_count": ${expected_fixture_count},
-  "reason": "kubectl inventory command failed"
+  "observed_count": ${observed_final},
+  "image_fail_count": ${image_fail_final},
+  "not_ready_pods": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps(d['not_ready'], indent=2))"),
+  "poll_count": ${poll_count},
+  "image_fail_pods": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps(d['image_fail_pods'], indent=2))"),
+  "selected_pods": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps([{'namespace':p['namespace'],'name':p['name'],'phase':p['phase'],'ready':p['ready']} for p in d['selected']], indent=2))"),
+  "expected_static_pairs": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps(d.get('expected_static_pairs', []), indent=2))"),
+  "observed_static_pairs": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps(d.get('observed_static_pairs', []), indent=2))"),
+  "missing_static_pairs": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps(d.get('missing_static_pairs', []), indent=2))"),
+  "unexpected_fixture_like_pairs": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps(d.get('unexpected_fixture_like_pairs', []), indent=2))"),
+  "dynamic_probe_pairs": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps(d.get('dynamic_probe_pairs', []), indent=2))"),
+  "duplicate_pairs": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print(json.dumps(d.get('duplicate_pairs', []), indent=2))"),
+  "canonical_population_ready": $(python3 -c "
+import json,sys
+d=json.load(open('$last_summary'))
+print('true' if d.get('canonical_population_ready') else 'false')"),
+  "events_log": "${events_log}",
+  "events_source": "JSON status.conditions + containerStatuses[*].state.waiting/terminated.reason",
+  "reason": "canonical 12+1 fixture population did not all READY/RUNNING within 8 minutes (480s); vocabulary evidence preserved in this artefact"
 }
 EOF
     mv "$snapshot_json.snapshot" "$snapshot_json"
-    abort_as FIXTURE_NOT_READY \
-      "${cmd_name} failed rc=${inv_rc}: inventory cannot be obtained (see $snapshot_json)" 12
-  }
-  while (( $(date +%s) < deadline )); do
-    : > "$pull_log"
-    : > "$pull_stderr"
-    set +e
-    # Pull every fixture pod. The fake kubectl
-    # emits canonical NAME READY STATUS
-    # RESTARTS AGE so the anchored regex matches
-    # col 1 and the per-pod readiness check
-    # below reads col 2 = READY, col 3 = STATUS.
-    kubectl get pod -A --no-headers 2>"$pull_stderr" \
-      | grep -E "$fixture_re" >"$pull_log"
-    local inv_rc=$?
-    set -e
-    if (( inv_rc != 0 )); then
-      capture_inventory_failure "kubectl get pod" "$inv_rc" \
-        "$(cat "$pull_stderr")"
-    fi
-    local observed
-    observed=$(wc -l <"$pull_log")
-    local pull_reasons
-    pull_reasons=$(
-      awk '{print $1, $2, $3}' "$pull_log" \
-        | grep -E "ImagePullBackOff|ErrImagePull|ErrImageNeverPull|CrashLoopBackOff" \
-        | sort -u || true)
-    if [[ -n "$pull_reasons" ]]; then
-      cat "$pull_log" | tee -a "$ARTIFACTS/install.log"
-      abort_as FIXTURE_IMAGE_NOT_LOADED \
-        "fixture Pod entered image-pull-failure: $pull_reasons" 14
-    fi
-    if (( observed != expected_fixture_count )); then
-      # Do not declare Ready on partial count.
-      sleep 5
-      continue
-    fi
-    local notready
-    # pull_log is canonical NAME READY STATUS
-    # RESTARTS AGE. A ready pod has $2 == 1/1
-    # and $3 == Running.
-    notready=$(awk '$2 != "1/1" || $3 != "Running" {n++}; END {print n+0}' \
-      "$pull_log")
-    if (( notready == 0 )); then
-      fixtures_ready=1
-      break
-    fi
-    sleep 5
-  done
-  if (( fixtures_ready != 1 )); then
-    # d2b.46: classify the timeout against the
-    # exact anchored fixture set, capture the
-    # full canonical inventory snapshot + events,
-    # and abort with observed/expected + names +
-    # non-ready reasons. Never infer time-out
-    # solely from a second 'date' check after
-    # the break: when fixtures_ready==1 we
-    # explicitly exit the loop above.
-    local snapshot_json="$ARTIFACTS/fixture-pod-readiness-timeout.json"
-    local snapshot_txt="$ARTIFACTS/fixture-pod-readiness-timeout.txt"
-    local events_log="$ARTIFACTS/fixture-pod-readiness-events.log"
+    # Per-pod events log wiring is preserved so
+    # any downstream verifier reading
+    # fixture-pod-readiness-events.log sees
+    # the NAMESPACE/NAME/PHASE triples derived
+    # from the SAME JSON projection (no
+    # positional awk grep).
     : > "$events_log"
-    set +e
-    kubectl get pod -A -o json 2>"$pull_stderr" \
-      | python3 -c "
-import json,sys,os
-data=json.loads(sys.stdin.read() or '{\"items\":[]}')
-items=data.get('items') if isinstance(data,dict) else []
-rows=[]
-for it in items:
-    md=(it.get('metadata') or {})
-    name=md.get('name','')
-    ns=md.get('namespace','')
-    if not (name.startswith('cni-mock-') or name=='cni-untrusted-default' or name.startswith('cni-control-')):
-        continue
-    phase=(it.get('status') or {}).get('phase','')
-    ready=False
-    for c in (it.get('status') or {}).get('conditions') or []:
-        if c.get('type')=='Ready':
-            ready=bool(c.get('status')=='True')
-            break
-    containers=[]
-    for cs in (it.get('status') or {}).get('containerStatuses') or []:
-        st=cs.get('state') or {}
-        wt=st.get('waiting') or {}
-        term=st.get('terminated') or {}
-        runn=st.get('running') or {}
-        containers.append({
-            'name': cs.get('name',''),
-            'ready': bool(cs.get('ready')),
-            'restartCount': cs.get('restartCount',0),
-            'waiting_reason': wt.get('reason') or None,
-            'waiting_message': wt.get('message') or None,
-            'terminated_reason': term.get('reason') or None,
-            'running': bool(runn),
-        })
-    rows.append({
-        'namespace': ns,
-        'name': name,
-        'phase': phase,
-        'ready': ready,
-        'containers': containers,
-    })
-out={'expected_count': 13, 'observed_count': len(rows), 'pods': rows}
-print(json.dumps(out, indent=2, sort_keys=True))
-" > "$snapshot_json"
-    local snap_rc=$?
-    set -e
-    if (( snap_rc != 0 )); then
-      capture_inventory_failure "kubectl get pod -o json" "$snap_rc" "python3 projection failed"
+    printf '# fixture-pod-readiness-events phase=fixture_pod_readiness_timeout poll=%s\n' "$poll_count" >"$events_log"
+    if [ -s "$last_summary" ]; then
+      python3 - "$last_summary" "$events_log" <<'PYEOF'
+import json, sys
+summary, evp = sys.argv[1], sys.argv[2]
+data = json.load(open(summary))
+with open(evp, 'a') as fh:
+    for p in data["selected"]:
+        fh.write(f"{p['namespace']}/{p['name']}\t{p['phase']}\tfixture_pod_readiness_timeout\n")
+    for p in data["image_fail_pods"]:
+        fh.write(f"{p['namespace']}/{p['name']}\timage-fail:{p['reason']}\tfixture_pod_readiness_timeout\n")
+PYEOF
     fi
-    # Human readable text view for grep-ability.
-    python3 -c "
-import json
-d=json.load(open('$snapshot_json'))
-print('expected_count:', d['expected_count'])
-print('observed_count:', d['observed_count'])
-print('--- non-ready pods ---')
-for p in d['pods']:
-    if not p['ready']:
-        cs=','.join(c['waiting_reason'] or c['terminated_reason'] or (('ready' if c['ready'] else 'notready')) for c in p['containers']) or 'none'
-        print(f\"{p['namespace']}/{p['name']} phase={p['phase']} containers={cs}\")
-" > "$snapshot_txt"
-    # Per-pod events; record failure distinctly but
-    # cannot erase the status snapshot.
-    set +e
-    kubectl get pod -A --no-headers 2>/dev/null \
-      | grep -E "$fixture_re" \
-      | awk '{print $1, $2}' \
-      | while read -r ns name; do
-          echo "=== events for ${ns}/${name} ===" >>"$events_log"
-          kubectl get events -n "$ns" --field-selector "involvedObject.kind=Pod,involvedObject.name=$name" \
-            --sort-by=.lastTimestamp 2>>"$events_log" \
-            | tail -10 >>"$events_log" || true
-        done
-    set -e
-    local observed_final
-    observed_final=$(wc -l <"$pull_log")
+    local observed_final_count
+    observed_final_count=$(python3 -c "import json;d=json.load(open('$last_summary'));print(d['observed_pod_count'])")
     abort_as FIXTURE_NOT_READY \
-      "fixture Pods not all Ready within 8 minutes (deadline); observed=${observed_final}/expected=${expected_fixture_count}; details in $snapshot_json" 12
+      "fixture Pods not all Ready within 8 minutes (deadline); observed=${observed_final_count}/expected=${expected_fixture_count}; details in $snapshot_json" 12
   fi
-  # cilium endpoint aggregation across nodes —
+  # -----------------------------------------------------------------
+  # Cilium endpoint aggregation across nodes —
   # exact 13-Pod contract; per-command failure
-  # classifiers + observable convergence evidence.
+  # classifiers + observable convergence
+  # evidence. expected_labels_file was
+  # derived from the SAME successful JSON
+  # snapshot whose projection identified
+  # exactly 13 Ready fixtures (above), so the
+  # generated cni-control-probe-* runtime
+  # identity is preserved end-to-end.
   #
   # Loop structure (this block):
-  #   1) on every iteration, RE-FETCH the Cilium
-  #      daemon Pod list. A failed cmd
-  #      (nonzero rc) writes a structured
-  #      error artefact and aborts as
+  #   1) on every iteration, RE-FETCH the
+  #      Cilium daemon Pod list. A failed cmd
+  #      (nonzero rc) writes a structured error
+  #      artefact and aborts as
   #      CLUSTER_OR_CNI_NOT_READY 10. A valid
-  #      empty list is a convergence observation,
-  #      not a failure; we sleep and retry.
+  #      empty list is a convergence
+  #      observation, not a failure; we sleep
+  #      and retry.
   #   2) for each daemon, capture explicit rc
   #      AND stderr for (a) kubectl exec
   #      (b) python3 JSON projection.
   #   3) project a per-iteration label set, run
   #      LC_ALL=C sort -u to produce unique
   #      labels, then count via awk.
-  #   4) break on LAST >= EXPECTED.
+  #   4) break on (LAST >= EXPECTED AND
+  #      missing_count==0 AND
+  #      unexpected_count==0).
   #   5) under-converged: emit a parseable
   #      convergence JSON whose observed_count
   #      equals the length of observed_labels.
+  # -----------------------------------------------------------------
   local expected="$expected_fixture_count"
   local daemon_out="$ARTIFACTS/cilium-daemon-list.out"
   local daemon_err="$ARTIFACTS/cilium-daemon-list.stderr"
@@ -1102,12 +1474,25 @@ EOF
     local obs_file="$ARTIFACTS/cilium-endpoint.unique.out"
     local missing_file="$ARTIFACTS/cilium-endpoint.missing.out"
     local unexpected_file="$ARTIFACTS/cilium-endpoint.unexpected.out"
+    # d2b.48: enrich the convergence artefact
+    # with the canonical 12+1 vocabulary and
+    # the dynamic-probe cardinality observed
+    # from the LAST successful JSON snapshot.
+    # The Cilium output itself does not carry
+    # namespace, so the observed_labels array
+    # is names-only and the canonical
+    # {namespace, name} match is asserted
+    # against the inventory summary. This
+    # guarantees an arbitrary prefix-shaped
+    # 13 cannot satisfy convergence.
+    local final_summary="$poll_summary"
     python3 - "$exp_file" "$obs_file" "$missing_file" "$unexpected_file" \
              "$daemon_list" "$deadline" "$(date +%s)" \
              "$expected_unique_count" \
+             "$final_summary" \
              >"$convergence_art.snapshot" <<'PYEOF'
 import json, sys
-exp_p, obs_p, miss_p, une_p, daemon_p, dl_s, now_s, exp_s = sys.argv[1:9]
+exp_p, obs_p, miss_p, une_p, daemon_p, dl_s, now_s, exp_s, summary_p = sys.argv[1:10]
 def reads(p):
     return [l for l in open(p).read().splitlines() if l.strip()]
 daemons   = reads(daemon_p)
@@ -1115,6 +1500,7 @@ expected  = reads(exp_p)
 observed  = reads(obs_p)
 missing   = reads(miss_p)
 unexpected= reads(une_p)
+summary = json.load(open(summary_p))
 obj = {
   "command": "cilium endpoint convergence",
   "phase": "cilium_convergence_undercount_or_mismatch",
@@ -1127,7 +1513,16 @@ obj = {
   "unexpected_labels": unexpected,
   "expected_count": len(expected),
   "observed_count": len(observed),
-  "reason": "cilium endpoint publication did not identity-match the dynamic 13-Pod vocabulary contract; expected_count == observed_count is NOT sufficient, set diffs must be empty"
+  "expected_static_pairs": summary.get("expected_static_pairs", []),
+  "observed_static_pairs": summary.get("observed_static_pairs", []),
+  "missing_static_pairs": summary.get("missing_static_pairs", []),
+  "unexpected_fixture_like_pairs": summary.get("unexpected_fixture_like_pairs", []),
+  "dynamic_probe_pairs": summary.get("dynamic_probe_pairs", []),
+  "duplicate_pairs": summary.get("duplicate_pairs", []),
+  "canonical_population_ready": bool(summary.get("canonical_population_ready", False)),
+  "canonical_vocabulary_size": int(summary.get("expected_count", 0)),
+  "dynamic_probe_cardinality": len(summary.get("dynamic_probe_pairs", [])),
+  "reason": "cilium endpoint publication did not identity-match the canonical 12+1 vocabulary; expected_count == observed_count is NOT sufficient; vocab arrays preserved in this artefact"
 }
 # Every count must equal the length of its
 # array AND must be derived from disk in one
