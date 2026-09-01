@@ -1042,17 +1042,38 @@ PYEOF
     # namespace/name contract is preserved in
     # cilium-endpoint-convergence.json (below).
     cp -p "$poll_json" "$successful_poll_json"
+    # d2b.49 namespace-aware expected projection.
+    # Cilium's `cilium endpoint list -o json` actually
+    # emits controller labels whose `name` IS a
+    # `resolve-labels-<namespace>/<pod>` string, NOT just
+    # `resolve-labels-default/<pod>`. Dropping namespace
+    # here hides every non-default fixture (e.g.
+    # `cni-test-ingress/cni-mock-ingress-controller`).
+    # We build the expected set directly from the
+    # canonical full (namespace, name) pairs that Step G
+    # already validated — the generated dynamic probe too.
     python3 - "$poll_summary" "$expected_labels_file" <<'PYEOF'
 import json, sys
 summary_path, out_path = sys.argv[1], sys.argv[2]
 data = json.load(open(summary_path))
 labels = []
-for p in data["selected"]:
-    labels.append(f"resolve-labels-default/{p['name']}")
+for p in data.get("observed_static_pairs", []):
+    ns = p.get("namespace", "")
+    nm = p.get("name", "")
+    if not ns or not nm:
+        continue
+    labels.append(f"resolve-labels-{ns}/{nm}")
+for p in data.get("dynamic_probe_pairs", []):
+    ns = p.get("namespace", "")
+    nm = p.get("name", "")
+    if not ns or not nm:
+        continue
+    labels.append(f"resolve-labels-{ns}/{nm}")
 seen = set()
 uniq = []
 for l in sorted(labels):
-    if l in seen: continue
+    if l in seen:
+        continue
     seen.add(l)
     uniq.append(l)
 with open(out_path, 'w') as fh:
@@ -1295,7 +1316,7 @@ EOF
       : > "$proj_out"
       : > "$proj_err"
       python3 -c "
-import json,sys,os
+import json,sys,os,re
 try:
     raw=open('${exec_out}').read()
     data=json.loads(raw)
@@ -1303,11 +1324,17 @@ except Exception as e:
     print('PROJECTION-FAILED: ' + repr(e), file=sys.stderr)
     sys.exit(17)
 endpoints=data if isinstance(data,list) else (data.get('endpoint') or [])
+# d2b.49 namespace-aware observed projection.
+# Accept ANY `resolve-labels-<real-namespace>/cni-*`
+# controller label, not only resolve-labels-default/.
+# Any non-fixture namespace appears in `unexpected`
+# instead of being silently filtered out.
+ctrl_re = re.compile(r'^resolve-labels-[^/]+/cni-.+')
 items=[]
 for e in endpoints:
     for c in e.get('status',{}).get('controllers',[]):
         nm=c.get('name','')
-        if nm.startswith('resolve-labels-default/cni-'):
+        if ctrl_re.match(nm):
             items.append(nm)
 for x in sorted(set(items)):
     print(x)
