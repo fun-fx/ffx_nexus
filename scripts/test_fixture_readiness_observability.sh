@@ -2559,7 +2559,7 @@ write_env_file "${C7C}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
-  "HARNESS_CILIUM_NAMES=${C7C_NAMES_12}"
+  "HARNESS_CILIUM_NAMES=${C7C_NAMES_12}" \
   "HARNESS_CILIUM_NS_NAMES=$(build_ns_names_from_space "${C7C_NAMES_12}")"
 drive_control C7c "${C7C}" "${C7C}/run_g.sh" "${C7C}/env.list"
 R7C=$(classify_control C7c "${C7C}")
@@ -2600,7 +2600,7 @@ write_env_file "${C7K}/env.list" \
   "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
-  "HARNESS_CILIUM_NAMES=${C7K_NAMES_NO_UNTRUSTED}"
+  "HARNESS_CILIUM_NAMES=${C7K_NAMES_NO_UNTRUSTED}" \
   "HARNESS_CILIUM_NS_NAMES=$(build_ns_names_from_space "${C7K_NAMES_NO_UNTRUSTED}")"
 drive_control C7k "${C7K}" "${C7K}/run_g.sh" "${C7K}/env.list"
 R7K=$(classify_control C7k "${C7K}")
@@ -2660,7 +2660,7 @@ write_env_file "${C7S}/env.list" \
   "HARNESS_DATE_ADVANCE=1" \
   "HARNESS_DATE_STEP=240" \
   "HARNESS_DATE_NOW=1700000000" \
-  "HARNESS_CILIUM_NAMES=${C7S_NAMES_13_STALE}"
+  "HARNESS_CILIUM_NAMES=${C7S_NAMES_13_STALE}" \
   "HARNESS_CILIUM_NS_NAMES=$(build_ns_names_from_space "${C7S_NAMES_13_STALE}")"
 # Note: FAKE_CILIUM_NAMES is auto-derived from
 # HARNESS_CILIUM_NAMES inside both the
