@@ -231,7 +231,47 @@ case "${1:-}" in
           IFS="${OLD_IFS}"
           total=${#}
           if [ "${cur}" -ge "${total}" ]; then
-            pick_tsv="${!total}"
+            # POSIX-sh-safe last-entry selection.
+            # The previous form used Bash
+            # indirect expansion (the bash
+            # `indirect` form below), which
+            # fails under dash. We keep the
+            # loop that already handled the
+            # in-range case; here we run the
+            # same loop unconditionally, but
+            # shift `cur` to the last slot
+            # — five LoC, one less fork —
+            # and the side-effect of falling
+            # back to the LAST entry when
+            # cur >= total is preserved.
+            #
+            # bash-only construct (no longer
+            # present here): pick_tsv=INDIR
+            # where INDIR expands to the
+            # positional at index `total`.
+            if [ "${total}" -ge 1 ]; then
+              want=$(( total ))
+            else
+              want=0
+            fi
+            i=1
+            pick_tsv=""
+            for cand in "$@"; do
+              if [ "${i}" -eq "${want}" ]; then
+                pick_tsv="${cand}"
+                break
+              fi
+              i=$(( i + 1 ))
+            done
+            if [ -z "${pick_tsv}" ] && [ "${total}" -ge 1 ]; then
+              # Defensive default: if the loop
+              # did not set pick_tsv (e.g. total
+              # equals 1 and want equals 1 but
+              # the positional set is empty),
+              # leave pick_tsv empty so the
+              # caller skips the rewrite.
+              :
+            fi
           else
             i=1
             pick_tsv=""
@@ -389,13 +429,19 @@ else:
           elif [ -n "${HARNESS_CILIUM_NS_NAMES:-}" ]; then
             data_src="/dev/stdin"
             first=1
-            printf '[' > /dev/null
-            while IFS="$(printf '\t')" read -r ns nm; do
+            printf '['
+            # POSIX-sh-safe pipeline in place of
+            # Bash here-string so the generated
+            # #!/bin/sh fake parses cleanly under
+            # dash on Linux. The pipeline runs in a
+            # subshell, so we deliberately emit the
+            # trailing ']\n' from the parent scope.
+            printf '%s\n' "${HARNESS_CILIUM_NS_NAMES}" | while IFS="$(printf '\t')" read -r ns nm; do
               [ -z "${ns:-}" ] && continue
               [ -z "${nm:-}" ] && continue
               if [ "${first}" = "1" ]; then first=0; else printf ','; fi
               printf '{"status":{"controllers":[{"name":"resolve-labels-%s/%s"}]}}' "${ns}" "${nm}"
-            done <<<"${HARNESS_CILIUM_NS_NAMES}"
+            done
             printf ']\n'
             exit 0
           fi
@@ -460,6 +506,37 @@ echo "fake-kubectl: unhandled: $*" 1>&2
 exit 99
 POSIXEOF
 chmod +x "${FAKE_BIN}/kubectl"
+
+# Generated-fake POSIX-sh portability guard.
+# Linux /bin/sh is dash and silently parses
+# the produced fake before running it. Any
+# Bash-only construct left in the fake aborts
+# the parse with "Syntax error: redirection
+# unexpected" / "Bad substitution", so we
+# inspect the generated file itself (not the
+# template source) and refuse to run controls
+# if the surface contains forbidden forms.
+if [ -f "${FAKE_BIN}/kubectl" ]; then
+  fake_grep_fail=0
+  if grep -F '<<<' "${FAKE_BIN}/kubectl" > /dev/null 2>&1; then
+    echo "FAKE_PORTABILITY_GUARD: forbidden <<< here-string still present in generated ${FAKE_BIN}/kubectl" 1>&2
+    fake_grep_fail=1
+  fi
+  if grep -F '${!' "${FAKE_BIN}/kubectl" > /dev/null 2>&1; then
+    echo "FAKE_PORTABILITY_GUARD: forbidden \${! indirect expansion still present in generated ${FAKE_BIN}/kubectl" 1>&2
+    fake_grep_fail=1
+  fi
+  if [ "${fake_grep_fail}" = "1" ]; then
+    echo "FAKE_PORTABILITY_GUARD: FAIL — generated fake is not POSIX-sh portable" 1>&2
+    exit 22
+  fi
+  if command -v /bin/sh > /dev/null 2>&1 && ! /bin/sh -n "${FAKE_BIN}/kubectl" 2>/dev/null; then
+    echo "FAKE_PORTABILITY_GUARD: FAIL — /bin/sh -n rejected generated ${FAKE_BIN}/kubectl (rc=$?)" 1>&2
+    /bin/sh -n "${FAKE_BIN}/kubectl" 1>&2 || true
+    exit 23
+  fi
+fi
+echo "# d2b.49 generated-fake portability guard: PASS (no <<< / \${! / /bin/sh -n rejections)"
 
 # Fake date.
 cat >"${FAKE_BIN}/date" <<'POSIXEOF'
