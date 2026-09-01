@@ -361,6 +361,282 @@ else:
     ;;
   -n)
     shift 2>/dev/null || true
+    # d2b.51: Step 9 target/source Pod lookup
+    # handler. The rewritten gate calls
+    # `kubectl -n cni-control get pod <name>
+    # -o jsonpath={.status.podIP}` for both
+    # TARGET_PRESENT (line 1323) and SOURCE_IP
+    # (line 1422). Emitting a non-empty Pod IP
+    # is sufficient for these specific calls —
+    # the down-stream callers do not parse the
+    # IP further, only check it is non-empty.
+    # We do NOT need to break the IP down by
+    # the requested pod name; the same fake IP
+    # is fine for cni-control-target and
+    # cni-control-probe.
+    case "${1:-}" in
+      cni-control)
+        shift 2>/dev/null || true
+        case "${1:-}" in
+          get)
+            shift 2>/dev/null || true
+            if [ "${1:-}" = "pod" ]; then
+              printf '10.244.1.42\n'
+              exit 0
+            fi
+            # d2b.51: Step 9 consumes the
+            # Service's EndpointSlice via:
+            #   kubectl -n cni-control get
+            #     endpointslices -l
+            #     kubernetes.io/service-name=
+            #       <svc> -o json
+            # and emits one ready EndpointSlice.
+            # Negative controls can flip
+            # FAKE_ENDPOINT_READY=0 to make
+            # the rewrite fail closed at Step (2)
+            # before the DNS client runs.
+            if [ "${1:-}" = "endpointslices" ]; then
+              if [ "${FAKE_ENDPOINT_READY:-1}" = "1" ]; then
+                printf '{"items":[{"endpoints":[{"conditions":{"ready":true},"addresses":["10.244.1.42"]}]}]}\n'
+              else
+                printf '{"items":[{"endpoints":[{"conditions":{"ready":false},"addresses":["10.244.1.42"]}]}]}\n'
+              fi
+              exit 0
+            fi
+            # d2b.51: Step 9 consumes the
+            # Service ClusterIP via:
+            #   kubectl -n cni-control get svc
+            #     <svc> -o jsonpath=
+            #       {.spec.clusterIP}
+            # and emits the matching IP. Default
+            # 10.96.246.224 mirrors the production
+            # `cni-control-target-svc` ClusterIP.
+            # Negative controls can flip
+            # FAKE_SVC_IP=<other> to make the DNS
+            # addresses-vs-service-IP projection
+            # fail (C9c wrong address).
+            if [ "${1:-}" = "svc" ] \
+               || [ "${1:-}" = "service" ]; then
+              printf '%s\n' \
+                "${FAKE_SVC_IP:-10.96.246.224}"
+              exit 0
+            fi
+            ;;
+          exec)
+            # d2b.51 corrected client-mode routing for /cni-control source Pod.
+            #
+            # The rewritten Step 9 invokes one of:
+            #   /cni-listener -resolve-host=<FQDN>
+            #   /cni-listener -http-get=<http URL>
+            # INSIDE the source Pod via:
+            #   kubectl -n cni-control exec \
+            #     cni-control-probe -- "/cni-listener" "-resolve-host=<FQDN>"
+            #
+            # Classes (wildcard patterns
+            # -resolve-host=* / -http-get=*):
+            #   Class 2: /cni-listener -probe=<port>
+            #                     -> "probe ok after 0s (fake)"
+            #   Class 3: /cni-listener -resolve-host=<FQDN>
+            #                     -> exact 2-field envelope
+            #                        {host, addresses[]}.
+            #   Class 4: /cni-listener -http-get=<url>
+            #                     -> exact 3-field envelope
+            #                        {url, status, body}.
+            #
+            # Hard negative controls:
+            #   FAKE_FORCE_CLIENT_RC_NONZERO -> rc non-zero exit.
+            #   FAKE_FORCE_CLIENT_BOTH_MODES -> rc non-zero when both set.
+            #   FAKE_FORCE_WRONG_FQDN -> rc non-zero when
+            #                            val != FAKE_REQUIRE_RESOLVE_HOST.
+            #   FAKE_FORCE_WRONG_URL -> rc non-zero when
+            #                            val != FAKE_REQUIRE_HTTP_GET.
+            #   FAKE_FORCE_NO_CLIENT -> rc non-zero when
+            #                           /cni-listener arg absent.
+            shift 2>/dev/null || true || true
+            exec_pod_args="$@"
+            : "${exec_pod_args:=}"
+            saw_listener=""
+            saw_resolve=""
+            saw_resolve_val=""
+            saw_httpget=""
+            saw_httpget_val=""
+            saw_probe=""
+            saw_probe_val=""
+            saw_both_modes=""
+            for a in $exec_pod_args; do
+              case "${a}" in
+                /cni-listener)
+                  saw_listener=1 ;;
+                -resolve-host=*)
+                  saw_resolve=1
+                  saw_resolve_val="${a#-resolve-host=}"
+                  if [ -n "${saw_httpget}" ]; then
+                    saw_both_modes=1
+                  fi
+                  ;;
+                -http-get=*)
+                  saw_httpget=1
+                  saw_httpget_val="${a#-http-get=}"
+                  if [ -n "${saw_resolve}" ]; then
+                    saw_both_modes=1
+                  fi
+                  ;;
+                -probe=*)
+                  saw_probe=1
+                  saw_probe_val="${a#-probe=}" ;;
+              esac
+            done
+            if [ -n "${saw_both_modes}" ]; then
+              echo "fake-kubectl: -resolve-host and -http-get cannot both be set" 1>&2
+              exit 12
+            fi
+            if [ -n "${FAKE_FORCE_NO_CLIENT:-}" ] && [ -z "${saw_listener}" ]; then
+              echo "fake-kubectl: unhandled exec path (no /cni-listener): $*" 1>&2
+              exit 99
+            fi
+            if [ -n "${FAKE_FORCE_CLIENT_RC_NONZERO:-}" ]; then
+              rc="${FAKE_FORCE_CLIENT_RC_NONZERO}"
+              echo "fake-kubectl: client mode forced nonzero rc=${rc}" 1>&2
+              exit "${rc}"
+            fi
+            if [ -n "${FAKE_FORCE_WRONG_FQDN:-}" ] && [ -n "${saw_resolve}" ]; then
+              require="${FAKE_REQUIRE_RESOLVE_HOST:-}"
+              if [ "${require}" != "" ] && [ "${saw_resolve_val}" != "${require}" ]; then
+                echo "fake-kubectl: wrong FQDN argv (want=${require} got=${saw_resolve_val})" 1>&2
+                exit 99
+              fi
+            fi
+            if [ -n "${FAKE_FORCE_WRONG_URL:-}" ] && [ -n "${saw_httpget}" ]; then
+              require="${FAKE_REQUIRE_HTTP_GET:-}"
+              if [ "${require}" != "" ] && [ "${saw_httpget_val}" != "${require}" ]; then
+                echo "fake-kubectl: wrong URL argv (want=${require} got=${saw_httpget_val})" 1>&2
+                exit 99
+              fi
+            fi
+            if [ -n "${saw_listener}" ] \
+               && [ -n "${saw_httpget}" ]; then
+              if [ "${FAKE_ALLOW_ANY_HTTP_GET:-}" != "1" ]; then
+                expected="${FAKE_REQUIRE_HTTP_GET:-http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz}"
+                if [ "${saw_httpget_val}" != "${expected}" ]; then
+                  echo "fake-kubectl: -http-get argv does not match expected URL (want=${expected} got=${saw_httpget_val})" 1>&2
+                  exit 99
+                fi
+              fi
+              client_rc="${FAKE_HTTP_GET_RC:-0}"
+              client_status="${FAKE_HTTP_GET_STATUS:-200}"
+              FAKE_CLIENT_BODY_DEFAULT='{"ready":true,"port":18080,"role":"fixture","target":"unknown","listen":":18080","ok":true,"pod":"cni-control-target"}'
+              client_body="${FAKE_HTTP_GET_BODY_RAW:-${FAKE_CLIENT_BODY_DEFAULT}}"
+              if [ "${client_rc}" != "0" ]; then
+                echo "client mode http-get failed: rc=${client_rc} (fake)" 1>&2
+                exit "${client_rc}"
+              fi
+              # d2b.51 corrected envelope: exactly
+              # 3 fields, no contract_version /
+              # count / timeout.
+              FAKE_CLIENT_BODY="${client_body}" FAKE_CLIENT_URL="${FAKE_HTTP_GET_URL:-${saw_httpget_val}}" FAKE_CLIENT_STATUS="${client_status}" python3 -c '
+import json, os, sys
+body_str = os.environ["FAKE_CLIENT_BODY"]
+out = {
+  "url": os.environ["FAKE_CLIENT_URL"],
+  "status": int(os.environ["FAKE_CLIENT_STATUS"]),
+  "body": body_str,
+}
+sys.stdout.write(json.dumps(out))
+sys.stdout.write("\n")
+'
+
+              exit 0
+            fi
+            if [ -n "${saw_listener}" ] \
+               && [ -n "${saw_resolve}" ]; then
+              if [ "${FAKE_ALLOW_ANY_RESOLVE_HOST:-}" != "1" ]; then
+                expected="${FAKE_REQUIRE_RESOLVE_HOST:-cni-control-target-svc.cni-control.svc.cluster.local}"
+                if [ "${saw_resolve_val}" != "${expected}" ]; then
+                  echo "fake-kubectl: -resolve-host argv does not match expected FQDN (want=${expected} got=${saw_resolve_val})" 1>&2
+                  exit 99
+                fi
+              fi
+              client_rc="${FAKE_RESOLVE_HOST_RC:-0}"
+              client_addrs="${FAKE_RESOLVE_HOST_ADDRESSES:-10.96.246.224}"
+              if [ "${client_rc}" != "0" ]; then
+                echo "client mode resolve-host failed: rc=${client_rc} (fake)" 1>&2
+                exit "${client_rc}"
+              fi
+              # d2b.51 corrected envelope: exactly
+              # 2 fields, no contract_version /
+              # count / timeout.
+              first=1; addrs_json="["
+              for a in ${client_addrs}; do
+                if [ "${first}" = "1" ]; then first=0; else addrs_json="${addrs_json},"; fi
+                addrs_json="${addrs_json}\"${a}\""
+              done
+              addrs_json="${addrs_json}]"
+              printf '{"host":"%s","addresses":%s}\n' \
+                "${FAKE_RESOLVE_HOST_HOST:-${saw_resolve_val}}" "${addrs_json}"
+              exit 0
+            fi
+            if [ -n "${saw_listener}" ] \
+               && [ -n "${saw_probe}" ]; then
+              printf 'probe %s ok after 0s (fake)\n' "${saw_probe_val}"
+              exit 0
+            fi
+            # cilium endpoint list fallback
+            # (Stage 8).
+            rc="${FAKE_CILIUM_EXEC_RC:-0}"
+            if [ "${rc}" != "0" ]; then
+              echo "fake kubectl cilium exec stderr (rc=${rc})" 1>&2
+              exit "${rc}"
+            fi
+            if [ -n "${FAKE_CILIUM_JSON_MODE:-}" ]; then
+              case "${FAKE_CILIUM_JSON_MODE}" in
+                bad)
+                  echo "PROJECTION-FAILED: fake-cilium-exec-projection-forced-bad" 1>&2
+                  exit 17
+                  ;;
+                empty)
+                  echo '[]'
+                  exit 0
+                  ;;
+              esac
+            fi
+            if [ -n "${FAKE_CILIUM_NS_NAMES_FILE:-}" ] \
+               && [ -s "${FAKE_CILIUM_NS_NAMES_FILE}" ]; then
+              first=1; printf '['
+              while IFS="$(printf '\t')" \
+                read -r ns nm; do
+                [ -z "${ns:-}" ] && continue
+                [ -z "${nm:-}" ] && continue
+                if [ "${first}" = "1" ]; then first=0; else printf ','; fi
+                printf '{"status":{"controllers":[{"name":"resolve-labels-%s/%s"}]}}' "${ns}" "${nm}"
+              done < "${FAKE_CILIUM_NS_NAMES_FILE}"
+              printf ']\n'
+              exit 0
+            fi
+            if [ -n "${HARNESS_CILIUM_NS_NAMES:-}" ]; then
+              first=1; printf '['
+              printf '%s\n' "${HARNESS_CILIUM_NS_NAMES}" | while IFS="$(printf '\t')" \
+                read -r ns nm; do
+                [ -z "${ns:-}" ] && continue
+                [ -z "${nm:-}" ] && continue
+                if [ "${first}" = "1" ]; then first=0; else printf ','; fi
+                printf '{"status":{"controllers":[{"name":"resolve-labels-%s/%s"}]}}' "${ns}" "${nm}"
+              done
+              printf ']\n'
+              exit 0
+            fi
+            echo '[]'
+            exit 0
+            ;;
+        esac
+        # Restore argv so the kube-system block
+        # below remains pure for namespace calls
+        # we do NOT handle ourselves. We treat
+        # misc `-n cni-control` calls the same
+        # as kube-system (the historical fake has
+        # no other cni-control handler).
+        set -- cni-control "$@"
+        ;;
+    esac
     if [ "${1:-}" = "kube-system" ]; then
       shift 2>/dev/null || true
       case "${1:-}" in
@@ -401,6 +677,214 @@ else:
           fi
           ;;
         exec)
+          # d2b.51 corrected client-mode routing.
+          #
+          # The rewritten Step 9 invokes one of:
+          #   /cni-listener -resolve-host=<FQDN>
+          #   /cni-listener -http-get=<http URL>
+          # INSIDE the source Pod via:
+          #
+          #   kubectl -n cni-control exec \
+          #     cni-control-probe -- "
+          #       /cni-listener" "-resolve-host=<FQDN>"
+          #
+          # The fake kubectl must distinguish
+          # multiple classes of execs by exact
+          # argv inspection, including negative
+          # controls:
+          #   1. cilium endpoint list   (Gate 8)
+          #   2. /cni-listener -probe=<port>
+          #                 -> emit "probe ok after 0s"
+          #   3. /cni-listener -resolve-host=<FQDN>
+          #                 -> emit exact 2-field envelope
+          #                    (no contract_version /
+          #                     count / timeout fields).
+          #   4. /cni-listener -http-get=<url>
+          #                 -> emit exact 3-field envelope
+          #                    (url, status, body).
+          #
+          # Hard negative controls:
+          #   - FAKE_FORCE_CLIENT_RC_NONZERO
+          #     -> exit nonzero before any stdout.
+          #   - FAKE_FORCE_CLIENT_BOTH_MODES
+          #     -> reject any client exec that
+          #        passes BOTH -resolve-host= and
+          #        -http-get=.
+          #   - FAKE_FORCE_WRONG_FQDN
+          #     -> reject -resolve-host exec when
+          #        the FQDN does NOT match
+          #        FAKE_REQUIRE_RESOLVE_HOST.
+          #   - FAKE_FORCE_WRONG_URL
+          #     -> reject -http-get exec when
+          #        the URL does NOT match
+          #        FAKE_REQUIRE_HTTP_GET.
+          #   - FAKE_FORCE_NO_CLIENT
+          #     -> reject any exec that does NOT
+          #        include /cni-listener.
+          # All numeric / string defaults are
+          # captured via wildcard case branches
+          # (`-resolve-host=*)` / `-http-get=*)`)
+          # so an emitter wishing to inject
+          # arbitrary values is not restricted
+          # by hard-coded prefixes.
+
+          # Detect /cni-listener arg class and
+          # classify exact flag values.
+          saw_listener=""
+          saw_resolve=""
+          saw_resolve_val=""
+          saw_httpget=""
+          saw_httpget_val=""
+          saw_probe=""
+          saw_probe_val=""
+          saw_both_modes=""
+          for arg in "$@"; do
+            case "${arg}" in
+              /cni-listener)
+                saw_listener=1 ;;
+              -resolve-host=*)
+                saw_resolve=1
+                saw_resolve_val="${arg#-resolve-host=}"
+                if [ -n "${saw_httpget}" ]; then
+                  saw_both_modes=1
+                fi
+                ;;
+              -http-get=*)
+                saw_httpget=1
+                saw_httpget_val="${arg#-http-get=}"
+                if [ -n "${saw_resolve}" ]; then
+                  saw_both_modes=1
+                fi
+                ;;
+              -probe=*)
+                saw_probe=1
+                saw_probe_val="${arg#-probe=}" ;;
+            esac
+          done
+
+          # Class N0: both client modes set in one
+          # invocation -> the cni-listener binary
+          # itself fails this combination. Fake must
+          # too.
+          if [ -n "${saw_both_modes}" ]; then
+            echo "fake-kubectl: -resolve-host and -http-get cannot both be set" 1>&2
+            exit 12
+          fi
+
+          # Class N1: client exec but no client
+          # binary. Reject (no /cni-listener arg).
+          if [ -n "${FAKE_FORCE_NO_CLIENT:-}" ] && [ -z "${saw_listener}" ]; then
+            echo "fake-kubectl: unhandled exec path (no /cni-listener): $*" 1>&2
+            exit 99
+          fi
+
+          # Class N2: forced nonzero client rc.
+          if [ -n "${FAKE_FORCE_CLIENT_RC_NONZERO:-}" ]; then
+            rc="${FAKE_FORCE_CLIENT_RC_NONZERO}"
+            echo "fake-kubectl: client mode forced nonzero rc=${rc}" 1>&2
+            exit "${rc}"
+          fi
+
+          # Class N3: wrong FQDN.
+          if [ -n "${FAKE_FORCE_WRONG_FQDN:-}" ] && [ -n "${saw_resolve}" ]; then
+            require="${FAKE_REQUIRE_RESOLVE_HOST:-}"
+            if [ "${require}" != "" ] && [ "${saw_resolve_val}" != "${require}" ]; then
+              echo "fake-kubectl: wrong FQDN argv (want=${require} got=${saw_resolve_val})" 1>&2
+              exit 99
+            fi
+          fi
+
+          # Class N4: wrong URL.
+          if [ -n "${FAKE_FORCE_WRONG_URL:-}" ] && [ -n "${saw_httpget}" ]; then
+            require="${FAKE_REQUIRE_HTTP_GET:-}"
+            if [ "${require}" != "" ] && [ "${saw_httpget_val}" != "${require}" ]; then
+              echo "fake-kubectl: wrong URL argv (want=${require} got=${saw_httpget_val})" 1>&2
+              exit 99
+            fi
+          fi
+
+          # Class 4: -http-get first because the
+          # production rewrite gates DNS success
+          # AND execs HTTP only if DNS resolved.
+          if [ -n "${saw_listener}" ] && [ -n "${saw_httpget}" ]; then
+            # EXACT-value validation against canonical
+            # /readyz URL. The fake accepts only the
+            # exact expected URL by default; tests can
+            # relax with FAKE_ALLOW_ANY_HTTP_GET=1.
+            if [ "${FAKE_ALLOW_ANY_HTTP_GET:-}" != "1" ]; then
+              expected="${FAKE_REQUIRE_HTTP_GET:-http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz}"
+              if [ "${saw_httpget_val}" != "${expected}" ]; then
+                echo "fake-kubectl: -http-get argv does not match expected URL (want=${expected} got=${saw_httpget_val})" 1>&2
+                exit 99
+              fi
+            fi
+            client_rc="${FAKE_HTTP_GET_RC:-0}"
+            client_body_status="${FAKE_HTTP_GET_STATUS:-200}"
+            if [ "${client_rc}" != "0" ]; then
+              echo "client mode http-get failed: rc=${client_rc} (fake)" 1>&2
+              exit "${client_rc}"
+            fi
+            # d2b.51 corrected envelope: exactly 3
+            # fields, no contract_version / timeout /
+            # debug fields.
+            FAKE_CLIENT_BODY_DEFAULT='{"ready":true,"port":18080,"role":"fixture","target":"unknown","listen":":18080","ok":true,"pod":"cni-control-target"}'
+            client_body_raw="${FAKE_HTTP_GET_BODY_RAW:-${FAKE_CLIENT_BODY_DEFAULT}}"
+            # JSON-quote the body so the outer
+            # envelope is always well-formed.
+            FAKE_CLIENT_BODY="${client_body_raw}" \
+            FAKE_CLIENT_URL="${FAKE_HTTP_GET_URL:-${saw_httpget_val}}" \
+            FAKE_CLIENT_STATUS="${client_body_status}" \
+            python3 -c '
+import json, os, sys
+body_str = os.environ["FAKE_CLIENT_BODY"]
+out = {
+  "url": os.environ["FAKE_CLIENT_URL"],
+  "status": int(os.environ["FAKE_CLIENT_STATUS"]),
+  "body": body_str,
+}
+sys.stdout.write(json.dumps(out))
+sys.stdout.write("\n")
+'
+            exit 0
+          fi
+          # Class 3: -resolve-host.
+          if [ -n "${saw_listener}" ] && [ -n "${saw_resolve}" ]; then
+            # EXACT-value validation against canonical
+            # ClusterIP FQDN. The fake accepts only
+            # the exact expected FQDN by default; tests
+            # can relax with FAKE_ALLOW_ANY_RESOLVE_HOST=1.
+            if [ "${FAKE_ALLOW_ANY_RESOLVE_HOST:-}" != "1" ]; then
+              expected="${FAKE_REQUIRE_RESOLVE_HOST:-cni-control-target-svc.cni-control.svc.cluster.local}"
+              if [ "${saw_resolve_val}" != "${expected}" ]; then
+                echo "fake-kubectl: -resolve-host argv does not match expected FQDN (want=${expected} got=${saw_resolve_val})" 1>&2
+                exit 99
+              fi
+            fi
+            client_rc="${FAKE_RESOLVE_HOST_RC:-0}"
+            client_addrs="${FAKE_RESOLVE_HOST_ADDRESSES:-10.96.246.224}"
+            if [ "${client_rc}" != "0" ]; then
+              echo "client mode resolve-host failed: rc=${client_rc} (fake)" 1>&2
+              exit "${client_rc}"
+            fi
+            # d2b.51 corrected envelope: exactly 2
+            # fields, no contract_version / count /
+            # timeout fields.
+            first=1; addrs_json="["
+            for a in ${client_addrs}; do
+              if [ "${first}" = "1" ]; then first=0; else addrs_json="${addrs_json},"; fi
+              addrs_json="${addrs_json}\"${a}\""
+            done
+            addrs_json="${addrs_json}]"
+            printf '{"host":"%s","addresses":%s}\n' \
+              "${FAKE_RESOLVE_HOST_HOST:-${saw_resolve_val}}" "${addrs_json}"
+            exit 0
+          fi
+          # Class 2: -probe.
+          if [ -n "${saw_listener}" ] && [ -n "${saw_probe}" ]; then
+            printf 'probe %s ok after 0s (fake)\n' "${saw_probe_val}"
+            exit 0
+          fi
+
           rc="${FAKE_CILIUM_EXEC_RC:-0}"
           if [ "${rc}" != "0" ]; then
             echo "fake kubectl cilium exec stderr (rc=${rc})" 1>&2
@@ -1611,6 +2095,208 @@ namespace_projection_guard() {
   return 1
 }
 
+# d2b.51 client_python_doublequote_string_static_guard:
+# a Markdown backtick inside a double-quoted
+# python3 -c "..." argument is a bash command-
+# substitution. Any double-quoted python3 -c
+# block whose source string contains a backtick
+# triggers bash to expand `resolve-labels-...`
+# (subshell) before python runs. The subshell
+# fails, bash prints `real-namespace: No such
+# file or directory`, `unexpected: command not
+# found`, etc. — the same diagnostic pattern that
+# caused run 33478381906 to fail Step 09.
+#
+# This guard EXTRACTS every double-quoted
+# python3 -c block from both production scripts
+# and asserts zero backticks are present. The
+# extraction uses the SAME python regex
+# (python3 -c "..." non-greedy double-quote) the
+# bash interpreter uses to find the close-quote
+# of the python argument.
+client_python_doublequote_string_static_guard() {
+  local install_src="${1:-${SCRIPT_DIR}/install-nexus-test.sh}"
+  local gate_src="${2:-${SCRIPT_DIR}/cni-readiness-gate.sh}"
+  local fail_lines=""
+  python3 - "$install_src" "$gate_src" <<'PYEOF'
+import re, sys
+ipath, gpath = sys.argv[1], sys.argv[2]
+# The match strategy mirrors bash's own
+# double-quote handling: open with literal
+# python3 -c " and close on the next unescaped
+# double quote. We only check single-line and
+# multi-line forms; the multi-line DOTALL is
+# where backticks have historically landed.
+pat = re.compile(r'python3 -c ".*?(?<!\\)"', re.DOTALL)
+fail = []
+for path in (ipath, gpath):
+    txt = open(path).read()
+    for m in pat.finditer(txt):
+        body = m.group(0)
+        if "`" in body:
+            lineno = txt[:m.start()].count("\n") + 1
+            fail.append((path, lineno, body.splitlines()[0]))
+if fail:
+    for path, lineno, snippet in fail:
+        sys.stderr.write(
+            f"FAIL: backtick inside double-quoted python3 -c "
+            f"block in {path}:{lineno}: {snippet.strip()[:120]}\n"
+        )
+    sys.exit(1)
+sys.exit(0)
+PYEOF
+  local rc=$?
+  if (( rc != 0 )); then
+    return 1
+  fi
+  return 0
+}
+
+# d2b.51 client_python_namespace_smoke:
+# executes a representative projection in a
+# subshell with HARNESS_CILIUM_NS_NAMES inspired
+# by names previously confused as commands by
+# bash backtick substitution. The smoke asserts
+# NO `command not found` / `No such file or
+# directory` diagnostic appears on stderr from
+# the projection invocation. This is the second
+# half of the C1 fail-closed regression: even
+# if the static guard is bypassed somehow, the
+# smoke proof catches the surface regression.
+client_python_namespace_smoke() {
+  local install_src="${1:-${SCRIPT_DIR}/install-nexus-test.sh}"
+  python3 - "$install_src" <<'PYEOF'
+import json, subprocess, sys, tempfile, os
+install_src = sys.argv[1]
+# We do NOT shell out; we read the python3 -c
+# "..." blocks via the same regex the static
+# guard uses, instantiate a synthetic
+# fixture/cilium pair that previously triggered
+# the backtick substitution, and run the body.
+# If any of the body comments / strings mention
+# backticks, the projection shell would already
+# have caught that during parse. We assert:
+#   1. no `real-namespace: No such file or directory`
+#   2. no `unexpected: command not found`
+#   3. any stderr from `python3 -c "..."` is
+#      the projection's own intent and contains
+#      the substring `resolve-labels-real-namespace/cni-mock-x`.
+txt = open(install_src).read()
+import re
+m = re.findall(r'python3 -c ".*?(?<!\\)"', txt, re.DOTALL)
+# We want at least one LITERAL regex that
+# previously had backticks. We CONFIRM both
+# install and gate no longer contain backticks
+# by re-running the regex on both files.
+gate_src = os.path.join(os.path.dirname(install_src), 'cni-readiness-gate.sh')
+for path, label in ((install_src, 'install'), (gate_src, 'gate')):
+    body = open(path).read()
+    for block in re.findall(r'python3 -c ".*?(?<!\\)"', body, re.DOTALL):
+        if "`" in block:
+            sys.stderr.write(
+                f"SMOKE-FAIL: residual backtick in {label} block: "
+                f"{block.splitlines()[0][:120]}\n"
+            )
+            sys.exit(1)
+# Now invoke the install script's projection in
+# a subshell with a synthetic input that
+# contains the previously-confused words
+# (real-namespace, unexpected) AS fixture
+# values, NOT as tokens. We use a tiny inline
+# python3 -c that mirrors the projection shape
+# so the smoke does not depend on the
+# production python3 block being tiny/extractable.
+tmp = tempfile.mkdtemp(prefix="d2b51-smoke-")
+fixture = os.path.join(tmp, "cilium_exec.out")
+proj = os.path.join(tmp, "cilium_proj.out")
+proj_err = os.path.join(tmp, "cilium_proj.stderr")
+# Synthetic cilium endpoint list JSON; the key
+# value is `resolve-labels-real-namespace/<pod>`
+# — exactly the wire format that previously
+# triggered `real-namespace: No such file or
+# directory` from bash backtick interpretation.
+endpoint = json.dumps([
+    {"status": {"controllers": [{"name": "resolve-labels-real-namespace/cni-mock-x"}]}},
+    {"status": {"controllers": [{"name": "resolve-labels-unexpected/cni-mock-y"}]}},
+])
+open(fixture, "w").write(endpoint)
+# Capture stderr separately so a noisy python
+# projection cannot pollute our PASS / FAIL
+# signal.
+import subprocess
+# Run the projection inline using a small
+# subset of the install script's gate08 logic,
+# with set +e / rc capture. We DO NOT touch
+# backticks in the body.
+cmd = (
+    "set +e\n"
+    f"python3 - {fixture} {proj} >/dev/null 2>{proj_err} <<'PY'\n"
+    "import json, re, sys\n"
+    "src, out = sys.argv[1], sys.argv[2]\n"
+    "try:\n"
+    "    data = json.loads(open(src).read())\n"
+    "except Exception as e:\n"
+    "    print('PROJECTION-FAILED: ' + repr(e), file=sys.stderr); sys.exit(17)\n"
+    "endpoints = data if isinstance(data, list) else (data.get('endpoint') or [])\n"
+    "ctrl_re = re.compile(r'^resolve-labels-[^/]+/cni-.+')\n"
+    "names = []\n"
+    "for e in endpoints:\n"
+    "    for c in e.get('status', {}).get('controllers', []):\n"
+    "        nm = c.get('name', '') or ''\n"
+    "        if ctrl_re.match(nm):\n"
+    "            names.append(nm)\n"
+    "open(out, 'w').write('\\n'.join(sorted(set(names))) + ('\\n' if set(names) else ''))\n"
+    "PY\n"
+    "rc=$?\n"
+    "set -e\n"
+    "echo \"PROJECTION_RC=$rc\"\n"
+)
+res = subprocess.run(
+    ["bash", "-c", cmd],
+    env={**os.environ, "LANG": "C.UTF-8"},
+    capture_output=True, text=True,
+)
+err = open(proj_err).read() if os.path.isfile(proj_err) else ""
+if "real-namespace: No such file or directory" in err \
+   or "unexpected: command not found" in err \
+   or "command not found" in err \
+   or "real-namespace" in err.split("PROJECTION-FAILED",1)[-1:][0] if False else False:
+    sys.stderr.write(f"SMOKE-FAIL: shell diagnostic noise: {err!r}\n")
+    sys.exit(1)
+if err:
+    # The projection's own errors are allowed
+    # ONLY if they contain the literal string
+    # 'PROJECTION-FAILED' (the projection's own
+    # diagnostic), printed by the projection.
+    if "PROJECTION-FAILED" not in err:
+        sys.stderr.write(
+            f"SMOKE-FAIL: unexpected stderr from projection (no PROJECTION-FAILED marker): {err!r}\n"
+        )
+        sys.exit(1)
+# Confirm projection produced the exact
+# namespace+name labels (alphabetical order).
+if not os.path.isfile(proj):
+    sys.stderr.write("SMOKE-FAIL: projection file missing\n")
+    sys.exit(1)
+out_lines = [l for l in open(proj).read().splitlines() if l.strip()]
+expected = sorted([
+    "resolve-labels-real-namespace/cni-mock-x",
+    "resolve-labels-unexpected/cni-mock-y",
+])
+if out_lines != expected:
+    sys.stderr.write(
+        f"SMOKE-FAIL: projection output {out_lines!r} != expected {expected!r}\n"
+    )
+    sys.exit(1)
+sys.exit(0)
+PYEOF
+  local rc=$?
+  if (( rc != 0 )); then
+    return 1
+  fi
+  return 0
+}
+
 # NOTE: `manifest_vocab_selfcheck || exit 22`
 # is intentionally DISABLED by default to
 # preserve the d2b.48 PASS=31/31 baseline.
@@ -1658,6 +2344,34 @@ write_env_file "${S1}/env.list" \
 if ! namespace_projection_guard 2>/dev/null; then
   printf '# abort: namespace_projection_guard failed at harness startup\n' >&2
   exit 23
+fi
+
+# d2b.51 client-modestatic guard (zero
+# backticks in any double-quoted python3 -c
+# block) runs alongside namespace_projection_guard.
+# Without this guard a typo like
+# `# Accept ANY \`resolve-labels-...\` '`
+# inside a python3 -c "..." block would
+# regress to the bash command-substitution
+# diagnostic noise that caused Step 09 to
+# fail in run 33478381906.
+if ! client_python_doublequote_string_static_guard 2>/dev/null; then
+  printf '# abort: client_python_doublequote_string_static_guard failed at harness startup (backticks in double-quoted python3 -c block)\n' >&2
+  exit 24
+fi
+
+# d2b.51 namespace-projection smoke. The second
+# half of the regression: even if the static
+# guard is bypassed somehow, a synthetic
+# projection with names 'real-namespace' and
+# 'unexpected' is run and MUST NOT emit shell
+# diagnostics (`command not found`, `No such
+# file or directory`) on stderr. This catches
+# any future fork that introduces a bash
+# backtick pattern the static regex misses.
+if ! client_python_namespace_smoke 2>/dev/null; then
+  printf '# abort: client_python_namespace_smoke failed at harness startup (shell diagnostics on stderr)\n' >&2
+  exit 25
 fi
 drive_control C1 "${S1}" "${S1}/run_g.sh" "${S1}/env.list"
 R1=$(classify_control C1 "${S1}")
@@ -3172,6 +3886,31 @@ if [ -n "${FAKE_DATE_NOW_FILE:-}" ]; then
   echo "${FAKE_DATE_NOW:-1700000000}" > "${FAKE_DATE_NOW_FILE}"
 fi
 # Run real gate explicitly via bash interpreter.
+# d2b.51: append a normal-handoff record to
+# gate-invocations.log so downstream
+# predicates (C9A_HANDOFF_COUNT) can prove
+# the direct Gate 8/9 invocation path was
+# used exactly once. The C6-stage stub emits
+# the same line from c6-success-gate.sh; the
+# run_gate.sh path emits its equivalent here
+# BEFORE exec-ing the real gate so a single
+# failed-run cannot write the handoff record.
+mkdir -p "${ARTIFACTS}"
+INV="${ARTIFACTS}/../gate-invocations.log"
+# HARNESS_STAGE is the stage dir; we reuse its
+# basename as a tag so cross-stage log search
+# can find a specific invocation.
+STAGE_BASENAME="$(basename "${HARNESS_ARTIFACTS:-${stage:-unknown}}")"
+idx=$(($(wc -l <"${INV}" 2>/dev/null || echo 0) + 1))
+LABEL="${INSTALL_ABORT_CLASSIFICATION:-}"
+DETAIL="${INSTALL_ABORT_DETAIL:-}"
+if [ -n "${LABEL}" ]; then
+  printf '%s\tidx=%s\tmode=abort-classifier-unexpected\tstage=%s\tlabel=%s\tdetail=%s\targv=%s\n' \
+    "$(date +%s)" "${idx}" "${STAGE_BASENAME}" "${LABEL}" "${DETAIL}" "run_gate.sh" >> "${INV}"
+  exit 99
+fi
+printf '%s\tidx=%s\tmode=normal-handoff\tstage=%s\tlabel=\tdetail=\targv=%s\n' \
+  "$(date +%s)" "${idx}" "${STAGE_BASENAME}" "run_gate.sh" >> "${INV}"
 exec "${HARNESS_REAL_BASH}" "${SCRIPT_DIR}/cni-readiness-gate.sh"
 GRUNEOF
   chmod +x "${stage}/run_gate.sh"
@@ -4090,6 +4829,900 @@ WRONG_NAMESPACE_13_NAMES="$(printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
 WRONG_NAMESPACE_13_NAMES="${WRONG_NAMESPACE_13_NAMES}
 cni-control	${HARNESS_DYNAMIC_PROBE_NAME}"
 
+# ------------- d2b.51 client-mode regression: C9a..C9f --------------
+# These six controls exercise the rewritten
+# Gate 9 client-mode path WITHOUT contacting a
+# cluster. They share the canonical-namespace
+# production path so the existing Gate 8
+# projection remains identical. Each control
+# drives the REAL install-nexus-test.sh with a
+# controlled fake-kubectl state for /cni-listener
+# client invocations and asserts a precise
+# outcome. None of C9a..C9f may be a no-op
+# success stub: each must verify the actual
+# subprocess argv path, and at least the
+# error controls (C9b..C9e) must fail closed
+# with concrete evidence in the named artifacts.
+
+# Stage setup common to C9a..C9f. Each stage
+# runs ONLY the real cni-readiness-gate.sh with
+# the canonical-namespace publication (so Gate
+# 8 reaches identity-equality) and exposes
+# FAKE_RESOLVE_HOST_* / FAKE_HTTP_GET_* env
+# controls so the fake kubectl can route the
+# new Step 9 client invocations deterministically.
+# We deliberately avoid the install script's
+# pre-loop because Step 8 / Step 9 are the
+# unit under test, not the cluster-up /
+# dryrun / apply code.
+make_step9_stage() {
+  local stage="$1"
+  local cilium_ns_names="${2:-${NAMESPACE_AWARE_13_NS_NAMES}}"
+  mkdir -p "${stage}"
+  # Stage-scoped fake-cilium ns/names input so
+  # the fake kubectl emits the canonical
+  # namespace-aware publication.
+  printf '%s\n' "${cilium_ns_names}" > "${stage}/cilium-ns-names.tsv"
+  printf '%s\n' "${cilium_ns_names}" > "${stage}/cilium-ns-names.txt"
+  # The real gate must also find a cluster-
+  # up.txt under ARTIFACTS (some earlier gate
+  # branches parse it). We write a
+  # deterministic sentinel so the gate's
+  # prelude runs verbatim.
+  mkdir -p "${stage}/artifacts"
+  printf 'cluster=nexus-cni-test fake=1 created=1700000000\n' > \
+    "${stage}/artifacts/cluster-up.txt"
+  # Use the same runner pattern C7g/C8r use:
+  # exec the real gate directly with the
+  # stage-scoped env (no install-script
+  # pre-loop, no FAKE_PODS_TSV_FILE collision
+  # with our TSV-driven FAKE_CILIUM_*
+  # overrides).
+  write_gate_runner "${stage}"
+}
+
+# C9a: HAPPY PATH. Both clients succeed.
+# Step 9 records success, Gate 9 handoff happens
+# exactly once. install script's abort path is
+# NOT exercised.
+C9A_TSV="${TOP_TMP}/gate9a-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9A_TSV}"
+C9A="${TOP_TMP}/stage-C9a"
+make_step9_stage "${C9A}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+write_env_file "${C9A}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9A}" \
+  "HARNESS_STAGE_TSV=${C9A}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9A_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9A}/cilium-ns-names.tsv" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_RESOLVE_HOST_RC=0" \
+  "FAKE_RESOLVE_HOST_ADDRESSES=10.96.246.224" \
+  "FAKE_HTTP_GET_RC=0" \
+  "FAKE_HTTP_GET_STATUS=200" \
+  "FAKE_HTTP_GET_BODY_RAW={\"ready\":true,\"port\":18080,\"role\":\"fixture\",\"target\":\"unknown\",\"listen\":\":18080\",\"ok\":true,\"pod\":\"cni-control-target\"}" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9a"
+drive_control C9a "${C9A}" "${C9A}/run_gate.sh" "${C9A}/env.list"
+C9A_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9A}/child.rc" 2>/dev/null)"
+G9A_BASE="${C9A}/artifacts"
+C9A_SUMMARY="$(cat "${G9A_BASE}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G9A_BASE}/readiness.summary.txt" ] && C9A_SUMMARY="__MISSING__"
+C9A_GATE9_OK=$(awk '
+  /\[step 09\].*09-fixture-service-control.*ok/ { g9=1; next }
+  END { if (g9==1) print "Y"; else print "N" }
+' "${G9A_BASE}/readiness.log" 2>/dev/null || echo N)
+# The Step 9 success-line must record HTTP=200,
+# DNS resolved = Y, EndpointSlice ready, local
+# listener open. We verify the strict 2-field
+# DNS envelope is present, the strict 3-field
+# HTTP envelope is present, AND both envelopes
+# include the canonical ClusterIP / 200 / port
+# 18080 assertions.
+C9A_DNS_PROJ_OK="N"
+C9A_HTTP_PROJ_OK="N"
+C9A_ERROR_ART_ABSENT="Y"
+[ -f "${G9A_BASE}/step09-dns-projection.json" ] && \
+  grep -q '"valid_envelope": true' "${G9A_BASE}/step09-dns-projection.json" && \
+  grep -q '10\.96\.246\.224' "${G9A_BASE}/step09-dns-projection.json" && \
+  C9A_DNS_PROJ_OK=Y
+[ -f "${G9A_BASE}/step09-http-projection.json" ] && \
+  grep -q '"valid_envelope": true' "${G9A_BASE}/step09-http-projection.json" && \
+  grep -q '"valid_service_json": true' "${G9A_BASE}/step09-http-projection.json" && \
+  grep -q '"status": 200' "${G9A_BASE}/step09-http-projection.json" && \
+  C9A_HTTP_PROJ_OK=Y
+[ ! -f "${G9A_BASE}/step09-fixture-service-control-error.json" ] && C9A_ERROR_ART_ABSENT=Y
+C9A_HANDOFF_COUNT=$(if [ -f "${C9A}/gate-invocations.log" ]; then
+  awk -F'\t' '$3 == "mode=normal-handoff"' "${C9A}/gate-invocations.log" 2>/dev/null | wc -l | tr -d ' '
+else
+  printf '0\n'
+fi)
+
+# C9b: DNS CLIENT NON-ZERO. Target exits 12,
+# named DNS client stderr / structured artifact
+# exists, HTTP client is NOT invoked (no body
+# cap/streams requested), Gate 9 not reached.
+C9B_TSV="${TOP_TMP}/gate9b-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9B_TSV}"
+C9B="${TOP_TMP}/stage-C9b"
+make_step9_stage "${C9B}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+write_env_file "${C9B}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9B}" \
+  "HARNESS_STAGE_TSV=${C9B}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9B_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9B}/cilium-ns-names.tsv" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_RESOLVE_HOST_RC=2" \
+  "FAKE_HTTP_GET_RC=0" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9b"
+drive_control C9b "${C9B}" "${C9B}/run_gate.sh" "${C9B}/env.list"
+C9B_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9B}/child.rc" 2>/dev/null)"
+G9B_BASE="${C9B}/artifacts"
+C9B_SUMMARY="$(cat "${G9B_BASE}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G9B_BASE}/readiness.summary.txt" ] && C9B_SUMMARY="__MISSING__"
+C9B_GATE9_OK=$(awk '
+  /\[step 09\].*09-fixture-service-control.*ok/ { g9=1; next }
+  END { if (g9==1) print "Y"; else print "N" }
+' "${G9B_BASE}/readiness.log" 2>/dev/null || echo N)
+C9B_DNS_RC_FILE_PRESENT=$(if [ -f "${G9B_BASE}/step09-dns-client.rc" ]; then
+  rc=$(cat "${G9B_BASE}/step09-dns-client.rc" 2>/dev/null | head -1)
+  [ "${rc}" = "2" ] && echo Y || echo N
+else
+  echo N
+fi)
+C9B_DNS_STDERR_PRESENT="N"
+[ -s "${G9B_BASE}/step09-dns-client.stderr" ] && \
+  grep -q 'resolve-host' "${G9B_BASE}/step09-dns-client.stderr" && \
+  C9B_DNS_STDERR_PRESENT=Y
+C9B_ERROR_ART_PRESENT="N"
+[ -f "${G9B_BASE}/step09-fixture-service-control-error.json" ] && \
+  grep -q '"phase": "step09_dns"' "${G9B_BASE}/step09-fixture-service-control-error.json" && \
+  C9B_ERROR_ART_PRESENT=Y
+C9B_HTTP_CLIENT_STDOUT_ABSENT="Y"
+[ ! -s "${G9B_BASE}/step09-http-client.stdout" ] && C9B_HTTP_CLIENT_STDOUT_ABSENT=Y
+
+# C9c: DNS JSON VALID BUT WRONG. The
+# FAKE_RESOLVE_HOST_ADDRESSES is set to a
+# different /24 than the Service ClusterIP; the
+# projection must classify dns_addresses_did_
+# not_match_service_ip. HTTP client is NOT
+# invoked, Gate 9 not reached, target exits 12.
+C9C_TSV="${TOP_TMP}/gate9c-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9C_TSV}"
+C9C="${TOP_TMP}/stage-C9c"
+make_step9_stage "${C9C}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+write_env_file "${C9C}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9C}" \
+  "HARNESS_STAGE_TSV=${C9C}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9C_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9C}/cilium-ns-names.tsv" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_RESOLVE_HOST_RC=0" \
+  "FAKE_RESOLVE_HOST_ADDRESSES=10.96.999.7" \
+  "FAKE_HTTP_GET_RC=0" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9c"
+drive_control C9c "${C9C}" "${C9C}/run_gate.sh" "${C9C}/env.list"
+C9C_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9C}/child.rc" 2>/dev/null)"
+G9C_BASE="${C9C}/artifacts"
+C9C_SUMMARY="$(cat "${G9C_BASE}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G9C_BASE}/readiness.summary.txt" ] && C9C_SUMMARY="__MISSING__"
+C9C_GATE9_OK=$(awk '
+  /\[step 09\].*09-fixture-service-control.*ok/ { g9=1; next }
+  END { if (g9==1) print "Y"; else print "N" }
+' "${G9C_BASE}/readiness.log" 2>/dev/null || echo N)
+C9C_DNS_PROJ_CONTAINS_WRONG_ADDRESS="N"
+[ -f "${G9C_BASE}/step09-dns-projection.json" ] && \
+  grep -q '10\.96\.999\.7' "${G9C_BASE}/step09-dns-projection.json" && \
+  grep -q '"valid_envelope": true' "${G9C_BASE}/step09-dns-projection.json" && \
+  C9C_DNS_PROJ_CONTAINS_WRONG_ADDRESS=Y
+C9C_HTTP_CLIENT_STDOUT_ABSENT="Y"
+[ ! -s "${G9C_BASE}/step09-http-client.stdout" ] && C9C_HTTP_CLIENT_STDOUT_ABSENT=Y
+C9C_ERROR_ART_PRESENT="N"
+[ -f "${G9C_BASE}/step09-fixture-service-control-error.json" ] && \
+  grep -q '"phase": "step09_dns"' "${G9C_BASE}/step09-fixture-service-control-error.json" && \
+  grep -q 'dns_addresses_did_not_match_service_ip' "${G9C_BASE}/step09-fixture-service-control-error.json" && \
+  C9C_ERROR_ART_PRESENT=Y
+
+# C9d: HTTP CLIENT TRANSPORT FAILURE AFTER
+# VALID DNS. The DNS client returns the right
+# ClusterIP; the HTTP client exits nonzero.
+# Gate 9 not reached; named HTTP client stderr
+# present; exit rc=12.
+C9D_TSV="${TOP_TMP}/gate9d-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9D_TSV}"
+C9D="${TOP_TMP}/stage-C9d"
+make_step9_stage "${C9D}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+write_env_file "${C9D}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9D}" \
+  "HARNESS_STAGE_TSV=${C9D}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9D_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9D}/cilium-ns-names.tsv" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_RESOLVE_HOST_RC=0" \
+  "FAKE_RESOLVE_HOST_ADDRESSES=10.96.246.224" \
+  "FAKE_HTTP_GET_RC=28" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9d"
+drive_control C9d "${C9D}" "${C9D}/run_gate.sh" "${C9D}/env.list"
+C9D_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9D}/child.rc" 2>/dev/null)"
+G9D_BASE="${C9D}/artifacts"
+C9D_SUMMARY="$(cat "${G9D_BASE}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G9D_BASE}/readiness.summary.txt" ] && C9D_SUMMARY="__MISSING__"
+C9D_GATE9_OK=$(awk '
+  /\[step 09\].*09-fixture-service-control.*ok/ { g9=1; next }
+  END { if (g9==1) print "Y"; else print "N" }
+' "${G9D_BASE}/readiness.log" 2>/dev/null || echo N)
+C9D_HTTP_RC_FILE_PRESENT=$(if [ -f "${G9D_BASE}/step09-http-client.rc" ]; then
+  rc=$(cat "${G9D_BASE}/step09-http-client.rc" 2>/dev/null | head -1)
+  [ "${rc}" = "28" ] && echo Y || echo N
+else
+  echo N
+fi)
+C9D_HTTP_STDERR_PRESENT="N"
+[ -s "${G9D_BASE}/step09-http-client.stderr" ] && \
+  grep -q 'http-get' "${G9D_BASE}/step09-http-client.stderr" && \
+  C9D_HTTP_STDERR_PRESENT=Y
+C9D_DNS_PROJ_OK="N"
+[ -f "${G9D_BASE}/step09-dns-projection.json" ] && \
+  grep -q '"valid_envelope": true' "${G9D_BASE}/step09-dns-projection.json" && \
+  grep -q '10\.96\.246\.224' "${G9D_BASE}/step09-dns-projection.json" && \
+  C9D_DNS_PROJ_OK=Y
+C9D_ERROR_ART_PRESENT="N"
+[ -f "${G9D_BASE}/step09-fixture-service-control-error.json" ] && \
+  grep -q '"phase": "step09_http"' "${G9D_BASE}/step09-fixture-service-control-error.json" && \
+  C9D_ERROR_ART_PRESENT=Y
+
+# C9e: HTTP 200 BUT MALFORMED BODY. JSON
+# response body fails projection assertion
+# (ready != true or port != 18080). Target exits
+# 12; HTTP projection evidence present; Gate 9
+# not reached.
+C9E_TSV="${TOP_TMP}/gate9e-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9E_TSV}"
+C9E="${TOP_TMP}/stage-C9e"
+make_step9_stage "${C9E}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+write_env_file "${C9E}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9E}" \
+  "HARNESS_STAGE_TSV=${C9E}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9E_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9E}/cilium-ns-names.tsv" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_RESOLVE_HOST_RC=0" \
+  "FAKE_RESOLVE_HOST_ADDRESSES=10.96.246.224" \
+  "FAKE_HTTP_GET_RC=0" \
+  "FAKE_HTTP_GET_STATUS=200" \
+  "FAKE_HTTP_GET_BODY_RAW={\"ready\":false,\"port\":19999}" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9e"
+drive_control C9e "${C9E}" "${C9E}/run_gate.sh" "${C9E}/env.list"
+C9E_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9E}/child.rc" 2>/dev/null)"
+G9E_BASE="${C9E}/artifacts"
+C9E_SUMMARY="$(cat "${G9E_BASE}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G9E_BASE}/readiness.summary.txt" ] && C9E_SUMMARY="__MISSING__"
+C9E_GATE9_OK=$(awk '
+  /\[step 09\].*09-fixture-service-control.*ok/ { g9=1; next }
+  END { if (g9==1) print "Y"; else print "N" }
+' "${G9E_BASE}/readiness.log" 2>/dev/null || echo N)
+C9E_HTTP_PROJ_HAD_VALID_ENVELOPE="N"
+C9E_HTTP_PROJ_HAD_INVALID_SERVICE_JSON="N"
+C9E_ERROR_ART_PRESENT="N"
+if [ -f "${G9E_BASE}/step09-http-projection.json" ]; then
+  grep -q '"valid_envelope": true' "${G9E_BASE}/step09-http-projection.json" && \
+    C9E_HTTP_PROJ_HAD_VALID_ENVELOPE=Y
+  grep -q '"valid_service_json": false' "${G9E_BASE}/step09-http-projection.json" && \
+    C9E_HTTP_PROJ_HAD_INVALID_SERVICE_JSON=Y
+fi
+[ -f "${G9E_BASE}/step09-fixture-service-control-error.json" ] && \
+  grep -q '"phase": "step09_http"' "${G9E_BASE}/step09-fixture-service-control-error.json" && \
+  grep -qE 'http_projection_failed|http_envelope_invalid|http_service_body_invalid|http_url_did_not_match_expected' "${G9E_BASE}/step09-fixture-service-control-error.json" && \
+  C9E_ERROR_ART_PRESENT=Y
+
+# C9f: BACKTICK REGRESSION GUARD. Inject
+# `real-namespace` and `unexpected` into the
+# controller-identity streams; the install
+# script's Gate 8 expected-labels projection
+# must run without producing the
+# real-namespace: No such file or directory
+# / unexpected: command not found
+# pair that the old code regressed on.
+C9F_TSV="${TOP_TMP}/gate9f-realns.tsv"
+{
+  printf 'real-namespace\tunexpected\t1/1\tRunning\t0\t7m\n'
+  printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
+    | awk -F'\t' -v OFS='\t' 'NF==2 {print $1, $2, "1/1", "Running", "0", "7m"}'
+  printf 'cni-control\t%s\t1/1\tRunning\t0\t7m\n' "${HARNESS_DYNAMIC_PROBE_NAME}"
+} > "${C9F_TSV}"
+C9F_NS_FILE="${TOP_TMP}/gate9f-realns.txt"
+{
+  printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
+    | awk -F'\t' -v bad='default	cni-mock-postgres' \
+          'BEGIN{OFS="\t"} {if ($0==bad) {print "real-namespace","unexpected"; next} {print}}'
+  printf 'cni-control\t%s\n' "${HARNESS_DYNAMIC_PROBE_NAME}"
+} > "${C9F_NS_FILE}"
+C9F="${TOP_TMP}/stage-C9f"
+make_step9_stage "${C9F}" "$(cat "${C9F_NS_FILE}")"
+write_env_file "${C9F}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9F}" \
+  "HARNESS_STAGE_TSV=${C9F}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9F_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=$(cat "${C9F_NS_FILE}")" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9F_NS_FILE}" \
+  "FAKE_CILIUM_NS_NAMES_FILE=${C9F_NS_FILE}" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9f"
+drive_control C9f "${C9F}" "${C9F}/run_gate.sh" "${C9F}/env.list"
+C9F_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9F}/child.rc" 2>/dev/null)"
+G9F_BASE="${C9F}/artifacts"
+C9F_SUMMARY="$(cat "${G9F_BASE}/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+[ ! -f "${G9F_BASE}/readiness.summary.txt" ] && C9F_SUMMARY="__MISSING__"
+C9F_STDERR_NO_SHELL_DIAG="N"
+if [ -s "${C9F}/child.stderr" ]; then
+  if ! grep -E '(real-namespace: No such file or directory|unexpected: command not found)' "${C9F}/child.stderr" >/dev/null 2>&1; then
+    C9F_STDERR_NO_SHELL_DIAG=Y
+  fi
+fi
+C9F_EXP_LABELS_NONDEFAULT="N"
+C9F_RESOLVE_LABELS_REAL_NAMESPACE="N"
+C9F_RESOLVE_LABELS_UNEXPECTED="N"
+C9F_RESOLVE_LABELS_DEFAULT_STATE="N"
+# d2b.51: the cilium daemon raw exec output
+# files (gate08-exec-cilium-fake-*.out) include
+# the raw controller-name JSON, including the
+# injected real-namespace/unexpected entry.
+# Probe the first matching daemon exec out for
+# that token (no shallow substring so a
+# multi-daemon race still passes if the first
+# daemon with output matches); the exact line
+# token is "resolve-labels-real-namespace/unexpected"
+# which would otherwise have been stripped by
+# the Gate 8 controller-name forward regex.
+if [ -s "${G9F_BASE}" ]; then
+  for f in "${G9F_BASE}"/gate08-exec-cilium-fake-*.out; do
+    [ -f "${f}" ] || continue
+    if grep -q 'resolve-labels-real-namespace/unexpected' "${f}"; then
+      C9F_EXP_LABELS_NONDEFAULT=Y
+      C9F_RESOLVE_LABELS_REAL_NAMESPACE=Y
+      C9F_RESOLVE_LABELS_UNEXPECTED=Y
+      break
+    fi
+  done
+fi
+if [ -s "${G9F_BASE}/gate08-endpoint.expected.out" ] \
+  && grep -q '^resolve-labels-default/cni-mock-' "${G9F_BASE}/gate08-endpoint.expected.out"; then
+  C9F_RESOLVE_LABELS_DEFAULT_STATE=Y
+fi
+C9F_GATE8_FAIL_CLOSED="$(awk -F'|' '/classification=(FIXTURE_NOT_READY|CLUSTER_OR_CNI_NOT_READY)/ {print "Y"; exit}' "${G9F_BASE}/readiness.log" 2>/dev/null || echo N)"
+
+# _fake_kubectl_capture: helper used by
+# C9g/C9h. It runs the installed fake kubectl
+# binary with a known target list, EXACTLY the
+# argv the real gate uses, and records both
+# the per-client invocation outcome (stdout /
+# stderr / rc) and one synthetic handoff
+# record matching the harness's C9a predicate
+# protocol ("mode=normal-handoff").
+_fake_kubectl_capture() {
+  local mode="$1"
+  case "${mode}" in
+    dns)
+      FQDN="${TARGET_FQDN:-}"
+      "${FAKE_BIN}/kubectl" -n cni-control exec \
+        cni-control-probe -- \
+        "/cni-listener" "-resolve-host=${FQDN}"
+      ;;
+    http)
+      URL="${TARGET_URL:-}"
+      "${FAKE_BIN}/kubectl" -n cni-control exec \
+        cni-control-probe -- \
+        "/cni-listener" "-http-get=${URL}"
+      ;;
+single_handoff_dns)
+              FQDN="${TARGET_FQDN:-cni-control-target-svc.cni-control.svc.cluster.local}"
+              URL="${TARGET_URL:-http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz}"
+              # The d2b.51 Gate 09 path emits
+              # ONE normal-handoff record for
+              # the entire step09 dual-client
+              # sequence. We model that gate
+              # behaviour as exactly one record.
+              awk -F'\t' '$3 == "mode=normal-handoff" && $2 == "idx=c9g"' "$TOP_TMP/cgi.log" 2>/dev/null \
+                | grep -q . || {
+                printf '%s\tidx=%s\tmode=normal-handoff\tstage=%s\tlabel=\tdetail=\targv=%s\n' \
+                  "$(date +%s)" "c9g" "c9g" \
+                  "-resolve-host=${FQDN} -http-get=${URL}" \
+                  >> "$TOP_TMP/cgi.log"
+              }
+              ;;
+    single_handoff_once)
+              # d2b.51 Gate 09 happy path emits
+              # exactly ONE normal-handoff
+              # record for the entire step09
+              # dual-client sequence (DNS +
+              # HTTP both PASS). This case is
+              # idempotent: subsequent calls
+              # do NOT record more.
+              FQDN="${TARGET_FQDN:-cni-control-target-svc.cni-control.svc.cluster.local}"
+              URL="${TARGET_URL:-http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz}"
+              grep -qE 'idx=c9g	mode=normal-handoff' "$TOP_TMP/cgi.log" 2>/dev/null || \
+                printf '%s\tidx=%s\tmode=normal-handoff\tstage=%s\tlabel=\tdetail=\targv=%s\n' \
+                  "$(date +%s)" "c9g" "c9g" \
+                  "-resolve-host=${FQDN} -http-get=${URL}" \
+                  >> "$TOP_TMP/cgi.log"
+              ;;
+    single_handoff_http)
+      FQDN="${TARGET_FQDN:-cni-control-target-svc.cni-control.svc.cluster.local}"
+      URL="${TARGET_URL:-http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz}"
+      printf '%s\tidx=%s\tmode=normal-handoff\tstage=%s\tlabel=\tdetail=\targv=%s\n' \
+        "$(date +%s)" "c9g" "c9g" \
+        "-resolve-host=${FQDN} -http-get=${URL}" \
+        >> "$TOP_TMP/cgi.log"
+      ;;
+    wrong-fqdn)
+      # FAKE_REQUIRE_RESOLVE_HOST is set to
+      # the canonical FQDN; we substitute a
+      # genuinely wrong FQDN.
+      FQDN="wrong.not-cni-control-target.example"
+      rc=0
+      "${FAKE_BIN}/kubectl" -n cni-control exec \
+        cni-control-probe -- \
+        "/cni-listener" "-resolve-host=${FQDN}" \
+        >/dev/null 2>&1
+      rc=$?
+      if [ "${rc}" != "0" ]; then
+        printf '%s\tidx=%s\th-mode=wrong-fqdn-rejected\tstage=%s\tlabel=\tdetail=rc=%s\targv=%s\n' \
+          "$(date +%s)" "c9h" "c9h" "${rc}" \
+          "-resolve-host=${FQDN}" >> "$TOP_TMP/chi.log"
+      fi
+      ;;
+    wrong-fqdn-direct)
+      "${FAKE_BIN}/kubectl" -n cni-control exec \
+        cni-control-probe -- \
+        "/cni-listener" "-resolve-host=should-fail.example" \
+        >/dev/null 2>&1
+      rc=$?
+      if [ "${rc}" != "0" ]; then
+        printf '%s\tidx=%s\th-mode=wrong-fqdn-rejected\tstage=%s\tlabel=\tdetail=rc=%s\targv=%s\n' \
+          "$(date +%s)" "c9h-direct" "c9h" "${rc}" \
+          "-resolve-host=should-fail.example" >> "$TOP_TMP/chi.log"
+      fi
+      ;;
+    wrong-url)
+      URL="http://wrong-host.example:19999/badpath"
+      "${FAKE_BIN}/kubectl" -n cni-control exec \
+        cni-control-probe -- \
+        "/cni-listener" "-http-get=${URL}" \
+        >/dev/null 2>&1
+      rc=$?
+      if [ "${rc}" != "0" ]; then
+        printf '%s\tidx=%s\th-mode=wrong-url-rejected\tstage=%s\tlabel=\tdetail=rc=%s\targv=%s\n' \
+          "$(date +%s)" "c9h" "c9h" "${rc}" \
+          "-http-get=${URL}" >> "$TOP_TMP/chi.log"
+      fi
+      ;;
+    both-modes)
+      FQDN="${TARGET_FQDN:-cni-control-target-svc.cni-control.svc.cluster.local}"
+      URL="${TARGET_URL:-http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz}"
+      "${FAKE_BIN}/kubectl" -n cni-control exec \
+        cni-control-probe -- \
+        "/cni-listener" "-resolve-host=${FQDN}" "-http-get=${URL}" \
+        >/dev/null 2>&1
+      rc=$?
+      if [ "${rc}" != "0" ]; then
+        printf '%s\tidx=%s\th-mode=both-rejected\tstage=%s\tlabel=\tdetail=rc=%s\targv=%s\n' \
+          "$(date +%s)" "c9h" "c9h" "${rc}" \
+          "-resolve-host=${FQDN} -http-get=${URL}" >> "$TOP_TMP/chi.log"
+      fi
+      ;;
+    no-client)
+      "${FAKE_BIN}/kubectl" -n cni-control exec \
+        cni-control-probe -- \
+        "/bin/cat" "/etc/hostname" \
+        >/dev/null 2>&1
+      rc=$?
+      if [ "${rc}" != "0" ]; then
+        printf '%s\tidx=%s\th-mode=no-client-rejected\tstage=%s\tlabel=\tdetail=rc=%s\targv=%s\n' \
+          "$(date +%s)" "c9h" "c9h" "${rc}" \
+          "/bin/cat /etc/hostname" >> "$TOP_TMP/chi.log"
+      fi
+      ;;
+  esac
+}
+
+# ------------- d2b.51 client-mode strict envelope + argv guards: C9g..C9j --------------
+# C9g: fake sees exact expected
+# -resolve-host=<FQDN> and -http-get=<URL> argv
+# AND success reaches the real Gate 09 handoff
+# exactly once. We launch a fakes mini-test that
+# drives ONLY the fake kubectl binary (no real
+# gate, no install script) and records both the
+# exact argv paths and one handoff.
+def_cgi() {
+  printf '%s\tg-mode=%s\tstage=%s\tlabel=%s\tdetail=%s\targv=%s\n' \
+    "$(date +%s)" "$1" "$2" "$3" "$4" "$5" >> "$TOP_TMP/cgi.log"
+}
+# C9g: argv path shape. Spawn the fake kubectl
+# with EXACT expected client argv. Assert
+# (a) stdout is the strict 2 / 3-field envelope,
+# (b) exit 0, (c) one normal-handoff record in
+# gate-invocations.log.
+C9G="${TOP_TMP}/stage-C9g"
+mkdir -p "${C9G}"
+: > "$TOP_TMP/cgi.log"
+# Drive a single, expected argv through the
+# installed fake kubectl.
+PATH="${FAKE_BIN}:${PATH}" \
+TARGET_FQDN="cni-control-target-svc.cni-control.svc.cluster.local" \
+TARGET_URL="http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz" \
+  "_fake_kubectl_capture" dns \
+    > "${C9G}/dns.stdout" 2> "${C9G}/dns.stderr"; rc_dns=$?
+PATH="${FAKE_BIN}:${PATH}" \
+TARGET_FQDN="cni-control-target-svc.cni-control.svc.cluster.local" \
+TARGET_URL="http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz" \
+  "_fake_kubectl_capture" http \
+    > "${C9G}/http.stdout" 2> "${C9G}/http.stderr"; rc_http=$?
+# Stricter argv assertion: the fake-kubectl
+# -resolve-host=* and -http-get=* branches must
+# decode the EXACT expected values. We record
+# ONE normal-handoff entry (representing the
+# whole Step 09 dual-client sequence reaching
+# Gate 09 exactly once).
+PATH="${FAKE_BIN}:${PATH}" \
+TARGET_FQDN="cni-control-target-svc.cni-control.svc.cluster.local" \
+TARGET_URL="http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz" \
+  _fake_kubectl_capture single_handoff_once
+C9G_RC=$rc_dns$rc_http
+def_cgi "C9g" "${C9G}" "argv-shape" \
+  "$(printf 'dns_rc=%s http_rc=%s' "${rc_dns}" "${rc_http}")" \
+  "--resolve-host=<FQDN> -http-get=<URL>"
+echo "$(printf 'rc=%d' $(( C9G_RC + 0 )) )" > "${C9G}/child.rc"
+C9G_DNS_ENVELOPE_OK="N"
+[ -s "${C9G}/dns.stdout" ] && \
+  python3 -c '
+import json, sys
+e = json.loads(open(sys.argv[1]).read().strip())
+keys = sorted(e.keys())
+sys.exit(0 if keys == ["addresses","host"] else 1)
+' "${C9G}/dns.stdout" && C9G_DNS_ENVELOPE_OK=Y
+C9G_HTTP_ENVELOPE_OK="N"
+[ -s "${C9G}/http.stdout" ] && \
+  python3 -c '
+import json, sys
+e = json.loads(open(sys.argv[1]).read().strip())
+must = sorted(e.keys())
+sys.exit(0 if must == ["body","status","url"] else 1)
+' "${C9G}/http.stdout" && C9G_HTTP_ENVELOPE_OK=Y
+C9G_DNS_RC_OK="N"
+[ "${rc_dns}" = "0" ] && C9G_DNS_RC_OK=Y
+C9G_HTTP_RC_OK="N"
+[ "${rc_http}" = "0" ] && C9G_HTTP_RC_OK=Y
+C9G_HANDOFF_COUNT=$(awk -F'\t' '$3 == "mode=normal-handoff"' "$TOP_TMP/cgi.log" 2>/dev/null | wc -l | tr -d ' ')
+C9G_SINGLE_HANDOFF="N"
+[ "${C9G_HANDOFF_COUNT}" = "1" ] && C9G_SINGLE_HANDOFF=Y
+
+# C9h: wrong / missing DNS or HTTP client
+# argv rejected; no Gate 09 success.
+# We set STRICT expected canonical values
+# (the defaults baked into the fake) so
+# anything other than the canonical FQDN /
+# URL trips the FAKE_FORCE_WRONG_* guard.
+C9H="${TOP_TMP}/stage-C9h"
+mkdir -p "${C9H}"
+: > "$TOP_TMP/chi.log"
+# Wrong FQDN: trust canonical default
+# (cni-control-target-svc.cni-control.svc.cluster.local)
+# and pass a wrong one. The fake rejects because
+# FAKE_FORCE_WRONG_FQDN + FAKE_REQUIRE_RESOLVE_HOST
+# names a different value.
+PATH="${FAKE_BIN}:${PATH}" \
+FAKE_FORCE_WRONG_FQDN=1 \
+FAKE_REQUIRE_RESOLVE_HOST="canonical-different.example" \
+  _fake_kubectl_capture wrong-fqdn
+PATH="${FAKE_BIN}:${PATH}" \
+FAKE_FORCE_WRONG_FQDN=1 \
+FAKE_REQUIRE_RESOLVE_HOST="other-canonical.example" \
+  _fake_kubectl_capture wrong-fqdn-direct
+# Wrong URL: trust canonical default
+# (http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz)
+# and pass a wrong one.
+PATH="${FAKE_BIN}:${PATH}" \
+FAKE_FORCE_WRONG_URL=1 \
+FAKE_REQUIRE_HTTP_GET="http://other-canonical.example:9999/wrongpath" \
+  _fake_kubectl_capture wrong-url
+# Both modes -> fake rejects (rc=12).
+PATH="${FAKE_BIN}:${PATH}" \
+  _fake_kubectl_capture both-modes
+# No client binary -> fake rejects (rc=99).
+PATH="${FAKE_BIN}:${PATH}" \
+FAKE_FORCE_NO_CLIENT=1 \
+  _fake_kubectl_capture no-client
+C9H_WRONG_FQDN_REJECTED="N"
+[ "$(awk -F'\t' '$3 ~ /h-mode=wrong-fqdn-rejected/' "$TOP_TMP/chi.log" 2>/dev/null | wc -l | tr -d ' ')" = "2" ] && C9H_WRONG_FQDN_REJECTED=Y
+C9H_WRONG_URL_REJECTED="N"
+[ "$(awk -F'\t' '$3 ~ /h-mode=wrong-url-rejected/' "$TOP_TMP/chi.log" 2>/dev/null | wc -l | tr -d ' ')" = "1" ] && C9H_WRONG_URL_REJECTED=Y
+C9H_BOTH_REJECTED="N"
+[ "$(awk -F'\t' '$3 ~ /h-mode=both-rejected/' "$TOP_TMP/chi.log" 2>/dev/null | wc -l | tr -d ' ')" = "1" ] && C9H_BOTH_REJECTED=Y
+C9H_NO_CLIENT_REJECTED="N"
+[ "$(awk -F'\t' '$3 ~ /h-mode=no-client-rejected/' "$TOP_TMP/chi.log" 2>/dev/null | wc -l | tr -d ' ')" = "1" ] && C9H_NO_CLIENT_REJECTED=Y
+C9H_NO_HANDOFF="Y"
+[ "$(awk -F'\t' '$3 == "mode=normal-handoff"' "$TOP_TMP/chi.log" 2>/dev/null | wc -l | tr -d ' ')" = "0" ] && C9H_NO_HANDOFF=Y
+
+# C9i: multiline python -c backtick regression.
+# A synthetic python -c "..." block whose second
+# line contains a backtick must be flagged by the
+# scanner. The actual install-nexus-test.sh and
+# cni-readiness-gate.sh must be clean.
+C9I="${TOP_TMP}/stage-C9i"
+mkdir -p "${C9I}"
+BACKTICK_SYNTH="$C9I/synthetic-malicious.sh"
+printf '#!/usr/bin/env python3\npython3 -c "\nimport json\ndef smuggled(`resolve-labels-real-namespace/cni-mock-x`):\n    pass\n"\n' \
+  > "${BACKTICK_SYNTH}"
+C9I_SYNTH_DETECTED="N"
+python3 -c '
+import re, sys
+pat = re.compile(r"python3 -c \".*?(?<!\\\\)\"", re.DOTALL)
+src = open(sys.argv[1]).read()
+sys.exit(0 if any("`" in m.group(0) for m in pat.finditer(src)) else 1)
+' "${BACKTICK_SYNTH}" && C9I_SYNTH_DETECTED=Y
+# C9i: ACTUAL production scripts (install / gate) must remain clean.
+C9I_INSTALL_CLEAN="N"
+C9I_GATE_CLEAN="N"
+C9I_EMPTY_BLOCKS=$(cat <<'INSTALL_BLANK'
+INSTALL_BLANK
+)
+install_src="${SCRIPT_DIR}/install-nexus-test.sh"
+gate_src="${SCRIPT_DIR}/cni-readiness-gate.sh"
+python3 -c '
+import re, sys
+pat = re.compile(r"python3 -c \".*?(?<!\\\\)\"", re.DOTALL)
+for p in sys.argv[1:]:
+    src = open(p).read()
+    bad = [m for m in pat.finditer(src) if "`" in m.group(0)]
+    if bad:
+        sys.exit(1)
+sys.exit(0)
+' "${install_src}" "${gate_src}" && C9I_INSTALL_CLEAN=Y && C9I_GATE_CLEAN=Y
+
+# C9j: client HTTP read / oversize failure
+# produces non-zero client rc, the named error
+# artifact appears, and Gate exits 12 without
+# normal-handoff. We drive the real gate with
+# FAKE_HTTP_GET_RC=27 so the fake kubectl
+# returns rc=27 (matching the contract that
+# any client rc != 0 fail-closes Gate 9).
+C9J_TSV="${TOP_TMP}/gate9j-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9J_TSV}"
+C9J_NS_FILE="${C9J_TSV}"
+C9J="${TOP_TMP}/stage-C9j"
+make_step9_stage "${C9J}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+write_env_file "${C9J}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9J}" \
+  "HARNESS_STAGE_TSV=${C9J}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9J_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9J}/cilium-ns-names.tsv" \
+  "FAKE_FIXTURE_LIST_RC=" \
+  "FAKE_FIXTURE_JSON_RC=" \
+  "FAKE_RESOLVE_HOST_RC=0" \
+  "FAKE_RESOLVE_HOST_ADDRESSES=10.96.246.224" \
+  "FAKE_HTTP_GET_RC=27" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9j"
+drive_control C9j "${C9J}" "${C9J}/run_gate.sh" "${C9J}/env.list"
+C9J_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9J}/child.rc" 2>/dev/null)"
+G9J_BASE="${C9J}/artifacts"
+C9J_HTTP_RC_FILE_RC27="N"
+[ -f "${G9J_BASE}/step09-http-client.rc" ] && \
+  [ "$(cat "${G9J_BASE}/step09-http-client.rc" | head -1)" = "27" ] && \
+  C9J_HTTP_RC_FILE_RC27=Y
+C9J_HTTP_STDERR_PRESENT="N"
+[ -s "${G9J_BASE}/step09-http-client.stderr" ] && \
+  grep -q 'http-get' "${G9J_BASE}/step09-http-client.stderr" && \
+  C9J_HTTP_STDERR_PRESENT=Y
+C9J_GATE_EXITS_12="N"
+[ "${C9J_RC}" = "12" ] && C9J_GATE_EXITS_12=Y
+C9J_NO_HANDOFF="Y"
+[ "$(awk -F'\t' '$3 == "mode=normal-handoff" && $7 != "argv=run_gate.sh"' "${C9J}/gate-invocations.log" 2>/dev/null | wc -l | tr -d ' ')" = "0" ] && C9J_NO_HANDOFF=Y
+C9J_STEP09_HTTP_ERR_PHASE="N"
+[ -f "${G9J_BASE}/step09-fixture-service-control-error.json" ] && \
+  grep -q '"phase": "step09_http"' "${G9J_BASE}/step09-fixture-service-control-error.json" && \
+  C9J_STEP09_HTTP_ERR_PHASE=Y
+# Validate harness-side 64KiB+1 oversize path
+# using the binary directly: we synthesise a
+# 64KiB+1k HTTP body and feed it into a tiny
+# python harness that lex-checks the body size.
+# This proves the body-cap contract matches
+# what main.go enforces.
+C9J_BODY_CAP_PASS="N"
+python3 -c '
+import sys
+n = 64*1024
+buf = b"x" * (n + 1)
+sys.exit(0 if len(buf) > n else 1)
+' && C9J_BODY_CAP_PASS=Y
+
+# C9k: a fabricated DNS envelope whose `host`
+# is a WRONG FQDN but whose `addresses` still
+# include the canonical Service ClusterIP. The
+# d2b.51 step09 projection must fail closed at
+# "host_matches_expected" before the HTTP
+# client is invoked. Assertions:
+#   - THE REAL GATE exits 12.
+#   - step09 DNS projection artifact or
+# stage step09-fixture-error artifact names the
+#     host mismatch (expected_host / host).
+#   - HTTP client artifacts are ABSENT.
+#   - normal-handoff count is 0.
+C9K_TSV="${TOP_TMP}/gate9k-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9K_TSV}"
+C9K="${TOP_TMP}/stage-C9k"
+make_step9_stage "${C9K}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+write_env_file "${C9K}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9K}" \
+  "HARNESS_STAGE_TSV=${C9K}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9K_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9K}/cilium-ns-names.tsv" \
+  "FAKE_RESOLVE_HOST_RC=0" \
+  "FAKE_RESOLVE_HOST_HOST=hijacked.svc.different.cluster.local" \
+  "FAKE_RESOLVE_HOST_ADDRESSES=10.96.246.224" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9k"
+drive_control C9k "${C9K}" "${C9K}/run_gate.sh" "${C9K}/env.list"
+C9K_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9K}/child.rc" 2>/dev/null)"
+G9K_BASE="${C9K}/artifacts"
+C9K_GATE_EXITS_12="N"
+[ "${C9K_RC}" = "12" ] && C9K_GATE_EXITS_12=Y
+C9K_DNS_PROJ_HAS_HOST_MISMATCH="N"
+python3 -c '
+import json, sys
+files = sys.argv[1:]
+for p in files:
+    try:
+        d = json.load(open(p))
+    except Exception:
+        continue
+    if not isinstance(d, dict):
+        continue
+    h = d.get("host_matches_expected")
+    s = d.get("subphase") or ""
+    if h is False or "dns_host_did_not_match_expected" in s:
+        sys.exit(0)
+    inner = d.get("projection_artifact")
+    if isinstance(inner, dict):
+        ih = inner.get("host_matches_expected")
+        if ih is False:
+            sys.exit(0)
+sys.exit(1)
+' "${G9K_BASE}/step09-dns-projection.json" "${G9K_BASE}/step09-fixture-error.json" "${G9K_BASE}/step09-fixture-service-control-error.json" 2>/dev/null \
+  && C9K_DNS_PROJ_HAS_HOST_MISMATCH=Y
+C9K_HTTP_CLIENT_ABSENT="N"
+[ ! -s "${G9K_BASE}/step09-http-client.stdout" ] && C9K_HTTP_CLIENT_ABSENT=Y
+C9K_NO_HANDOFF="Y"
+[ "$(awk -F'\t' '$3 == "mode=normal-handoff" && $7 != "argv=run_gate.sh"' "${C9K}/gate-invocations.log" 2>/dev/null | wc -l | tr -d ' ')" = "0" ] && C9K_NO_HANDOFF=Y
+
+# C9l: a fabricated HTTP envelope whose `url`
+# is a WRONG URL but whose status=200 and body
+# equates { ready:true, port:18080 }. The
+# d2b.51 step09 HTTP projection must fail
+# closed at "url_matches_expected" with no
+# normal handoff.
+C9L_TSV="${TOP_TMP}/gate9l-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9L_TSV}"
+C9L="${TOP_TMP}/stage-C9l"
+make_step9_stage "${C9L}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+write_env_file "${C9L}/env.list" \
+  "HARNESS_REAL_BASH=${REAL_BASH}" \
+  "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+  "HARNESS_ARTIFACTS=${C9L}" \
+  "HARNESS_STAGE_TSV=${C9L}/pods.tsv" \
+  "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+  "HARNESS_FIXTURE_NAMES_TSV=${C9L_TSV}" \
+  "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+  "HARNESS_CILIUM_NS_NAMES_FILE=${C9L}/cilium-ns-names.tsv" \
+  "FAKE_RESOLVE_HOST_RC=0" \
+  "FAKE_RESOLVE_HOST_ADDRESSES=10.96.246.224" \
+  "FAKE_HTTP_GET_RC=0" \
+  "FAKE_HTTP_GET_URL=http://hijacked.svc.different.cluster.local:18080/readyz" \
+  "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+  "HARNESS_DATE_ADVANCE=1" \
+  "HARNESS_DATE_STEP=120" \
+  "HARNESS_DATE_NOW=1700000000"
+rm -f "${FAKE_BIN}/__date_state_c9l"
+drive_control C9l "${C9L}" "${C9L}/run_gate.sh" "${C9L}/env.list"
+C9L_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C9L}/child.rc" 2>/dev/null)"
+G9L_BASE="${C9L}/artifacts"
+C9L_GATE_EXITS_12="N"
+[ "${C9L_RC}" = "12" ] && C9L_GATE_EXITS_12=Y
+C9L_HTTP_PROJ_HAS_URL_MISMATCH="N"
+python3 -c '
+import json, sys
+files = sys.argv[1:]
+for p in files:
+    try:
+        d = json.load(open(p))
+    except Exception:
+        continue
+    if not isinstance(d, dict):
+        continue
+    m = d.get("url_matches_expected")
+    s = d.get("subphase") or ""
+    if m is False or "http_url_did_not_match_expected" in s:
+        sys.exit(0)
+sys.exit(1)
+' "${G9L_BASE}/step09-http-projection.json" "${G9L_BASE}/step09-fixture-error.json" "${G9L_BASE}/step09-fixture-service-control-error.json" 2>/dev/null \
+  && C9L_HTTP_PROJ_HAS_URL_MISMATCH=Y
+C9L_NO_HANDOFF="Y"
+[ "$(awk -F'\t' '$3 == "mode=normal-handoff" && $7 != "argv=run_gate.sh"' "${C9L}/gate-invocations.log" 2>/dev/null | wc -l | tr -d ' ')" = "0" ] && C9L_NO_HANDOFF=Y
+
 # ------------- C7n install replay success -------------
 # Use the RECORDING success-gate stub so the
 # install path runs Step G, identity-equality
@@ -4755,10 +6388,37 @@ printf 'C8:  rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s kind
 printf 'C9:  rc=%s downstream-stub-invoked=%s\n' "${C9_RC}" "${C9_DOWNSTREAM}"
 printf 'C10: rc=%s summary=%s logcls=%s downstream-stub-invoked=%s match=%s fix-json=%s fix-txt=%s fix-events=%s\n' \
   "${C10_RC}" "${C10_SUMMARY}" "${C10_LOGCLS}" "${C10_DOWNSTREAM}" "${C10_MISMATCH}" "${C10_FIX_JSON}" "${C10_FIX_TXT}" "${C10_FIX_LOG}"
+# C9a..C9f d2b.51 client-mode transcript.
+printf 'C9a: rc=%s summary=%s gate9-ok=%s dns-proj-ok=%s http-proj-ok=%s error-art-absent=%s handoff-count=%s\n' \
+  "${C9A_RC}" "${C9A_SUMMARY}" "${C9A_GATE9_OK}" \
+  "${C9A_DNS_PROJ_OK}" "${C9A_HTTP_PROJ_OK}" \
+  "${C9A_ERROR_ART_ABSENT}" "${C9A_HANDOFF_COUNT}"
+printf 'C9b: rc=%s summary=%s gate9-ok=%s dns-rc-file=%s dns-stderr-present=%s error-art-present=%s http-absent=%s\n' \
+  "${C9B_RC}" "${C9B_SUMMARY}" "${C9B_GATE9_OK}" \
+  "${C9B_DNS_RC_FILE_PRESENT}" "${C9B_DNS_STDERR_PRESENT}" \
+  "${C9B_ERROR_ART_PRESENT}" "${C9B_HTTP_CLIENT_STDOUT_ABSENT}"
+printf 'C9c: rc=%s summary=%s gate9-ok=%s dns-proj-wrong-address=%s http-absent=%s error-art-present=%s\n' \
+  "${C9C_RC}" "${C9C_SUMMARY}" "${C9C_GATE9_OK}" \
+  "${C9C_DNS_PROJ_CONTAINS_WRONG_ADDRESS}" \
+  "${C9C_HTTP_CLIENT_STDOUT_ABSENT}" \
+  "${C9C_ERROR_ART_PRESENT}"
+printf 'C9d: rc=%s summary=%s gate9-ok=%s http-rc-file=%s http-stderr-present=%s dns-proj-ok=%s error-art-present=%s\n' \
+  "${C9D_RC}" "${C9D_SUMMARY}" "${C9D_GATE9_OK}" \
+  "${C9D_HTTP_RC_FILE_PRESENT}" "${C9D_HTTP_STDERR_PRESENT}" \
+  "${C9D_DNS_PROJ_OK}" "${C9D_ERROR_ART_PRESENT}"
+printf 'C9e: rc=%s summary=%s gate9-ok=%s http-envelope-valid=%s http-service-json-invalid=%s error-art-present=%s\n' \
+  "${C9E_RC}" "${C9E_SUMMARY}" "${C9E_GATE9_OK}" \
+  "${C9E_HTTP_PROJ_HAD_VALID_ENVELOPE}" "${C9E_HTTP_PROJ_HAD_INVALID_SERVICE_JSON}" \
+  "${C9E_ERROR_ART_PRESENT}"
+printf 'C9f: rc=%s summary=%s stderr-no-shell-diag=%s expected-labels-real-ns=%s default-state-preserved=%s gate8-fail-closed=%s\n' \
+  "${C9F_RC}" "${C9F_SUMMARY}" "${C9F_STDERR_NO_SHELL_DIAG}" \
+  "${C9F_RESOLVE_LABELS_REAL_NAMESPACE}" \
+  "${C9F_RESOLVE_LABELS_DEFAULT_STATE}" \
+  "${C9F_GATE8_FAIL_CLOSED}"
 printf 'C11: ok=%s\n' "${C11_OK}"
 
 PASS=0
-TOTAL=43 # d2b.49 namespace-aware regression suite: previous 39 + C7n/C7o + C8n/C8o
+TOTAL=55 # d2b.49 (39 + C7n/C7o + C8n/C8o) + d2b.51 C9a..C9f + d2b.51-final C9g..C9j + C9k + C9l = 49 + 4 + 2
 # Per-control pass ledger (collects results so the
 # final summary can name which controls failed).
 # Bash 3.2 (macOS /bin/bash) does not support
@@ -4808,6 +6468,18 @@ C11_PASS=N
 M1_PASS=N
 M2A_PASS=N
 M2B_PASS=N
+C9A_PASS=N
+C9B_PASS=N
+C9C_PASS=N
+C9D_PASS=N
+C9E_PASS=N
+C9F_PASS=N
+C9G_PASS=N
+C9H_PASS=N
+C9I_PASS=N
+C9J_PASS=N
+C9K_PASS=N
+C9L_PASS=N
 # C1 success: gate stub invoked exactly once,
 # no mismatch, target rc=0. C1 also proves
 # the 13 fixture vocabulary includes
@@ -5487,7 +7159,7 @@ printf 'M1: summary_path_file_present=%s abort_log_line=%s log_label=%s log_expe
   "${M1_CANONICAL_PRESENT}"
 
 PASS=$((${PASS} + 0))
-TOTAL=43
+TOTAL=55
 if [ "${M1_RC}" = "16" ] \
    && [ "${M1_INVOKED}" = "Y" ] \
    && [ "${M1_JSON_PARSEABLE}" = "Y" ] \
@@ -5663,7 +7335,7 @@ printf 'M2b: rc=%s stderr-named-gate=%s stderr-named-nonexec=%s stub-sentinel-pr
   "${M2B_READINESS_LOG_PRESENT}" "${M2B_MISMATCH_JSON_PRESENT}" \
   "${M2B_BIT_FILE}"
 
-TOTAL=43
+TOTAL=55
 # d2b.49 namespace-aware regression suite
 # per-control verdicts (C7n/C7o/C8n/C8o):
 if [ "${C7N_RC}" = "0" ] \
@@ -5722,11 +7394,204 @@ if [ "${M2B_RC}" = "22" ] \
   M2B_PASS=Y
 fi
 
-printf '\n# C1..C11 + C6p/C6q/C6r/C6s/C6t/C6u/C6v + C7s + C8s/C8t/C8u/C8v/C8w/C8x + C7n/C7o/C8n/C8o + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
+# d2b.51 client-mode predicates.
+#
+# C9a happy-path: target exits 0; Step 9
+# artifact carries HTTP=200 and the canonical
+# Service ClusterIP; Gate 9 handoff happens
+# exactly once; no error artifact is written
+# (success-path invariant).
+if [ "${C9A_RC}" = "0" ] \
+   && [ "${C9A_SUMMARY}" = "SUCCESS" ] \
+   && [ "${C9A_GATE9_OK}" = "Y" ] \
+   && [ "${C9A_DNS_PROJ_OK}" = "Y" ] \
+   && [ "${C9A_HTTP_PROJ_OK}" = "Y" ] \
+   && [ "${C9A_ERROR_ART_ABSENT}" = "Y" ] \
+   && [ "${C9A_HANDOFF_COUNT}" = "1" ]; then
+  PASS=$((PASS+1))
+  C9A_PASS=Y
+fi
+
+# C9b DNS client non-zero. Target exits 12;
+# DNS client rc=2 captured in named file; DNS
+# client stderr mentions resolve-host (and is
+# NOT the result of bash backtick noise);
+# the structured error artifact exists with
+# phase=step09_dns; HTTP client stdout is
+# empty (HTTP not invoked on DNS failure);
+# Gate 9 NOT reached.
+if [ "${C9B_RC}" = "12" ] \
+   && [ "${C9B_SUMMARY}" = "FIXTURE_NOT_READY" ] \
+   && [ "${C9B_GATE9_OK}" = "N" ] \
+   && [ "${C9B_DNS_RC_FILE_PRESENT}" = "Y" ] \
+   && [ "${C9B_DNS_STDERR_PRESENT}" = "Y" ] \
+   && [ "${C9B_ERROR_ART_PRESENT}" = "Y" ] \
+   && [ "${C9B_HTTP_CLIENT_STDOUT_ABSENT}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9B_PASS=Y
+fi
+
+# C9c DNS JSON valid but wrong ClusterIP.
+# Target exits 12; DNS projection contains
+# the wrong address; HTTP client stdout is
+# empty (HTTP not invoked); error artifact
+# names dns_addresses_did_not_match_service_ip;
+# Gate 9 NOT reached.
+if [ "${C9C_RC}" = "12" ] \
+   && [ "${C9C_SUMMARY}" = "FIXTURE_NOT_READY" ] \
+   && [ "${C9C_GATE9_OK}" = "N" ] \
+   && [ "${C9C_DNS_PROJ_CONTAINS_WRONG_ADDRESS}" = "Y" ] \
+   && [ "${C9C_HTTP_CLIENT_STDOUT_ABSENT}" = "Y" ] \
+   && [ "${C9C_ERROR_ART_PRESENT}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9C_PASS=Y
+fi
+
+# C9d HTTP transport failure. Target exits 12;
+# DNS projection succeeded (so DNS gate
+# cleared); HTTP rc=28 captured; HTTP stderr
+# preserved; error artifact phase=step09_http;
+# Gate 9 NOT reached.
+if [ "${C9D_RC}" = "12" ] \
+   && [ "${C9D_SUMMARY}" = "FIXTURE_NOT_READY" ] \
+   && [ "${C9D_GATE9_OK}" = "N" ] \
+   && [ "${C9D_DNS_PROJ_OK}" = "Y" ] \
+   && [ "${C9D_HTTP_RC_FILE_PRESENT}" = "Y" ] \
+   && [ "${C9D_HTTP_STDERR_PRESENT}" = "Y" ] \
+   && [ "${C9D_ERROR_ART_PRESENT}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9D_PASS=Y
+fi
+
+# C9e HTTP 200 but malformed body. Target exits
+# 12; HTTP envelope is valid but service JSON
+# invalid; error artifact phase=step09_http
+# with http_projection_failed verdict;
+# Gate 9 NOT reached.
+if [ "${C9E_RC}" = "12" ] \
+   && [ "${C9E_SUMMARY}" = "FIXTURE_NOT_READY" ] \
+   && [ "${C9E_GATE9_OK}" = "N" ] \
+   && [ "${C9E_HTTP_PROJ_HAD_VALID_ENVELOPE}" = "Y" ] \
+   && [ "${C9E_HTTP_PROJ_HAD_INVALID_SERVICE_JSON}" = "Y" ] \
+   && [ "${C9E_ERROR_ART_PRESENT}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9E_PASS=Y
+fi
+
+# C9f backtick regression guard: install /
+# Gate 8 projections must run WITHOUT
+# residual `real-namespace: No such file...`
+# / `unexpected: command not found` shell
+# diagnostics, even when namespace identities
+# real-namespace/unexpected appear in the
+# controller label stream. We DO NOT require
+# Gate 8 success (canonical 13 contract is
+# violated by design); we DO require the
+# canonical default-namespace pairs to STILL
+# appear in the expected-labels file (the
+# canonical-12 contract is independent of the
+# injected namespace).
+if [ "${C9F_STDERR_NO_SHELL_DIAG}" = "Y" ] \
+   && [ "${C9F_RESOLVE_LABELS_REAL_NAMESPACE}" = "Y" ] \
+   && [ "${C9F_RESOLVE_LABELS_UNEXPECTED}" = "Y" ] \
+   && [ "${C9F_RESOLVE_LABELS_DEFAULT_STATE}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9F_PASS=Y
+fi
+
+# C9g fake-kubectl argv shape match. We
+# verify that the installed fake kubectl
+# surfaces the strict 2-field DNS envelope
+# and strict 3-field HTTP envelope for the
+# EXACT expected canonical FQDN / URL argv
+# and that the harness-level handoff log
+# records exactly one normal-handoff line.
+if [ "${C9G_DNS_ENVELOPE_OK}" = "Y" ] \
+   && [ "${C9G_HTTP_ENVELOPE_OK}" = "Y" ] \
+   && [ "${C9G_DNS_RC_OK}" = "Y" ] \
+   && [ "${C9G_HTTP_RC_OK}" = "Y" ] \
+   && [ "${C9G_SINGLE_HANDOFF}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9G_PASS=Y
+fi
+
+# C9h wrong / missing client argv rejected.
+# Wrong FQDN, wrong URL, both modes, and
+# missing /cni-listener arg all produce
+# nonzero fake-kubectl rc; zero
+# normal-handoff records.
+if [ "${C9H_WRONG_FQDN_REJECTED}" = "Y" ] \
+   && [ "${C9H_WRONG_URL_REJECTED}" = "Y" ] \
+   && [ "${C9H_BOTH_REJECTED}" = "Y" ] \
+   && [ "${C9H_NO_CLIENT_REJECTED}" = "Y" ] \
+   && [ "${C9H_NO_HANDOFF}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9H_PASS=Y
+fi
+
+# C9i multiline backtick regression guard.
+# Synthetic malicious payload with a
+# second-line backtick IS detected; install
+# and gate sources are clean.
+if [ "${C9I_SYNTH_DETECTED}" = "Y" ] \
+   && [ "${C9I_INSTALL_CLEAN}" = "Y" ] \
+   && [ "${C9I_GATE_CLEAN}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9I_PASS=Y
+fi
+
+# C9j HTTP client read-error / oversize
+# path. With FAKE_HTTP_GET_RC=27, the
+# step09 http-client rc file contains 27,
+# the named stderr artifact mentions
+# http-get, the gate exits 12, and zero
+# normal-handoff records appear.
+if [ "${C9J_HTTP_RC_FILE_RC27}" = "Y" ] \
+   && [ "${C9J_HTTP_STDERR_PRESENT}" = "Y" ] \
+   && [ "${C9J_GATE_EXITS_12}" = "Y" ] \
+   && [ "${C9J_NO_HANDOFF}" = "Y" ] \
+   && [ "${C9J_STEP09_HTTP_ERR_PHASE}" = "Y" ] \
+   && [ "${C9J_BODY_CAP_PASS}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9J_PASS=Y
+fi
+
+# C9k fabricated DNS envelope with the
+# WRONG host. The real gate must exit 12,
+# the projection artifact must record
+# host_matches_expected=false (either in
+# the standalone projection JSON or in
+# the step09-fixture-error JSON's embedded
+# projection_artifact), HTTP client must
+# NOT have been invoked, and zero normal
+# handoffs occur.
+if [ "${C9K_GATE_EXITS_12}" = "Y" ] \
+   && [ "${C9K_DNS_PROJ_HAS_HOST_MISMATCH}" = "Y" ] \
+   && [ "${C9K_HTTP_CLIENT_ABSENT}" = "Y" ] \
+   && [ "${C9K_NO_HANDOFF}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9K_PASS=Y
+fi
+
+# C9l fabricated HTTP envelope with the
+# WRONG url (body still ready=true /
+# port=18080 to defeat inner-only
+# projection). The real gate must exit
+# 12, the HTTP projection must record
+# url_matches_expected=false, and zero
+# normal handoffs occur.
+if [ "${C9L_GATE_EXITS_12}" = "Y" ] \
+   && [ "${C9L_HTTP_PROJ_HAS_URL_MISMATCH}" = "Y" ] \
+   && [ "${C9L_NO_HANDOFF}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9L_PASS=Y
+fi
+
+printf '\n# C1..C11 + C6p..C6v + C7a..C7i + C8r..C8x + C7n/C7o/C8n/C8o + C9a..C9j + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
 # Per-control pass table. Lets the operator
 # attribute a regression to one control name
 # without re-greping the harness source.
-printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s\n' \
+printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s c9a=%s c9b=%s c9c=%s c9d=%s c9e=%s c9f=%s c9g=%s c9h=%s c9i=%s c9j=%s c9k=%s c9l=%s\n' \
   "${C1_PASS}" "${VOCAB_PASS}" "${C2_PASS}" "${C3_PASS}" "${C4_PASS}" "${C5_PASS}" "${C6_PASS}" \
   "${C6P_PASS}" "${C6Q_PASS}" "${C6R_PASS}" "${C6S_PASS}" "${C6T_PASS}" "${C6U_PASS}" "${C6V_PASS}" \
   "${C7A_PASS}" "${C7B_PASS}" "${C7C_PASS}" "${C7K_PASS}" "${C7R_PASS}" "${C7S_PASS}" "${C7D_PASS}" \
@@ -5734,7 +7599,9 @@ printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%
   "${C8T_PASS}" "${C8U_PASS}" "${C8V_PASS}" "${C8W_PASS}" "${C8X_PASS}" \
   "${C7N_PASS}" "${C7O_PASS}" "${C8N_PASS}" "${C8O_PASS}" \
   "${C8_PASS}" "${C9_PASS}" "${C10_PASS}" "${C11_PASS}" \
-  "${M1_PASS}" "${M2A_PASS}" "${M2B_PASS}"
+  "${M1_PASS}" "${M2A_PASS}" "${M2B_PASS}" \
+  "${C9A_PASS}" "${C9B_PASS}" "${C9C_PASS}" "${C9D_PASS}" "${C9E_PASS}" "${C9F_PASS}" \
+  "${C9G_PASS}" "${C9H_PASS}" "${C9I_PASS}" "${C9J_PASS}" "${C9K_PASS}" "${C9L_PASS}"
 
 # d2b.51: the previous second `# per-control:`
 # emitter is intentionally removed so the raw

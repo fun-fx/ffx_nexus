@@ -1325,10 +1325,17 @@ except Exception as e:
     sys.exit(17)
 endpoints=data if isinstance(data,list) else (data.get('endpoint') or [])
 # d2b.49 namespace-aware observed projection.
-# Accept ANY `resolve-labels-<real-namespace>/cni-*`
+# Accept ANY resolve-labels-<real-namespace>/cni-*
 # controller label, not only resolve-labels-default/.
-# Any non-fixture namespace appears in `unexpected`
-# instead of being silently filtered out.
+# Any non-fixture namespace appears in the unexpected
+# bucket instead of being silently filtered out.
+# d2b.51: do NOT use Markdown backticks inside
+# this python3 -c "..." double-quoted shell
+# argument; bash performs command substitution on
+# every backtick pair, which previously caused
+# real-namespace: No such file or directory
+# and unexpected: command not found noise to
+# appear on stderr. Use bare quotes here.
 ctrl_re = re.compile(r'^resolve-labels-[^/]+/cni-.+')
 items=[]
 for e in endpoints:
