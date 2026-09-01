@@ -372,7 +372,9 @@ ensure_kind_node_image() {
 emit_header
 # Boot the JSON envelope only on the first
 # (pre-fixture) phase. Subsequent phases append.
-if [[ "$GATE_PHASE" == "pre-fixture" || "$GATE_PHASE" == "both" ]]; then
+if [[ "$GATE_PHASE" == "pre-fixture" \
+   || "$GATE_PHASE" == "both" \
+   || "$GATE_PHASE" == "post-fixture" ]]; then
   python3 - "$ARTIFACTS" "$RECOVERY_PR_SHA" "$WORKFLOW_RUN_ID" "$CLUSTER_NAME" "$EXPECTED_IMAGE_TAG" "$CILIUM_VERSION" "$EXPECTED_NODE_COUNT" "$KUBECTL_TIMEOUT" "$IMAGE_PULL_TIMEOUT" "$GATE_PHASE" <<'PY' > "$READINESS_JSON"
 import json, sys
 art, sha, rid, cn, image, cilium, nn, kt, ipt, phase = sys.argv[1:]
@@ -1016,9 +1018,16 @@ except Exception as e:
     sys.exit(17)
 endpoints=data if isinstance(data,list) else (data.get('endpoint') or [])
 # d2b.49 namespace-aware observed projection.
-# Accept ANY `resolve-labels-<real-namespace>/cni-*`
+# Accept ANY resolve-labels-<real-namespace>/cni-*
 # controller name so the projection matches the
 # Cilium daemon's actual publication.
+# d2b.51: do NOT use Markdown backticks inside
+# this python3 -c "..." double-quoted shell
+# argument; bash performs command substitution on
+# every backtick pair, which previously caused
+# real-namespace: No such file or directory
+# and unexpected: command not found noise to
+# appear on stderr. Use bare quotes here.
 ctrl_re=re.compile(r'^resolve-labels-[^/]+/cni-.+')
 names=[]
 for e in endpoints:
@@ -1359,60 +1368,464 @@ if [[ "$ENDPOINT_READY" != "true" ]]; then
   classify failed 12 FIXTURE_NOT_READY
 fi
 
-# (3) control source Pod resolves target Service via DNS.
+# (3) d2b.51 DNS via the INTERNAL cni-listener
+# client mode. The cni-control probe Pod is
+# built FROM scratch and contains ONLY
+# /cni-listener; it does NOT have /bin/sh,
+# getent, or curl. The shell utilities that
+# the previous Step 09 used
+# (`sh -c 'getent hosts $FQDN'` and
+# `sh -c 'curl ... $URL'`) were unavailable
+# by fixture construction, so DNS_OUT was
+# always empty and Step 09 emitted
+# dns_not_resolved even when the Service
+# EndpointSlice and listener were ready.
+#
+# The rewrite replaces the shell utilities
+# with two bounded client modes inside the
+# SAME binary:
+#   -resolve-host=<FQDN>  -> DNS via Go net
+#                            standard library,
+#                            hard default 5s,
+#                            emits one JSON
+#                            envelope.
+#   -http-get=<http URL>  -> HTTP GET via Go
+#                            net/http standard
+#                            library, hard
+#                            default 5s, body
+#                            cap 64KiB, no
+#                            redirects.
+#
+# Each client invocation is wrapped in a
+# set +e boundary; rc + stdout + stderr are
+# captured into named files under $ARTIFACTS;
+# set -e is restored BEFORE the python
+# projection runs, which is itself in a
+# set +e / set -e boundary so a json parse
+# error does not terminate the gate under
+# errexit. This mirrors the d2b.49 pattern
+# already used by Gate 8 and is required by
+# the d2b.51 directive.
+TARGET_FQDN="cni-control-target-svc.cni-control.svc.cluster.local"
+TARGET_URL="http://${TARGET_FQDN}:18080/readyz"
+
+DNS_CLIENT_STDOUT="${ARTIFACTS}/step09-dns-client.stdout"
+DNS_CLIENT_STDERR="${ARTIFACTS}/step09-dns-client.stderr"
+DNS_CLIENT_RC_FILE="${ARTIFACTS}/step09-dns-client.rc"
+DNS_PROJ_ART="${ARTIFACTS}/step09-dns-projection.json"
+DNS_PROJ_ERR="${ARTIFACTS}/step09-dns-projection.stderr"
+HTTP_CLIENT_STDOUT="${ARTIFACTS}/step09-http-client.stdout"
+HTTP_CLIENT_STDERR="${ARTIFACTS}/step09-http-client.stderr"
+HTTP_CLIENT_RC_FILE="${ARTIFACTS}/step09-http-client.rc"
+HTTP_PROJ_ART="${ARTIFACTS}/step09-http-projection.json"
+HTTP_PROJ_ERR="${ARTIFACTS}/step09-http-projection.stderr"
+STEP09_ERROR_ART="${ARTIFACTS}/step09-fixture-service-control-error.json"
+
 SOURCE_IP=$(kubectl -n "$CONTROL_NS" get pod "$SOURCE_POD" \
   -o jsonpath='{.status.podIP}' 2>/dev/null || true)
 SVC_IP=$(kubectl -n "$CONTROL_NS" get svc "$TARGET_SVC" \
   -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
 DNS_RESOLVED="false"
+DNS_CLIENT_RC="0"
+DNS_PROJ_RC="0"
+DNS_PROJ_VERDICT="dns_artifact_missing"
+DNS_RESOLVED_COUNT="0"
+DNS_FIRST_ADDRESS=""
 if [[ -n "$SVC_IP" ]]; then
-  DNS_OUT=$(kubectl -n "$CONTROL_NS" exec "$SOURCE_POD" -- \
-    sh -c 'getent hosts cni-control-target-svc.cni-control.svc.cluster.local' \
-    2>/dev/null || true)
-  if grep -q "$SVC_IP" <<<"$DNS_OUT"; then
-    DNS_RESOLVED="true"
+  : > "$DNS_CLIENT_STDOUT"
+  : > "$DNS_CLIENT_STDERR"
+  : > "$DNS_PROJ_ERR"
+  set +e
+  kubectl -n "$CONTROL_NS" exec "$SOURCE_POD" -- "/cni-listener" "-resolve-host=${TARGET_FQDN}" >"$DNS_CLIENT_STDOUT" 2>"$DNS_CLIENT_STDERR"
+  DNS_CLIENT_RC=$?
+  set -e
+  printf '%s\n' "$DNS_CLIENT_RC" > "$DNS_CLIENT_RC_FILE"
+  if (( DNS_CLIENT_RC == 0 )); then
+    set +e
+    # d2b.51 corrected projection: the client
+    # emits exactly {"host":..., "addresses":[...]}
+    # with NO contract_version / count / timeout
+    # fields. The projection: parse JSON, assert
+    # exactly two keys, assert addresses is a
+    # non-empty list of non-empty strings, AND
+    # assert that data["host"] byte-equals the
+    # EXACT expected FQDN we asked the binary to
+    # resolve (no silent truncate / trim /
+    # substitution allowed). A fabricated
+    # envelope for a different host cannot
+    # satisfy the cluster-IP predicate once this
+    # identity check is enforced.
+    python3 - "$DNS_CLIENT_STDOUT" "$DNS_PROJ_ART" "$TARGET_FQDN" >/dev/null 2>"$DNS_PROJ_ERR" <<'PYEOF'
+import json, sys
+src, out_path, expected_fqdn = sys.argv[1], sys.argv[2], sys.argv[3]
+if expected_fqdn == "" or expected_fqdn != expected_fqdn.strip() or "\t" in expected_fqdn or "\n" in expected_fqdn or " " in expected_fqdn:
+    print("DNS-PROJ-FAILED: harness expected_fqdn is non-trivial whitespace", file=sys.stderr)
+    sys.exit(16)
+try:
+    raw = open(src).read()
+    data = json.loads(raw)
+except Exception as e:
+    print(f"DNS-PROJ-FAILED: cannot parse client JSON: {e!r}", file=sys.stderr)
+    sys.exit(17)
+if not isinstance(data, dict):
+    print(f"DNS-PROJ-FAILED: envelope not an object: {type(data).__name__}", file=sys.stderr)
+    sys.exit(17)
+keys = sorted(data.keys())
+if keys != ["addresses", "host"]:
+    print(f"DNS-PROJ-FAILED: envelope keys must be exactly ['addresses','host']; got {keys}", file=sys.stderr)
+    sys.exit(18)
+addresses = data.get("addresses")
+host = data.get("host")
+host_matches_expected = isinstance(host, str) and host == expected_fqdn
+ok_envelope = (
+    isinstance(addresses, list) and len(addresses) >= 1
+    and all(isinstance(a, str) and a for a in addresses)
+    and host_matches_expected
+)
+proj = {
+    "command": "/cni-listener -resolve-host=" + expected_fqdn,
+    "phase": "step09_dns_projection",
+    "expected_host": expected_fqdn,
+    "host": host,
+    "host_matches_expected": bool(host_matches_expected),
+    "addresses": addresses,
+    "valid_envelope": bool(ok_envelope),
+}
+open(out_path, "w").write(json.dumps(proj, indent=2) + "\n")
+if not host_matches_expected:
+    print(
+        f"DNS-PROJ-FAILED: envelope host {host!r} does NOT byte-equal expected_fqdn {expected_fqdn!r}",
+        file=sys.stderr,
+    )
+    sys.exit(20)
+if not ok_envelope:
+    print(
+        f"DNS-PROJ-FAILED: invalid client envelope "
+        f"(host={host!r}, addresses_count={len(addresses) if isinstance(addresses, list) else 0})",
+        file=sys.stderr,
+    )
+    sys.exit(19)
+sys.exit(0)
+PYEOF
+    DNS_PROJ_RC=$?
+    set -e
+    if (( DNS_PROJ_RC == 0 )); then
+      DNS_RESOLVED_COUNT=$(python3 -c "
+import json
+d=json.load(open('$DNS_PROJ_ART'))
+print(d.get('count') or len(d.get('addresses') or []))
+")
+      DNS_FIRST_ADDRESS=$(python3 -c "
+import json
+d=json.load(open('$DNS_PROJ_ART'))
+addrs=d.get('addresses') or []
+print(addrs[0] if addrs else '')
+")
+      # The Gate 9 criterion is that the resolved
+      # set INCLUDES the Service ClusterIP. We do
+      # NOT require the cluster IP alone; we accept
+      # any envelope whose addresses include the
+      # canonical Service IP, which is what the
+      # Pod's resolver would surface if CoreDNS
+      # propagated the Service correctly.
+      if awk -v svc="$SVC_IP" '
+        BEGIN{found=0}
+        { for(i=1;i<=NF;i++) if ($i==svc) {found=1; exit} }
+        END { exit (found?0:1) }
+      ' <<<"$(python3 -c 'import json;print(" ".join(json.load(open("'$DNS_PROJ_ART'")).get("addresses") or []))')" \
+         || [[ "$DNS_FIRST_ADDRESS" == "$SVC_IP" ]]; then
+        DNS_RESOLVED="true"
+        DNS_PROJ_VERDICT="dns_projection_ok"
+      else
+        DNS_PROJ_VERDICT="dns_addresses_did_not_match_service_ip"
+      fi
+    elif (( DNS_PROJ_RC == 20 )); then
+      DNS_PROJ_VERDICT="dns_host_did_not_match_expected"
+    else
+      DNS_PROJ_VERDICT="dns_projection_failed"
+    fi
+  else
+    DNS_PROJ_VERDICT="dns_client_exit_nonzero"
   fi
 fi
+# d2b.51 fail-closed projection (DNS): any
+# non-success classifies Step 9 FIXTURE_NOT_READY
+# exit 12 with a structured artifact. The HTTP
+# client is NOT invoked; the gate's "DNS
+# succeeded" predicate is the only path through.
 if [[ "$DNS_RESOLVED" != "true" ]]; then
   FINAL_VERDICT="failed"
-  FINAL_DETAIL="DNS for $TARGET_SVC.$CONTROL_NS.svc.cluster.local did not resolve to $SVC_IP from $SOURCE_POD"
-  record_step 9 "failed" "$FINAL_DETAIL"
+  case "$DNS_PROJ_VERDICT" in
+    dns_addresses_did_not_match_service_ip)
+      FINAL_DETAIL="DNS client /cni-listener -resolve-host did NOT include Service ClusterIP $SVC_IP from $SOURCE_POD (got $DNS_RESOLVED_COUNT addresses; first=$DNS_FIRST_ADDRESS)"
+      ;;
+    dns_host_did_not_match_expected)
+      FINAL_DETAIL="DNS client JSON envelope host did NOT byte-equal expected_fqdn $TARGET_FQDN (see $DNS_PROJ_ART)"
+      ;;
+    dns_projection_failed)
+      FINAL_DETAIL="DNS client JSON envelope failed validation (see $DNS_PROJ_ART rc=$DNS_PROJ_RC)"
+      ;;
+    dns_client_exit_nonzero)
+      FINAL_DETAIL="DNS client /cni-listener -resolve-host exited rc=$DNS_CLIENT_RC (see $DNS_CLIENT_STDERR)"
+      ;;
+    *)
+      FINAL_DETAIL="DNS client /cni-listener -resolve-host did not produce a usable envelope (verdict=$DNS_PROJ_VERDICT)"
+      ;;
+  esac
   emit_probe "post-fixture" "$SOURCE_POD" "$SOURCE_IP" "$CONTROL_NS" "$TARGET_POD" "$TARGET_PRESENT" "$TARGET_SVC" "$SVC_IP" "$TARGET_PORT" "false" "$ENDPOINT_READY" "$LOCAL_LISTENER_OPEN" "0" "" "dns_not_resolved"
+  record_step 9 "failed" "$FINAL_DETAIL"
+  python3 - "$DNS_CLIENT_RC_FILE" "$DNS_CLIENT_STDERR" "$DNS_PROJ_ART" \
+    "$DNS_PROJ_VERDICT" "$SVC_IP" "$TARGET_FQDN" "$DNS_FIRST_ADDRESS" \
+    "$DNS_RESOLVED_COUNT" >"$STEP09_ERROR_ART" <<'PYEOF'
+import json, sys
+rc_file, stderr_file, proj_artifact, verdict, svc_ip, fqdn, first, count = sys.argv[1:9]
+def reads(p):
+    try:
+        return open(p).read()
+    except Exception:
+        return ""
+rc = reads(rc_file).strip()
+try:
+    proj = json.loads(reads(proj_artifact) or "{}")
+except Exception:
+    proj = {}
+obj = {
+    "phase": "step09_dns",
+    "subphase": verdict,
+    "command": "/cni-listener -resolve-host=" + fqdn,
+    "fqdn": fqdn,
+    "service_cluster_ip": svc_ip,
+    "client_rc": int(rc) if rc else None,
+    "client_stderr": reads(stderr_file),
+    "projection_artifact": proj,
+    "addresses_count": int(count) if count else 0,
+    "first_address": first,
+    "reason": "step 9 DNS client fail-closed; HTTP client NOT invoked because DNS did not surface the Service ClusterIP",
+}
+print(json.dumps(obj, indent=2))
+PYEOF
   classify failed 12 FIXTURE_NOT_READY
 fi
 
-# (4) control source Pod performs an HTTP GET against
-# the Service IP on the target port. We talk to the
-# Service ClusterIP and the FQDN; both must succeed.
-# We accept either response body as long as it parses
-# as JSON with port=18080 and ready=true, because
-# the cni-listener serves a deterministic JSON body
-# (see scripts/fixtures/integrationcni/cmd/cni-listener
-# /main.go).
-HTTP_STATUS=$(kubectl -n "$CONTROL_NS" exec "$SOURCE_POD" -- \
-  sh -c 'curl -sS -m 5 -o /tmp/probe.body -w "%{http_code}" \
-    http://cni-control-target-svc.cni-control.svc.cluster.local:18080/readyz' \
-  2>/dev/null || echo "0")
-PROBE_BODY=$(kubectl -n "$CONTROL_NS" exec "$SOURCE_POD" -- \
-  cat /tmp/probe.body 2>/dev/null || true)
-BODY_OK=$(echo "$PROBE_BODY" | python3 -c "
-import json,sys
+# (4) d2b.51 HTTP via the INTERNAL cni-listener
+# client mode. Same errexit-boundary pattern as
+# the DNS arm: set +e around kubectl exec, capture
+# rc + stdout + stderr into named files, restore
+# set -e, then a python projection (also wrapped
+# in set +e / set -e) parses the JSON envelope
+# and asserts status=200 AND body.ready==true AND
+# body.port==18080. Any subphase non-success is
+# recorded into STEP09_ERROR_ART and classifies
+# Step 9 FIXTURE_NOT_READY exit 12.
+HTTP_STATUS="0"
+HTTP_CLIENT_RC="0"
+HTTP_PROJ_RC="0"
+HTTP_PROJ_VERDICT="http_artifact_missing"
+PROBE_BODY=""
+: > "$HTTP_CLIENT_STDOUT"
+: > "$HTTP_CLIENT_STDERR"
+: > "$HTTP_PROJ_ERR"
+set +e
+kubectl -n "$CONTROL_NS" exec "$SOURCE_POD" -- "/cni-listener" "-http-get=${TARGET_URL}" >"$HTTP_CLIENT_STDOUT" 2>"$HTTP_CLIENT_STDERR"
+HTTP_CLIENT_RC=$?
+set -e
+printf '%s\n' "$HTTP_CLIENT_RC" > "$HTTP_CLIENT_RC_FILE"
+if (( HTTP_CLIENT_RC == 0 )); then
+  set +e
+  # d2b.51 corrected projection: the client
+  # emits exactly {"url":..., "status":N, "body":"..."}
+  # with NO contract_version / timeout fields.
+  # The projection: assert exactly 3 keys, status
+  # is int, body is string. Service-JSON inner
+  # assertion (ready=true, port=18080) happens
+  # AFTER env validation.
+  python3 - "$HTTP_CLIENT_STDOUT" "$HTTP_PROJ_ART" "${TARGET_PORT}" "$TARGET_URL" >/dev/null 2>"$HTTP_PROJ_ERR" <<'PYEOF'
+import json, sys
+src, out_path, want_port_s, expected_url = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+if expected_url == "" or expected_url != expected_url.strip() or "\t" in expected_url or "\n" in expected_url or " " in expected_url:
+    print("HTTP-PROJ-FAILED: harness expected_url is non-trivial whitespace", file=sys.stderr)
+    sys.exit(16)
 try:
-    d=json.loads(sys.stdin.read())
+    raw = open(src).read()
+    data = json.loads(raw)
+except Exception as e:
+    print(f"HTTP-PROJ-FAILED: cannot parse client JSON: {e!r}", file=sys.stderr)
+    sys.exit(17)
+if not isinstance(data, dict):
+    print(f"HTTP-PROJ-FAILED: envelope not an object: {type(data).__name__}", file=sys.stderr)
+    sys.exit(17)
+keys = sorted(data.keys())
+if keys != ["body", "status", "url"]:
+    print(f"HTTP-PROJ-FAILED: envelope keys must be exactly ['body','status','url']; got {keys}", file=sys.stderr)
+    sys.exit(18)
+status = data.get("status")
+body_raw = data.get("body")
+url = data.get("url")
+# d2b.51 final: the URL field must byte-equal
+# the EXACT URL we requested via -http-get=
+# before any other projection assertion runs.
+# This prevents a substituted listener (e.g. a
+# custom Pod pointing back to the same target
+# on a different path / different Service) from
+# passing only on body.ready=true / body.port=18080.
+url_matches_expected = isinstance(url, str) and url == expected_url
+ok_envelope = (
+    isinstance(status, int)
+    and isinstance(body_raw, str)
+    and url_matches_expected
+)
+want_port = int(want_port_s)
+body_json = None
+ok_service = False
+if ok_envelope:
+    try:
+        body_json = json.loads(body_raw)
+        ok_service = (
+            isinstance(body_json, dict)
+            and body_json.get("ready") is True
+            and int(body_json.get("port", -1)) == want_port
+        )
+    except Exception:
+        ok_service = False
+proj = {
+    "command": "/cni-listener -http-get=" + expected_url,
+    "phase": "step09_http_projection",
+    "expected_url": expected_url,
+    "url": url,
+    "url_matches_expected": bool(url_matches_expected),
+    "status": status,
+    "expected_status": 200,
+    "expected_port": want_port,
+    "body_raw": body_raw,
+    "body_json": body_json,
+    "valid_envelope": bool(ok_envelope),
+    "valid_service_json": bool(ok_service),
+}
+open(out_path, "w").write(json.dumps(proj, indent=2) + "\n")
+if not url_matches_expected:
+    print(
+        f"HTTP-PROJ-FAILED: envelope url {url!r} does NOT byte-equal expected_url {expected_url!r}",
+        file=sys.stderr,
+    )
+    sys.exit(20)
+if not ok_envelope:
+    print(
+        f"HTTP-PROJ-FAILED: invalid client envelope "
+        f"(url={url!r}, status={status!r}, body_type={type(body_raw).__name__})",
+        file=sys.stderr,
+    )
+    sys.exit(21)
+if not ok_service:
+    print(
+        f"HTTP-PROJ-FAILED: service JSON did not assert ready/port "
+        f"(status={status}, ready={body_json and body_json.get('ready')!r}, "
+        f"port={body_json and body_json.get('port')!r}, want_port={want_port})",
+        file=sys.stderr,
+    )
+    sys.exit(22)
+sys.exit(0)
+PYEOF
+HTTP_PROJ_RC=$?
+    set -e
+    if (( HTTP_PROJ_RC == 0 )); then
+      HTTP_STATUS=$(python3 -c "
+import json
+d=json.load(open('$HTTP_PROJ_ART'))
+s=d.get('status')
+print(s if isinstance(s,int) else 0)
+")
+      PROBE_BODY=$(python3 -c "
+import json
+d=json.load(open('$HTTP_PROJ_ART'))
+print(d.get('body_raw') or '')
+")
+      BODY_OK="true"
+      HTTP_PROJ_VERDICT="http_projection_ok"
+    elif (( HTTP_PROJ_RC == 21 )); then
+      HTTP_PROJ_VERDICT="http_envelope_invalid"
+    elif (( HTTP_PROJ_RC == 20 )); then
+      HTTP_PROJ_VERDICT="http_url_did_not_match_expected"
+    elif (( HTTP_PROJ_RC == 22 )); then
+      HTTP_PROJ_VERDICT="http_service_body_invalid"
+    else
+      HTTP_STATUS=$(python3 -c "
+import json
+try:
+    d=json.load(open('$HTTP_CLIENT_STDOUT'))
+    print(d.get('status') if isinstance(d.get('status'), int) else 0)
 except Exception:
-    d={}
-ok = (d.get('ready') is True and int(d.get('port',-1)) == 18080)
-print('true' if ok else 'false')" 2>/dev/null || echo "false")
+    print(0)
+")
+      PROBE_BODY=$(python3 -c "
+import json
+try:
+    d=json.load(open('$HTTP_CLIENT_STDOUT'))
+    print(d.get('body') or '')
+except Exception:
+    print('')
+")
+      BODY_OK="false"
+      HTTP_PROJ_VERDICT="http_projection_failed"
+    fi
+  else
+    HTTP_PROJ_VERDICT="http_client_exit_nonzero"
+    BODY_OK="false"
+  fi
+
 if [[ "$HTTP_STATUS" != "200" || "$BODY_OK" != "true" ]]; then
-  FINAL_VERDICT="CONTROL_PATH_BLOCKED"
-  FINAL_DETAIL="control source $SOURCE_POD could not HTTP through Service: status=$HTTP_STATUS body=$PROBE_BODY"
+  FINAL_VERDICT="failed"
+  case "$HTTP_PROJ_VERDICT" in
+    http_url_did_not_match_expected)
+      FINAL_DETAIL="HTTP client JSON envelope url did NOT byte-equal expected_url $TARGET_URL (see $HTTP_PROJ_ART rc=$HTTP_PROJ_RC)"
+      ;;
+    http_envelope_invalid)
+      FINAL_DETAIL="HTTP client JSON envelope keys / types invalid (url/status/body); rc=$HTTP_PROJ_RC"
+      ;;
+    http_service_body_invalid)
+      FINAL_DETAIL="HTTP client envelope valid but service JSON did not assert ready=true / port=18080"
+      ;;
+    http_projection_failed)
+      FINAL_DETAIL="HTTP client JSON envelope did not assert status=200 / ready=true / port=18080 (client_rc=$HTTP_CLIENT_RC, projection_rc=$HTTP_PROJ_RC)"
+      ;;
+    http_client_exit_nonzero)
+      FINAL_DETAIL="HTTP client /cni-listener -http-get exited rc=$HTTP_CLIENT_RC (see $HTTP_CLIENT_STDERR)"
+      ;;
+    *)
+      FINAL_DETAIL="HTTP client /cni-listener -http-get did not produce a usable envelope (verdict=$HTTP_PROJ_VERDICT)"
+      ;;
+  esac
   record_step 9 "failed" "$FINAL_DETAIL"
   emit_probe "post-fixture" "$SOURCE_POD" "$SOURCE_IP" "$CONTROL_NS" "$TARGET_POD" "$TARGET_PRESENT" "$TARGET_SVC" "$SVC_IP" "$TARGET_PORT" "$DNS_RESOLVED" "$ENDPOINT_READY" "$LOCAL_LISTENER_OPEN" "$HTTP_STATUS" "$PROBE_BODY" "control_path_blocked"
-  # NOTE: this classification is FIXTURE_NOT_READY
-  # because the failure is about the control
-  # NetworkPolicy in 05-control-policy.yaml,
-  # which is a fixture artefact, not a chart
-  # NetworkPolicy.
+  python3 - "$HTTP_CLIENT_RC_FILE" "$HTTP_CLIENT_STDERR" "$HTTP_PROJ_ART" \
+    "$HTTP_PROJ_VERDICT" "$TARGET_URL" "$SVC_IP" "$TARGET_FQDN" "$HTTP_STATUS" \
+    >"$STEP09_ERROR_ART" <<'PYEOF'
+import json, sys
+rc_file, stderr_file, proj_artifact, verdict, url, svc_ip, fqdn, status_s = sys.argv[1:9]
+def reads(p):
+    try:
+        return open(p).read()
+    except Exception:
+        return ""
+rc = reads(rc_file).strip()
+try:
+    proj = json.loads(reads(proj_artifact) or "{}")
+except Exception:
+    proj = {}
+obj = {
+    "phase": "step09_http",
+    "subphase": verdict,
+    "command": "/cni-listener -http-get=" + url,
+    "url": url,
+    "service_cluster_ip": svc_ip,
+    "fqdn": fqdn,
+    "client_rc": int(rc) if rc else None,
+    "client_status": int(status_s) if status_s else None,
+    "client_stderr": reads(stderr_file),
+    "projection_artifact": proj,
+    "reason": "step 9 HTTP client fail-closed; verdict reflects the exact subphase (client vs projection) that exited non-success",
+}
+print(json.dumps(obj, indent=2))
+PYEOF
   classify failed 12 FIXTURE_NOT_READY
 fi
 
