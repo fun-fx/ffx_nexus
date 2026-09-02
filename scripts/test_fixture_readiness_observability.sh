@@ -6572,6 +6572,7 @@ run_serializer_unit() {
     "${per_attempt_tsv}" \
     "${stage_dir}/" \
     "${canon_tsv}" \
+    "cni-listener:local|docker.io/library/cni-listener:local|" \
     >"${out_file}" 2>"${err_file}"
   local rc=$?
   local stdout_empty="N"
@@ -6593,15 +6594,27 @@ run_serializer_unit() {
 }
 
 # C8i: all three nodes return schema-valid
-# JSON with exact tag + ID on first poll →
-# rc 0, one load, no sleep, attempt=1.
+# JSON with the canonical alias
+# (docker.io/library/cni-listener:local)
+# representation kind/containerd emits for
+# the declared bare reference, paired with
+# the exact expected image ID, on first poll
+# → rc 0, one load, no sleep, attempt=1.
+# This is the d2b.51.51-canonical-alias
+# positive proof derived from the retained
+# real heavy-run artifact (each kind node's
+# `crictl images --output json` had one
+# image entry whose repoTags was exactly
+# `["docker.io/library/cni-listener:local"]`
+# and whose normalized id matched the
+# expected built artifact ID).
 S8I="${TOP_TMP}/stage-C8i"
 mk_img_stage "${S8I}"
 RES8I="${S8I}/recipe"
 mkdir -p "${RES8I}"
-write_node_recipe_byname "${RES8I}" "node-a" 0 '{"images":[{"repoTags":["cni-listener:local"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}'
-write_node_recipe_byname "${RES8I}" "node-b" 0 '{"images":[{"repoTags":["cni-listener:local"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}'
-write_node_recipe_byname "${RES8I}" "node-c" 0 '{"images":[{"repoTags":["cni-listener:local"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}'
+write_node_recipe_byname "${RES8I}" "node-a" 0 '{"images":[{"repoTags":["docker.io/library/cni-listener:local"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}'
+write_node_recipe_byname "${RES8I}" "node-b" 0 '{"images":[{"repoTags":["docker.io/library/cni-listener:local"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}'
+write_node_recipe_byname "${RES8I}" "node-c" 0 '{"images":[{"repoTags":["docker.io/library/cni-listener:local"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}'
 reset_invocation_logs
 drive_img_control C8i "${S8I}" "FAKE_DOCKER_NODE_RECIPES_DIR=${RES8I}"
 C8I_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${S8I}/child.rc" 2>/dev/null)"
@@ -6614,6 +6627,55 @@ d=json.load(open('${C8I_FINAL_JSON}'))
 print(d.get('all_nodes_ready',False), d.get('node_count',0), d.get('expected_tag',''), d.get('normalized_expected_id',''))" 2>/dev/null || echo "False 0  ?")"
 C8I_ALL_READY="$(echo "${C8I_FINAL_NODES}" | awk '{print $1}')"
 C8I_NODE_COUNT="$(echo "${C8I_FINAL_NODES}" | awk '{print $2}')"
+# d2b.51.51-canonical-alias positive proof:
+# the terminal record MUST carry
+# accepted_runtime_tags as the closed two-
+# value JSOn list, exactly
+# ["cni-listener:local",
+#  "docker.io/library/cni-listener:local"].
+# The exact emitted JSON field is the
+# authoritative surface for the alias set;
+# the runtime verifier must agree.
+C8I_ACCEPTED_RUNTIME_TAGS_JSON="$(python3 - "${C8I_FINAL_JSON}" 2>/dev/null <<'PY' || echo NO
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print('NO')
+    sys.exit(0)
+v = d.get('accepted_runtime_tags')
+if isinstance(v, list):
+    print(json.dumps(v, sort_keys=True))
+else:
+    print('NO')
+PY
+)"
+C8I_ACCEPTED_RUNTIME_TAGS_OK=N
+# `sort_keys=True` plus json.dumps default
+# separators yields
+# ["cni-listener:local", "docker.io/library/cni-listener:local"]
+# (single space after each comma). Accept
+# any byte-equal rendering of the closed
+# ordered two-entry list.
+if [ "${C8I_ACCEPTED_RUNTIME_TAGS_JSON}" = '["cni-listener:local", "docker.io/library/cni-listener:local"]' ] \
+   || [ "${C8I_ACCEPTED_RUNTIME_TAGS_JSON}" = '["cni-listener:local","docker.io/library/cni-listener:local"]' ] \
+   || [ "${C8I_ACCEPTED_RUNTIME_TAGS_JSON}" = '[ "cni-listener:local", "docker.io/library/cni-listener:local" ]' ]; then
+  C8I_ACCEPTED_RUNTIME_TAGS_OK=Y
+fi
+# Also verify every terminal per_node_record
+# reports same_entry_match=true so the
+# canonical alias acceptance is gated on,
+# not in addition to, the same-entry check.
+C8I_TERMINAL_SAME_ENTRY_COUNT="$(python3 - "${C8I_FINAL_JSON}" 2>/dev/null <<'PY' || echo 0
+import json, sys
+d = json.load(open(sys.argv[1]))
+recs = d.get('per_node_records', [])
+if not isinstance(recs, list):
+    print(0)
+else:
+    print(sum(1 for r in recs if isinstance(r, dict) and r.get('same_entry_match') is True))
+PY
+)"
 # No more than 1 sleep invocation is allowed
 # because attempt 1 success means we MUST NOT
 # sleep. The verifier only sleeps when another
@@ -6632,7 +6694,9 @@ if [ "${C8I_RC}" = "0" ] \
    && [ "${C8I_SLEEP_COUNT}" = "0" ] \
    && [ "${C8I_ALL_READY}" = "True" ] \
    && [ "${C8I_NODE_COUNT}" = "3" ] \
-   && [ "${C8I_FINAL_ATTEMPT}" = "1" ]; then
+   && [ "${C8I_FINAL_ATTEMPT}" = "1" ] \
+   && [ "${C8I_ACCEPTED_RUNTIME_TAGS_OK}" = "Y" ] \
+   && [ "${C8I_TERMINAL_SAME_ENTRY_COUNT}" = "3" ]; then
   C8I_PASS=Y
 fi
 
@@ -6738,11 +6802,12 @@ if [ "${C8I_PASS}" = "Y" ] \
 else
   C8I_PASS=N
 fi
-printf 'C8i: rc=%s kind-loads=%s sleeps=%s all-nodes-ready=%s node-count=%s attempt=%s normalizer-rc=%s normalizer-stderr-empty=%s legacy-range-rejected=%s prod-expr=%s (success on attempt 1; LC_ALL=C safe normalizer round-trips normal/unsafe/space inputs and historical range spelling is rejected)\n' \
+printf 'C8i: rc=%s kind-loads=%s sleeps=%s all-nodes-ready=%s node-count=%s attempt=%s normalizer-rc=%s normalizer-stderr-empty=%s legacy-range-rejected=%s prod-expr=%s accepted-runtime-tags=%s same-entry-count=%s (success on attempt 1; canonical alias docker.io/library/... accepted, closed two-tag list emitted, every terminal per-node record has same_entry_match=true)\n' \
   "${C8I_RC}" "${C8I_KIND_LOAD_COUNT}" "${C8I_SLEEP_COUNT}" \
   "${C8I_ALL_READY}" "${C8I_NODE_COUNT}" "${C8I_FINAL_ATTEMPT}" \
   "${C8I_PROD_NORMALIZER_RC}" "${C8I_PROD_NORMALIZER_STDERR_EMPTY}" \
   "${C8I_LEGACY_RANGE_REJECTED}" "${C8I_PROD_EXPR_DISPLAY}" \
+  "${C8I_ACCEPTED_RUNTIME_TAGS_OK}" "${C8I_TERMINAL_SAME_ENTRY_COUNT}" \
   >"${S8I}/C8i-line.txt"
 cat "${S8I}/C8i-line.txt"
 
@@ -7435,6 +7500,7 @@ run_terminal_serializer_unit() {
     "${per_attempt_jsonl_tsv}" \
     "${stage_dir}/node_log.txt" \
     "${stage_dir}/final.json" \
+    "cni-listener:local|docker.io/library/cni-listener:local|" \
     >"${out_file}" 2>"${err_file}"
   local rc=$?
   local stdout_empty="N"
@@ -7744,6 +7810,107 @@ C8P_RECORDS_ALL_READY="$(printf '%s' "$C8P_TERMINAL_FIELD_DUMP" | awk -F'[;]' '{
 [ "${C8P_TERMINAL_ALL_READY}" = "False" ] && C8P_TERM_ALL_READY_OK=Y || C8P_TERM_ALL_READY_OK=N
 [ "${C8P_RECORDS_ALL_READY}" = "False" ] && C8P_TERM_RECORDS_ALL_FALSE_OK=Y || C8P_TERM_RECORDS_ALL_FALSE_OK=N
 
+# d2b.51.51-canonical-alias: REJECT negative
+# alias matrix. The verifier MUST reject
+# the four alias-rule violations even when
+# the exact expected ID is on the same entry
+# as the alias. Each subcase runs against
+# an independent stage so each carries its
+# own kind-loads/exec/no-handoff proof —
+# no shared state, no inherited attempt
+# counter. Subcase 4: wrong tag (`latest`).
+# Subcase 5: wrong tag suffix false
+# positive (`localx`). Subcase 6: wrong
+# registry (`quay.io/`). Subcase 7: wrong
+# namespace (`docker.io/other/`).
+C8P4_ALIAS_SUBSTAGE="${S8P}/sub-tag-latest"
+C8P5_ALIAS_SUBSTAGE="${S8P}/sub-tag-localx"
+C8P6_ALIAS_SUBSTAGE="${S8P}/sub-registry-quay"
+C8P7_ALIAS_SUBSTAGE="${S8P}/sub-namespace-other"
+_run_c8p_alias_stage() {
+  local stage_path="$1"
+  local payload="$2"
+  mk_img_stage "${stage_path}"
+  local recipe="${stage_path}/recipe"
+  mkdir -p "${recipe}"
+  write_node_recipe_byname "${recipe}" "node-a" 0 "${payload}"
+  write_node_recipe_byname "${recipe}" "node-b" 0 "${payload}"
+  write_node_recipe_byname "${recipe}" "node-c" 0 "${payload}"
+  reset_invocation_logs
+  drive_img_control "C8p_alias_${stage_path##*/}" "${stage_path}" "FAKE_DOCKER_NODE_RECIPES_DIR=${recipe}"
+  awk -F'=' '/^rc=/ {print $2; exit}' "${stage_path}/child.rc" 2>/dev/null
+}
+C8P4_RC="$(_run_c8p_alias_stage "${C8P4_ALIAS_SUBSTAGE}" '{"images":[{"repoTags":["docker.io/library/cni-listener:latest"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}')"
+C8P5_RC="$(_run_c8p_alias_stage "${C8P5_ALIAS_SUBSTAGE}" '{"images":[{"repoTags":["docker.io/library/cni-listener:localx"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}')"
+C8P6_RC="$(_run_c8p_alias_stage "${C8P6_ALIAS_SUBSTAGE}" '{"images":[{"repoTags":["quay.io/cni-listener:local"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}')"
+C8P7_RC="$(_run_c8p_alias_stage "${C8P7_ALIAS_SUBSTAGE}" '{"images":[{"repoTags":["docker.io/other/cni-listener:local"],"id":"sha256:580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"}]}')"
+# Each subcase must: rc=14, no ready=true
+# in any node log, AND no downstream gate
+# invocation. The parser's stderr trace is
+# the same-entry token shape (`tag=…id=…
+# same_entry_match=…ready=…`).
+C8P4_SAME_ENTRY_OK=N
+C8P5_SAME_ENTRY_OK=N
+C8P6_SAME_ENTRY_OK=N
+C8P7_SAME_ENTRY_OK=N
+C8P4_NO_READY_TRUE=Y
+C8P5_NO_READY_TRUE=Y
+C8P6_NO_READY_TRUE=Y
+C8P7_NO_READY_TRUE=Y
+C8P4_NO_HANDOFF=Y
+C8P5_NO_HANDOFF=Y
+C8P6_NO_HANDOFF=Y
+C8P7_NO_HANDOFF=Y
+# The trace's `tag=` field names the EXPECTED
+# tag (always the declared `cni-listener:local`),
+# not the tag the node actually advertised. The
+# negative-alias verdict therefore reads off the
+# booleans: the rejected alias must leave
+# tag_seen_anywhere=false while the matching ID
+# still yields id_seen_anywhere=true. That pair
+# is the proof the closed two-tag set — not an
+# ID-only or substring match — decided the case.
+C8P_ALIAS_REJECT_RE="^tag=cni-listener:local"
+C8P_ALIAS_REJECT_RE="${C8P_ALIAS_REJECT_RE} id=580a8b6b26e9ed561aca22c55bec70a6179a8a51183b0ca2047e359035928df5"
+C8P_ALIAS_REJECT_RE="${C8P_ALIAS_REJECT_RE} tag_seen_anywhere=false id_seen_anywhere=true"
+C8P_ALIAS_REJECT_RE="${C8P_ALIAS_REJECT_RE} same_entry_match=false ready=false"
+if grep -qE "${C8P_ALIAS_REJECT_RE}" "${C8P4_ALIAS_SUBSTAGE}/fixture-image-node-runtime.log" 2>/dev/null; then
+  C8P4_SAME_ENTRY_OK=Y
+fi
+if grep -qE "${C8P_ALIAS_REJECT_RE}" "${C8P5_ALIAS_SUBSTAGE}/fixture-image-node-runtime.log" 2>/dev/null; then
+  C8P5_SAME_ENTRY_OK=Y
+fi
+if grep -qE "${C8P_ALIAS_REJECT_RE}" "${C8P6_ALIAS_SUBSTAGE}/fixture-image-node-runtime.log" 2>/dev/null; then
+  C8P6_SAME_ENTRY_OK=Y
+fi
+if grep -qE "${C8P_ALIAS_REJECT_RE}" "${C8P7_ALIAS_SUBSTAGE}/fixture-image-node-runtime.log" 2>/dev/null; then
+  C8P7_SAME_ENTRY_OK=Y
+fi
+# No ready=true in any substage node log.
+for s in "${C8P4_ALIAS_SUBSTAGE}" "${C8P5_ALIAS_SUBSTAGE}" "${C8P6_ALIAS_SUBSTAGE}" "${C8P7_ALIAS_SUBSTAGE}"; do
+  if grep -qE '^tag=.* same_entry_match=true ' "${s}/fixture-image-node-runtime.log" 2>/dev/null; then
+    case "$s" in
+      *"tag-latest"*) C8P4_NO_READY_TRUE=N;;
+      *"tag-localx"*) C8P5_NO_READY_TRUE=N;;
+      *"registry-quay"*) C8P6_NO_READY_TRUE=N;;
+      *"namespace-other"*) C8P7_NO_READY_TRUE=N;;
+    esac
+  fi
+done
+# Downstream handoff: gate-invocations.log
+# under each substage must be empty (no
+# downstream run_gate.sh invocation).
+for s in "${C8P4_ALIAS_SUBSTAGE}" "${C8P5_ALIAS_SUBSTAGE}" "${C8P6_ALIAS_SUBSTAGE}" "${C8P7_ALIAS_SUBSTAGE}"; do
+  if [ -s "${s}/gate-invocations.log" ] && grep -qE 'argv=run_gate\.sh' "${s}/gate-invocations.log"; then
+    case "$s" in
+      *"tag-latest"*) C8P4_NO_HANDOFF=N;;
+      *"tag-localx"*) C8P5_NO_HANDOFF=N;;
+      *"registry-quay"*) C8P6_NO_HANDOFF=N;;
+      *"namespace-other"*) C8P7_NO_HANDOFF=N;;
+    esac
+  fi
+done
+
 C8P_PASS=N
 if [ "${C8P1_RC}" = "14" ] && [ "${C8P1_SAME_ENTRY_OK}" = "Y" ] && [ "${C8P1_NO_ENTRY_MATCH}" = "Y" ] && [ "${C8P1_NO_HANDOFF}" = "Y" ] \
    && [ "${C8P2_RC}" = "14" ] && [ "${C8P2_SAME_ENTRY_OK}" = "Y" ] && [ "${C8P2_NO_ENTRY_MATCH}" = "Y" ] \
@@ -7760,25 +7927,34 @@ if [ "${C8P1_RC}" = "14" ] && [ "${C8P1_SAME_ENTRY_OK}" = "Y" ] && [ "${C8P1_NO_
    && [ "${C8P_TERM_HISTORY_OK}" = "Y" ] \
    && [ "${C8P_TERM_ATTEMPT_OK}" = "Y" ] \
    && [ "${C8P_TERM_ALL_READY_OK}" = "Y" ] \
-   && [ "${C8P_TERM_RECORDS_ALL_FALSE_OK}" = "Y" ]; then
+   && [ "${C8P_TERM_RECORDS_ALL_FALSE_OK}" = "Y" ] \
+   && [ "${C8P4_RC}" = "14" ] && [ "${C8P4_SAME_ENTRY_OK}" = "Y" ] && [ "${C8P4_NO_READY_TRUE}" = "Y" ] && [ "${C8P4_NO_HANDOFF}" = "Y" ] \
+   && [ "${C8P5_RC}" = "14" ] && [ "${C8P5_SAME_ENTRY_OK}" = "Y" ] && [ "${C8P5_NO_READY_TRUE}" = "Y" ] && [ "${C8P5_NO_HANDOFF}" = "Y" ] \
+   && [ "${C8P6_RC}" = "14" ] && [ "${C8P6_SAME_ENTRY_OK}" = "Y" ] && [ "${C8P6_NO_READY_TRUE}" = "Y" ] && [ "${C8P6_NO_HANDOFF}" = "Y" ] \
+   && [ "${C8P7_RC}" = "14" ] && [ "${C8P7_SAME_ENTRY_OK}" = "Y" ] && [ "${C8P7_NO_READY_TRUE}" = "Y" ] && [ "${C8P7_NO_HANDOFF}" = "Y" ]; then
   C8P_PASS=Y
 fi
 # d2b.51.51-final-correct: surface the
 # components so a failing predicate is
 # debuggable from the harness stdout alone.
-printf 'C8p-dbg: rc1=%s same1=%s no_match1=%s handoff1=%s rc2=%s same2=%s no_match2=%s rc3=%s agg_tag=%s agg_id=%s same3=%s no_match3=%s handoff3=%s jsval=%s loads=%s sleeps=%s\n' \
+printf 'C8p-dbg: rc1=%s same1=%s no_match1=%s handoff1=%s rc2=%s same2=%s no_match2=%s rc3=%s agg_tag=%s agg_id=%s same3=%s no_match3=%s handoff3=%s jsval=%s loads=%s sleeps=%s rc4=%s same4=%s no_match4=%s handoff4=%s rc5=%s same5=%s no_match5=%s handoff5=%s rc6=%s same6=%s no_match6=%s handoff6=%s rc7=%s same7=%s no_match7=%s handoff7=%s\n' \
   "${C8P1_RC}" "${C8P1_SAME_ENTRY_OK}" "${C8P1_NO_ENTRY_MATCH}" "${C8P1_NO_HANDOFF}" \
   "${C8P2_RC}" "${C8P2_SAME_ENTRY_OK}" "${C8P2_NO_ENTRY_MATCH}" \
   "${C8P3_RC}" "${C8P3_AGGREGATE_AGREE_TAG}" "${C8P3_AGGREGATE_AGREE_ID}" \
   "${C8P3_SAME_ENTRY_OK}" "${C8P3_NO_ENTRY_MATCH_NODES}" "${C8P3_NO_HANDOFF}" \
-  "${C8P3_JSON_VALID}" "${C8P3_KIND_LOAD_COUNT}" "${C8P3_SLEEP_COUNT}"
-printf 'C8p: tag-right-id-wrong rc=%s same-entry-match=N tag-wrong-id-right rc=%s same-entry-match=N cross-entry-split rc=%s kind-loads=%s sleeps=%s attempt=15 same-entry-match=N tag-seen-anywhere=Y id-seen-anywhere=Y no-handoff=%s json-valid=%s term-attempt=%s term-records=%s term-all-ready=%s term-history=%s term-all-records-false=%s (terminal document selected by attempt=15; cross-entry not_ready never surfaces attempt-1/2/3..14 records)\n' \
+  "${C8P3_JSON_VALID}" "${C8P3_KIND_LOAD_COUNT}" "${C8P3_SLEEP_COUNT}" \
+  "${C8P4_RC}" "${C8P4_SAME_ENTRY_OK}" "${C8P4_NO_READY_TRUE}" "${C8P4_NO_HANDOFF}" \
+  "${C8P5_RC}" "${C8P5_SAME_ENTRY_OK}" "${C8P5_NO_READY_TRUE}" "${C8P5_NO_HANDOFF}" \
+  "${C8P6_RC}" "${C8P6_SAME_ENTRY_OK}" "${C8P6_NO_READY_TRUE}" "${C8P6_NO_HANDOFF}" \
+  "${C8P7_RC}" "${C8P7_SAME_ENTRY_OK}" "${C8P7_NO_READY_TRUE}" "${C8P7_NO_HANDOFF}"
+printf 'C8p: tag-right-id-wrong rc=%s same-entry-match=N tag-wrong-id-right rc=%s same-entry-match=N cross-entry-split rc=%s kind-loads=%s sleeps=%s attempt=15 same-entry-match=N tag-seen-anywhere=Y id-seen-anywhere=Y no-handoff=%s json-valid=%s term-attempt=%s term-records=%s term-all-ready=%s term-history=%s term-all-records-false=%s alias-latest(rc=%s same-entry=N no-ready=true:=Y handoff=N) alias-localx(rc=%s same-entry=N no-ready=true:=Y handoff=N) alias-quay(rc=%s same-entry=N no-ready=true:=Y handoff=N) alias-namespace(rc=%s same-entry=N no-ready=true:=Y handoff=N) (terminal document selected by attempt=15; canonical-alias matrix rejects wrong tag/registry/namespace without handoff)\n' \
   "${C8P1_RC}" "${C8P2_RC}" \
   "${C8P3_RC}" "${C8P3_KIND_LOAD_COUNT}" "${C8P3_SLEEP_COUNT}" \
   "${C8P3_NO_HANDOFF}" "${C8P3_JSON_VALID}" \
   "${C8P_TERM_ATTEMPT_OK}" "${C8P_TERM_RECORDS_OK}" \
   "${C8P_TERM_ALL_READY_OK}" "${C8P_TERM_HISTORY_OK}" \
-  "${C8P_TERM_RECORDS_ALL_FALSE_OK}"
+  "${C8P_TERM_RECORDS_ALL_FALSE_OK}" \
+  "${C8P4_RC}" "${C8P5_RC}" "${C8P6_RC}" "${C8P7_RC}"
 
 # Update PASS ledger for the new image-pipeline
 # controls. PASS is initialised further below
