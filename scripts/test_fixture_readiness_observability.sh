@@ -30,6 +30,16 @@ TARGET="${SCRIPT_DIR}/install-nexus-test.sh"
 
 # Target install script.
 TARGET="${SCRIPT_DIR}/install-nexus-test.sh"
+# d2b-tr-portability: Repo root, used by
+# the C8i normalizer probe block to source
+# the production safe-expression directly
+# from scripts/install-nexus-test.sh (no
+# invented alternative).
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
+case "${REPO_ROOT}" in
+  /*) ;;
+  *) printf 'FATAL: REPO_ROOT (%s) is not absolute\n' "${REPO_ROOT}" >&2; exit 2 ;;
+esac
 # Real cni-readiness-gate.sh source for
 # failure-controlled controls (C2..C8, C10).
 # Success controls (C1, C9) keep the per-stage
@@ -6625,9 +6635,116 @@ if [ "${C8I_RC}" = "0" ] \
    && [ "${C8I_FINAL_ATTEMPT}" = "1" ]; then
   C8I_PASS=Y
 fi
-printf 'C8i: rc=%s kind-loads=%s sleeps=%s all-nodes-ready=%s node-count=%s attempt=%s (success on attempt 1)\n' \
+
+# d2b-tr-portability regression: production
+# per-node artifact-name normalizer must
+# succeed for the exact C-locale spelling,
+# and the historical `_-.` range spelling
+# must be detectable as defective. The
+# test must obtain the exact production
+# safe spelling from scripts/install-nexus-test.sh
+# (no invented alternative), not a
+# separately invented normalizer. The
+# legacy-range negative proof runs the
+# historical spelling under LC_ALL=C
+# against GNU `tr` so the diagnostic
+# surfaces deterministically (`/opt/homebrew/bin/gtr`
+# on macOS hosts, `/usr/bin/tr` on the
+# GitHub runner; both implement the same
+# GNU semantics).
+C8I_PROD_NORMALIZER_SRC="${REPO_ROOT}/scripts/install-nexus-test.sh"
+# Use single-quoted grep literals that never
+# cross an internal apostrophe (each `'…'`
+# token is a single shell word, no adjacent
+# concatenation). The safe allow-set and the
+# LC_ALL=C prefix are themselves
+# apostrophe-free, so plain `-nF` matching is
+# unambiguous. The legacy spelling has no
+# inner apostrophes either, so we can grep
+# for it as a single-word `-F` literal.
+C8I_PROD_NORMALIZER_LINE="$(grep -nF 'LC_ALL=C tr -c' "${C8I_PROD_NORMALIZER_SRC}" | head -1 || true)"
+C8I_PROD_NORMALIZER_HAS_SAFE_ALLOW=N
+if grep -qF 'A-Za-z0-9._ -' "${C8I_PROD_NORMALIZER_SRC}"; then
+  C8I_PROD_NORMALIZER_HAS_SAFE_ALLOW=Y
+fi
+C8I_PROD_NORMALIZER_HAS_LEGACY_ALLOW=N
+if grep -qF 'A-Za-z0-9._- ' "${C8I_PROD_NORMALIZER_SRC}"; then
+  C8I_PROD_NORMALIZER_HAS_LEGACY_ALLOW=Y
+fi
+C8I_PROD_NORMALIZER_OK=N
+C8I_PROD_NORMALIZER_STDERR_EMPTY=N
+C8I_PROD_NORMALIZER_RC=-1
+if [ -n "${C8I_PROD_NORMALIZER_LINE}" ]; then
+  C8I_PROD_NORMALIZER_EXPR="${C8I_PROD_NORMALIZER_LINE#*:}"
+  C8I_NORMAL_OUT="$(printf '%s' 'nexus-cni-test-control-plane' | LC_ALL=C tr -c 'A-Za-z0-9._ -' '_' 2>/tmp/d2b-c8i-safe-normal.stderr >/tmp/d2b-c8i-safe-normal.stdout)"
+  C8I_NORMAL_RC=$?
+  C8I_NORMAL_ERR="$(cat /tmp/d2b-c8i-safe-normal.stderr 2>/dev/null || true)"
+  C8I_UNSAFE_OUT="$(printf '%s' 'node/with:unsafe*chars' | LC_ALL=C tr -c 'A-Za-z0-9._ -' '_' 2>/tmp/d2b-c8i-safe-unsafe.stderr >/tmp/d2b-c8i-safe-unsafe.stdout)"
+  C8I_UNSAFE_RC=$?
+  C8I_UNSAFE_ERR="$(cat /tmp/d2b-c8i-safe-unsafe.stderr 2>/dev/null || true)"
+  C8I_SPACE_OUT="$(printf '%s' 'node name-with.dots_123' | LC_ALL=C tr -c 'A-Za-z0-9._ -' '_' 2>/tmp/d2b-c8i-safe-space.stderr >/tmp/d2b-c8i-safe-space.stdout)"
+  C8I_SPACE_RC=$?
+  C8I_SPACE_ERR="$(cat /tmp/d2b-c8i-safe-space.stderr 2>/dev/null || true)"
+  if [ "${C8I_NORMAL_RC}" = "0" ] \
+    && [ "${C8I_UNSAFE_RC}" = "0" ] \
+    && [ "${C8I_SPACE_RC}" = "0" ] \
+    && [ -z "${C8I_NORMAL_ERR}${C8I_UNSAFE_ERR}${C8I_SPACE_ERR}" ] \
+    && [ "${C8I_PROD_NORMALIZER_HAS_SAFE_ALLOW}" = "Y" ] \
+    && [ "${C8I_PROD_NORMALIZER_HAS_LEGACY_ALLOW}" = "N" ]; then
+    C8I_PROD_NORMALIZER_OK=Y
+    C8I_PROD_NORMALIZER_STDERR_EMPTY=Y
+    C8I_PROD_NORMALIZER_RC=0
+  fi
+fi
+# Legacy-range rejected: pick GNU tr if
+# available, else fall back to system `tr`
+# which on Linux runners implements GNU
+# semantics. Run the historical spelling
+# against a normal node name and assert
+# nonzero + range-endpoints diagnostic.
+C8I_LEGACY_BIN=""
+if command -v gtr >/dev/null 2>&1; then
+  C8I_LEGACY_BIN="gtr"
+elif command -v /opt/homebrew/opt/coreutils/libexec/gnubin/tr >/dev/null 2>&1; then
+  C8I_LEGACY_BIN="/opt/homebrew/opt/coreutils/libexec/gnubin/tr"
+elif [ -x /opt/homebrew/bin/gtr ]; then
+  C8I_LEGACY_BIN="/opt/homebrew/bin/gtr"
+else
+  C8I_LEGACY_BIN="tr"
+fi
+C8I_LEGACY_RC=-1
+C8I_LEGACY_ERR=""
+if [ -n "${C8I_LEGACY_BIN}" ]; then
+  C8I_LEGACY_OUT="$(printf '%s' 'nexus-cni-test-control-plane' | LC_ALL=C "${C8I_LEGACY_BIN}" -c 'A-Za-z0-9._- ' '_' 2>/tmp/d2b-c8i-legacy.stderr >/tmp/d2b-c8i-legacy.stdout)"
+  C8I_LEGACY_RC=$?
+  C8I_LEGACY_ERR="$(cat /tmp/d2b-c8i-legacy.stderr 2>/dev/null || true)"
+fi
+C8I_LEGACY_RANGE_REJECTED=N
+if [ "${C8I_LEGACY_RC}" != "0" ] && printf '%s' "${C8I_LEGACY_ERR}" | grep -qE 'range-endpoints|reverse.*collating'; then
+  C8I_LEGACY_RANGE_REJECTED=Y
+fi
+# Surface the captured expressions so the
+# output binds production expression ↔
+# probe expression explicitly.
+C8I_PROD_EXPR_DISPLAY="${C8I_PROD_NORMALIZER_EXPR:-NOT_EXTRACTED}"
+# d2b-tr-portability fields are required
+# by the C8i gate; the historical one-load
+# / no-handoff / attempt=1 / node-runtime
+# fields above are unchanged.
+if [ "${C8I_PASS}" = "Y" ] \
+   && [ "${C8I_PROD_NORMALIZER_OK}" = "Y" ] \
+   && [ "${C8I_LEGACY_RANGE_REJECTED}" = "Y" ]; then
+  C8I_PASS=Y
+else
+  C8I_PASS=N
+fi
+printf 'C8i: rc=%s kind-loads=%s sleeps=%s all-nodes-ready=%s node-count=%s attempt=%s normalizer-rc=%s normalizer-stderr-empty=%s legacy-range-rejected=%s prod-expr=%s (success on attempt 1; LC_ALL=C safe normalizer round-trips normal/unsafe/space inputs and historical range spelling is rejected)\n' \
   "${C8I_RC}" "${C8I_KIND_LOAD_COUNT}" "${C8I_SLEEP_COUNT}" \
-  "${C8I_ALL_READY}" "${C8I_NODE_COUNT}" "${C8I_FINAL_ATTEMPT}"
+  "${C8I_ALL_READY}" "${C8I_NODE_COUNT}" "${C8I_FINAL_ATTEMPT}" \
+  "${C8I_PROD_NORMALIZER_RC}" "${C8I_PROD_NORMALIZER_STDERR_EMPTY}" \
+  "${C8I_LEGACY_RANGE_REJECTED}" "${C8I_PROD_EXPR_DISPLAY}" \
+  >"${S8I}/C8i-line.txt"
+cat "${S8I}/C8i-line.txt"
 
 # C8j: control-plane validly misses attempt 1,
 # then all three nodes exact-match attempt 2

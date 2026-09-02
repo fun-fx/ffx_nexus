@@ -552,8 +552,16 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
     local per_attempt_fail_reason=""
     while IFS= read -r n; do
       [ -z "${n}" ] && continue
+      # Per-node artifact-name normalizer.
+      # LC_ALL=C forces deterministic ASCII-range
+      # semantics AND the literal hyphen is the
+      # last character in the allow-set so it can
+      # never form a `_-.` or similar reverse
+      # collating range. Acceptance: ASCII letters,
+      # digits, `.`, `_`, space, `-`; any other
+      # byte maps to `_`.
       local safe_n
-      safe_n="$(printf '%s' "${n}" | tr -c 'A-Za-z0-9._- ' '_')"
+      safe_n="$(printf '%s' "${n}" | LC_ALL=C tr -c 'A-Za-z0-9._ -' '_')"
       local raw_stdout="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.stdout.json"
       local raw_stderr="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.stderr.txt"
       local raw_rcfile="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.rc"
