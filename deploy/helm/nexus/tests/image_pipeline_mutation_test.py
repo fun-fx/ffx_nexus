@@ -303,12 +303,15 @@ ok.append(assert_eq(
     [],
 ))
 
-# ---- 6. Per-node runtime verification -----------------------------------
-# The directive requires install-nexus-test.sh
-# NOT to trust `kind load`'s rc=0 alone. The
-# install script MUST verify crictl images on
-# every kind node shows the recorded image_id.
-# We assert this by walking the source string.
+# ---- 6. Per-node runtime verification (d2b.51-final bounded contract) --
+# The d2b.51-final contract replaces the old
+# immediate post-load `grep -qE prefix` check
+# with: exactly one kind load, then a bounded
+# machine-readable crictl images --output
+# json run on every node, evaluating exact tag
+# PLUS the full normalized image-id. Each
+# attempt writes deterministic raw artifacts
+# under $ARTIFACTS/attempts/attempt-N/.
 install_src_path = REPO / "scripts" / "install-nexus-test.sh"
 install_src = install_src_path.read_text() if install_src_path.exists() else ""
 
@@ -342,9 +345,61 @@ ok.append(assert_eq(
     "fixture-pod-imagepull.log" in install_src,
     True,
 ))
+# d2b.51-final: the verifier MUST NOT use a
+# partial grep prefix as the success predicate.
 ok.append(assert_eq(
-    "install-nexus-test.sh counts missing nodes as delta present < expected",
-    "PRESENT=" in install_src and "MISSING=" in install_src,
+    "install-nexus-test.sh does NOT use partial grep -qE prefix as success predicate",
+    ('grep -qE "${FIXTURE_IMAGE_ID:0:12}"'
+     in install_src),
+    False,
+))
+# d2b.51-final: exactly ONE kind load
+# invocation (no retry/reload/rebuild), and
+# the verifier sleeps ONLY when another
+# attempt remains (no success-by-timeout).
+# We count the actual executable invocation
+# (the line begins with `kind load docker-image`
+# syntactically, not as a quoted echo string).
+ok.append(assert_eq(
+    "install-nexus-test.sh invokes kind load docker-image exactly once (executable)",
+    sum(1 for ln in install_src.splitlines()
+        if ln.lstrip().startswith("kind load docker-image ")),
+    1,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh fixes IMG_VERIFY_MAX_ATTEMPTS=15",
+    "IMG_VERIFY_MAX_ATTEMPTS=15" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh fixes IMG_VERIFY_INTERVAL_SEC=2",
+    "IMG_VERIFY_INTERVAL_SEC=2" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh fixes IMG_VERIFY_MAX_WINDOW_SEC=30",
+    "IMG_VERIFY_MAX_WINDOW_SEC=30" in install_src,
+    True,
+))
+# d2b.51-final: machine-readable JSON mode
+# crictl images, NOT text grep.
+ok.append(assert_eq(
+    "install-nexus-test.sh invokes crictl images --output json",
+    "crictl images --output json" in install_src,
+    True,
+))
+# d2b.51-final: per-attempt raw artifacts.
+ok.append(assert_eq(
+    "install-nexus-test.sh writes per-attempt raw stdout artifacts",
+    "attempts/attempt-" in install_src,
+    True,
+))
+# d2b.51-final: explicit normalized image-id
+# call site (sha256 prefix stripped)
+# immediately before comparison.
+ok.append(assert_eq(
+    "install-nexus-test.sh strips sha256: only before normalized full ID compare",
+    "removeprefix(\"sha256:\")" in install_src,
     True,
 ))
 ok.append(assert_eq(
@@ -370,6 +425,593 @@ ok.append(assert_eq(
     True,
 ))
 
+# ---------------------------------------------------------------------------
+# d2b.51.51-final-clean: harness C8k predicate
+# STRICTNESS assertions. The harness must
+# strictly derive the C8k terminal record
+# from actual step_image_pipeline JSON and
+# prove node-c:not_ready, attempt 15, parser
+# rc 0, empty parser stderr, exit 14,
+# fourteen sleeps, one load, and no handoff.
+harness_src_path = REPO / "scripts" / "test_fixture_readiness_observability.sh"
+harness_src = harness_src_path.read_text() if harness_src_path.exists() else ""
+
+# d2b.51.51-final-clean: the harness C8k
+# evidence line must name every C8k
+# contract field AND emit the contract
+# `failing-nodes=node-c:not_ready` token.
+ok.append(assert_eq(
+    "harness C8k evidence line names terminal attempt=15",
+    'attempt=15 failing-nodes=node-c:not_ready' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8k evidence line names parser-stderr-empty",
+    'parser-stderr-empty=%s' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8k evidence line names no-handoff=Y",
+    'no-handoff=%s' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8k evidence line emits failing-nodes=node-c:not_ready",
+    'failing-nodes=node-c:not_ready' in harness_src,
+    True,
+))
+# d2b.51.51-final-clean: the C8k predicate
+# must require parser_rc=0 (not rc=14 or
+# any other default value).
+ok.append(assert_eq(
+    "harness C8k predicate requires parser_rc=0",
+    '[ "${C8K_PARSE_RC}" = "0" ]' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8k predicate requires parser_line=Y (exact contract line)",
+    '[ "${C8K_PARSER_LINE_OK}" = "Y" ]' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8k predicate requires parser_stderr_empty=Y",
+    '[ "${C8K_PARSER_STDERR_EMPTY}" = "Y" ]' in harness_src,
+    True,
+))
+# d2b.51.51-final-clean: the strict parser
+# must be a portable python3 invocation
+# (heredoc or python3 -c) and MUST NOT use
+# invalid awk/escape constructs. Reject the
+# former fragile awk pattern.
+ok.append(assert_eq(
+    "harness uses portable python3 heredoc for C8k strict parser",
+    "C8KPYEOF" in harness_src or "python3 -c \"" in harness_src
+    or 'python3 -c "' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness does NOT use the former invalid awk escape construct",
+    '"\\"\\""' not in harness_src
+    and "C8K_FAILS_NODES=\"$(echo" not in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness does NOT carry an empty-default C8K_FAILS_NODES echo-fallback",
+    "echo \"False []\"" not in harness_src and "echo 'False []'" not in harness_src,
+    True,
+))
+# d2b.51.51-final-clean: the production
+# contract reason appears consistently in
+# the harness parser and the C8K event
+# ledger line.
+CONTRACT_REASON = "tag or normalized id mismatch (parser OK; tag/id not exact)"
+ok.append(assert_eq(
+    "harness parser references the production contract reason",
+    CONTRACT_REASON in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness strips sha256 prefix in normalized full id comparison",
+    'IMG_VERIFY_EXPECTED_ID' in install_src,
+    True,
+))
+# d2b.51.51-final-clean: fake-date state MUST
+# live under the stage-local fakebin root
+# and CANNOT escape to /__date_state or
+# other root-absolute paths.
+ok.append(assert_eq(
+    "harness fake-date uses FAKE_DATE_STATE (canonical key)",
+    "FAKE_DATE_STATE" in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness fake-date validates state path is absolute AND under root",
+    'fake-date: state path' in harness_src and 'not under root' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness fake-date fails closed if FAKE_DATE_STATE absent",
+    'fake-date: missing FAKE_DATE_STATE or HARNESS_FAKE_BIN_ROOT' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness write_env_file publishes FAKE_DATE_STATE per stage",
+    "printf 'FAKE_DATE_STATE=%s\\n'" in harness_src,
+    True,
+))
+# d2b.51.51-final-clean: clean-stderr harness-
+# level gate present.
+ok.append(assert_eq(
+    "harness-level clean-stderr gate captures parent FD2 to a trace",
+    "exec 2>" in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness verifies parent stderr contains zero unexpected noise",
+    "HARNESS_STDERR_NOISE_COUNT" in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness emits the clean-stderr ledger line",
+    "# clean-stderr: noise_count=" in harness_src,
+    True,
+))
+# d2b.51.51-final-clean: parent PATH is
+# scrubbed of any stale d2b46-.*fakebin or
+# *_fakebin entries so bash's internal
+# `$(date +%s)` calls never reach a
+# previous fakebin.
+ok.append(assert_eq(
+    "harness scrubs d2b46-*-fakebin entries from parent PATH",
+    '*d2b46-*|*/fakebin|*-fakebin' in harness_src,
+    True,
+))
+# ---------------------------------------------------------------------------
+# d2b.51.51-final-correct: same-entry image
+# identity (cross-entry split is a negative
+# case). Aggregate booleans MUST NOT drive
+# ready independently. The test rejects any
+# source that derives success from
+# `ready = tag_match and id_match` (or its
+# semantic equivalent; e.g. `ready = any(img
+# for img in imgs if img_match)`).
+# Detection: scan install-nexus-test.sh for
+# the legacy aggregate derivation AND for the
+# new same_entry_match invariant. The
+# parser heredoc MUST compute per-entry
+# matches and gate ready on the
+# same_entry_match boolean.
+ok.append(assert_eq(
+    "install-nexus-test.sh per-entry parser computes same_entry_match invariant",
+    'same_entry_match' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh per-entry parser records tag_seen_anywhere for telemetry",
+    'tag_seen_anywhere' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh per-entry parser records id_seen_anywhere for telemetry",
+    'id_seen_anywhere' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh does NOT derive ready from aggregate tag_match and id_match",
+    # The d2b.45-era aggregate derivation
+    # combined two separate entry-iteration
+    # booleans. We forbid the EXACT literal
+    # form (`ready = tag_match and id_match`)
+    # AND any semantic equivalent where ready
+    # is the boolean product of an aggregate
+    # tag_match and aggregate id_match over
+    # the images list. The new parser uses
+    # `ready = same_entry_match` (one boolean
+    # produced inside the same-entry loop).
+    ('ready = tag_match and id_match'
+     not in install_src)
+    and 'ready = tag_match and id_match' not in harness_src,
+    True,
+))
+# d2b.51.51-final-correct: NO printf-style
+# hand-built JSON for the runtime report
+# files. Only json.dumps / json.dump is
+# allowed.
+ok.append(assert_eq(
+    "install-nexus-test.sh does NOT hand-build fixture-image-node-runtime.json with printf",
+    # The FIN helper printed `_report.txt`.
+    'printf \'{\\n"expected_ref"\'' not in install_src
+    and 'printf \'{\\n"attempt"' not in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh does NOT hand-build fixture-image-node-runtime-attempts.jsonl with printf",
+    # The old per-attempt JSON line used
+    # printf '\\n"attempt":'. Reject it.
+    not any(snippet in install_src for snippet in (
+        'printf \'{\\n"attempt":',
+        'printf \'{\\n"attempt": %s',
+    )),
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh uses python3 json.dumps for the per-attempt JSONL serializer",
+    'json.dumps(record' in install_src
+    and 'ATTEMPT_PYEOF' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh uses python3 json.dumps for the final report serializer",
+    'json.dumps(record' in install_src
+    and 'TERMINAL_PYEOF' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh surfaces serializer failure as FIXTURE_IMAGE_NOT_LOADED 14",
+    'SERIALIZER_FAIL' in install_src
+    and 'FIXTURE_IMAGE_NOT_LOADED' in install_src,
+    True,
+))
+# d2b.51.51-final-correct: the production
+# parser uses .removeprefix("sha256:") to
+# normalise image IDs. The d2b.45-era
+# raw_id[6:] form strips only the bytes
+# "sha256" and leaves the ":" separator,
+# producing a FALSE-positive for any cross-
+# entry split.
+ok.append(assert_eq(
+    "install-nexus-test.sh parser uses .removeprefix(\"sha256:\") (NOT raw_id[6:])",
+    '.removeprefix("sha256:")' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh parser no longer uses raw_id[6:] for sha256 prefix strip",
+    'raw_id[6:]' not in install_src
+    and 'raw_id.removeprefix("sha256")' not in install_src,
+    True,
+))
+# d2b.51.51-final-correct: the harness C8p
+# ledger line includes the cross-entry-split
+# marker and the false-positive-prevention
+# tokens.
+ok.append(assert_eq(
+    "harness C8p evidence line includes cross-entry-split",
+    'cross-entry-split rc=' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8p evidence line includes tag-seen-anywhere=Y",
+    'tag-seen-anywhere=Y' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8p evidence line includes id-seen-anywhere=Y",
+    'id-seen-anywhere=Y' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8p evidence line includes json-valid=Y (or json-valid=N) — present",
+    'json-valid=' in harness_src,
+    True,
+))
+# d2b.51.51-final-correct: the harness C8p
+# PASS predicate requires the cross-entry
+# subcase to record all of:
+#   rc=14, kind-loads=1, attempt=15,
+#   same-entry-match=N,
+#   tag-seen-anywhere=Y, id-seen-anywhere=Y,
+#   no-handoff=Y, json-valid=Y
+ok.append(assert_eq(
+    "harness C8p_cross_entry subcase asserts cross-entry payload contains split",
+    'cni-listener:not-the-target' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness asserts C8P3_RC=\"14\" in C8p predicate",
+    '[ "${C8P3_RC}" = "14" ]' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness asserts C8P3_KIND_LOAD_COUNT=\"1\" in C8p predicate",
+    '[ "${C8P3_KIND_LOAD_COUNT}" = "1" ]' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness asserts C8P3_SLEEP_COUNT=\"14\" in C8p predicate",
+    '[ "${C8P3_SLEEP_COUNT}" = "14" ]' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness asserts C8P3_SAME_ENTRY_OK, AGGREGATE_AGREE_TAG/ID in C8p predicate",
+    'C8P3_SAME_ENTRY_OK' in harness_src
+    and 'C8P3_AGGREGATE_AGREE_TAG' in harness_src
+    and 'C8P3_AGGREGATE_AGREE_ID' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness asserts C8P3_JSON_VALID (terminal JSON parses) in C8p predicate",
+    '[ "${C8P3_JSON_VALID}" = "Y" ]' in harness_src,
+    True,
+))
+# d2b.51.51-final-correct-evidence-integrity:
+# strict serializer input-schema validation.
+# The former weak patterns must be REJECTED:
+#   - `if nodes_tsv_path and os.path.isfile`
+#     (allows silent skip on absent file)
+#   - `if len(parts) < 9: continue`
+#     (silently drops short rows)
+#   - unknown-boolean default False /
+#     unknown-token-coerced-to-false
+#   - all_nodes_ready missing the per-node
+#     record-set equality check
+#   - missing canonical TSV argument
+ok.append(assert_eq(
+    "production serializer no longer uses weak `if nodes_tsv_path and os.path.isfile` gate",
+    'if nodes_tsv_path and os.path.isfile' not in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer no longer silently drops rows via `if len(parts) < 9: continue`",
+    'if len(parts) < 9: continue' not in install_src
+    and 'len(parts) < 9:' not in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer header check references nine-column EXPECTED_HEADER constant",
+    'EXPECTED_HEADER' in install_src
+    and 'per_attempt_node_tsv_header_mismatch' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects unknown boolean spellings (no false-on-unknown)",
+    'unknown_boolean' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer accepts argv slot 10 as canonical_nodes_tsv",
+    'canonical_nodes_tsv_path' in install_src
+    and 'sys.argv[1:11]' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects missing canonical TSV with canonical_nodes_tsv_missing",
+    'canonical_nodes_tsv_missing' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects duplicate canonical nodes",
+    'canonical_node_duplicate' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects node-set mismatch (records vs canonical)",
+    'per_attempt_node_tsv_node_set_mismatch' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects per-attempt row count mismatch",
+    'per_attempt_node_tsv_count_mismatch' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects node-not-in-canonical-set",
+    'per_attempt_node_tsv_node_not_canonical' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects duplicate node in per-attempt set",
+    'per_attempt_node_tsv_node_duplicate' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects non-integer command_rc / parser_rc",
+    'per_attempt_node_tsv_command_rc_non_integer' in install_src
+    and 'per_attempt_node_tsv_parser_rc_non_integer' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer rejects empty raw_stdout/raw_stderr paths",
+    'per_attempt_node_tsv_raw_stdout_empty' in install_src
+    and 'per_attempt_node_tsv_raw_stderr_empty' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer writes only `serializer_error=<reason>` on failure (single line)",
+    'sys.stderr.write("serializer_error=" + reason' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer sets all_nodes_ready from complete-record-set check (not aggregate)",
+    'record_set == canonical_set_sorted' in install_src
+    and 'all_nodes_ready' in install_src,
+    True,
+))
+# d2b.51.51-final-correct-evidence-integrity:
+# shell caller passes canonical nodes_tsv
+# AS argv slot 10 to the production
+# serializer. Without this arg the
+# serializer rejects. The static test
+# inspects argv NAMES and ASSERT the
+# canonical TSV literal sits in the
+# python3 - argv{...} invocation.
+ok.append(assert_eq(
+    "install-nexus-test.sh passes canonical nodes_tsv to the JSONL serializer",
+    '"${per_attempt_node_tsv}"' in install_src
+    and '"${nodes_tsv}"' in install_src,
+    True,
+))
+# d2b.51.51-final-correct-evidence-integrity:
+# shell caller fail-closed path writes
+# terminal_failure_reason='json serializer
+# failed' (canonical token) and abort_as
+# FIXTURE_IMAGE_NOT_LOADED with rc 14.
+ok.append(assert_eq(
+    "install-nexus-test.sh fail-closed branch writes canonical 'json serializer failed' failure_reason",
+    'json serializer failed' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh serializer-fail-closed invokes abort_as FIXTURE_IMAGE_NOT_LOADED with rc 14 start",
+    'SERIALIZER_FAIL' in install_src,
+    True,
+))
+# d2b.51.51-final-correct-evidence-integrity:
+# harness exercises the strict serializer
+# through FOUR named subcases driven by
+# extracted production code. We require
+# literal evidence of each subcase.
+ok.append(assert_eq(
+    "harness C8m exercises serializer-missing-tsv subcase against extracted production serializer",
+    'serializer-missing-tsv' in harness_src
+    and 'C8M_MISSING_TSV_RC' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer short-row failure carries canonical `short_row:line=N:fields=N` reason",
+    'per_attempt_node_tsv_short_row:line=' in install_src
+    and 'fields=' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "production serializer uses fail() not continue/defaults for short-row rejection",
+    # Direct short-row rejection uses
+    # `if len(parts) != 9: fail(...)` with
+    # NO `continue`, NO `len(parts) < 9: continue`,
+    # NO silent defaulting on unknown boolean,
+    # and the canonical
+    # `per_attempt_node_tsv_short_row` reason.
+    'if len(parts) != 9:' in install_src
+    and 'if len(parts) != 9\n    fail' not in install_src
+    and 'if len(parts) < 9: continue' not in install_src
+    and 'continue' not in install_src.split('per_attempt_node_tsv_short_row')[1].split('per_node_records.append')[0],
+    True,
+))
+ok.append(assert_eq(
+    "production serializer does NOT identify short rows merely via count mismatch",
+    # Direct short-row failure via explicit
+    # short_row reason must be present,
+    # independent of (and BEFORE) the later
+    # `per_attempt_node_tsv_count_mismatch`
+    # guard. The count guard is reserved for
+    # structurally valid rows whose record set
+    # does not match canonical.
+    'per_attempt_node_tsv_short_row' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8m exercises serializer-duplicate-node subcase against extracted production serializer",
+    'serializer-duplicate-node' in harness_src
+    and 'C8M_DUP_RC' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8m exercises serializer-unknown-bool subcase against extracted production serializer",
+    'serializer-unknown-bool' in harness_src
+    and 'C8M_BOOL_RC' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8m requires each subcase produces nonzero rc + stdout-empty Y + stderr-prefix serializer_error=",
+    '"${C8M_MISSING_TSV_STDERR_PREFIX#serializer_error=}" != "${C8M_MISSING_TSV_STDERR_PREFIX}"' in harness_src
+    and '"${C8M_SHORT_ROW_STDERR_PREFIX#serializer_error=}" != "${C8M_SHORT_ROW_STDERR_PREFIX}"' in harness_src
+    and '"${C8M_DUP_STDERR_PREFIX#serializer_error=}" != "${C8M_DUP_STDERR_PREFIX}"' in harness_src
+    and '"${C8M_BOOL_STDERR_PREFIX#serializer_error=}" != "${C8M_BOOL_STDERR_PREFIX}"' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness extracts the production ATTEMPT_PYEOF body via extract_production_attempt_serializer",
+    'extract_production_attempt_serializer' in harness_src,
+    True,
+))
+# d2b.51.51-correct-evidence-integrity:
+# Terminal serializer MUST derive verdict
+# fields from the validated terminal_doc
+# (whose attempt equals shell-supplied
+# terminal_attempt). It MUST NOT aggregate
+# earlier per-node records into the
+# terminal per_node_records. The legacy
+# pattern looped all JSONL records into
+# one list; reject that.
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer does NOT loop per_attempt_records into one list",
+    # The legacy pattern appended every doc's
+    # per-node records into one list and
+    # collected every prior ready=False. We
+    # require a per-doc, attempt-bounded
+    # `documents_by_attempt[…]` map and
+    # selection `terminal_doc` only.
+    'documents_by_attempt' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer selects terminal_doc = documents_by_attempt[terminal_attempt]",
+    'terminal_doc = documents_by_attempt[terminal_attempt]' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer no longer accepts `.get(\"per_node_records\", []) or []`",
+    # The old weak pattern silently accepted
+    # missing per_node_records. We require
+    # an explicit failure on missing field.
+    '.get("per_node_records", []) or []' not in install_src
+    and 'doc.get("per_node_records"' not in install_src
+    and 'doc.get("per_node_records",' not in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer keeps attempt_history_count as separate bounded field",
+    'attempt_history_count' in install_src
+    and '"attempt_history_count"' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer fail-closed emits single pipeline_runtime_error=<reason>",
+    'sys.stderr.write("pipeline_runtime_error=" + reason' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer validates ready is JSON bool (not truthy)",
+    'ready_val, bool' in install_src
+    or "if not isinstance(ready_val, bool)" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer cross-checks shell-vs-doc all_nodes_ready",
+    'shell_all_nodes_ready != terminal_all_nodes_ready_per_doc' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer keeps canonical `all-node-exact-tag-id-present` success reason",
+    'all-node-exact-tag-id-present' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8j asserts terminal JSON attempt=2 with all_nodes_ready=true and 3 terminal records",
+    'C8J_TERMINAL_ATTEMPT' in harness_src
+    and 'C8J_TERMINAL_ALL_READY' in harness_src
+    and 'C8J_TERMINAL_RECORD_COUNT' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8p asserts terminal JSON attempt=15 with all ready=false and exactly 3 terminal records (not 45 historical)",
+    'C8P_TERMINAL_ATTEMPT' in harness_src
+    and "C8P_TERM_RECORDS_OK" in harness_src
+    and 'C8P_TERM_RECORDS_ALL_FALSE_OK' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8k asserts terminal JSON has exactly 3 terminal records with node-a+node-b ready and node-c not ready",
+    'C8K_TERMINAL_RECORD_COUNT' in harness_src
+    and 'C8K_TERMINAL_NODEC_READY' in harness_src,
+    True,
+))
+ok.append(assert_eq(
+    "harness C8m indirect terminal serializer invocations include wrong-shape JSONL subcase",
+    'serializer-wrong-shape' in harness_src
+    and 'C8M_WRONG_SHAPE_RC' in harness_src
+    and 'C8M_WRONG_SHAPE_STDERR_PREFIX' in harness_src,
+    True,
+))
 print()
 if all(ok):
     print("d2b.26 image-pipeline mutation tests: PASS")

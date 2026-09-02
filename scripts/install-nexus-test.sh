@@ -458,11 +458,22 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
   fi
   echo "[install] image build: id=$FIXTURE_IMAGE_ID ref=$FIXTURE_IMAGE_REF" \
     | tee -a "$ARTIFACTS/install.log"
-  # kind load then per-node crictl verify.
-  # d2b.46: capture the real exit code without
-  # masking via '|| true'. A load failure must
-  # raise FIXTURE_IMAGE_NOT_LOADED; the log is
-  # preserved regardless of outcome.
+  # kind load then bounded all-node runtime
+  # verification. The runtime confirmation
+  # loop is local to step_image_pipeline:
+  #   - exactly one kind load invocation;
+  #   - exactly 15 attempts at 2s interval;
+  #   - machine-readable crictl images --output json;
+  #   - exact tag + full normalized image ID match.
+  # Constants below are intentionally NOT
+  # operator-tunable; mutating them locally
+  # would diverge from the install pipeline
+  # contract and is forbidden by the
+  # d2b.51-final image-pipeline correctness
+  # gate.
+  local IMG_VERIFY_MAX_ATTEMPTS=15
+  local IMG_VERIFY_INTERVAL_SEC=2
+  local IMG_VERIFY_MAX_WINDOW_SEC=30
   local load_log="$ARTIFACTS/fixture-image-kind-load.log"
   set +e
   {
@@ -476,31 +487,1094 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
       "kind load docker-image returned rc=${load_rc} (see $load_log)" 14
   fi
   # Per-node runtime image presence.
-  # Compute PRESENT and MISSING counts so a
-  # downstream assertion can replay the
-  # delta "present < expected" and surface it
-  # in `fixture-image-node-runtime.log`.
+  # Capture the node list exactly once after a
+  # successful load. A nonzero `kind get nodes`
+  # or an empty list is fail-closed exit 14.
   local node_log="$ARTIFACTS/fixture-image-node-runtime.log"
+  local final_report="$ARTIFACTS/fixture-image-node-runtime.json"
   : > "$node_log"
-  local PRESENT=0
-  local MISSING=0
-  for n in $(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null); do
-    echo "--- node: $n ---" >>"$node_log"
-    if docker exec "${n}" crictl images 2>/dev/null \
-        | grep -qE "${FIXTURE_IMAGE_ID:0:12}"; then
-      PRESENT=$((PRESENT + 1))
-      echo "(present image_id ${FIXTURE_IMAGE_ID:0:12})" >>"$node_log"
-    else
-      MISSING=$((MISSING + 1))
-      echo "(missing image_id ${FIXTURE_IMAGE_ID:0:12})" >>"$node_log"
-    fi
-  done
-  echo "PRESENT=$PRESENT MISSING=$MISSING" >>"$node_log"
-  local missing="$MISSING"
-  if (( missing > 0 )); then
-    cat "$node_log" | tee -a "$ARTIFACTS/install.log"
+  set +e
+  local nodes_text
+  nodes_text="$(kind get nodes --name "${CLUSTER_NAME}" 2>/dev/null)"
+  local get_nodes_rc=$?
+  set -e
+  if (( get_nodes_rc != 0 )) || [ -z "${nodes_text}" ]; then
+    printf 'KIND_GET_NODES_FAIL rc=%s (see %s)\n' \
+      "${get_nodes_rc}" "$node_log" >> "$node_log"
     abort_as FIXTURE_IMAGE_NOT_LOADED \
-      "image_id=$FIXTURE_IMAGE_ID missing on ${missing} kind node(s)" 14
+      "kind get nodes failed rc=${get_nodes_rc} or returned empty list" 14
+  fi
+  # Normalize the node list: one node name per
+  # line, no whitespace, no duplicates. Lines
+  # that contain a tab are collapsed to column
+  # 1 (kind's STATUS column sits in column 2).
+  local nodes_tsv="$ARTIFACTS/fixture-image-node-list.tsv"
+  printf '%s\n' "${nodes_text}" | awk '
+    NF==1 { print $1; next }
+    NF>=2 { print $1; next }
+  ' | sort -u > "${nodes_tsv}"
+  # Sanitized node count recorded for the
+  # audit trail; raw node-list goes to
+  # fixture-image-node-list.tsv.
+  printf 'NODES_LINES=%s (kind get nodes rc=%s)\n' \
+    "$(wc -l < "${nodes_tsv}" | tr -d ' ')" "${get_nodes_rc}" \
+    >> "$node_log"
+  # Normalize the expected image ID: strip the
+  # optional leading 'sha256:' prefix once so
+  # the comparison after `crictl images --output
+  # json` is byte-equal. NEVER grep-prefixed.
+  # crictl images --output json emits one entry
+  # per tagged ref: `repoTags` is the FULL
+  # `name[:tag]` string, never just the suffix.
+  # Compare against the exact FIXTURE_IMAGE_REF
+  # (the input, never hard-coded).
+  local IMG_VERIFY_TAG="${FIXTURE_IMAGE_REF}"
+  local IMG_VERIFY_EXPECTED_ID="${FIXTURE_IMAGE_ID#sha256:}"
+  # Per-attempt structured JSON: declare the
+  # expected ref/normalized id once so the
+  # consolidated JSON report is shaped exactly
+  # the same on every attempt.
+  local attempts_report="$ARTIFACTS/fixture-image-node-runtime-attempts.jsonl"
+  : > "$attempts_report"
+  local attempt=0
+  local all_nodes_ready=0
+  local last_attempt_rc=1
+  while (( attempt < IMG_VERIFY_MAX_ATTEMPTS )); do
+    attempt=$((attempt + 1))
+    printf '\n=== attempt=%s/%s ===\n' "${attempt}" "${IMG_VERIFY_MAX_ATTEMPTS}" >>"$node_log"
+    # Per-node execution. set +e around each
+    # `docker exec` so the rc is captured
+    # structurally.
+    local per_attempt_rc=0
+    local per_attempt_fail_count=0
+    local soft_fail_count=0
+    local per_attempt_fail_node=""
+    local per_attempt_fail_reason=""
+    while IFS= read -r n; do
+      [ -z "${n}" ] && continue
+      local safe_n
+      safe_n="$(printf '%s' "${n}" | tr -c 'A-Za-z0-9._- ' '_')"
+      local raw_stdout="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.stdout.json"
+      local raw_stderr="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.stderr.txt"
+      local raw_rcfile="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.rc"
+      mkdir -p "${ARTIFACTS}/attempts/attempt-${attempt}"
+      printf 'attempt=%s node=%s cmd=docker exec %s crictl images --output json\n' \
+        "${attempt}" "${n}" "${n}" >>"$node_log"
+      set +e
+      docker exec "${n}" crictl images --output json >"${raw_stdout}" 2>"${raw_stderr}"
+      local node_rc=$?
+      set -e
+      printf '%s\n' "${node_rc}" >"${raw_rcfile}"
+      printf 'node=%s exec_rc=%s raw_stdout_bytes=%s raw_stderr_bytes=%s\n' \
+        "${n}" "${node_rc}" \
+        "$(wc -c <"${raw_stdout}" | tr -d ' ')" \
+        "$(wc -c <"${raw_stderr}" | tr -d ' ')" >>"$node_log"
+      # Classify: command failure OR malformed
+      # JSON is an immediate exit-14 — do NOT
+      # make subsequent calls that could hide
+      # the error.
+      if (( node_rc != 0 )); then
+        per_attempt_rc=1
+        per_attempt_fail_count=1
+        per_attempt_fail_node="${n}"
+        per_attempt_fail_reason="docker exec crictl images exited rc=${node_rc}; raw stderr retained at ${raw_stderr}"
+        printf 'FAIL node=%s reason=%s rc=%s\n' \
+          "${n}" "${per_attempt_fail_reason}" "${node_rc}" >>"$node_log"
+        break
+      fi
+      set +e
+      local node_ready node_stdout
+      # We append the parser's stderr (the
+      # `tag=... id=... tag_match=... id_match=...`
+      # line) to the human-readable log so the
+      # regression selectors can grep on it
+      # and so operators see the deterministic
+      # per-node verdict inline. The
+      # Python stderr is the canonical surface
+      # for the comparison result.
+      # d2b.51.51-final-clean strict parser:
+      # each images[] entry is validated as a
+      # dict; repoTags must be a list-of-strings;
+      # Id or id must be a string before the
+      # optional sha256: prefix is stripped. A
+      # malformed usable entry raises a parser
+      # error (with a single explanatory stderr
+      # line) and exits non-zero. The script
+      # captures rc separately and treats any
+      # non-zero exit as __PARSER_FAIL__, which
+      # the install script maps to immediate
+      # exit 14 (FAIL-CLOSED, NO HANDOFF).
+      #
+      # Comparison happens per-entry and ONLY
+      # per-entry. The aggregate booleans
+      # tag_seen_anywhere and id_seen_anywhere
+      # are recorded for telemetry but NEVER
+      # drive ready — a node is ready ONLY when
+      # one same entry carries both the expected
+      # tag AND the normalized full ID. Two
+      # distinct entries (one with the right
+      # tag, the other with the right ID) are a
+      # cross-entry split and read as not_ready.
+      set +e
+      node_ready="$(IMG_VERIFY_TAG="${IMG_VERIFY_TAG}" \
+                    IMG_VERIFY_EXPECTED_ID="${IMG_VERIFY_EXPECTED_ID}" \
+                    RAW_STDOUT="${raw_stdout}" \
+                    RAW_STDERR="${raw_stderr}" \
+                    python3 - "${raw_stdout}" "${raw_stderr}" 2>"${raw_stderr}" <<'PYEOF'
+"""
+Strict per-node crictl images --output json parser.
+
+Reads argv[1] (raw crictl JSON document) and
+emits EXACTLY ONE LINE on stdout (either "Y",
+"N", or "__PARSER_FAIL__") plus ONE LINE on
+stderr of the form:
+
+    tag=<want_tag> id=<want_id> tag_seen_anywhere=<t|f> id_seen_anywhere=<t|f> same_entry_match=<t|f> ready=<t|f>
+
+On rc=0, ready is "Y" only when at least ONE
+image entry's repoTags list contains the
+expected tag AND the same entry's normalized
+Id (sha256 prefix stripped) equals the
+expected normalized id. Any non-ready
+condition (cross-entry split; tag-only match;
+ID-only match; missing lists) emits "N".
+
+Any schema defect (top-level not a dict;
+images not a list; entry not a dict;
+repoTags not a list-of-strings; Id/id not a
+string before normalization) emits
+"__PARSER_FAIL__" on stdout and a single
+explanatory line on stderr, then exits rc>=2
+so the harness can map it to immediate exit
+14 (no success-by-implicit-success).
+"""
+import json, os, sys
+
+raw_path = sys.argv[1]
+want_tag = os.environ.get("IMG_VERIFY_TAG", "")
+want_id  = os.environ.get("IMG_VERIFY_EXPECTED_ID", "")
+
+
+def fail(msg):
+    sys.stderr.write("parser_error: " + msg + "\n")
+    sys.stdout.write("__PARSER_FAIL__\n")
+    sys.stdout.flush()
+    sys.exit(2)
+
+
+def parse_one(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except FileNotFoundError:
+        fail("missing input file " + path)
+    except json.JSONDecodeError as e:
+        fail("json decode error in " + path + ": " + str(e))
+    except OSError as e:
+        fail("os error reading " + path + ": " + str(e))
+    if not isinstance(doc, dict):
+        fail("top-level is not a dict (got " + type(doc).__name__ + ")")
+    imgs = doc.get("images")
+    if not isinstance(imgs, list):
+        fail("'images' is not a list (got " + type(imgs).__name__ + ")")
+    return imgs
+
+
+def normalise_id(raw_id):
+    """Strip an optional 'sha256:' prefix
+    (7 chars: 'sha256' + ':') from the Id
+    string. Caller has already asserted that
+    the value IS a string. An empty string
+    after stripping distinguishes 'no Id'
+    from a real hash, so the schema check
+    rejects non-strings BEFORE we reach this
+    function. We use removeprefix (Python 3.9+
+    available on every target) which is more
+    explicit than a 6-char slice and leaves the
+    ':' separator in place when the prefix is
+    missing."""
+    return raw_id.removeprefix("sha256:")
+
+
+def each_entry(imgs):
+    """Yield one diagnostic boolean per entry;
+    raise (return error indicator via fail) on
+    schema defect. We classify three booleans:
+      - entry_id_string: entry's Id value (under
+        "Id" canonically, then "id" lower-case
+        fallback) is a string
+      - entry_has_tag: want_tag is in entry's
+        repoTags list
+      - entry_has_id: normalised Id equals want_id
+    """
+    for idx, img in enumerate(imgs):
+        if not isinstance(img, dict):
+            fail("images[" + str(idx) + "] is not a dict")
+        rt = img.get("repoTags")
+        if rt is not None and not isinstance(rt, list):
+            fail("images[" + str(idx) + "].repoTags is not a list")
+        repo_tags = []
+        if rt:
+            for tag in rt:
+                if not isinstance(tag, str):
+                    fail("images[" + str(idx) + "].repoTags contains a non-string tag")
+                repo_tags.append(tag)
+        # Pull Id strictly via canonical key first,
+        # then lowercase fallback. Both schemas
+        # accept a single non-string value as a
+        # schema defect (not a default-collapsed
+        # empty-string success).
+        raw_id = img.get("Id")
+        if raw_id is None:
+            raw_id = img.get("id")
+        if raw_id is not None and not isinstance(raw_id, str):
+            fail("images[" + str(idx) + "].Id is not a string")
+        norm = normalise_id(raw_id or "")
+        yield (
+            want_tag in repo_tags,
+            (bool(norm) and norm == want_id),
+        )
+
+
+imgs = parse_one(raw_path)
+tag_seen_anywhere = False
+id_seen_anywhere = False
+same_entry_match = False
+for tag_hit, id_hit in each_entry(imgs):
+    if tag_hit:
+        tag_seen_anywhere = True
+    if id_hit:
+        id_seen_anywhere = True
+    if tag_hit and id_hit:
+        same_entry_match = True
+ready = same_entry_match
+sys.stderr.write(
+    "tag={t} id={i} tag_seen_anywhere={ts} id_seen_anywhere={ids} "
+    "same_entry_match={sem} ready={rd}\n".format(
+        t=want_tag,
+        i=want_id,
+        ts=("true" if tag_seen_anywhere else "false"),
+        ids=("true" if id_seen_anywhere else "false"),
+        sem=("true" if same_entry_match else "false"),
+        rd=("true" if ready else "false"),
+    )
+)
+sys.stdout.write("Y\n" if ready else "N\n")
+sys.stdout.flush()
+sys.exit(0)
+PYEOF
+      )"
+      local parser_rc=$?
+      set -e
+      # Tee stderr into the human log too so
+      # per-node diagnostic surface lives there.
+      if [ -s "${raw_stderr}" ]; then
+        printf 'node=%s parser_stderr_lines:\n' "${n}" >>"$node_log"
+        cat "${raw_stderr}" >>"$node_log"
+      fi
+      printf 'node=%s parser_rc=%s ready=%s\n' \
+        "${n}" "${parser_rc}" "${node_ready:-__PARSER_FAIL__}" >>"$node_log"
+      if [ "${node_ready}" = "__PARSER_FAIL__" ] || (( parser_rc != 0 )); then
+        per_attempt_rc=1
+        per_attempt_fail_count=1
+        per_attempt_fail_node="${n}"
+        per_attempt_fail_reason="crictl document is not a JSON object with an images array; raw stdout/stderr retained"
+        printf 'FAIL node=%s reason=%s\n' "${n}" "${per_attempt_fail_reason}" >>"$node_log"
+        break
+      fi
+      # Extract per-node booleans from the
+      # parser stderr diagnostic line. The
+      # parser writes exactly one line of the
+      # form:
+      #   tag=<v> id=<v> tag_seen_anywhere=<t|f>
+      #   id_seen_anywhere=<t|f>
+      #   same_entry_match=<t|f> ready=<t|f>
+      # We append a per-node record to a
+      # dedicated TSV so the JSON-safe
+      # serializer below can build structured
+      # records without re-parsing JSON.
+      per_attempt_node_tsv="$ARTIFACTS/attempts/attempt-${attempt}/nodes.tsv"
+      if [ ! -f "${per_attempt_node_tsv}" ]; then
+        printf 'node\tcommand_rc\tparser_rc\ttag_seen_anywhere\tid_seen_anywhere\tsame_entry_match\tready\traw_stdout\traw_stderr\n' \
+          >"${per_attempt_node_tsv}"
+      fi
+      cmd_rc="$(cat "${raw_rcfile}" 2>/dev/null | tr -d '\n' || echo 0)"
+      tag_seen_anywhere=N
+      id_seen_anywhere=N
+      same_entry_match=N
+      ready_marker=N
+      if grep -qE '^tag=.* tag_seen_anywhere=true ' "${raw_stderr}" 2>/dev/null; then
+        tag_seen_anywhere=Y
+      fi
+      if grep -qE '^tag=.* id_seen_anywhere=true ' "${raw_stderr}" 2>/dev/null; then
+        id_seen_anywhere=Y
+      fi
+      if grep -qE '^tag=.* same_entry_match=true ' "${raw_stderr}" 2>/dev/null; then
+        same_entry_match=Y
+      fi
+      if [ "${node_ready}" = "Y" ]; then
+        ready_marker=Y
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "${n}" "${cmd_rc}" "${parser_rc}" \
+        "${tag_seen_anywhere}" "${id_seen_anywhere}" \
+        "${same_entry_match}" "${ready_marker}" \
+        "${raw_stdout}" "${raw_stderr}" \
+        >>"${per_attempt_node_tsv}"
+      if [ "${node_ready}" != "Y" ]; then
+        # valid JSON but tag/id not ready. This
+        # is a SOFT failure — the parser saw a
+        # well-formed document, just with the
+        # wrong tag/id — and we keep the bounded
+        # retry loop alive. Record the offending
+        # node and increment soft_fail_count so
+        # the outer loop can decide to sleep and
+        # retry.
+        soft_fail_count=$(( soft_fail_count + 1 ))
+        per_attempt_fail_node="${n}"
+        per_attempt_fail_reason="tag or normalized id mismatch (parser OK; tag/id not exact)"
+        printf 'node=%s state=not_ready (parser saw valid JSON; tag/id not exact)\n' \
+          "${n}" >>"$node_log"
+        continue
+      fi
+    done < "${nodes_tsv}"
+    # Safe JSONL serializer for the per-attempt
+    # record. We pass scalars as argv (individually
+    # quoted, no shell interpolation of arbitrary
+    # strings into Python source); per-node data
+    # is loaded from the TSV via argv path
+    # (no payload interpolation into Python
+    # source code).
+    #
+    # On any serializer failure the rc is captured
+    # and surfaced via $ARTIFACTS serialization
+    # failure diagnostics; the install DOES NOT
+    # silently use printf JSON. The serializer
+    # always emits one valid JSON object per
+    # call (newline-terminated so the JSONL file
+    # can be appended without buffering).
+    set +e
+    python3 - \
+      "${attempt}" "${FIXTURE_IMAGE_REF}" \
+      "${IMG_VERIFY_TAG}" "${IMG_VERIFY_EXPECTED_ID}" \
+      "${per_attempt_rc}" \
+      "${per_attempt_fail_node}" "${per_attempt_fail_reason}" \
+      "${per_attempt_node_tsv}" \
+      "${ARTIFACTS}/attempts/attempt-${attempt}/" \
+      "${nodes_tsv}" \
+      >>"${attempts_report}" 2>"${ARTIFACTS}/attempts/attempt-${attempt}/serializer.stderr.txt" \
+      <<'ATTEMPT_PYEOF'
+"""Per-attempt JSONL serializer (strict).
+
+Reads argv scalars (strings are passed verbatim
+from bash via shell-quoted positional
+parameters, no shell interpolation of arbitrary
+content into Python source). Reads per-node
+records from the TSV file referenced by
+argv[8] AND the one-time canonical kind get
+nodes list at argv[10].
+
+The serializer is FAIL-CLOSED: if ANY of the
+ten schema/identity conditions numbered below
+fails, we write a single
+  serializer_error=<reason>
+line on stderr, write NOTHING on stdout, and
+exit rc >= 3 BEFORE json.dumps is reached.
+Production treats rc >= 2 as FIXTURE_IMAGE_NOT_LOADED.
+
+Required argv (in order):
+  1 attempt                  (str,int-like)
+  2 expected_ref             (str; full env form)
+  3 expected_tag             (str)
+  4 normalized_expected_id   (str)
+  5 per_attempt_rc           ('0' or non-zero)
+  6 failing_node             (str, may be empty)
+  7 failure_reason           (str, may be empty)
+  8 nodes_tsv_path           (per-attempt TSV at
+      $ARTIFACTS/attempts/attempt-N/nodes.tsv;
+      records one row per canonical node with
+      command_rc, parser_rc, tag_seen_anywhere,
+      id_seen_anywhere, same_entry_match,
+      ready, raw_stdout, raw_stderr)
+  9 raw_paths_root           ($ARTIFACTS/attempts/attempt-N/)
+ 10 canonical_nodes_tsv_path (one-time kind get
+      nodes list at
+      $ARTIFACTS/fixture-image-node-list.tsv;
+      one node per line; the canonical set the
+      step_image_pipeline used to drive this
+      iteration)
+"""
+import json, os, sys
+
+# argv slots documented above.
+attempt, expected_ref, expected_tag, normalized_expected_id, \
+    per_attempt_rc, failing_node, failure_reason, \
+    per_attempt_node_tsv_path, raw_paths_root, \
+    canonical_nodes_tsv_path = sys.argv[1:11]
+
+
+def fail(reason):
+    """Write a single serializer_error line on
+    stderr, emit NO stdout, exit ≥3. Production
+    capture maps any non-zero serializer rc to
+    FIXTURE_IMAGE_NOT_LOADED 14."""
+    sys.stderr.write("serializer_error=" + reason + "\n")
+    sys.stderr.flush()
+    sys.exit(3)
+
+
+# 1. canonical node list: must be non-empty,
+#    present, regular file, readable.
+if not canonical_nodes_tsv_path:
+    fail("empty_canonical_nodes_tsv_path")
+if not os.path.isfile(canonical_nodes_tsv_path):
+    fail("canonical_nodes_tsv_missing")
+try:
+    with open(canonical_nodes_tsv_path, "r", encoding="utf-8") as fh:
+        canonical_lines = fh.readlines()
+except OSError:
+    fail("canonical_nodes_tsv_unreadable")
+# 2. canonical node list must yield at least
+#    one usable record.
+canonical_nodes = []
+for line in canonical_lines:
+    n = line.rstrip("\n").rstrip("\r")
+    if n != n.strip():
+        fail("canonical_node_whitespace_padding")
+    if n == "":
+        fail("canonical_node_empty_line")
+    canonical_nodes.append(n)
+# 3. canonical node list: no duplicates, no
+#    whitespace contents.
+seen = set()
+for n in canonical_nodes:
+    if n not in seen:
+        seen.add(n)
+    else:
+        fail("canonical_node_duplicate:" + n)
+
+# 1. per-attempt TSV: must be non-empty,
+#    present, regular file, readable.
+if not per_attempt_node_tsv_path:
+    fail("empty_per_attempt_node_tsv_path")
+if not os.path.isfile(per_attempt_node_tsv_path):
+    fail("per_attempt_node_tsv_missing")
+try:
+    with open(per_attempt_node_tsv_path, "r", encoding="utf-8") as fh:
+        per_attempt_lines = fh.readlines()
+except OSError:
+    fail("per_attempt_node_tsv_unreadable")
+
+# 4. per-attempt TSV header must exist and
+#    name the nine columns in exact order.
+EXPECTED_HEADER = (
+    "node\tcommand_rc\tparser_rc\ttag_seen_anywhere\t"
+    "id_seen_anywhere\tsame_entry_match\tready\t"
+    "raw_stdout\traw_stderr"
+)
+if len(per_attempt_lines) == 0:
+    fail("per_attempt_node_tsv_empty")
+header = per_attempt_lines[0].rstrip("\n").rstrip("\r")
+if header != EXPECTED_HEADER:
+    fail("per_attempt_node_tsv_header_mismatch")
+
+per_node_records = []
+seen_in_this_attempt = set()
+for idx, line in enumerate(per_attempt_lines[1:], start=2):
+    raw = line.rstrip("\n").rstrip("\r")
+    parts = raw.split("\t")
+    # 5. exactly nine tab-delimited fields.
+    # Reject SHORT AND LONG rows here, at
+    # row granularity, with an explicit
+    # `short_row` reason. Do NOT defer the
+    # rejection to a later count mismatch,
+    # field-defaulting, or placeholder
+    # substitution. The reason string MUST
+    # carry the canonical tokens `short_row`,
+    # `line=N` (the 1-based file line index
+    # for this row in the per-attempt TSV)
+    # and `fields=N` (the actual field count
+    # we observed). Production-side anchoring
+    # on those tokens is what proves the row
+    # was rejected directly and not skipped or
+    # absorbed by a later aggregate guard.
+    if len(parts) != 9:
+        fail("per_attempt_node_tsv_short_row:line=" + str(idx) + ":fields=" + str(len(parts)))
+    node, command_rc, parser_rc, tag_seen, id_seen, same_match, ready_marker, raw_stdout, raw_stderr = parts
+    # 6. node name: non-empty, no surrounding
+    #    whitespace, present in canonical set,
+    #    unique within this attempt.
+    if node != node.strip():
+        fail("per_attempt_node_tsv_node_whitespace:line=" + str(idx))
+    if node == "":
+        fail("per_attempt_node_tsv_node_empty:line=" + str(idx))
+    if node in seen_in_this_attempt:
+        fail("per_attempt_node_tsv_node_duplicate:line=" + str(idx) + ":node=" + node)
+    seen_in_this_attempt.add(node)
+    if node not in seen:
+        fail("per_attempt_node_tsv_node_not_canonical:line=" + str(idx) + ":node=" + node)
+    # 7. command_rc and parser_rc must be
+    #    parseable integer strings.
+    if not command_rc.lstrip("-").isdigit():
+        fail("per_attempt_node_tsv_command_rc_non_integer:line=" + str(idx) + ":rc=" + command_rc)
+    if not parser_rc.lstrip("-").isdigit():
+        fail("per_attempt_node_tsv_parser_rc_non_integer:line=" + str(idx) + ":rc=" + parser_rc)
+    # 8. tag/id/same-entry/ready markers must
+    #    be one of the explicit boolean
+    #    spellings. No unknown-token default;
+    #    reject anything outside the allowed
+    #    set with a clear reason.
+    for col_name, val in (
+        ("tag_seen_anywhere", tag_seen),
+        ("id_seen_anywhere", id_seen),
+        ("same_entry_match", same_match),
+        ("ready", ready_marker),
+    ):
+        v = (val or "").strip().lower()
+        if v not in ("y", "n", "yes", "no", "true", "false", "t", "f", "1", "0"):
+            fail("per_attempt_node_tsv_unknown_boolean:" + col_name + ":line=" + str(idx) + ":val=" + str(val))
+    # 9. raw stdout/stderr artifact paths must
+    #    be non-empty.
+    if raw_stdout == "":
+        fail("per_attempt_node_tsv_raw_stdout_empty:line=" + str(idx))
+    if raw_stderr == "":
+        fail("per_attempt_node_tsv_raw_stderr_empty:line=" + str(idx))
+    # Decode boolean markers explicitly.
+    def is_true(tok):
+        return tok.strip().lower() in ("y", "yes", "true", "t", "1")
+    per_node_records.append({
+        "node": node,
+        "command_rc": int(command_rc),
+        "parser_rc": int(parser_rc),
+        "tag_seen_anywhere": is_true(tag_seen),
+        "id_seen_anywhere": is_true(id_seen),
+        "same_entry_match": is_true(same_match),
+        "ready": is_true(ready_marker),
+        "raw_stdout_path": raw_stdout,
+        "raw_stderr_path": raw_stderr,
+    })
+
+# 10. per-attempt record node set must be
+#     byte-for-byte the canonical set.
+record_set = sorted(rec["node"] for rec in per_node_records)
+canonical_set_sorted = sorted(canonical_nodes)
+if len(per_node_records) != len(canonical_set_sorted):
+    fail("per_attempt_node_tsv_count_mismatch:records=" + str(len(per_node_records)) + ":canonical=" + str(len(canonical_set_sorted)))
+if record_set != canonical_set_sorted:
+    fail("per_attempt_node_tsv_node_set_mismatch:records=" + ",".join(record_set) + ":canonical=" + ",".join(canonical_set_sorted))
+
+# Success path: every per-node ready must be
+# True. all_nodes_ready is a JSON boolean
+# derived ONLY from this complete, identical
+# record set.
+all_ready = all(rec["ready"] is True for rec in per_node_records)
+all_nodes_ready = bool(
+    str(per_attempt_rc) == "0"
+    and not failing_node
+    and all_ready
+    and len(per_node_records) == len(canonical_set_sorted)
+    and record_set == canonical_set_sorted
+)
+
+record = {
+    "schema_version": 1,
+    "attempt": int(attempt) if str(attempt).lstrip("-").isdigit() else attempt,
+    "expected_ref": expected_ref,
+    "expected_tag": expected_tag,
+    "normalized_expected_id": normalized_expected_id,
+    "per_attempt_rc": int(per_attempt_rc) if str(per_attempt_rc).lstrip("-").isdigit() else per_attempt_rc,
+    "all_nodes_ready": bool(all_nodes_ready),
+    "failing_node": failing_node,
+    "failure_reason": failure_reason,
+    "nodes_seen": len(per_node_records),
+    "per_node_records": per_node_records,
+    "canonical_node_count": len(canonical_set_sorted),
+    "canonical_nodes": canonical_nodes,
+    "raw_paths_root": raw_paths_root,
+    "serializer": "python-stdlib-json.dumps-strict",
+    "serializer_kind": "strict-attempt-jsonl-v1",
+}
+sys.stdout.write(json.dumps(record, sort_keys=True) + "\n")
+sys.stdout.flush()
+sys.exit(0)
+ATTEMPT_PYEOF
+    local serializer_rc=$?
+    set -e
+    if (( serializer_rc != 0 )); then
+      # Strict serializer failure path.
+      # Conditions 1..10 in the production
+      # serializer above wrote a single
+      # serializer_error line above and exit
+      # rc >= 3. We capture rc (no -e, no
+      # sleep, no second attempt). The
+      # subsequent while-loop break leads the
+      # end-of-function terminal serializer
+      # block (call site below) to write a
+      # valid JSON terminal report whose
+      # terminal_failure_reason is the
+      # canonical 'json serializer failed'.
+      # We:
+      #   1. Persist serializer stderr/rc into
+      #      the running node log +
+      #      install.log.
+      #   2. Override per_attempt_fail_reason
+      #      so the terminal report records
+      #      'json serializer failed' (a
+      #      canonical, grep-able token).
+      #   3. Override per_attempt_rc=1 so
+      #      all_nodes_ready stays false and
+      #      we DO NOT claim success.
+      #   4. break the while loop, fall
+      #      through to the end-of-function
+      #      terminal serializer ALREADY
+      #      implemented below this loop.
+      #   5. That terminal call emits a valid
+      #      JSON report (parses with
+      #      python3 -m json.tool) AND we
+      #      then abort_as with exit 14.
+      printf 'SERIALIZER_FAIL attempt=%s rc=%s (see %s)\n' \
+        "${attempt}" "${serializer_rc}" \
+        "${ARTIFACTS}/attempts/attempt-${attempt}/serializer.stderr.txt" \
+        >>"$node_log"
+      local serializer_failures_csv="${per_attempt_fail_node:-<none>}"
+      printf 'SERIALIZATION_FAILED rc=%s node=%s attempts_report=%s failing_node=%s\n' \
+        "${serializer_rc}" "${n:-<none>}" \
+        "${attempts_report}" "${serializer_failures_csv}" \
+        | tee -a "$ARTIFACTS/install.log" >>"$node_log"
+      per_attempt_fail_node="${serializer_failures_csv}"
+      per_attempt_fail_reason="json serializer failed (rc=${serializer_rc} attempt=${attempt})"
+      per_attempt_rc=1
+      all_nodes_ready=0
+      # Break out so the while loop ends.
+      # The end-of-function terminal
+      # serializer will pick up the
+      # overridden reason above and emit a
+      # valid JSON terminal report. After the
+      # break we fall to the abort path.
+      break
+    fi
+    if (( per_attempt_rc == 0 )); then
+      # per_attempt_rc==0 here means NEITHER
+      # an exec failure NOR a parser failure
+      # happened. The inner loop also records
+      # `soft_fail_count` to detect transient
+      # not_ready tag/id observations.
+      if (( soft_fail_count == 0 )); then
+        all_nodes_ready=1
+        printf 'ALL_NODES_READY at attempt=%s\n' "${attempt}" >>"$node_log"
+        break
+      fi
+    else
+      # d2b.51-final: per the directive, any
+      # command OR parse failure classifies
+      # IMMEDIATELY as exit 14 — do NOT retry.
+      # No sleep is taken; we fall through to
+      # the final consolidated JSON and abort.
+      break
+    fi
+    # All retries live here. Sleep only when
+    # another attempt remains. An immediate
+    # success on the first observation MUST
+    # NOT sleep.
+    local remaining=$(( IMG_VERIFY_MAX_ATTEMPTS - attempt ))
+    if (( remaining > 0 )); then
+      printf 'attempt=%s sleeping_for=2s remaining=%s\n' \
+        "${attempt}" "${remaining}" >>"$node_log"
+      sleep "${IMG_VERIFY_INTERVAL_SEC}"
+    else
+      printf 'attempt=%s LAST_ATTEMPT (no remaining sleeps)\n' \
+        "${attempt}" >>"$node_log"
+      # 15 attempts exhausted without every node
+      # ready. This is the deadline path: classify
+      # immediately as exit 14 and name every
+      # failing node.
+      per_attempt_rc=1
+      break
+    fi
+    last_attempt_rc="${per_attempt_rc}"
+  done
+  # Final consolidated JSON report.
+  # Built via python3 json.dumps + json.dump
+  # (the standard library is the safety net for
+  # arbitrary shell-side strings). We pass
+  # scalars as argv (no shell interpolation of
+  # arbitrary strings into Python source code)
+  # and load per-node data from the TSV file
+  # referenced by argv. On serializer failure
+  # we surface rc + stderr under
+  # $ARTIFACTS and abort with exit 14.
+  local final_serializer_stderr="$ARTIFACTS/fixture-image-node-runtime.serializer.stderr"
+  : > "${final_serializer_stderr}"
+  set +e
+  python3 - \
+    "${attempt}" "${FIXTURE_IMAGE_REF}" \
+    "${IMG_VERIFY_TAG}" "${IMG_VERIFY_EXPECTED_ID}" \
+    "${all_nodes_ready}" "${nodes_tsv}" \
+    "${per_attempt_fail_node}" \
+    "${per_attempt_fail_reason:-tag-or-id-mismatch}" \
+    "${attempts_report}" "${node_log}" \
+    "${final_report}" \
+    >"${final_report}.tmp" 2>"${final_serializer_stderr}" \
+    <<'TERMINAL_PYEOF'
+"""Terminal fixture-image-node-runtime.json serializer.
+
+Reads argv scalars (no shell interpolation of
+arbitrary strings into Python source). Reads
+the one-time canonical node list from the
+TSV file pointed at by argv[6]. Reads the
+per-attempt JSONL records from argv[9].
+The verdict fields
+(per_node_records, failing_nodes,
+terminal_failure_reason, all_nodes_ready)
+are computed EXCLUSIVELY from the JSONL
+document whose attempt equals the supplied
+terminal attempt (argv[1]). Prior attempts
+are validated but never aggregate into the
+terminal verdict. The terminal report does
+NOT collect earlier per-node records.
+
+Required argv (in order):
+  1  terminal_attempt        (str/int; the
+      attempt number we are reporting on.
+      This MUST equal the highest attempt
+      number in the JSONL; it equals the
+      shell-side $attempt after the loop.)
+  2  expected_ref            (str)
+  3  expected_tag            (str)
+  4  normalized_expected_id  (str)
+  5  all_nodes_ready         ('1' or '0')
+  6  nodes_tsv_path          (str)
+  7  per_attempt_fail_node   (str, may be empty)
+  8  per_attempt_fail_reason (str, may be empty)
+  9  per_attempt_jsonl       (str)
+  10 node_log                (str)
+  11 final_report_path       (str; the path the
+      serializer is writing TO; we do not
+      include this in the output)
+"""
+import json, os, sys, time
+
+
+def fail(reason):
+    """Single-line terminal-serializer
+    failure marker. Emit NO stdout, exit
+    non-zero. Production routes this into
+    FIXTURE_IMAGE_NOT_LOADED 14."""
+    sys.stderr.write("pipeline_runtime_error=" + reason + "\n")
+    sys.stderr.flush()
+    sys.exit(13)
+
+
+def parse_int(name, raw):
+    if not str(raw).lstrip("-").isdigit():
+        fail("terminal_" + name + "_not_integer:val=" + str(raw))
+    return int(raw)
+
+
+(terminal_attempt_raw, expected_ref, expected_tag, normalized_expected_id,
+ all_nodes_ready, nodes_tsv_path, per_attempt_fail_node,
+ per_attempt_fail_reason, per_attempt_jsonl, node_log,
+ _final_path) = sys.argv[1:12]
+
+terminal_attempt = parse_int("attempt", terminal_attempt_raw)
+shell_all_nodes_ready = (str(all_nodes_ready) == "1")
+
+# ---- canonical node list -----------------------------------------------
+if not nodes_tsv_path:
+    fail("terminal_canonical_nodes_tsv_path_empty")
+if not os.path.isfile(nodes_tsv_path):
+    fail("terminal_canonical_nodes_tsv_missing")
+try:
+    with open(nodes_tsv_path, "r", encoding="utf-8") as fh:
+        canonical_lines_raw = fh.readlines()
+except OSError:
+    fail("terminal_canonical_nodes_tsv_unreadable")
+canonical_nodes = []
+seen = set()
+for line in canonical_lines_raw:
+    n = line.strip()
+    if not n:
+        fail("terminal_canonical_node_empty_line")
+    if n in seen:
+        fail("terminal_canonical_node_duplicate:" + n)
+    seen.add(n)
+    canonical_nodes.append(n)
+canonical_set = set(canonical_nodes)
+
+# ---- per-attempt JSONL: validate every line ---------------------------
+if not per_attempt_jsonl:
+    fail("terminal_per_attempt_jsonl_path_empty")
+if not os.path.isfile(per_attempt_jsonl):
+    fail("terminal_per_attempt_jsonl_missing")
+try:
+    with open(per_attempt_jsonl, "r", encoding="utf-8") as fh:
+        jsonl_lines_raw = fh.readlines()
+except OSError:
+    fail("terminal_per_attempt_jsonl_unreadable")
+if len(jsonl_lines_raw) == 0:
+    fail("terminal_per_attempt_jsonl_empty")
+
+documents_by_attempt = {}
+attempt_history_count = 0
+last_seen_attempt = 0
+
+for idx, raw_line in enumerate(jsonl_lines_raw, start=1):
+    line = raw_line.strip()
+    if not line:
+        fail("terminal_per_attempt_jsonl_blank_line:line=" + str(idx))
+    # Decode. Any decode failure is a hard
+    # terminal-serializer error. We catch
+    # the exact exception class to avoid
+    # silent tracebacks.
+    try:
+        doc = json.loads(line)
+    except json.JSONDecodeError:
+        fail("terminal_per_attempt_jsonl_decode_failure:line=" + str(idx))
+    # Condition 1: every non-empty line
+    # must decode to a dictionary.
+    if not isinstance(doc, dict):
+        fail("terminal_per_attempt_jsonl_doc_not_dict:line=" + str(idx))
+    # Condition 2: every doc must contain an
+    # integer attempt.
+    if "attempt" not in doc:
+        fail("terminal_per_attempt_jsonl_no_attempt_field:line=" + str(idx))
+    raw_doc_attempt = doc["attempt"]
+    if not isinstance(raw_doc_attempt, int) or isinstance(raw_doc_attempt, bool):
+        fail("terminal_per_attempt_jsonl_attempt_not_integer:line=" + str(idx))
+    doc_attempt = raw_doc_attempt
+    # Condition 3: attempts must be
+    # strictly ordered, no duplicate, begin
+    # at 1, end at terminal_attempt.
+    if doc_attempt <= 0:
+        fail("terminal_per_attempt_jsonl_attempt_not_positive:line=" + str(idx) + ":attempt=" + str(doc_attempt))
+    if doc_attempt <= last_seen_attempt:
+        fail("terminal_per_attempt_jsonl_attempt_not_strictly_ordered:line=" + str(idx) + ":attempt=" + str(doc_attempt) + ":last=" + str(last_seen_attempt))
+    if doc_attempt in documents_by_attempt:
+        fail("terminal_per_attempt_jsonl_attempt_duplicate:line=" + str(idx) + ":attempt=" + str(doc_attempt))
+    last_seen_attempt = doc_attempt
+    # Condition 4 / 5: per_node_records list
+    # required; every record is a dict;
+    # node is in canonical set; ready is a
+    # JSON bool. NO .get default fallback
+    # accepts "missing field" silently.
+    if "per_node_records" not in doc:
+        fail("terminal_per_attempt_jsonl_missing_per_node_records:line=" + str(idx) + ":attempt=" + str(doc_attempt))
+    raw_pn = doc["per_node_records"]
+    if not isinstance(raw_pn, list):
+        fail("terminal_per_attempt_jsonl_per_node_records_not_list:line=" + str(idx) + ":attempt=" + str(doc_attempt))
+    seen_nodes_in_doc = set()
+    validated_records = []
+    for r_idx, rec in enumerate(raw_pn, start=1):
+        if not isinstance(rec, dict):
+            fail("terminal_per_attempt_jsonl_record_not_dict:line=" + str(idx) + ":attempt=" + str(doc_attempt) + ":record=" + str(r_idx))
+        if "node" not in rec:
+            fail("terminal_per_attempt_jsonl_record_missing_node:line=" + str(idx) + ":attempt=" + str(doc_attempt) + ":record=" + str(r_idx))
+        node_val = rec["node"]
+        if not isinstance(node_val, str) or not node_val or node_val != node_val.strip():
+            fail("terminal_per_attempt_jsonl_record_node_not_string:line=" + str(idx) + ":attempt=" + str(doc_attempt) + ":record=" + str(r_idx))
+        if node_val not in canonical_set:
+            fail("terminal_per_attempt_jsonl_record_node_not_canonical:line=" + str(idx) + ":attempt=" + str(doc_attempt) + ":record=" + str(r_idx) + ":node=" + node_val)
+        if node_val in seen_nodes_in_doc:
+            fail("terminal_per_attempt_jsonl_record_node_duplicate:line=" + str(idx) + ":attempt=" + str(doc_attempt) + ":node=" + node_val)
+        seen_nodes_in_doc.add(node_val)
+        if "ready" not in rec:
+            fail("terminal_per_attempt_jsonl_record_missing_ready:line=" + str(idx) + ":attempt=" + str(doc_attempt) + ":node=" + node_val)
+        ready_val = rec["ready"]
+        # Condition 4 strict: ready MUST be a
+        # bool (not a truthy string, not a
+        # truthy integer, not None).
+        if not isinstance(ready_val, bool):
+            fail("terminal_per_attempt_jsonl_record_ready_not_bool:line=" + str(idx) + ":attempt=" + str(doc_attempt) + ":node=" + node_val + ":type=" + type(ready_val).__name__)
+        # Append to validated_records so the
+        # later recompute can use the validated
+        # surface instead of the raw per-doc list.
+        validated_records.append({"node": node_val, "ready": ready_val})
+        # Also: must be in canonical set
+        # (full record count == canonical
+        # count) and uniquely — i.e. exactly
+        # one record per canonical node.
+        # Validated below for completeness.
+    # Exactly one record per canonical
+    # node for THIS attempt.
+    if seen_nodes_in_doc != canonical_set:
+        missing = sorted(canonical_set - seen_nodes_in_doc)
+        extra = sorted(seen_nodes_in_doc - canonical_set)
+        fail("terminal_per_attempt_jsonl_record_set_mismatch:attempt=" + str(doc_attempt) + ":missing=" + ",".join(missing) + ":extra=" + ",".join(extra))
+    if len(seen_nodes_in_doc) != len(canonical_set):
+        fail("terminal_per_attempt_jsonl_record_count_mismatch:attempt=" + str(doc_attempt))
+    # Condition 6: all_nodes_ready must be
+    # a JSON bool AND equal the per-record
+    # recomputation of "all ready True".
+    if "all_nodes_ready" not in doc:
+        fail("terminal_per_attempt_jsonl_missing_all_nodes_ready:line=" + str(idx) + ":attempt=" + str(doc_attempt))
+    raw_anr = doc["all_nodes_ready"]
+    if not isinstance(raw_anr, bool):
+        fail("terminal_per_attempt_jsonl_all_nodes_ready_not_bool:line=" + str(idx) + ":attempt=" + str(doc_attempt))
+    expected_anr = all((rec["ready"] is True) for rec in raw_pn if isinstance(rec, dict))
+    if raw_anr != expected_anr:
+        fail("terminal_per_attempt_jsonl_all_nodes_ready_mismatch:attempt=" + str(doc_attempt) + ":doc=" + str(raw_anr) + ":recomputed=" + str(expected_anr))
+    # Re-confirm recomputation against the
+    # validated_records list (cheapest
+    # available truth). If we were to skip
+    # this, a stray `doc["all_nodes_ready"]
+    # = True` write to a doc whose records
+    # are not all ready would be missed.
+    if raw_anr != all(rec["ready"] for rec in validated_records):
+        fail("terminal_per_attempt_jsonl_all_nodes_ready_recompute_mismatch:attempt=" + str(doc_attempt))
+    documents_by_attempt[doc_attempt] = {
+        "per_node_records": raw_pn,
+        "all_nodes_ready": raw_anr,
+        "failing_node": doc.get("failing_node", ""),
+        "failure_reason": doc.get("failure_reason", ""),
+        "canonical_node_count": len(canonical_nodes),
+    }
+    attempt_history_count = doc_attempt
+
+# Final JSONL shape rules: attempts must
+# begin at 1 and end at terminal_attempt
+# exactly. Earlier transient not-ready
+# records are KEPT at attempt-N artifact
+# paths but DO NOT re-enter terminal
+# verdict fields.
+if 1 not in documents_by_attempt:
+    fail("terminal_per_attempt_jsonl_missing_attempt_1")
+if terminal_attempt not in documents_by_attempt:
+    fail("terminal_per_attempt_jsonl_missing_terminal_attempt:terminal=" + str(terminal_attempt))
+expected_attempts = set(range(1, terminal_attempt + 1))
+actual_attempts = set(documents_by_attempt.keys())
+if actual_attempts != expected_attempts:
+    fail("terminal_per_attempt_jsonl_attempt_set_not_contiguous:expected=" + ",".join(str(x) for x in sorted(expected_attempts)) + ":actual=" + ",".join(str(x) for x in sorted(actual_attempts)))
+
+# ---- select terminal_doc -----------------------------------------------
+terminal_doc = documents_by_attempt[terminal_attempt]
+terminal_per_node_records = terminal_doc["per_node_records"]
+terminal_all_nodes_ready_per_doc = terminal_doc["all_nodes_ready"]
+
+# Build the terminal per_node_records list
+# from terminal_doc ONLY. This guarantees
+# earlier transient not-ready observations
+# never reappear as terminal failing nodes.
+terminal_failing_nodes = []
+seen_t = set()
+for rec in terminal_per_node_records:
+    if not isinstance(rec, dict):
+        fail("terminal_record_not_dict_terminal_attempt:after_validation")
+    if rec.get("ready") is False:
+        node_name = rec.get("node", "")
+        if not isinstance(node_name, str) or not node_name:
+            fail("terminal_record_invalid_node_terminal_attempt")
+        if node_name not in seen_t:
+            terminal_failing_nodes.append(node_name)
+            seen_t.add(node_name)
+
+# Cross-check: shell-side all_nodes_ready
+# MUST match the doc-supplied boolean AND
+# the recomputed terminal-all-ready
+# verdict. A mismatch means the loop and
+# the JSONL are inconsistent — terminal
+# serializer failure, not a quiet "ok"
+# report.
+recomputed_terminal_all_ready = all(
+    (isinstance(rec, dict) and rec.get("ready") is True)
+    for rec in terminal_per_node_records
+)
+if terminal_all_nodes_ready_per_doc != recomputed_terminal_all_ready:
+    fail("terminal_all_nodes_ready_recompute_mismatch:doc=" + str(terminal_all_nodes_ready_per_doc) + ":recomputed=" + str(recomputed_terminal_all_ready))
+if shell_all_nodes_ready != terminal_all_nodes_ready_per_doc:
+    fail("terminal_all_nodes_ready_shell_doc_mismatch:shell=" + str(shell_all_nodes_ready) + ":doc=" + str(terminal_all_nodes_ready_per_doc))
+# Final all_nodes_ready: prefer the doc
+# value (validated above against both the
+# shell flag and the rec-ready recompute).
+final_all_nodes_ready = bool(terminal_all_nodes_ready_per_doc)
+
+# terminal_failure_reason MUST come from
+# terminal_doc['failure_reason'] ONLY when
+# the terminal verdict is "not ready"; for
+# a clean terminal report the canonical
+# success reason is used.
+if final_all_nodes_ready and not terminal_failing_nodes:
+    terminal_failure_reason = "all-node-exact-tag-id-present"
+else:
+    # Use the supplied per_attempt_fail_reason
+    # ONLY if it matches terminal_doc's
+    # failure_reason OR is empty. Otherwise
+    # we trust terminal_doc verbatim (a stale
+    # transient reason from a prior attempt
+    # MUST NOT appear as terminal reason).
+    doc_reason = terminal_doc["failure_reason"]
+    if not isinstance(doc_reason, str):
+        fail("terminal_doc_failure_reason_not_string")
+    if doc_reason:
+        terminal_failure_reason = doc_reason
+    elif per_attempt_fail_reason:
+        # Allow shell's pointer only if the
+        # shell pointer names an exact failure
+        # that we can corroborate from
+        # terminal per_node_records.
+        if per_attempt_fail_node in terminal_failing_nodes:
+            terminal_failure_reason = per_attempt_fail_reason
+        else:
+            fail("terminal_reason_shell_doc_mismatch:shell_reason_present_but_node_not_in_terminal_failing")
+    else:
+        # No shell reason, no doc reason,
+        # but terminal has failing nodes.
+        # Synthesize a canonical-per-attempt
+        # reason string so the audit trail
+        # is unambiguously traceable.
+        terminal_failure_reason = "tag-or-id-mismatch"
+
+# attempt_history_count is intentionally
+# a separate, clearly-bounded field.
+# It MUST NOT drive the verdict.
+record = {
+    "schema_version": 2,
+    "expected_ref": expected_ref,
+    "expected_tag": expected_tag,
+    "normalized_expected_id": normalized_expected_id,
+    "attempt": int(terminal_attempt),
+    "all_nodes_ready": bool(final_all_nodes_ready),
+    "node_count": len(canonical_nodes),
+    "nodes": canonical_nodes,
+    "failing_nodes": terminal_failing_nodes,
+    "terminal_failure_reason": terminal_failure_reason,
+    "per_attempt_report": per_attempt_jsonl,
+    "node_log": node_log,
+    "per_node_records": terminal_per_node_records,
+    "attempt_history_count": int(attempt_history_count),
+    "serializer": "python-stdlib-json.dumps-terminal-attempt-truth-v1",
+    "serialized_at_epoch": int(time.time()),
+}
+sys.stdout.write(json.dumps(record, sort_keys=True) + "\n")
+sys.stdout.flush()
+sys.exit(0)
+TERMINAL_PYEOF
+  local final_serializer_rc=$?
+  set -e
+  if (( final_serializer_rc == 0 )); then
+    mv "${final_report}.tmp" "${final_report}"
+  else
+    rm -f "${final_report}.tmp"
+    printf 'FINAL_SERIALIZER_FAIL rc=%s (see %s)\n' \
+      "${final_serializer_rc}" "${final_serializer_stderr}" \
+      >>"$node_log"
+    printf 'SERIALIZATION_FAILED rc=%s attempts_report=%s node_log=%s\n' \
+      "${final_serializer_rc}" "${attempts_report}" "${node_log}" \
+      | tee -a "$ARTIFACTS/install.log" >>"$node_log"
+    abort_as FIXTURE_IMAGE_NOT_LOADED \
+      "image pipeline final JSON serializer exited rc=${final_serializer_rc}; raw retained at ${final_serializer_stderr}" 14
+  fi
+  if (( all_nodes_ready == 1 )); then
+    printf 'IMAGE_PIPELINE_OK attempt=%s all_nodes_ready=true node_count=%s\n' \
+      "${attempt}" "$(wc -l <"${nodes_tsv}" | tr -d ' ')" \
+      | tee -a "$ARTIFACTS/install.log" >>"$node_log"
+  else
+    # Fail-closed: name every failing node plus
+    # its exact reason. Do NOT overwrite earlier
+    # attempts' raw evidence — they are under
+    # $ARTIFACTS/attempts/attempt-N/.
+    local fail_reason="image_id=$FIXTURE_IMAGE_ID (tag=$IMG_VERIFY_TAG) not exact on every kind node after ${IMG_VERIFY_MAX_ATTEMPTS} bounded attempts; failing_node=${per_attempt_fail_node:-<none>}; reason=${per_attempt_fail_reason:-tag-or-id-mismatch}"
+    printf '%s' "${fail_reason}" | tee -a "$ARTIFACTS/install.log" >>"$node_log"
+    abort_as FIXTURE_IMAGE_NOT_LOADED "${fail_reason}" 14
   fi
   echo "[install] image pipeline ok" | tee -a "$ARTIFACTS/install.log"
 }
