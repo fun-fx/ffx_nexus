@@ -210,6 +210,18 @@ if [ -n "${HARNESS_FIXTURE_NAMES_TSV:-}" ] && [ -r "${HARNESS_FIXTURE_NAMES_TSV}
   HARNESS_FIXTURE_TSV="${HARNESS_FIXTURE_NAMES_TSV}"
   export HARNESS_FIXTURE_TSV
 fi
+# d2b.52 argv ledger. EVERY fake kubectl
+# invocation appends one `argv=` line before any
+# dispatch happens, so a control can assert on
+# what the gate actually asked kubectl for —
+# including proving a literal `exec
+# cni-control-probe` never occurs and that the
+# DNS/HTTP exec count is exactly zero on a
+# discovery failure. Written to the fake bin dir
+# so it survives the stage's artifact tree.
+if [ -n "${FAKE_KUBECTL_LEDGER:-}" ]; then
+  printf 'argv=%s\n' "$*" >> "${FAKE_KUBECTL_LEDGER}" 2>/dev/null || true
+fi
 case "${1:-}" in
   get)
     shift 2>/dev/null || true
@@ -430,6 +442,162 @@ else:
         case "${1:-}" in
           get)
             shift 2>/dev/null || true
+            # d2b.52: the Step 09 source-pod
+            # resolver issues a LABEL-SELECTED
+            # structured Pod list:
+            #   kubectl -n cni-control get pod
+            #     -l app=cni-control,role=probe
+            #     -o json
+            # That must be answered with a Pod
+            # list document, NOT the bare Pod IP
+            # the jsonpath callers expect, so the
+            # selector form is matched first.
+            if [ "${1:-}" = "pod" ] && [ "${2:-}" = "-l" ]; then
+              SD_MODE="${FAKE_STEP09_POD_LIST_MODE:-}"
+              SD_POD="${FAKE_STEP09_POD_NAME:-cni-control-probe-5d5fb89454-jkqfq}"
+              SD_RS="${FAKE_STEP09_RS_NAME:-cni-control-probe-5d5fb89454}"
+              SD_SELECTOR="${2:-}${3:-}"
+              export SD_MODE SD_POD SD_RS
+              sd_rc="${FAKE_STEP09_POD_LIST_RC:-0}"
+              if [ "${sd_rc}" != "0" ]; then
+                printf 'fake: pod list injected failure\n' 1>&2
+                exit "${sd_rc}"
+              fi
+              python3 -c '
+import json, os, sys
+mode = os.environ.get("SD_MODE","")
+pod  = os.environ.get("SD_POD","")
+rs   = os.environ.get("SD_RS","")
+
+if mode == "malformed":
+    sys.stdout.write("{\"items\": [ this is not json\n")
+    raise SystemExit(0)
+if mode == "schema-not-object":
+    sys.stdout.write("[]\n")
+    raise SystemExit(0)
+if mode == "schema-items-not-list":
+    sys.stdout.write(json.dumps({"items": {"bad": True}}) + "\n")
+    raise SystemExit(0)
+
+def mk(name, rsname, ns="cni-control", ready=True,
+       phase="Running", terminating=False,
+       owner_kind="ReplicaSet", owner_controller=True,
+       owner_name=None):
+    meta = {"name": name, "namespace": ns}
+    if terminating:
+        meta["deletionTimestamp"] = "2026-09-02T13:20:00Z"
+    if owner_kind is not None:
+        meta["ownerReferences"] = [{
+            "apiVersion": "apps/v1",
+            "kind": owner_kind,
+            "name": rsname if owner_name is None else owner_name,
+            "controller": owner_controller,
+        }]
+    return {
+        "metadata": meta,
+        "status": {
+            "phase": phase,
+            "podIP": "10.244.1.42",
+            "conditions": [{
+                "type": "Ready",
+                "status": ("True" if ready else "False"),
+            }],
+        },
+    }
+
+if mode == "zero":
+    items = []
+elif mode == "two":
+    items = [mk(pod, rs), mk("cni-control-probe-7c9ab21f04-mn2kd",
+                             "cni-control-probe-7c9ab21f04")]
+elif mode == "wrong-namespace":
+    items = [mk(pod, rs, ns="cni-control-other")]
+elif mode == "wrong-name-literal":
+    items = [mk("cni-control-probe", rs)]
+elif mode == "not-ready":
+    items = [mk(pod, rs, ready=False)]
+elif mode == "terminating":
+    items = [mk(pod, rs, terminating=True)]
+elif mode == "not-running":
+    items = [mk(pod, rs, phase="Pending")]
+elif mode == "owner-kind-wrong":
+    items = [mk(pod, rs, owner_kind="StatefulSet")]
+elif mode == "owner-not-controller":
+    items = [mk(pod, rs, owner_controller=False)]
+else:
+    items = [mk(pod, rs)]
+
+sys.stdout.write(json.dumps({"kind": "PodList", "items": items}) + "\n")
+'
+              exit 0
+            fi
+            # d2b.52: exactly one ReplicaSet
+            # query, by exact name, proving the
+            # Pod's ReplicaSet is owned by the
+            # expected Deployment.
+            if [ "${1:-}" = "replicaset" ] \
+               || [ "${1:-}" = "replicasets" ] \
+               || [ "${1:-}" = "rs" ]; then
+              SD_RS_REQ="${2:-}"
+              SD_RS_MODE="${FAKE_STEP09_RS_MODE:-}"
+              SD_RS_DEPLOY="${FAKE_STEP09_RS_DEPLOYMENT:-cni-control-probe}"
+              export SD_RS_REQ SD_RS_MODE SD_RS_DEPLOY
+              sd_rs_rc="${FAKE_STEP09_RS_RC:-0}"
+              if [ "${sd_rs_rc}" != "0" ]; then
+                printf 'fake: replicaset injected failure\n' 1>&2
+                exit "${sd_rs_rc}"
+              fi
+              python3 -c '
+import json, os, sys
+name   = os.environ.get("SD_RS_REQ","")
+mode   = os.environ.get("SD_RS_MODE","")
+deploy = os.environ.get("SD_RS_DEPLOY","")
+
+if mode == "malformed":
+    sys.stdout.write("{\"kind\": \"ReplicaSet\", oops\n")
+    raise SystemExit(0)
+if mode == "schema-not-object":
+    sys.stdout.write("[]\n")
+    raise SystemExit(0)
+
+kind = "ReplicaSet"
+ns = "cni-control"
+rs_name = name
+owners = [{
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "name": deploy,
+    "controller": True,
+}]
+
+if mode == "wrong-kind":
+    kind = "StatefulSet"
+elif mode == "wrong-namespace":
+    ns = "cni-control-other"
+elif mode == "wrong-name":
+    rs_name = name + "-mutated"
+elif mode == "owner-kind-wrong":
+    owners = [dict(owners[0], kind="StatefulSet")]
+elif mode == "owner-name-wrong":
+    owners = [dict(owners[0], name="cni-control-probe-impostor")]
+elif mode == "owner-not-controller":
+    owners = [dict(owners[0], controller=False)]
+elif mode == "owner-two-controllers":
+    owners = [owners[0], dict(owners[0], name="cni-control-probe-second")]
+elif mode == "owner-absent":
+    owners = []
+
+sys.stdout.write(json.dumps({
+    "kind": kind,
+    "metadata": {
+        "name": rs_name,
+        "namespace": ns,
+        "ownerReferences": owners,
+    },
+}) + "\n")
+'
+              exit 0
+            fi
             if [ "${1:-}" = "pod" ]; then
               printf '10.244.1.42\n'
               exit 0
@@ -6072,6 +6240,282 @@ sys.exit(1)
 C9L_NO_HANDOFF="Y"
 [ "$(awk -F'\t' '$3 == "mode=normal-handoff" && $7 != "argv=run_gate.sh"' "${C9L}/gate-invocations.log" 2>/dev/null | wc -l | tr -d ' ')" = "0" ] && C9L_NO_HANDOFF=Y
 
+# ------------- C9m Step 09 dynamic source-pod discovery -------------
+# d2b.52. Heavy run 33634196860 failed Step 09
+# because the gate exec'd the literal Deployment
+# name `cni-control-probe`, which is never a Pod.
+# This control is ONE strict predicate over TEN
+# independently driven substages, grouped because
+# they all interrogate the same seam: the
+# resolver's decision to accept or reject a
+# source-pod identity. The grouping is
+# deliberate — all 61 pre-existing control
+# predicates are untouched, and the denominator
+# moves 61 -> 62 for this single addition. A
+# C9m-dbg line below surfaces every substage
+# component so a failing predicate is debuggable
+# from harness stdout alone.
+#
+# Substage map:
+#   m1  happy            resolve + both execs use the exact dynamic name
+#   m2  literal-absent   no `exec cni-control-probe` argv exists at all
+#   m3  zero             cardinality 0            -> 12, no DNS/HTTP
+#   m4  two              cardinality 2            -> 12, no DNS/HTTP
+#   m5  wrong-namespace  namespace mismatch       -> 12, no DNS/HTTP
+#   m6  wrong-name       literal (non-dynamic)    -> 12, no DNS/HTTP
+#   m7  not-ready        Ready=False              -> 12, no DNS/HTTP
+#   m8  terminating      deletionTimestamp set    -> 12, no DNS/HTTP
+#   m9  wrong-rs-owner   RS owned by impostor     -> 12, no DNS/HTTP
+#   m10 malformed/cmderr pod-list JSON + rc fault -> 12, named evidence
+C9M_DYNAMIC_POD="cni-control-probe-5d5fb89454-jkqfq"
+C9M_DYNAMIC_RS="cni-control-probe-5d5fb89454"
+C9M_TSV="${TOP_TMP}/gate9m-exact13.tsv"
+build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C9M_TSV}"
+
+# Drive one discovery substage. Every substage
+# gets its OWN kubectl argv ledger so exec counts
+# are attributable and cannot leak across cases.
+_run_c9m_substage() {
+  local label="$1"; local stage="$2"; shift 2
+  make_step9_stage "${stage}" "${NAMESPACE_AWARE_13_NS_NAMES}"
+  write_env_file "${stage}/env.list" \
+    "HARNESS_REAL_BASH=${REAL_BASH}" \
+    "HARNESS_SCRIPT_DIR=${SCRIPT_DIR}" \
+    "HARNESS_ARTIFACTS=${stage}" \
+    "HARNESS_STAGE_TSV=${stage}/pods.tsv" \
+    "HARNESS_GATE_BIN=${REAL_GATE_BIN}" \
+    "CNI_READINESS_GATE_BIN=${REAL_GATE_BIN}" \
+    "HARNESS_FIXTURE_NAMES_TSV=${C9M_TSV}" \
+    "HARNESS_CILIUM_NS_NAMES=${NAMESPACE_AWARE_13_NS_NAMES}" \
+    "HARNESS_CILIUM_NS_NAMES_FILE=${stage}/cilium-ns-names.tsv" \
+    "FAKE_KUBECTL_LEDGER=${stage}/kubectl-invocations.log" \
+    "FAKE_STEP09_POD_NAME=${C9M_DYNAMIC_POD}" \
+    "FAKE_STEP09_RS_NAME=${C9M_DYNAMIC_RS}" \
+    "FAKE_RESOLVE_HOST_RC=0" \
+    "FAKE_RESOLVE_HOST_ADDRESSES=10.96.246.224" \
+    "FAKE_HTTP_GET_RC=0" \
+    "FAKE_HTTP_GET_STATUS=200" \
+    "FAKE_HTTP_GET_BODY_RAW={\"ready\":true,\"port\":18080,\"role\":\"fixture\",\"target\":\"unknown\",\"listen\":\":18080\",\"ok\":true,\"pod\":\"cni-control-target\"}" \
+    "FAKE_DATE_NOW_FILE=${FAKE_BIN}/__date_state" \
+    "HARNESS_DATE_ADVANCE=1" \
+    "HARNESS_DATE_STEP=120" \
+    "HARNESS_DATE_NOW=1700000000" \
+    "$@"
+  : > "${stage}/kubectl-invocations.log"
+  drive_control "${label}" "${stage}" "${stage}/run_gate.sh" "${stage}/env.list"
+  awk -F'=' '/^rc=/ {print $2; exit}' "${stage}/child.rc" 2>/dev/null
+}
+
+# Count matching ledger lines, emitting EXACTLY
+# one integer. `grep -c` prints 0 and exits 1 on
+# no match, so an `|| printf 0` fallback would
+# emit "00"; the count is therefore captured
+# first and normalised.
+_c9m_count() {
+  local ledger="$1"; local pattern="$2"; local n
+  n="$(grep -c "${pattern}" "${ledger}" 2>/dev/null || true)"
+  n="$(printf '%s' "${n}" | tr -d ' \n')"
+  case "${n}" in
+    ''|*[!0-9]*) n=0;;
+  esac
+  printf '%s' "${n}"
+}
+# Count kubectl `exec` invocations that carry a
+# /cni-listener client flag. This is the exact
+# "DNS/HTTP handoff happened" measurement the
+# directive requires to be zero on every
+# discovery failure.
+_c9m_client_exec_count() {
+  _c9m_count "$1/kubectl-invocations.log" \
+    '^argv=.*exec.*/cni-listener.*-\(resolve-host\|http-get\)='
+}
+# Count kubectl invocations that exec the LITERAL
+# Deployment name as if it were a Pod. Must be 0
+# everywhere — this is the exact defect that
+# failed heavy run 33634196860.
+_c9m_literal_exec_count() {
+  _c9m_count "$1/kubectl-invocations.log" \
+    '^argv=.*exec cni-control-probe '
+}
+_c9m_no_handoff() {
+  if [ "$(awk -F'\t' '$3 == "mode=normal-handoff" && $7 != "argv=run_gate.sh"' \
+      "$1/gate-invocations.log" 2>/dev/null | wc -l | tr -d ' ')" = "0" ]; then
+    printf 'Y'
+  else
+    printf 'N'
+  fi
+}
+# Read one field out of the discovery artifact
+# with stdlib JSON. Never grep — the control must
+# fail if the document is not real JSON.
+_c9m_sd_field() {
+  python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+v = d.get(sys.argv[2])
+sys.stdout.write("" if v is None else str(v))
+' "$1/artifacts/step09-source-discovery.json" "$2" 2>/dev/null || printf '__UNREADABLE__'
+}
+
+# ---- m1 happy: dynamic identity resolves ----
+C9M1="${TOP_TMP}/stage-C9m-happy"
+C9M1_RC="$(_run_c9m_substage C9m_happy "${C9M1}")"
+C9M1_VERDICT="$(_c9m_sd_field "${C9M1}" verdict)"
+C9M1_RESOLVED="$(_c9m_sd_field "${C9M1}" resolved_pod)"
+C9M1_RS="$(_c9m_sd_field "${C9M1}" replicaset)"
+C9M1_OWNER="$(_c9m_sd_field "${C9M1}" deployment_owner)"
+C9M1_READY="$(_c9m_sd_field "${C9M1}" ready)"
+C9M1_CAND="$(_c9m_sd_field "${C9M1}" candidate_count)"
+C9M1_SUMMARY="$(cat "${C9M1}/artifacts/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+C9M1_GATE9_OK=$(awk '
+  /\[step 09\].*09-fixture-service-control.*ok/ { g9=1 }
+  END { if (g9==1) print "Y"; else print "N" }
+' "${C9M1}/artifacts/readiness.log" 2>/dev/null || echo N)
+# Exactly one Pod-list query and exactly one
+# ReplicaSet query — the resolver must not poll.
+C9M1_POD_LIST_QUERIES="$(_c9m_count "${C9M1}/kubectl-invocations.log" '^argv=.*get pod -l app=cni-control,role=probe -o json')"
+C9M1_RS_QUERIES="$(_c9m_count "${C9M1}/kubectl-invocations.log" '^argv=.*get replicaset '"${C9M1_RS}"' -o json')"
+# BOTH client execs must name the resolved
+# dynamic pod, and there must be exactly two.
+C9M1_DNS_EXEC_DYNAMIC="$(_c9m_count "${C9M1}/kubectl-invocations.log" '^argv=.*exec '"${C9M1_RESOLVED}"' -- /cni-listener -resolve-host=')"
+C9M1_HTTP_EXEC_DYNAMIC="$(_c9m_count "${C9M1}/kubectl-invocations.log" '^argv=.*exec '"${C9M1_RESOLVED}"' -- /cni-listener -http-get=')"
+C9M1_CLIENT_EXECS="$(_c9m_client_exec_count "${C9M1}")"
+C9M1_HANDOFF_COUNT=$(if [ -f "${C9M1}/gate-invocations.log" ]; then
+  awk -F'\t' '$3 == "mode=normal-handoff"' "${C9M1}/gate-invocations.log" | wc -l | tr -d ' '
+else printf '0'; fi)
+# The resolved name must also be the one recorded
+# as src_pod in the Step 09 probe transcript.
+C9M1_PROBE_SRC_OK=N
+python3 -c '
+import json, sys
+want = sys.argv[2]
+ok = False
+try:
+    for line in open(sys.argv[1]):
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        if d.get("src_pod") == want:
+            ok = True
+        elif d.get("src_pod") is not None:
+            sys.exit(1)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if ok else 1)
+' "${C9M1}/artifacts/step-09-fixture-service-control.json" "${C9M1_RESOLVED}" 2>/dev/null \
+  && C9M1_PROBE_SRC_OK=Y
+
+# ---- m2 literal-absent: same happy stage ----
+# The literal Deployment name must never appear
+# as an exec target. Asserted on the happy stage
+# because that is where an exec actually happens.
+C9M2_LITERAL_EXECS="$(_c9m_literal_exec_count "${C9M1}")"
+# Any ledger line naming the bare Deployment as a
+# positional resource is also reported, so the
+# transcript shows the literal is absent from the
+# whole argv surface rather than just from exec.
+C9M2_LITERAL_ANY="$(_c9m_count "${C9M1}/kubectl-invocations.log" 'cni-control-probe ')"
+
+# ---- m3..m10 fail-closed substages ----
+# Each asserts: rc=12, FIXTURE_NOT_READY, the
+# discovery artifact is valid JSON carrying the
+# expected closed failure_reason with an EMPTY
+# resolved_pod, zero /cni-listener client execs,
+# and zero downstream gate handoff.
+C9M3="${TOP_TMP}/stage-C9m-zero"
+C9M3_RC="$(_run_c9m_substage C9m_zero "${C9M3}" "FAKE_STEP09_POD_LIST_MODE=zero")"
+C9M4="${TOP_TMP}/stage-C9m-two"
+C9M4_RC="$(_run_c9m_substage C9m_two "${C9M4}" "FAKE_STEP09_POD_LIST_MODE=two")"
+C9M5="${TOP_TMP}/stage-C9m-wrongns"
+C9M5_RC="$(_run_c9m_substage C9m_wrongns "${C9M5}" "FAKE_STEP09_POD_LIST_MODE=wrong-namespace")"
+C9M6="${TOP_TMP}/stage-C9m-wrongname"
+C9M6_RC="$(_run_c9m_substage C9m_wrongname "${C9M6}" "FAKE_STEP09_POD_LIST_MODE=wrong-name-literal")"
+C9M7="${TOP_TMP}/stage-C9m-notready"
+C9M7_RC="$(_run_c9m_substage C9m_notready "${C9M7}" "FAKE_STEP09_POD_LIST_MODE=not-ready")"
+C9M8="${TOP_TMP}/stage-C9m-terminating"
+C9M8_RC="$(_run_c9m_substage C9m_terminating "${C9M8}" "FAKE_STEP09_POD_LIST_MODE=terminating")"
+C9M9="${TOP_TMP}/stage-C9m-rsowner"
+C9M9_RC="$(_run_c9m_substage C9m_rsowner "${C9M9}" "FAKE_STEP09_RS_MODE=owner-name-wrong")"
+C9M10="${TOP_TMP}/stage-C9m-malformed"
+C9M10_RC="$(_run_c9m_substage C9m_malformed "${C9M10}" "FAKE_STEP09_POD_LIST_MODE=malformed")"
+C9M11="${TOP_TMP}/stage-C9m-cmderr"
+C9M11_RC="$(_run_c9m_substage C9m_cmderr "${C9M11}" "FAKE_STEP09_POD_LIST_RC=7")"
+
+# Shared fail-closed evaluator: rc, summary,
+# reason, empty resolved_pod, zero client exec,
+# zero handoff.
+_c9m_failclosed() {
+  local stage="$1"; local rc="$2"; local want_reason="$3"
+  local summary reason resolved execs handoff
+  summary="$(cat "${stage}/artifacts/readiness.summary.txt" 2>/dev/null || echo '__MISSING__')"
+  reason="$(_c9m_sd_field "${stage}" failure_reason)"
+  resolved="$(_c9m_sd_field "${stage}" resolved_pod)"
+  execs="$(_c9m_client_exec_count "${stage}")"
+  handoff="$(_c9m_no_handoff "${stage}")"
+  if [ "${rc}" = "12" ] \
+     && [ "${summary}" = "FIXTURE_NOT_READY" ] \
+     && [ "${reason}" = "${want_reason}" ] \
+     && [ "${resolved}" = "" ] \
+     && [ "${execs}" = "0" ] \
+     && [ "${handoff}" = "Y" ]; then
+    printf 'Y'
+  else
+    printf 'N'
+  fi
+}
+C9M3_OK="$(_c9m_failclosed "${C9M3}" "${C9M3_RC}" candidate_cardinality_invalid)"
+C9M3_CAND="$(_c9m_sd_field "${C9M3}" candidate_count)"
+C9M4_OK="$(_c9m_failclosed "${C9M4}" "${C9M4_RC}" candidate_cardinality_invalid)"
+C9M4_CAND="$(_c9m_sd_field "${C9M4}" candidate_count)"
+C9M5_OK="$(_c9m_failclosed "${C9M5}" "${C9M5_RC}" candidate_cardinality_invalid)"
+C9M6_OK="$(_c9m_failclosed "${C9M6}" "${C9M6_RC}" candidate_cardinality_invalid)"
+C9M7_OK="$(_c9m_failclosed "${C9M7}" "${C9M7_RC}" candidate_cardinality_invalid)"
+C9M8_OK="$(_c9m_failclosed "${C9M8}" "${C9M8_RC}" candidate_cardinality_invalid)"
+C9M9_OK="$(_c9m_failclosed "${C9M9}" "${C9M9_RC}" deployment_owner_invalid)"
+C9M10_OK="$(_c9m_failclosed "${C9M10}" "${C9M10_RC}" pod_list_invalid_json)"
+C9M11_OK="$(_c9m_failclosed "${C9M11}" "${C9M11_RC}" pod_list_command_failed)"
+# m11 additionally requires the NAMED stdout /
+# stderr / rc evidence trio for the failed
+# command, per the directive's evidence rule.
+C9M11_NAMED_EVIDENCE=N
+if [ -f "${C9M11}/artifacts/step09-source-discovery-pod-list.stdout.json" ] \
+   && [ -s "${C9M11}/artifacts/step09-source-discovery-pod-list.stderr" ] \
+   && [ "$(cat "${C9M11}/artifacts/step09-source-discovery-pod-list.rc" 2>/dev/null | tr -d ' \n')" = "7" ]; then
+  C9M11_NAMED_EVIDENCE=Y
+fi
+# m10 must also report the pod-list rc as 0 (the
+# command succeeded; only its body was garbage),
+# proving the two failure modes stay distinct.
+C9M10_POD_RC="$(_c9m_sd_field "${C9M10}" pod_list_command_rc)"
+
+# Surface every substage component so a failing
+# C9m predicate is attributable from stdout alone
+# without re-running the harness.
+printf '\n# --- C9m Step 09 dynamic source-pod discovery transcript ---\n'
+printf 'C9m-dbg: m1(rc=%s summary=%s gate9=%s verdict=%s resolved=%s rs=%s owner=%s ready=%s cand=%s podq=%s rsq=%s dns-exec=%s http-exec=%s client-execs=%s probe-src=%s handoff=%s) m2(literal-execs=%s literal-any=%s)\n' \
+  "${C9M1_RC}" "${C9M1_SUMMARY}" "${C9M1_GATE9_OK}" "${C9M1_VERDICT}" \
+  "${C9M1_RESOLVED}" "${C9M1_RS}" "${C9M1_OWNER}" "${C9M1_READY}" "${C9M1_CAND}" \
+  "${C9M1_POD_LIST_QUERIES}" "${C9M1_RS_QUERIES}" \
+  "${C9M1_DNS_EXEC_DYNAMIC}" "${C9M1_HTTP_EXEC_DYNAMIC}" "${C9M1_CLIENT_EXECS}" \
+  "${C9M1_PROBE_SRC_OK}" "${C9M1_HANDOFF_COUNT}" \
+  "${C9M2_LITERAL_EXECS}" "${C9M2_LITERAL_ANY}"
+printf 'C9m-dbg: m3-zero(rc=%s ok=%s cand=%s) m4-two(rc=%s ok=%s cand=%s) m5-wrongns(rc=%s ok=%s) m6-wrongname(rc=%s ok=%s) m7-notready(rc=%s ok=%s) m8-terminating(rc=%s ok=%s) m9-rsowner(rc=%s ok=%s) m10-malformed(rc=%s ok=%s pod-rc=%s) m11-cmderr(rc=%s ok=%s named-evidence=%s)\n' \
+  "${C9M3_RC}" "${C9M3_OK}" "${C9M3_CAND}" \
+  "${C9M4_RC}" "${C9M4_OK}" "${C9M4_CAND}" \
+  "${C9M5_RC}" "${C9M5_OK}" \
+  "${C9M6_RC}" "${C9M6_OK}" \
+  "${C9M7_RC}" "${C9M7_OK}" \
+  "${C9M8_RC}" "${C9M8_OK}" \
+  "${C9M9_RC}" "${C9M9_OK}" \
+  "${C9M10_RC}" "${C9M10_OK}" "${C9M10_POD_RC}" \
+  "${C9M11_RC}" "${C9M11_OK}" "${C9M11_NAMED_EVIDENCE}"
+
 # ------------- C7n install replay success -------------
 # Use the RECORDING success-gate stub so the
 # install path runs Step G, identity-equality
@@ -8363,7 +8807,14 @@ PASS=0
 # simply add the successes to PASS so the final
 # verdict matches `PASS==TOTAL==61`.
 PASS=$((PASS + C8_LEDS_PASS))
-TOTAL=61 # d2b.49 (39 + C7n/C7o + C8n/C8o) + d2b.51 C9a..C9f + d2b.51-final C9g..C9j + C9k + C9l + d2b.51-final C8i..C8p = 55 + 6
+# d2b.52: 61 -> 62. The single addition is C9m,
+# the Step 09 dynamic source-pod discovery
+# control. It groups 11 independently driven
+# substages under one strict predicate; every one
+# of the 61 pre-existing control predicates is
+# retained verbatim and none was renamed or
+# dropped to keep the denominator flat.
+TOTAL=62 # d2b.49 (39 + C7n/C7o + C8n/C8o) + d2b.51 C9a..C9f + d2b.51-final C9g..C9j + C9k + C9l + d2b.51-final C8i..C8p = 55 + 6, + d2b.52 C9m = 62
 # Per-control pass ledger (collects results so the
 # final summary can name which controls failed).
 # Bash 3.2 (macOS /bin/bash) does not support
@@ -8425,6 +8876,7 @@ C9I_PASS=N
 C9J_PASS=N
 C9K_PASS=N
 C9L_PASS=N
+C9M_PASS=N
 # C1 success: gate stub invoked exactly once,
 # no mismatch, target rc=0. C1 also proves
 # the 13 fixture vocabulary includes
@@ -9104,7 +9556,7 @@ printf 'M1: summary_path_file_present=%s abort_log_line=%s log_label=%s log_expe
   "${M1_CANONICAL_PRESENT}"
 
 PASS=$((${PASS} + 0))
-TOTAL=61
+TOTAL=62
 if [ "${M1_RC}" = "16" ] \
    && [ "${M1_INVOKED}" = "Y" ] \
    && [ "${M1_JSON_PARSEABLE}" = "Y" ] \
@@ -9280,7 +9732,7 @@ printf 'M2b: rc=%s stderr-named-gate=%s stderr-named-nonexec=%s stub-sentinel-pr
   "${M2B_READINESS_LOG_PRESENT}" "${M2B_MISMATCH_JSON_PRESENT}" \
   "${M2B_BIT_FILE}"
 
-TOTAL=61
+TOTAL=62
 # d2b.49 namespace-aware regression suite
 # per-control verdicts (C7n/C7o/C8n/C8o):
 if [ "${C7N_RC}" = "0" ] \
@@ -9532,11 +9984,65 @@ if [ "${C9L_GATE_EXITS_12}" = "Y" ] \
   C9L_PASS=Y
 fi
 
-printf '\n# C1..C11 + C6p..C6v + C7a..C7i + C8r..C8x + C7n/C7o/C8n/C8o + C9a..C9j + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
+# C9m Step 09 dynamic source-pod discovery.
+# ONE predicate over 11 substages.
+#
+# Happy (m1): the resolver accepts the
+# Deployment-created Pod, does EXACTLY one
+# Pod-list query and EXACTLY one ReplicaSet
+# query, both /cni-listener execs name the
+# resolved dynamic Pod (one DNS + one HTTP, so
+# exactly two client execs), the probe
+# transcript's src_pod is that same name, and
+# Step 09 reaches ok with one normal handoff.
+#
+# Literal-absent (m2): the literal Deployment
+# name `cni-control-probe` is never an exec
+# target anywhere in the kubectl argv ledger.
+#
+# Fail-closed (m3..m11): each rejects with rc 12
+# / FIXTURE_NOT_READY, a valid discovery document
+# carrying the expected closed failure_reason and
+# an EMPTY resolved_pod, ZERO /cni-listener client
+# execs, and ZERO downstream handoff. m11 also
+# requires the named stdout/stderr/rc trio, and
+# m10 must still report pod_list_command_rc=0 so
+# "bad body" stays distinct from "bad command".
+if [ "${C9M1_RC}" = "0" ] \
+   && [ "${C9M1_SUMMARY}" = "SUCCESS" ] \
+   && [ "${C9M1_GATE9_OK}" = "Y" ] \
+   && [ "${C9M1_VERDICT}" = "resolved" ] \
+   && [ "${C9M1_RESOLVED}" = "${C9M_DYNAMIC_POD}" ] \
+   && [ "${C9M1_RS}" = "${C9M_DYNAMIC_RS}" ] \
+   && [ "${C9M1_OWNER}" = "cni-control-probe" ] \
+   && [ "${C9M1_READY}" = "True" ] \
+   && [ "${C9M1_CAND}" = "1" ] \
+   && [ "${C9M1_POD_LIST_QUERIES}" = "1" ] \
+   && [ "${C9M1_RS_QUERIES}" = "1" ] \
+   && [ "${C9M1_DNS_EXEC_DYNAMIC}" = "1" ] \
+   && [ "${C9M1_HTTP_EXEC_DYNAMIC}" = "1" ] \
+   && [ "${C9M1_CLIENT_EXECS}" = "2" ] \
+   && [ "${C9M1_PROBE_SRC_OK}" = "Y" ] \
+   && [ "${C9M1_HANDOFF_COUNT}" = "1" ] \
+   && [ "${C9M2_LITERAL_EXECS}" = "0" ] \
+   && [ "${C9M3_OK}" = "Y" ] && [ "${C9M3_CAND}" = "0" ] \
+   && [ "${C9M4_OK}" = "Y" ] && [ "${C9M4_CAND}" = "2" ] \
+   && [ "${C9M5_OK}" = "Y" ] \
+   && [ "${C9M6_OK}" = "Y" ] \
+   && [ "${C9M7_OK}" = "Y" ] \
+   && [ "${C9M8_OK}" = "Y" ] \
+   && [ "${C9M9_OK}" = "Y" ] \
+   && [ "${C9M10_OK}" = "Y" ] && [ "${C9M10_POD_RC}" = "0" ] \
+   && [ "${C9M11_OK}" = "Y" ] && [ "${C9M11_NAMED_EVIDENCE}" = "Y" ]; then
+  PASS=$((PASS+1))
+  C9M_PASS=Y
+fi
+
+printf '\n# C1..C11 + C6p..C6v + C7a..C7i + C8r..C8x + C7n/C7o/C8n/C8o + C9a..C9m + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
 # Per-control pass table. Lets the operator
 # attribute a regression to one control name
 # without re-greping the harness source.
-printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c8i=%s c8j=%s c8k=%s c8l=%s c8m=%s c8p=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s c9a=%s c9b=%s c9c=%s c9d=%s c9e=%s c9f=%s c9g=%s c9h=%s c9i=%s c9j=%s c9k=%s c9l=%s\n' \
+printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c8i=%s c8j=%s c8k=%s c8l=%s c8m=%s c8p=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s c9a=%s c9b=%s c9c=%s c9d=%s c9e=%s c9f=%s c9g=%s c9h=%s c9i=%s c9j=%s c9k=%s c9l=%s c9m=%s\n' \
   "${C1_PASS}" "${VOCAB_PASS}" "${C2_PASS}" "${C3_PASS}" "${C4_PASS}" "${C5_PASS}" "${C6_PASS}" \
   "${C6P_PASS}" "${C6Q_PASS}" "${C6R_PASS}" "${C6S_PASS}" "${C6T_PASS}" "${C6U_PASS}" "${C6V_PASS}" \
   "${C7A_PASS}" "${C7B_PASS}" "${C7C_PASS}" "${C7K_PASS}" "${C7R_PASS}" "${C7S_PASS}" "${C7D_PASS}" \
@@ -9547,7 +10053,8 @@ printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%
   "${C8_PASS}" "${C9_PASS}" "${C10_PASS}" "${C11_PASS}" \
   "${M1_PASS}" "${M2A_PASS}" "${M2B_PASS}" \
   "${C9A_PASS}" "${C9B_PASS}" "${C9C_PASS}" "${C9D_PASS}" "${C9E_PASS}" "${C9F_PASS}" \
-  "${C9G_PASS}" "${C9H_PASS}" "${C9I_PASS}" "${C9J_PASS}" "${C9K_PASS}" "${C9L_PASS}"
+  "${C9G_PASS}" "${C9H_PASS}" "${C9I_PASS}" "${C9J_PASS}" "${C9K_PASS}" "${C9L_PASS}" \
+  "${C9M_PASS}"
 
 # d2b.51: the previous second `# per-control:`
 # emitter is intentionally removed so the raw
