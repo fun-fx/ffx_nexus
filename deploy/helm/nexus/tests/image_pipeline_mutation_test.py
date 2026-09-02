@@ -769,8 +769,17 @@ ok.append(assert_eq(
 ))
 ok.append(assert_eq(
     "production serializer accepts argv slot 10 as canonical_nodes_tsv",
-    'canonical_nodes_tsv_path' in install_src
-    and 'sys.argv[1:11]' in install_src,
+    # Slot 10 stays canonical_nodes_tsv; the
+    # closed accepted-runtime-tag set lands in
+    # slot 11, so the fixed-width slice is
+    # [1:12] rather than the pre-alias [1:11].
+    'canonical_nodes_tsv_path, accepted_runtime_tags_raw = sys.argv[1:12]'
+    in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "terminal serializer takes accepted_runtime_tags as argv slot 12 (fixed-width [1:13])",
+    'accepted_runtime_tags_raw) = sys.argv[1:13]' in install_src,
     True,
 ))
 ok.append(assert_eq(
@@ -1069,6 +1078,94 @@ ok.append(assert_eq(
     and 'IMG_VERIFY_INTERVAL_SEC=2' in install_src
     and 'kind get nodes' in install_src,
     True,
+))
+# d2b.51.51-canonical-alias: closed ordered
+# two-element runtime tag acceptance set
+# (declared bare tag + the one
+# docker.io/library/ canonical alias).
+# No wildcard, no suffix/prefix,
+# no arbitrary registry/namespace. The
+# runtime verifier routes the closed set
+# into the per-entry parser via an env
+# var, decodes it as a Python list of
+# exactly two unique non-empty strings,
+# and gates same_entry_match on membership.
+ok.append(assert_eq(
+    "install-nexus-test.sh declares the exact closed accepted-runtime-tag set",
+    # The shell-side closed set MUST be the
+    # declared bare tag and the one
+    # canonical alias, no other text in the
+    # pipe.
+    "ACCEPTED_RUNTIME_TAGS_PIPE_DELIM="
+    "'cni-listener:local"
+    "|docker.io/library/cni-listener:local|'" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh never uses startswith/endswith/wildcard/digest-only for runtime tag matching",
+    # Reject shell-side substring matchers
+    # that would falsely accept extra
+    # aliases.
+    not any(anti in install_src for anti in (
+        'tag_seen_anywhere = (want_tag in',
+        '\nstartswith(\"docker.io\")',
+        '\nstartswith(\"docker.io/\")',
+        '\nendswith(\":local\")',
+        '\nendswith(\"docker.io/library/\")',
+        'cni-listener:*',
+        'cni-listener:latest',
+        'quay.io/',
+        'docker.io/other/',
+        'docker.io/library/cni-listener:localx',
+    )),
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh per-attempt serializer emits accepted_runtime_tags via Python stdlib json.dumps",
+    # The string `accepted_runtime_tags`
+    # MUST appear in the per-attempt
+    # serializer source, AND it MUST be
+    # emitted through json.dumps (NOT
+    # printf-built JSON, NOT sed/awk reshape).
+    "accepted_runtime_tags" in install_src
+    and '"accepted_runtime_tags": list(accepted_tags)' in install_src
+    and "json.dumps" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh terminal serializer also emits accepted_runtime_tags via Python stdlib json.dumps",
+    # The terminal record MUST also carry
+    # the closed two-value list emitted via
+    # json.dumps. The terminal serializer
+    # emits `accepted_runtime_tags` in its
+    # final record dict.
+    install_src.count('"accepted_runtime_tags": list(accepted_runtime_tags)'),
+    1,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh still uses strict same_entry_match runtime gating",
+    'same_entry_match' in install_src
+    and 'same_entry_match = True' in install_src
+    and 'ready = same_entry_match' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh keeps the bounded 15-attempt × 2-second image-verification contract intact",
+    'local IMG_VERIFY_MAX_ATTEMPTS=15' in install_src
+    and 'local IMG_VERIFY_INTERVAL_SEC=2' in install_src
+    and '(( attempt < IMG_VERIFY_MAX_ATTEMPTS ))' in install_src,
+    True,
+))
+# d2b.45 tr-implementation line guard: at this
+# point the install script retains only the
+# portable LC_ALL=C normalizer form from
+# d2b-tr-portability. The histogram tells
+# us exactly one safe normalizer and zero
+# legacy range spellings.
+ok.append(assert_eq(
+    "install-nexus-test.sh accepts only the d2b-tr-portability safe normalizer spelling",
+    install_src.count("LC_ALL=C tr -c 'A-Za-z0-9._ -' '_'"),
+    1,
 ))
 print()
 if all(ok):

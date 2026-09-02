@@ -530,6 +530,39 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
   # (the input, never hard-coded).
   local IMG_VERIFY_TAG="${FIXTURE_IMAGE_REF}"
   local IMG_VERIFY_EXPECTED_ID="${FIXTURE_IMAGE_ID#sha256:}"
+  # d2b.51.51-canonical-alias: closed ordered
+  # set of CRI repoTags that the runtime
+  # verifier accepts as evidence for the
+  # declared bare reference cni-listener:local.
+  # kind/containerd canonicalises unqualified
+  # Docker-Hub names to docker.io/library/...
+  # so a single ``bare-tag-only'' verifier
+  # would falsely reject the canonical
+  # representation, even while the per-node
+  # image ID matches exactly. The verifier
+  # accepts the declared tag PLUS that one
+  # canonical alias — and NOTHING ELSE.
+  # No wildcard, no suffix / prefix,
+  # no unqualified repository, no arbitrary
+  # registry, no arbitrary namespace, no
+  # arbitrary tag, no digest-only alias, no
+  # import-* alias. The set is passed to the
+  # Python stdlib parser as one pipe-delimited
+  # env var so shell substitution of arbitrary
+  # strings into Python source is impossible
+  # and any inner single-/double-quote values
+  # in Python heredoc body have no impact on
+  # shell parsing. Python parses the set,
+  # asserts exactly 2 unique non-empty entries,
+  # and uses Python set membership (exact
+  # Python string equality) for the per-entry
+  # tag check. No sed, grep, cut, or tr is
+  # applied to CRI JSON output.
+  # The trailing ``|'' separator is part of
+  # the strict contract and MUST NOT be
+  # removed.
+  local ACCEPTED_RUNTIME_TAGS_PIPE_DELIM
+  ACCEPTED_RUNTIME_TAGS_PIPE_DELIM='cni-listener:local|docker.io/library/cni-listener:local|'
   # Per-attempt structured JSON: declare the
   # expected ref/normalized id once so the
   # consolidated JSON report is shaped exactly
@@ -624,43 +657,117 @@ print(json.loads(sys.stdin.read()).get('image_ref',''))")
       # tag, the other with the right ID) are a
       # cross-entry split and read as not_ready.
       set +e
+      # d2b.51.51-canonical-alias: closed ordered
+      # set of CRI repoTags that the runtime
+      # verifier accepts as evidence for the
+      # declared bare reference cni-listener:local.
+      # kind/containerd canonicalises unqualified
+      # Docker-Hub names to docker.io/library/...
+      # so a single ``bare-tag-only'' verifier
+      # would falsely reject the canonical
+      # representation, even while the per-node
+      # image ID matches exactly. The verifier
+      # accepts the declared tag PLUS that one
+      # canonical alias — and NOTHING ELSE.
+      # No wildcard, no suffix / prefix,
+      # no unqualified repository, no arbitrary
+      # registry, no arbitrary namespace, no
+      # arbitrary tag, no digest-only alias, no
+      # import-* alias. The set is passed to the
+      # Python stdlib parser via a single env
+      # variable, JSON-decoded by the parser
+      # BEFORE any tag comparison, and the
+      # set membership test is exact Python
+      # string equality — no shell substitution
+      # of arbitrary strings into Python source
+      # and no prefix/suffix/wildcard action.
+      # Any other tag the parser sees fails
+      # per-entry and the node reads as not_ready.
       node_ready="$(IMG_VERIFY_TAG="${IMG_VERIFY_TAG}" \
                     IMG_VERIFY_EXPECTED_ID="${IMG_VERIFY_EXPECTED_ID}" \
+                    IMG_VERIFY_ACCEPTED_TAGS="${ACCEPTED_RUNTIME_TAGS_PIPE_DELIM}" \
                     RAW_STDOUT="${raw_stdout}" \
                     RAW_STDERR="${raw_stderr}" \
                     python3 - "${raw_stdout}" "${raw_stderr}" 2>"${raw_stderr}" <<'PYEOF'
 """
 Strict per-node crictl images --output json parser.
 
-Reads argv[1] (raw crictl JSON document) and
-emits EXACTLY ONE LINE on stdout (either "Y",
-"N", or "__PARSER_FAIL__") plus ONE LINE on
-stderr of the form:
+Reads argv[1] (raw crictl JSON document),
+argv[2] (stderr trace path inside the
+container) and argv[3] (a JSON literal
+carrying the closed ordered set of CRI
+repoTags this verifier accepts as canonical
+representations of the declared reference).
 
-    tag=<want_tag> id=<want_id> tag_seen_anywhere=<t|f> id_seen_anywhere=<t|f> same_entry_match=<t|f> ready=<t|f>
+Emits EXACTLY ONE LINE on stdout (either
+"Y", "N", or "__PARSER_FAIL__") plus ONE
+LINE on stderr of the form:
+
+   tag=<want_tag> id=<want_id> tag_seen_anywhere=<t|f> id_seen_anywhere=<t|f> same_entry_match=<t|f> ready=<t|f> accepted_runtime_tags=<json>
 
 On rc=0, ready is "Y" only when at least ONE
-image entry's repoTags list contains the
-expected tag AND the same entry's normalized
-Id (sha256 prefix stripped) equals the
-expected normalized id. Any non-ready
-condition (cross-entry split; tag-only match;
-ID-only match; missing lists) emits "N".
+image entry's repoTags list contains one of
+the accepted runtime tags AND the same
+entry's normalized Id (sha256 prefix
+stripped) equals the expected normalized
+id. Any non-ready condition (cross-entry
+split; tag-only match; ID-only match;
+missing or wrong tag; missing lists)
+emits "N".
+
+The accepted-runtime-tags contract is
+exactly JSON decode argv[3] as a list,
+must be a list of exactly two non-empty
+strings, the set is fixed by the shell
+side to ["cni-listener:local",
+"docker.io/library/cni-listener:local"]
+and any other value is contract failure
+(rc=5, parser_error= + __PARSER_FAIL__).
 
 Any schema defect (top-level not a dict;
 images not a list; entry not a dict;
-repoTags not a list-of-strings; Id/id not a
-string before normalization) emits
-"__PARSER_FAIL__" on stdout and a single
-explanatory line on stderr, then exits rc>=2
-so the harness can map it to immediate exit
-14 (no success-by-implicit-success).
+repoTags not a list-of-strings;
+Id/id not a string before normalization)
+emits "__PARSER_FAIL__" on stdout and a
+single explanatory line on stderr, then
+exits rc>=2 so the harness can map it
+to immediate exit 14 (no
+success-by-implicit-success).
+
+We use Python JSON decode and exact
+Python string equality for tag
+comparison. NO sed, grep, cut, or
+tr against the CRI JSON output.
 """
 import json, os, sys
 
 raw_path = sys.argv[1]
 want_tag = os.environ.get("IMG_VERIFY_TAG", "")
 want_id  = os.environ.get("IMG_VERIFY_EXPECTED_ID", "")
+# IMG_VERIFY_ACCEPTED_TAGS carries the closed
+# ordered set of CRI repoTags. The shell
+# passes them pipe-delimited from a single
+# env var so the parser receives them as a
+# plain string (no JSON, no shell glob
+# re-tokenisation risk). The contract is:
+#   * exactly 2 entries
+#   * each entry is a non-empty string
+#   * entries are unique
+# Anything else is contract failure (rc=5,
+# parser_error= + stdout __PARSER_FAIL__).
+accepted_tags_raw = os.environ.get("IMG_VERIFY_ACCEPTED_TAGS", "")
+accepted_tags = [t for t in accepted_tags_raw.split("|") if t != ""]
+if len(accepted_tags) != 2:
+    sys.stderr.write("parser_error: accepted_runtime_tags must be exactly 2 pipe-delimited entries (got " + str(len(accepted_tags)) + ")\n")
+    sys.stdout.write("__PARSER_FAIL__\n")
+    sys.stdout.flush()
+    sys.exit(5)
+if len(set(accepted_tags)) != 2:
+    sys.stderr.write("parser_error: accepted_runtime_tags entries must be unique\n")
+    sys.stdout.write("__PARSER_FAIL__\n")
+    sys.stdout.flush()
+    sys.exit(5)
+accepted_tags_set = frozenset(accepted_tags)
 
 
 def fail(msg):
@@ -711,8 +818,12 @@ def each_entry(imgs):
       - entry_id_string: entry's Id value (under
         "Id" canonically, then "id" lower-case
         fallback) is a string
-      - entry_has_tag: want_tag is in entry's
-        repoTags list
+      - entry_has_tag: at least one element of
+        the closed accepted runtime tag set
+        (declared in argv[3]) appears in this
+        entry's repoTags list. Exact Python
+        string membership — no prefix/suffix,
+        no wildcard, no startswith.
       - entry_has_id: normalised Id equals want_id
     """
     for idx, img in enumerate(imgs):
@@ -739,7 +850,7 @@ def each_entry(imgs):
             fail("images[" + str(idx) + "].Id is not a string")
         norm = normalise_id(raw_id or "")
         yield (
-            want_tag in repo_tags,
+            any(t in accepted_tags_set for t in repo_tags),
             (bool(norm) and norm == want_id),
         )
 
@@ -758,13 +869,14 @@ for tag_hit, id_hit in each_entry(imgs):
 ready = same_entry_match
 sys.stderr.write(
     "tag={t} id={i} tag_seen_anywhere={ts} id_seen_anywhere={ids} "
-    "same_entry_match={sem} ready={rd}\n".format(
+    "same_entry_match={sem} ready={rd} accepted_runtime_tags={art}\n".format(
         t=want_tag,
         i=want_id,
         ts=("true" if tag_seen_anywhere else "false"),
         ids=("true" if id_seen_anywhere else "false"),
         sem=("true" if same_entry_match else "false"),
         rd=("true" if ready else "false"),
+        art=("[" + ",".join(sorted(accepted_tags)) + "]"),
     )
 )
 sys.stdout.write("Y\n" if ready else "N\n")
@@ -870,6 +982,7 @@ PYEOF
       "${per_attempt_node_tsv}" \
       "${ARTIFACTS}/attempts/attempt-${attempt}/" \
       "${nodes_tsv}" \
+      "${ACCEPTED_RUNTIME_TAGS_PIPE_DELIM}" \
       >>"${attempts_report}" 2>"${ARTIFACTS}/attempts/attempt-${attempt}/serializer.stderr.txt" \
       <<'ATTEMPT_PYEOF'
 """Per-attempt JSONL serializer (strict).
@@ -911,6 +1024,13 @@ Required argv (in order):
       one node per line; the canonical set the
       step_image_pipeline used to drive this
       iteration)
+ 11 accepted_runtime_tags    (str; pipe-delimited
+      closed ordered set the runtime verifier
+      accepts as canonical CRI repoTags;
+      exactly two non-empty entries, with a
+      trailing pipe. The per-attempt record's
+      `accepted_runtime_tags` field is the
+      decoded list of those two entries.)
 """
 import json, os, sys
 
@@ -918,7 +1038,7 @@ import json, os, sys
 attempt, expected_ref, expected_tag, normalized_expected_id, \
     per_attempt_rc, failing_node, failure_reason, \
     per_attempt_node_tsv_path, raw_paths_root, \
-    canonical_nodes_tsv_path = sys.argv[1:11]
+    canonical_nodes_tsv_path, accepted_runtime_tags_raw = sys.argv[1:12]
 
 
 def fail(reason):
@@ -929,6 +1049,27 @@ def fail(reason):
     sys.stderr.write("serializer_error=" + reason + "\n")
     sys.stderr.flush()
     sys.exit(3)
+
+
+# Validate the accepted-runtime-tags contract
+# BEFORE emitting any stdout. The pipe-delimited
+# form MUST encode exactly two unique non-empty
+# strings followed by a trailing pipe. Empty,
+# single-entry, double-equal, malformed
+# payload, or extra entry → serializer_error.
+accepted_tags = [t for t in accepted_runtime_tags_raw.split("|") if t != ""]
+if len(accepted_tags) != 2:
+    fail("accepted_runtime_tags_invalid_count:count=" + str(len(accepted_tags)))
+if len(set(accepted_tags)) != 2:
+    fail("accepted_runtime_tags_not_unique")
+# Reject broader alias surface (wildcard,
+# suffix, prefix, digest-only, registry
+# blob). The exact two-string closed set is
+# emitted into per-attempt and terminal
+# records verbatim.
+_expected_set = frozenset(("cni-listener:local", "docker.io/library/cni-listener:local"))
+if frozenset(accepted_tags) != _expected_set:
+    fail("accepted_runtime_tags_set_mismatch:encoded=" + ",".join(sorted(accepted_tags)))
 
 
 # 1. canonical node list: must be non-empty,
@@ -1090,6 +1231,7 @@ record = {
     "expected_ref": expected_ref,
     "expected_tag": expected_tag,
     "normalized_expected_id": normalized_expected_id,
+    "accepted_runtime_tags": list(accepted_tags),
     "per_attempt_rc": int(per_attempt_rc) if str(per_attempt_rc).lstrip("-").isdigit() else per_attempt_rc,
     "all_nodes_ready": bool(all_nodes_ready),
     "failing_node": failing_node,
@@ -1222,6 +1364,7 @@ ATTEMPT_PYEOF
     "${per_attempt_fail_reason:-tag-or-id-mismatch}" \
     "${attempts_report}" "${node_log}" \
     "${final_report}" \
+    "${ACCEPTED_RUNTIME_TAGS_PIPE_DELIM}" \
     >"${final_report}.tmp" 2>"${final_serializer_stderr}" \
     <<'TERMINAL_PYEOF'
 """Terminal fixture-image-node-runtime.json serializer.
@@ -1259,6 +1402,13 @@ Required argv (in order):
   11 final_report_path       (str; the path the
       serializer is writing TO; we do not
       include this in the output)
+  12 accepted_runtime_tags   (str; pipe-delimited
+      closed ordered set the runtime verifier
+      accepts as canonical CRI repoTags;
+      exactly two non-empty entries followed by
+      a trailing pipe. Re-emitted as a JSON
+      list of two strings in the terminal
+      record.)
 """
 import json, os, sys, time
 
@@ -1282,10 +1432,22 @@ def parse_int(name, raw):
 (terminal_attempt_raw, expected_ref, expected_tag, normalized_expected_id,
  all_nodes_ready, nodes_tsv_path, per_attempt_fail_node,
  per_attempt_fail_reason, per_attempt_jsonl, node_log,
- _final_path) = sys.argv[1:12]
+ _final_path, accepted_runtime_tags_raw) = sys.argv[1:13]
 
 terminal_attempt = parse_int("attempt", terminal_attempt_raw)
 shell_all_nodes_ready = (str(all_nodes_ready) == "1")
+
+# Validate the accepted-runtime-tags contract
+# BEFORE validating JSONL. The terminal record
+# re-emits the closed ordered set; the source
+# of truth is argv[12].
+accepted_runtime_tags = [t for t in accepted_runtime_tags_raw.split("|") if t != ""]
+if len(accepted_runtime_tags) != 2:
+    fail("terminal_accepted_runtime_tags_invalid_count:count=" + str(len(accepted_runtime_tags)))
+if len(set(accepted_runtime_tags)) != 2:
+    fail("terminal_accepted_runtime_tags_not_unique")
+if frozenset(accepted_runtime_tags) != frozenset(("cni-listener:local", "docker.io/library/cni-listener:local")):
+    fail("terminal_accepted_runtime_tags_set_mismatch:encoded=" + ",".join(sorted(accepted_runtime_tags)))
 
 # ---- canonical node list -----------------------------------------------
 if not nodes_tsv_path:
@@ -1539,6 +1701,7 @@ record = {
     "expected_ref": expected_ref,
     "expected_tag": expected_tag,
     "normalized_expected_id": normalized_expected_id,
+    "accepted_runtime_tags": list(accepted_runtime_tags),
     "attempt": int(terminal_attempt),
     "all_nodes_ready": bool(final_all_nodes_ready),
     "node_count": len(canonical_nodes),
