@@ -1012,6 +1012,64 @@ ok.append(assert_eq(
     and 'C8M_WRONG_SHAPE_STDERR_PREFIX' in harness_src,
     True,
 ))
+# d2b-tr-portability: production per-node
+# artifact-name normalizer must use the
+# exact `LC_ALL=C tr -c 'A-Za-z0-9._ -' '_'`
+# allow-set. Reject the historical
+# `tr -c 'A-Za-z0-9._- '` spelling which
+# causes GNU `tr` to emit
+# `range-endpoints of '_- ' are in reverse
+# collating sequence order` and abort
+# before any JSONL record is written. The
+# new spelling puts the hyphen LAST in
+# the allow-set so it can never pair with
+# `_` (0x5F) to form a reverse collating
+# sequence. LC_ALL=C forces deterministic
+# ASCII byte-range semantics regardless
+# of how the runner sets LANG.
+ok.append(assert_eq(
+    "install-nexus-test.sh per-node safe normalizer uses LC_ALL=C tr -c 'A-Za-z0-9._ -' '_' (hyphen literal last)",
+    "LC_ALL=C tr -c 'A-Za-z0-9._ -' '_'" in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh no longer contains the legacy `tr -c 'A-Za-z0-9._- '` spelling",
+    # The historical spelling ordered hyphen
+    # directly after `_` inside a C-locale
+    # allow-set; GNU `tr` collapses those
+    # into a character range and rejects
+    # the out-of-order endpoint pair
+    # ("reverse collating sequence order").
+    "tr -c 'A-Za-z0-9._- '" not in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh has exactly one per-node safe_n= normalizer in the all-node pipeline loop",
+    install_src.count("safe_n="),
+    1,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh safe_n normalizer is positioned before raw_stdout/raw_stderr/raw_rcfile path construction",
+    # The shell assigns safe_n before
+    # constructing the per-attempt
+    # artifact paths so unsanitized node
+    # names can never reach disk. We
+    # require safe_n to appear and the
+    # raw_* paths to follow it.
+    'local safe_n' in install_src
+    and 'raw_stdout="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.stdout.json"' in install_src
+    and 'raw_stderr="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.stderr.txt"' in install_src
+    and 'raw_rcfile="$ARTIFACTS/attempts/attempt-${attempt}/node-${safe_n}.rc"' in install_src,
+    True,
+))
+ok.append(assert_eq(
+    "install-nexus-test.sh still enforces same-entry verify and exactly-one-load bounded 15×2s semantics",
+    'same_entry_match' in install_src
+    and 'IMG_VERIFY_MAX_ATTEMPTS=15' in install_src
+    and 'IMG_VERIFY_INTERVAL_SEC=2' in install_src
+    and 'kind get nodes' in install_src,
+    True,
+))
 print()
 if all(ok):
     print("d2b.26 image-pipeline mutation tests: PASS")
