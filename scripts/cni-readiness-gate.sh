@@ -1299,7 +1299,26 @@ if run_in_phase; then
 #          by step #6, but if step #6 passes then
 #          this case is not "step #9 fail").
 CONTROL_NS=cni-control
-SOURCE_POD=cni-control-probe
+# Phase D-2b.52: the control SOURCE Pod is
+# NOT a literal name. `cni-control-probe` is an
+# apps/v1 Deployment, so kind/containerd runs a
+# ReplicaSet-generated Pod such as
+# `cni-control-probe-5d5fb89454-jkqfq`. Heavy run
+# 33634196860 failed here: Step 09 exec'd the
+# Deployment name and kubectl answered
+# `pods "cni-control-probe" not found`.
+#
+# There is deliberately NO `SOURCE_POD=` default.
+# The name is resolved below by
+# resolve_step09_source_pod() from exactly one
+# Pod-list query plus exactly one ReplicaSet
+# query, both owner- and readiness-validated. If
+# discovery cannot establish exactly one valid
+# Pod the step fails closed with exit 12 and
+# neither DNS nor HTTP client is invoked.
+SOURCE_POD_DEPLOYMENT=cni-control-probe
+SOURCE_POD_LABEL_SELECTOR='app=cni-control,role=probe'
+SOURCE_POD_NAME_REGEX='^cni-control-probe-[a-z0-9]+-[a-z0-9]+$'
 TARGET_POD=cni-control-target
 TARGET_SVC=cni-control-target-svc
 TARGET_PORT=18080
@@ -1320,6 +1339,341 @@ print(json.dumps(dict(zip(keys,vals))))
 }
 FINAL_VERDICT="ok"
 FINAL_DETAIL=""
+
+# ---- Step 09 dynamic source-pod discovery ----
+# d2b.52: named evidence paths. Every kubectl
+# query in the resolver writes its stdout,
+# stderr, and rc to its own file so an
+# independent reviewer can replay the decision
+# without trusting the gate's own verdict.
+STEP09_SD_ART="${ARTIFACTS}/step09-source-discovery.json"
+STEP09_SD_POD_OUT="${ARTIFACTS}/step09-source-discovery-pod-list.stdout.json"
+STEP09_SD_POD_ERR="${ARTIFACTS}/step09-source-discovery-pod-list.stderr"
+STEP09_SD_POD_RC_FILE="${ARTIFACTS}/step09-source-discovery-pod-list.rc"
+STEP09_SD_RS_OUT="${ARTIFACTS}/step09-source-discovery-replicaset.stdout.json"
+STEP09_SD_RS_ERR="${ARTIFACTS}/step09-source-discovery-replicaset.stderr"
+STEP09_SD_RS_RC_FILE="${ARTIFACTS}/step09-source-discovery-replicaset.rc"
+
+# Accumulated discovery facts. Defaults are the
+# fail-closed values: no pod, no replicaset, not
+# ready, zero candidates. Any early exit
+# serialises exactly these.
+STEP09_SD_POD_RC="0"
+STEP09_SD_RS_RC="0"
+STEP09_SD_CANDIDATE_COUNT="0"
+STEP09_SD_RESOLVED_POD=""
+STEP09_SD_REPLICASET=""
+STEP09_SD_DEPLOYMENT_OWNER=""
+STEP09_SD_READY="false"
+
+# Single artifact writer. Called on BOTH the
+# success and every failure path so exactly one
+# step09-source-discovery.json always exists.
+# Serialisation is Python stdlib json.dumps —
+# never a hand-built JSON string — so a pod name
+# carrying a quote cannot forge the document.
+step09_sd_write() {
+  local verdict="$1"; local reason="$2"
+  python3 - \
+    "$STEP09_SD_ART" \
+    "$verdict" \
+    "$reason" \
+    "$STEP09_SD_POD_RC" \
+    "$STEP09_SD_RS_RC" \
+    "$CONTROL_NS" \
+    "$SOURCE_POD_LABEL_SELECTOR" \
+    "$SOURCE_POD_NAME_REGEX" \
+    "$STEP09_SD_CANDIDATE_COUNT" \
+    "$STEP09_SD_RESOLVED_POD" \
+    "$STEP09_SD_REPLICASET" \
+    "$STEP09_SD_DEPLOYMENT_OWNER" \
+    "$STEP09_SD_READY" <<'PYEOF'
+import json
+import sys
+
+(art, verdict, reason, pod_rc, rs_rc, ns, selector,
+ regex, cand, pod, rs, owner, ready) = sys.argv[1:14]
+
+doc = {
+    "phase": "step09_source_discovery",
+    "pod_list_command_rc": int(pod_rc),
+    "replicaset_command_rc": int(rs_rc),
+    "namespace": ns,
+    "label_selector": selector,
+    "dynamic_name_regex": regex,
+    "candidate_count": int(cand),
+    "resolved_pod": pod,
+    "replicaset": rs,
+    "deployment_owner": owner,
+    "ready": (ready == "true"),
+    "verdict": verdict,
+}
+# resolved_pod MUST be empty on any failure so a
+# reader cannot mistake a rejected candidate for
+# an accepted identity.
+if verdict != "resolved":
+    doc["failure_reason"] = reason
+    doc["resolved_pod"] = ""
+with open(art, "w") as fh:
+    fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+PYEOF
+}
+
+# Fail closed: serialise the discovery document,
+# record the step, and exit 12 WITHOUT reaching
+# any /cni-listener invocation.
+step09_sd_fail() {
+  local reason="$1"; local detail="$2"
+  step09_sd_write "failed" "$reason"
+  FINAL_VERDICT="failed"
+  FINAL_DETAIL="$detail"
+  record_step 9 "failed" "$FINAL_DETAIL"
+  classify failed 12 FIXTURE_NOT_READY
+}
+
+# (0a) EXACTLY ONE structured Pod-list query,
+# scoped to the control namespace and the
+# Deployment's template labels. Structured JSON
+# only — never tabular output parsed by grep,
+# awk, cut, or whitespace splitting.
+: > "$STEP09_SD_POD_OUT"
+: > "$STEP09_SD_POD_ERR"
+set +e
+kubectl -n "$CONTROL_NS" get pod \
+  -l "$SOURCE_POD_LABEL_SELECTOR" \
+  -o json >"$STEP09_SD_POD_OUT" 2>"$STEP09_SD_POD_ERR"
+STEP09_SD_POD_RC=$?
+set -e
+printf '%s\n' "$STEP09_SD_POD_RC" > "$STEP09_SD_POD_RC_FILE"
+if (( STEP09_SD_POD_RC != 0 )); then
+  step09_sd_fail "pod_list_command_failed" \
+    "source-pod discovery: kubectl -n ${CONTROL_NS} get pod -l ${SOURCE_POD_LABEL_SELECTOR} -o json exited rc=${STEP09_SD_POD_RC} (see ${STEP09_SD_POD_ERR})"
+fi
+
+# (0b) Candidate validation with Python stdlib
+# JSON. A candidate qualifies only if namespace,
+# full-match name, lifecycle, readiness, and a
+# single controlling ReplicaSet owner ALL hold,
+# and only if exactly one such candidate exists.
+set +e
+STEP09_SD_POD_PARSE=$(python3 - \
+  "$STEP09_SD_POD_OUT" \
+  "$CONTROL_NS" \
+  "$SOURCE_POD_NAME_REGEX" <<'PYEOF'
+import json
+import re
+import sys
+
+list_path, want_ns, name_regex = sys.argv[1:4]
+
+
+def bail(reason, count=0):
+    """Emit `reason<TAB>count` and exit non-zero.
+    The shell maps the token to the closed
+    failure vocabulary; nothing else is printed
+    so a malformed name cannot leak into argv."""
+    sys.stdout.write(reason + "\t" + str(count) + "\n")
+    sys.exit(3)
+
+
+try:
+    with open(list_path) as fh:
+        doc = json.load(fh)
+except Exception:
+    bail("pod_list_invalid_json")
+
+if not isinstance(doc, dict):
+    bail("pod_list_schema_invalid")
+items = doc.get("items")
+if not isinstance(items, list):
+    bail("pod_list_schema_invalid")
+
+pattern = re.compile(name_regex)
+qualified = []
+for item in items:
+    if not isinstance(item, dict):
+        bail("pod_list_schema_invalid")
+    meta = item.get("metadata")
+    status = item.get("status")
+    if not isinstance(meta, dict) or not isinstance(status, dict):
+        bail("pod_list_schema_invalid")
+
+    # Namespace: exact equality, never a prefix.
+    if meta.get("namespace") != want_ns:
+        continue
+    # Name: full match against the dynamic
+    # Deployment/ReplicaSet shape. `fullmatch`
+    # so a longer name cannot satisfy it.
+    name = meta.get("name")
+    if not isinstance(name, str) or not pattern.fullmatch(name):
+        continue
+    # Lifecycle: not terminating, and Running.
+    if meta.get("deletionTimestamp") is not None:
+        continue
+    if status.get("phase") != "Running":
+        continue
+    # Readiness: an explicit Ready=True condition.
+    conds = status.get("conditions")
+    if conds is not None and not isinstance(conds, list):
+        bail("pod_list_schema_invalid")
+    ready = False
+    for cond in (conds or []):
+        if not isinstance(cond, dict):
+            bail("pod_list_schema_invalid")
+        if cond.get("type") == "Ready" and cond.get("status") == "True":
+            ready = True
+    if not ready:
+        continue
+    # Controller owner: exactly one controlling
+    # reference, and it must be a ReplicaSet with
+    # a non-empty name.
+    owners = meta.get("ownerReferences")
+    if owners is not None and not isinstance(owners, list):
+        bail("pod_list_schema_invalid")
+    controllers = []
+    for own in (owners or []):
+        if not isinstance(own, dict):
+            bail("pod_list_schema_invalid")
+        if own.get("controller") is True:
+            controllers.append(own)
+    if len(controllers) != 1:
+        continue
+    ctrl = controllers[0]
+    if ctrl.get("kind") != "ReplicaSet":
+        continue
+    rs_name = ctrl.get("name")
+    if not isinstance(rs_name, str) or rs_name == "":
+        continue
+    qualified.append((name, rs_name))
+
+# Cardinality: exactly one. Zero means the
+# fixture never came up; more than one means the
+# identity is ambiguous and must not be guessed.
+if len(qualified) != 1:
+    bail("candidate_cardinality_invalid", len(qualified))
+
+sys.stdout.write(qualified[0][0] + "\t" + qualified[0][1] + "\t1\n")
+PYEOF
+)
+STEP09_SD_POD_PARSE_RC=$?
+set -e
+if (( STEP09_SD_POD_PARSE_RC != 0 )); then
+  STEP09_SD_REASON=$(printf '%s' "$STEP09_SD_POD_PARSE" | cut -f1)
+  STEP09_SD_CANDIDATE_COUNT=$(printf '%s' "$STEP09_SD_POD_PARSE" | cut -f2)
+  case "$STEP09_SD_CANDIDATE_COUNT" in
+    ''|*[!0-9]*) STEP09_SD_CANDIDATE_COUNT="0";;
+  esac
+  case "$STEP09_SD_REASON" in
+    pod_list_invalid_json|pod_list_schema_invalid|candidate_cardinality_invalid) : ;;
+    *) STEP09_SD_REASON="pod_list_schema_invalid";;
+  esac
+  step09_sd_fail "$STEP09_SD_REASON" \
+    "source-pod discovery: ${STEP09_SD_REASON} (namespace=${CONTROL_NS} selector=${SOURCE_POD_LABEL_SELECTOR} qualifying_candidates=${STEP09_SD_CANDIDATE_COUNT})"
+fi
+STEP09_SD_RESOLVED_POD=$(printf '%s' "$STEP09_SD_POD_PARSE" | cut -f1)
+STEP09_SD_REPLICASET=$(printf '%s' "$STEP09_SD_POD_PARSE" | cut -f2)
+STEP09_SD_CANDIDATE_COUNT="1"
+STEP09_SD_READY="true"
+
+# (0c) EXACTLY ONE ReplicaSet query, by exact
+# name, to prove the Pod's ReplicaSet is itself
+# controlled by the expected Deployment. A name
+# prefix or substring check would accept a
+# look-alike ReplicaSet, so the owner kind and
+# name are compared for exact equality.
+: > "$STEP09_SD_RS_OUT"
+: > "$STEP09_SD_RS_ERR"
+set +e
+kubectl -n "$CONTROL_NS" get replicaset "$STEP09_SD_REPLICASET" \
+  -o json >"$STEP09_SD_RS_OUT" 2>"$STEP09_SD_RS_ERR"
+STEP09_SD_RS_RC=$?
+set -e
+printf '%s\n' "$STEP09_SD_RS_RC" > "$STEP09_SD_RS_RC_FILE"
+if (( STEP09_SD_RS_RC != 0 )); then
+  step09_sd_fail "replicaset_command_failed" \
+    "source-pod discovery: kubectl -n ${CONTROL_NS} get replicaset ${STEP09_SD_REPLICASET} -o json exited rc=${STEP09_SD_RS_RC} (see ${STEP09_SD_RS_ERR})"
+fi
+set +e
+STEP09_SD_RS_PARSE=$(python3 - \
+  "$STEP09_SD_RS_OUT" \
+  "$CONTROL_NS" \
+  "$STEP09_SD_REPLICASET" \
+  "$SOURCE_POD_DEPLOYMENT" <<'PYEOF'
+import json
+import sys
+
+rs_path, want_ns, want_rs, want_deploy = sys.argv[1:5]
+
+
+def bail(reason):
+    sys.stdout.write(reason + "\n")
+    sys.exit(3)
+
+
+try:
+    with open(rs_path) as fh:
+        doc = json.load(fh)
+except Exception:
+    bail("replicaset_invalid_json")
+
+if not isinstance(doc, dict):
+    bail("replicaset_schema_invalid")
+# Identity: the document must be the ReplicaSet
+# we asked for, in the namespace we asked for.
+if doc.get("kind") != "ReplicaSet":
+    bail("replicaset_schema_invalid")
+meta = doc.get("metadata")
+if not isinstance(meta, dict):
+    bail("replicaset_schema_invalid")
+if meta.get("namespace") != want_ns:
+    bail("replicaset_schema_invalid")
+if meta.get("name") != want_rs:
+    bail("replicaset_schema_invalid")
+
+owners = meta.get("ownerReferences")
+if owners is not None and not isinstance(owners, list):
+    bail("replicaset_schema_invalid")
+controllers = []
+for own in (owners or []):
+    if not isinstance(own, dict):
+        bail("replicaset_schema_invalid")
+    if own.get("controller") is True:
+        controllers.append(own)
+# Exactly one controlling Deployment, named
+# exactly as expected. No prefix inference.
+if len(controllers) != 1:
+    bail("deployment_owner_invalid")
+ctrl = controllers[0]
+if ctrl.get("kind") != "Deployment":
+    bail("deployment_owner_invalid")
+if ctrl.get("name") != want_deploy:
+    bail("deployment_owner_invalid")
+
+sys.stdout.write(ctrl.get("name") + "\n")
+PYEOF
+)
+STEP09_SD_RS_PARSE_RC=$?
+set -e
+if (( STEP09_SD_RS_PARSE_RC != 0 )); then
+  STEP09_SD_REASON=$(printf '%s' "$STEP09_SD_RS_PARSE" | head -n1)
+  case "$STEP09_SD_REASON" in
+    replicaset_invalid_json|replicaset_schema_invalid|deployment_owner_invalid) : ;;
+    *) STEP09_SD_REASON="replicaset_schema_invalid";;
+  esac
+  step09_sd_fail "$STEP09_SD_REASON" \
+    "source-pod discovery: ${STEP09_SD_REASON} (replicaset=${STEP09_SD_REPLICASET} expected_deployment=${SOURCE_POD_DEPLOYMENT})"
+fi
+STEP09_SD_DEPLOYMENT_OWNER=$(printf '%s' "$STEP09_SD_RS_PARSE" | head -n1)
+
+# Both validations passed. This is the ONLY
+# assignment of SOURCE_POD in the script, and
+# every Step 09 consumer below reads this one
+# variable.
+SOURCE_POD="${STEP09_SD_RESOLVED_POD}"
+step09_sd_write "resolved" ""
+printf '[step 09] source pod resolved dynamically: %s (replicaset=%s deployment=%s)\n' \
+  "$SOURCE_POD" "$STEP09_SD_REPLICASET" "$STEP09_SD_DEPLOYMENT_OWNER" \
+  | tee -a "$READINESS_LOG"
 
 # (1) target Pod's local listener is open.
 TARGET_PRESENT=$(kubectl -n "$CONTROL_NS" get pod "$TARGET_POD" \

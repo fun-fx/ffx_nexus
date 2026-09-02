@@ -1057,6 +1057,231 @@ with tempfile.TemporaryDirectory() as tmp:
         rc != 0, True,
     ))
 
+# ---- d2b.52 Step 09 dynamic source-pod discovery -------------------------
+# Heavy run 33634196860 failed Step 09 because
+# the gate exec'd the literal Deployment name
+# `cni-control-probe`, which is never a Pod name
+# (kubectl answered `pods "cni-control-probe" not
+# found`). These checks pin the repaired contract
+# against the gate source so a future edit cannot
+# silently reintroduce a static assumption.
+
+# The literal assignment must be GONE. Only the
+# resolved dynamic name may ever be assigned, so
+# there is exactly one `SOURCE_POD=` assignment
+# and it reads the resolver's output.
+ok.append(assert_eq(
+    "gate no longer assigns the literal Deployment name to SOURCE_POD",
+    "SOURCE_POD=cni-control-probe" not in src,
+    True,
+))
+ok.append(assert_eq(
+    "gate assigns SOURCE_POD exactly once, from the resolver result",
+    len([
+        ln for ln in src.splitlines()
+        if ln.strip().startswith("SOURCE_POD=")
+    ]) == 1
+    and 'SOURCE_POD="${STEP09_SD_RESOLVED_POD}"' in src,
+    True,
+))
+
+# Exactly one structured Pod-list query, scoped by
+# namespace and the Deployment template labels,
+# and exactly one exact-name ReplicaSet query.
+ok.append(assert_eq(
+    "gate issues exactly one label-selected structured Pod-list query",
+    src.count('get pod \\\n  -l "$SOURCE_POD_LABEL_SELECTOR" \\\n  -o json') == 1,
+    True,
+))
+ok.append(assert_eq(
+    "gate declares the canonical Step 09 selector and dynamic-name regex",
+    "SOURCE_POD_LABEL_SELECTOR='app=cni-control,role=probe'" in src
+    and "SOURCE_POD_NAME_REGEX='^cni-control-probe-[a-z0-9]+-[a-z0-9]+$'" in src,
+    True,
+))
+ok.append(assert_eq(
+    "gate issues exactly one exact-name ReplicaSet query",
+    src.count(
+        'get replicaset "$STEP09_SD_REPLICASET" \\\n  -o json'
+    ) == 1,
+    True,
+))
+
+# Structured parsing only. Tabular kubectl output
+# must never be fed to grep/awk/cut in the
+# resolver, and the resolver must use fullmatch
+# rather than a prefix or substring test.
+ok.append(assert_eq(
+    "resolver parses the Pod list with stdlib JSON, not tabular text tools",
+    "json.load(fh)" in src
+    and "pattern.fullmatch(name)" in src,
+    True,
+))
+ok.append(assert_eq(
+    "resolver never infers Deployment ownership from a name prefix/substring",
+    not any(anti in src for anti in (
+        'startswith("cni-control-probe")',
+        "startswith('cni-control-probe')",
+        'rs_name.startswith(',
+        '"cni-control-probe" in ',
+    )),
+    True,
+))
+
+# Owner validation must compare kind AND name for
+# exact equality, and require exactly one
+# controlling reference at both levels.
+ok.append(assert_eq(
+    "resolver requires exactly one controlling ReplicaSet owner on the Pod",
+    'if own.get("controller") is True' in src
+    and 'if ctrl.get("kind") != "ReplicaSet"' in src,
+    True,
+))
+ok.append(assert_eq(
+    "resolver requires exactly one controlling Deployment owner on the ReplicaSet",
+    'if ctrl.get("kind") != "Deployment"' in src
+    and 'if ctrl.get("name") != want_deploy' in src,
+    True,
+))
+
+# Lifecycle and readiness are mandatory.
+ok.append(assert_eq(
+    "resolver rejects terminating and non-Running candidates",
+    'meta.get("deletionTimestamp") is not None' in src
+    and 'status.get("phase") != "Running"' in src,
+    True,
+))
+ok.append(assert_eq(
+    "resolver requires an explicit Ready=True condition",
+    'cond.get("type") == "Ready" and cond.get("status") == "True"' in src,
+    True,
+))
+
+# Cardinality must be exactly one; zero or many
+# are both rejections, never a pick-the-first.
+ok.append(assert_eq(
+    "resolver requires exactly one qualifying candidate",
+    "if len(qualified) != 1:" in src
+    and 'bail("candidate_cardinality_invalid", len(qualified))' in src,
+    True,
+))
+ok.append(assert_eq(
+    "resolver never picks the first of several candidates",
+    "qualified[0]" in src and "sorted(qualified)" not in src,
+    True,
+))
+
+# One discovery document on BOTH paths, serialized
+# with stdlib json.dumps, with resolved_pod forced
+# empty on failure.
+ok.append(assert_eq(
+    "gate writes step09-source-discovery.json via stdlib json.dumps",
+    "step09-source-discovery.json" in src
+    and "fh.write(json.dumps(doc, indent=2, sort_keys=True)" in src,
+    True,
+))
+ok.append(assert_eq(
+    "discovery document forces empty resolved_pod on any failure verdict",
+    'if verdict != "resolved":' in src
+    and 'doc["resolved_pod"] = ""' in src,
+    True,
+))
+ok.append(assert_eq(
+    "discovery document carries the required minimum field set",
+    all(f'"{field}"' in src for field in (
+        "phase",
+        "pod_list_command_rc",
+        "replicaset_command_rc",
+        "namespace",
+        "label_selector",
+        "dynamic_name_regex",
+        "candidate_count",
+        "resolved_pod",
+        "replicaset",
+        "deployment_owner",
+        "ready",
+        "verdict",
+    )) and '"phase": "step09_source_discovery"' in src,
+    True,
+))
+
+# Closed failure-reason vocabulary.
+ok.append(assert_eq(
+    "gate uses the closed discovery failure-reason vocabulary",
+    all(reason in src for reason in (
+        "pod_list_command_failed",
+        "pod_list_invalid_json",
+        "pod_list_schema_invalid",
+        "candidate_cardinality_invalid",
+        "replicaset_command_failed",
+        "replicaset_invalid_json",
+        "replicaset_schema_invalid",
+        "deployment_owner_invalid",
+    )),
+    True,
+))
+
+# Named stdout/stderr/rc evidence for both
+# queries.
+ok.append(assert_eq(
+    "gate captures named stdout/stderr/rc for both discovery queries",
+    all(path in src for path in (
+        "step09-source-discovery-pod-list.stdout.json",
+        "step09-source-discovery-pod-list.stderr",
+        "step09-source-discovery-pod-list.rc",
+        "step09-source-discovery-replicaset.stdout.json",
+        "step09-source-discovery-replicaset.stderr",
+        "step09-source-discovery-replicaset.rc",
+    )),
+    True,
+))
+
+# Fail closed at exit 12 before any client call.
+# The resolver block must precede the first
+# /cni-listener invocation in file order, so a
+# discovery failure cannot reach DNS or HTTP.
+ok.append(assert_eq(
+    "discovery failure classifies FIXTURE_NOT_READY at exit 12",
+    "step09_sd_fail()" in src
+    and "classify failed 12 FIXTURE_NOT_READY" in src,
+    True,
+))
+ok.append(assert_eq(
+    "resolver runs before the first /cni-listener client invocation",
+    (
+        src.index('SOURCE_POD="${STEP09_SD_RESOLVED_POD}"')
+        < src.index('"-resolve-host=${TARGET_FQDN}"')
+    ) and (
+        src.index('SOURCE_POD="${STEP09_SD_RESOLVED_POD}"')
+        < src.index('"-http-get=${TARGET_URL}"')
+    ),
+    True,
+))
+
+# Both client execs must read the one resolved
+# variable.
+ok.append(assert_eq(
+    "both DNS and HTTP client execs target the resolved SOURCE_POD variable",
+    'exec "$SOURCE_POD" -- "/cni-listener" "-resolve-host=${TARGET_FQDN}"' in src
+    and 'exec "$SOURCE_POD" -- "/cni-listener" "-http-get=${TARGET_URL}"' in src,
+    True,
+))
+
+# The already-reviewed Step 08 vocabulary and the
+# exact FQDN/URL envelope checks must survive this
+# repair untouched.
+ok.append(assert_eq(
+    "d2b.52 preserves the Step 08 exact 12+1 dynamic-probe vocabulary",
+    "GATE8_DYNAMIC_PROBE_REGEX='^cni-control-probe-[a-z0-9]+-[a-z0-9]+$'" in src
+    and "EXACT_POPULATION_EXPECTED=13" in src,
+    True,
+))
+ok.append(assert_eq(
+    "d2b.52 preserves the canonical Step 09 target FQDN",
+    'TARGET_FQDN="cni-control-target-svc.cni-control.svc.cluster.local"' in src,
+    True,
+))
+
 # ---- final verdict -------------------------------------------------------
 
 print()
