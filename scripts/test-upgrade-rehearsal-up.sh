@@ -299,6 +299,30 @@ capture_values_asserted() {
     die "values capture: helm get values rc=${rc} out_size=$(wc -c < "${out}" 2>/dev/null | tr -d ' '); refusing to trust values"
   fi
 }
+# Best-effort cluster snapshot for a failed mutating helm step. A `--wait`
+# timeout otherwise leaves nothing but helm's one-line error, which names
+# the client rate limiter rather than the workload that never went Ready;
+# run 33736159105 spent ten minutes producing a 98-byte artifact. Every
+# command here is unasserted on purpose: this runs on the way to `die`, so
+# a capture fault must not replace the original verdict.
+capture_install_failure_evidence() {
+  local step="$1"
+  local prefix="${ARTIFACTS}/upgrade-step${step}-failure"
+  (
+    set +e
+    echo "=== helm status ==="
+    helm status "${RELEASE}" 2>&1
+    echo "=== pods (release selector, all namespaces) ==="
+    kubectl get pods -A -l "app.kubernetes.io/instance=${RELEASE}" -o wide 2>&1
+    echo "=== deployments (release selector, all namespaces) ==="
+    kubectl get deploy -A -l "app.kubernetes.io/instance=${RELEASE}" -o wide 2>&1
+    echo "=== pod describe + container state ==="
+    kubectl describe pods -A -l "app.kubernetes.io/instance=${RELEASE}" 2>&1
+    echo "=== recent events (all namespaces, by time) ==="
+    kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -60
+  ) > "${prefix}.txt" 2>&1
+  echo "[upgrade] step ${step} failed; cluster snapshot written to ${prefix}.txt ($(wc -c < "${prefix}.txt" 2>/dev/null | tr -d ' ') bytes)"
+}
 capture_manifest_asserted() {
   local out_manifest="$1" out_sha="$2"
   local log="${out_manifest}.log"
@@ -541,13 +565,39 @@ echo "[upgrade] step 1/4: install mode=disabled (development profile)"
   helm uninstall "${RELEASE}" --ignore-not-found >/dev/null 2>&1
   set -e
 } || true
+# The placeholder image must satisfy the probes this chart declares, not
+# merely exist. values.yaml pins readinessProbe httpGet /readyz and
+# livenessProbe httpGet /healthz on the gateway port, so `--wait` can only
+# succeed against an image that serves both. busybox serves neither and its
+# default entrypoint exits immediately, which is the exact defect
+# control-netpol-gate.Dockerfile was written to eliminate; using it here
+# guarantees a 10-minute `--wait` burn surfacing as a client-side rate
+# limiter deadline. The fixture listener already loaded into this cluster
+# answers /readyz and /healthz on every -ports value.
+#
+# migrations.enabled=false is a declared scope boundary, not a relaxation
+# of what this rehearsal asserts. The migration Job is a helm
+# pre-install/pre-upgrade hook whose container runs `migrate --engine=all`
+# against a live schema owner. This cluster has neither the real Nexus
+# image nor a real Postgres — install-nexus-test.sh says so in its own
+# header — so hook completion is UNAVAILABLE here and must never be
+# reported as green. What the customer actually depends on, that the
+# migration role can still reach the schema owner once enforcement is on,
+# is proven as datapath evidence by scenario s14
+# (cni-mock-nexus-migration -> cni-postgres.database:5432, expect ALLOW)
+# rather than inferred from a hook that cannot run. Disabling the hook
+# also leaves the rendered NetworkPolicy set byte-identical, so the
+# revision, values, and policy-identity assertions below are untouched.
 S1RC=$(run_helm_capture "${ARTIFACTS}/upgrade-step1.log" \
   helm install "${RELEASE}" "${CHART_PATH}" \
     --set networkPolicy.mode=disabled \
     --set networkPolicy.profile=development \
     --set networkPolicy.enforcementAcknowledged=true \
-    --set image.repository=busybox \
-    --set image.tag=1.36 \
+    --set image.repository=cni-listener \
+    --set image.tag=local \
+    --set image.pullPolicy=Never \
+    --set-json 'args=["-ports=8080,8081","-role=rehearsal","-target=upgrade-rehearsal"]' \
+    --set migrations.enabled=false \
     --set dependencies.postgres.url="postgres://nexus:nopassword@postgres.default.svc.cluster.local:5432/nexus" \
     --wait \
     --timeout "$D2B_HELM_TIMEOUT" \
@@ -557,6 +607,7 @@ S1RC=$(cat "${ARTIFACTS}/upgrade-step1.rc")
 S1RC=${S1RC:-1}
 
 if [[ "$S1RC" -ne 0 ]]; then
+  capture_install_failure_evidence 1
   die "step 1 (disabled install) helm exit code = ${S1RC}; not 0; refusing to write install-disabled-ok sentinel"
 fi
 # Step 1 sentinel-last ordering:
@@ -589,8 +640,11 @@ S2RC=$(run_helm_capture "${ARTIFACTS}/upgrade-step2.log" \
     --set networkPolicy.mode=enforce \
     --set networkPolicy.profile=enterprise \
     --set networkPolicy.enforcementAcknowledged=true \
-    --set image.repository=busybox \
-    --set image.tag=1.36 \
+    --set image.repository=cni-listener \
+    --set image.tag=local \
+    --set image.pullPolicy=Never \
+    --set-json 'args=["-ports=8080,8081","-role=rehearsal","-target=upgrade-rehearsal"]' \
+    --set migrations.enabled=false \
     --set dependencies.postgres.url="postgres://nexus:nopassword@postgres.default.svc.cluster.local:5432/nexus" \
     --atomic \
     --wait \
@@ -601,6 +655,7 @@ S2RC=$(cat "${ARTIFACTS}/upgrade-step2.rc")
 S2RC=${S2RC:-1}
 
 if [[ "$S2RC" -ne 0 ]]; then
+  capture_install_failure_evidence 2
   die "step 2 (enforce helm upgrade --atomic) exit code = ${S2RC}; not 0; refusing to write upgrade-enforce-ok sentinel"
 fi
 
@@ -668,8 +723,11 @@ S3RC=$(run_helm_capture "${ARTIFACTS}/upgrade-step3.log" \
     --set networkPolicy.enforcementAcknowledged=true \
     --set 'networkPolicy.ingressController.namespaces[0]=' \
     --set 'networkPolicy.ingressController.matchPorts[0]=8080' \
-    --set image.repository=busybox \
-    --set image.tag=1.36 \
+    --set image.repository=cni-listener \
+    --set image.tag=local \
+    --set image.pullPolicy=Never \
+    --set-json 'args=["-ports=8080,8081","-role=rehearsal","-target=upgrade-rehearsal"]' \
+    --set migrations.enabled=false \
     --set dependencies.postgres.url="postgres://nexus:nopassword@postgres.default.svc.cluster.local:5432/nexus" \
     --atomic \
     --wait \

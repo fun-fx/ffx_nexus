@@ -39,6 +39,10 @@ spec:
         - name: nexus
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:

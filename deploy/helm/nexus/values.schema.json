@@ -358,6 +358,13 @@
         }
       }
     },
+    "args": {
+      "type": "array",
+      "description": "Container args for the gateway container. Empty renders no args key, leaving the image entrypoint in charge.",
+      "items": {
+        "type": "string"
+      }
+    },
     "imagePullSecrets": {
       "type": "array",
       "items": {

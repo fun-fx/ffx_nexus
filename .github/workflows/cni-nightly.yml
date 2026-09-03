@@ -19,7 +19,7 @@
 #   cni-policy-required
 #     - path-filtered to policy files
 #     - runs the full enforcing-CNI integration
-#       gate (12 scenarios + mutations +
+#       gate (all declared scenarios + mutations +
 #       upgrade rehearsal)
 #     - heavy (~20-30 minutes)
 #     - this is the additional merge
@@ -599,7 +599,7 @@ jobs:
         if: success()
         run: bash scripts/install-nexus-test.sh
 
-      - name: Run 12 enforcing-CNI scenarios (three-tier probe)
+      - name: Run enforcing-CNI scenarios (three-tier probe)
         if: success()
         run: bash scripts/d2b-twelve-scenarios.sh
 

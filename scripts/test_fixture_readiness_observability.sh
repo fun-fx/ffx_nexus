@@ -8821,7 +8821,10 @@ PASS=$((PASS + C8_LEDS_PASS))
 # enforcing-CNI scenario gate and the bounded Helm client transport. All 62
 # pre-existing control predicates are retained verbatim; none was renamed,
 # merged, or dropped to keep the denominator flat.
-TOTAL=73 # d2b.49 (39 + C7n/C7o + C8n/C8o) + d2b.51 C9a..C9f + d2b.51-final C9g..C9j + C9k + C9l + d2b.51-final C8i..C8p = 55 + 6, + d2b.52 C9m = 62, + d2b.53 C12a..C12k = 73
+# d2b.56: 73 -> 74. One genuinely new control (C12l) mirrors C12h so a
+# dropped-traffic datapath cannot be graded green. All 73 pre-existing
+# control predicates are retained verbatim.
+TOTAL=74 # d2b.49 (39 + C7n/C7o + C8n/C8o) + d2b.51 C9a..C9f + d2b.51-final C9g..C9j + C9k + C9l + d2b.51-final C8i..C8p = 55 + 6, + d2b.52 C9m = 62, + d2b.53 C12a..C12k = 73, + d2b.56 C12l = 74
 # Per-control pass ledger (collects results so the
 # final summary can name which controls failed).
 # Bash 3.2 (macOS /bin/bash) does not support
@@ -8897,6 +8900,7 @@ C12H_PASS=N
 C12I_PASS=N
 C12J_PASS=N
 C12K_PASS=N
+C12L_PASS=N
 # C1 success: gate stub invoked exactly once,
 # no mismatch, target rc=0. C1 also proves
 # the 13 fixture vocabulary includes
@@ -9578,7 +9582,7 @@ printf 'M1: summary_path_file_present=%s abort_log_line=%s log_label=%s log_expe
 PASS=$((${PASS} + 0))
 # d2b.53: re-pin follows the new denominator (62 + C12a..C12k = 73).
 # d2b.54: 73 -> 84. Eleven new controls (C13a..C13k).
-TOTAL=73
+TOTAL=74 # d2b.56 re-pin: 73 + C12l
 if [ "${M1_RC}" = "16" ] \
    && [ "${M1_INVOKED}" = "Y" ] \
    && [ "${M1_JSON_PARSEABLE}" = "Y" ] \
@@ -9756,7 +9760,7 @@ printf 'M2b: rc=%s stderr-named-gate=%s stderr-named-nonexec=%s stub-sentinel-pr
 
 # d2b.53: re-pin follows the new denominator (62 + C12a..C12k = 73).
 # d2b.54: 73 -> 84. Eleven new controls (C13a..C13k).
-TOTAL=73
+TOTAL=74 # d2b.56 re-pin: 73 + C12l
 # d2b.49 namespace-aware regression suite
 # per-control verdicts (C7n/C7o/C8n/C8o):
 if [ "${C7N_RC}" = "0" ] \
@@ -10185,6 +10189,7 @@ if [[ "${ARGS[0]:-}" == "exec" ]]; then
         execerr)   printf 'error: unable to upgrade connection: container not found\n' >&2; exit 1 ;;
         badstdout) printf 'garbage-not-json\n'; exit 0 ;;
         allopen)   printf '{"body":"{}","status":200,"url":"%s"}\n' "$URL"; exit 0 ;;
+        allclosed) printf 'cni-listener client mode failed: http-get %s failed: dial tcp: i/o timeout\n' "$URL" >&2; exit 2 ;;
       esac
       if c12_deny "${SRC_POD}>${HP}"; then
         printf 'cni-listener client mode failed: http-get %s failed: dial tcp: i/o timeout\n' "$URL" >&2
@@ -10201,6 +10206,7 @@ if [[ "${ARGS[0]:-}" == "exec" ]]; then
         execerr)   printf 'error: unable to upgrade connection: container not found\n' >&2; exit 1 ;;
         badstdout) printf 'garbage-not-json\n'; exit 0 ;;
         allopen)   printf '{"connected":true,"host":"%s","port":%s,"target":"%s"}\n' "$H" "$P" "$HP"; exit 0 ;;
+        allclosed) printf 'cni-listener client mode failed: tcp-connect %s failed: dial tcp: i/o timeout\n' "$HP" >&2; exit 2 ;;
       esac
       if c12_deny "${SRC_POD}>${HP}"; then
         printf 'cni-listener client mode failed: tcp-connect %s failed: dial tcp: connect: connection refused\n' "$HP" >&2
@@ -10566,6 +10572,45 @@ C12H_CLASS="${C12S_CLASS}"
 C12H_LEAKS="$(grep -E '^DENY_LEAK=' "${C12S_DIR}/art/scenario-summary.txt" 2>/dev/null | cut -d= -f2 || true)"
 C12H_TOTAL="${C12S_TOTAL}"
 
+# --- C12l: an all-closed datapath is a policy failure --------------------
+# The mirror of C12h. C12h proves a permissive datapath cannot be graded
+# green; without its opposite, an ALLOW scenario whose traffic is actually
+# dropped had no local control at all — that direction was only ever caught
+# in a live cluster (run 33726350873 failed this way on s10/s12). It is the
+# direction that gives s14 its meaning: if the migration egress policy stops
+# admitting the schema owner, the gate must close with the policy exit code
+# and name the affected ids as RULE_GAP, never report a silent pass.
+c12_drive allclosed "${C12S_SCEN_JSON}" "C12S_L3=allclosed"
+C12L_RC="${C12S_RC}"
+C12L_CLASS="${C12S_CLASS}"
+C12L_GAPS="$(grep -E '^RULE_GAP=' "${C12S_DIR}/art/scenario-summary.txt" 2>/dev/null | cut -d= -f2 || true)"
+C12L_TOTAL="${C12S_TOTAL}"
+C12L_S14_GAP="N"
+if [ -s "${C12S_DIR}/art/scenario-accounting.json" ] && [ -s "${C12S_DIR}/art/probes.jsonl" ]; then
+  if python3 - "${C12S_DIR}/art/scenario-accounting.json" "${C12S_DIR}/art/probes.jsonl" >/dev/null 2>&1 <<'C12L_PY_EOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+# The declared migration egress scenario must be among the graded ids and
+# must not have been quietly dropped from the run.
+assert "s14" in d["declared_ids"], d["declared_ids"]
+assert "s14" in d["result_ids"], d["result_ids"]
+assert d["declared_count"] == d["executed_count"] == d["result_count"]
+assert d["counters"]["rule_gap"] > 0, d["counters"]
+rows = [json.loads(x) for x in open(sys.argv[2], encoding="utf-8") if x.strip()]
+s14 = [r for r in rows if r["id"] == "s14"]
+assert len(s14) == 1, len(s14)
+s14 = s14[0]
+# Naming the exact verdict, not merely "not OK": a dropped migration egress
+# must be graded RULE_GAP so the operator reads the policy gap off the
+# artifact instead of inferring it from an exit code.
+assert s14["expected"] == "ALLOW", s14["expected"]
+assert s14["chart_intent"] == "ALLOW_IMPLIED", s14["chart_intent"]
+assert s14["L3"] == "CLOSED", s14["L3"]
+assert s14["verdict"] == "RULE_GAP", s14["verdict"]
+C12L_PY_EOF
+  then C12L_S14_GAP="Y"; fi
+fi
+
 # --- C12i: no obsolete label rediscovery; exact declared identity --------
 C12I_OBSOLETE=0
 while IFS= read -r ln; do
@@ -10802,6 +10847,17 @@ if [ "${C12H_RC}" = "6" ] \
   PASS=$((PASS+1)); C12H_PASS=Y
 fi
 
+# C12l: if the datapath drops everything, every declared ALLOW becomes a
+# RULE_GAP and the gate closes with the policy exit code — not the structural
+# one, and never zero. s14 must still be declared, executed, and graded.
+if [ "${C12L_RC}" = "6" ] \
+   && [ "${C12L_CLASS}" = "POLICY" ] \
+   && [ -n "${C12L_GAPS}" ] && [ "${C12L_GAPS}" -gt 0 ] \
+   && [ -n "${C12L_TOTAL}" ] && [ "${C12L_TOTAL}" -gt 0 ] \
+   && [ "${C12L_S14_GAP}" = "Y" ]; then
+  PASS=$((PASS+1)); C12L_PASS=Y
+fi
+
 # C12i: the obsolete app=cni-source / app=cni-target rediscovery switch is
 # gone (including the jsonpath first-item reads it used), and every declared
 # scenario reconciles 1:1 to a tracked fixture Pod that really listens on the
@@ -10860,12 +10916,14 @@ printf 'C12j: go-contract-terms=%s(want 7) go-test-terms=%s(want 7) tunable-knob
 printf 'C12k: consts=%s(want 3) mutating-helm=%s(want 3) fully-flagged=%s(want 3) atomic-upgrades=%s(want 2) validate-before-helm=%s retry-loops=%s(want 0) sentinels=%s(want 4) runtime-proof-controls=%s\n' \
   "${C12K_CONSTS}" "${C12K_MUTATING}" "${C12K_FLAGGED}" "${C12K_ATOMIC}" "${C12K_ORDER}" \
   "${C12K_RETRYLOOP}" "${C12K_SENTINELS}" "${C12K_RUNTIME_PROOF}"
+printf 'C12l: all-closed datapath rc=%s(want 6) class=%s(want POLICY) rule-gaps=%s total=%s s14-graded=%s\n' \
+  "${C12L_RC}" "${C12L_CLASS}" "${C12L_GAPS}" "${C12L_TOTAL}" "${C12L_S14_GAP}"
 
-printf '\n# C1..C11 + C6p..C6v + C7a..C7i + C8r..C8x + C7n/C7o/C8n/C8o + C9a..C9m + C12a..C12k + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
+printf '\n# C1..C11 + C6p..C6v + C7a..C7i + C8r..C8x + C7n/C7o/C8n/C8o + C9a..C9m + C12a..C12l + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
 # Per-control pass table. Lets the operator
 # attribute a regression to one control name
 # without re-greping the harness source.
-printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c8i=%s c8j=%s c8k=%s c8l=%s c8m=%s c8p=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s c9a=%s c9b=%s c9c=%s c9d=%s c9e=%s c9f=%s c9g=%s c9h=%s c9i=%s c9j=%s c9k=%s c9l=%s c9m=%s c12a=%s c12b=%s c12c=%s c12d=%s c12e=%s c12f=%s c12g=%s c12h=%s c12i=%s c12j=%s c12k=%s\n' \
+printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c8i=%s c8j=%s c8k=%s c8l=%s c8m=%s c8p=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s c9a=%s c9b=%s c9c=%s c9d=%s c9e=%s c9f=%s c9g=%s c9h=%s c9i=%s c9j=%s c9k=%s c9l=%s c9m=%s c12a=%s c12b=%s c12c=%s c12d=%s c12e=%s c12f=%s c12g=%s c12h=%s c12i=%s c12j=%s c12k=%s c12l=%s\n' \
   "${C1_PASS}" "${VOCAB_PASS}" "${C2_PASS}" "${C3_PASS}" "${C4_PASS}" "${C5_PASS}" "${C6_PASS}" \
   "${C6P_PASS}" "${C6Q_PASS}" "${C6R_PASS}" "${C6S_PASS}" "${C6T_PASS}" "${C6U_PASS}" "${C6V_PASS}" \
   "${C7A_PASS}" "${C7B_PASS}" "${C7C_PASS}" "${C7K_PASS}" "${C7R_PASS}" "${C7S_PASS}" "${C7D_PASS}" \
@@ -10879,7 +10937,8 @@ printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%
   "${C9G_PASS}" "${C9H_PASS}" "${C9I_PASS}" "${C9J_PASS}" "${C9K_PASS}" "${C9L_PASS}" \
   "${C9M_PASS}" \
   "${C12A_PASS}" "${C12B_PASS}" "${C12C_PASS}" "${C12D_PASS}" "${C12E_PASS}" \
-  "${C12F_PASS}" "${C12G_PASS}" "${C12H_PASS}" "${C12I_PASS}" "${C12J_PASS}" "${C12K_PASS}"
+  "${C12F_PASS}" "${C12G_PASS}" "${C12H_PASS}" "${C12I_PASS}" "${C12J_PASS}" "${C12K_PASS}" \
+  "${C12L_PASS}"
 
 # d2b.51: the previous second `# per-control:`
 # emitter is intentionally removed so the raw
