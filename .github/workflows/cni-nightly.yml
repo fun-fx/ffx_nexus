@@ -126,13 +126,19 @@ on:
         required: true
         type: string
 
-# Concurrency: ONLY the lightweight gate cancels
-# in-flight runs per branch. The enforcement gate
-# records three independent runs as separate
-# artifacts; we must NOT collapse them.
-concurrency:
-  group: cni-lightweight-${{ github.event.pull_request.head.ref || github.ref }}
-  cancel-in-progress: true
+# Concurrency is declared per job, not here.
+#
+# A workflow-level group applies to the whole run, so the group named
+# `cni-lightweight-*` with cancel-in-progress was in fact cancelling the
+# enforcement gate too — the opposite of what its own comment promised
+# ("we must NOT collapse them"). Three dispatch runs against one SHA share a
+# ref, so the second would have cancelled the first and the campaign could
+# never have produced three passes if the runs overlapped. It survived
+# because the runs were always started sequentially.
+#
+# The lightweight gate keeps per-branch cancellation, since only its latest
+# result matters. The enforcement gate groups per run id so nothing can
+# cancel it.
 
 # Permissions: read-only. Anything that needs
 # write is a token escalation we should NOT
@@ -160,6 +166,9 @@ jobs:
     name: CNI lightweight gate (always)
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    concurrency:
+      group: cni-lightweight-${{ github.event.pull_request.head.ref || github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - name: helm render + NetworkPolicy shape check
@@ -219,14 +228,40 @@ jobs:
   # ====================================================================
   cni-enforcement-gate:
     name: CNI enforcement gate (3× runs on pinned SHA)
-    # workflow_dispatch is the only trigger for
-    # the heavy gate: schedule + PR paths can
-    # never produce enough evidence (PRs change
-    # between runs; schedule runs against refs
-    # we cannot pin).
-    if: github.event_name == 'workflow_dispatch'
+    # Two triggers, for two different questions.
+    #
+    # workflow_dispatch answers "is this exact tree safe to merge": the
+    # operator pins a SHA and runs three times against it, and three
+    # independent passes are the evidence. Nothing else can produce that,
+    # which is why pull_request and push still cannot reach this job.
+    #
+    # schedule answers "did main break since yesterday", and it is here
+    # because the alternative was worse. The heavy gate ran on dispatch
+    # only, so between one manual campaign and the next nothing exercised
+    # the enforcing-CNI path at all — a chart change that broke policy
+    # enforcement would sit on main until somebody remembered to dispatch.
+    # A nightly run against the default-branch tip bounds that window to a
+    # day. It is deliberately not a merge gate: one run against a moving
+    # ref is not the three-run evidence, and it is not in branch
+    # protection.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 90
+    # The nightly has no operator to pin a SHA or number the run, so it
+    # resolves to the tip it was scheduled against and labels itself. Every
+    # step downstream reads these instead of github.event.inputs, so the
+    # two triggers share one code path rather than growing conditionals.
+    env:
+      PINNED_SHA: ${{ github.event.inputs.recovery_pr_sha || github.sha }}
+      RUN_INDEX: ${{ github.event.inputs.run_index || format('nightly-{0}', github.run_number) }}
+    # Grouped per run id, so every run is alone in its group and nothing can
+    # cancel it. Three dispatch runs against one SHA are three separate
+    # pieces of evidence, and the previous workflow-level group would have
+    # collapsed them: it applied to every job in the workflow, not just the
+    # lightweight one its name and comment described.
+    concurrency:
+      group: cni-enforcement-${{ github.run_id }}
+      cancel-in-progress: false
     # Phase D-2b.34 — entire heavy-job evidence
     # root is routed outside the worktree. The
     # job cannot declare ARTIFACTS at this
@@ -242,20 +277,32 @@ jobs:
       - name: Validate SHA input
         run: |
           set -euo pipefail
-          if [[ -z "${{ github.event.inputs.recovery_pr_sha }}" ]]; then
-            echo "FAIL: workflow_dispatch must supply recovery_pr_sha"
+          # The dispatch path keeps its original strictness: a run whose SHA
+          # or index the operator forgot is evidence for nothing, so refuse
+          # rather than guess. The scheduled path has no operator and its
+          # values are resolved in the job env, so there is nothing to
+          # validate beyond printing what it settled on.
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ -z "${{ github.event.inputs.recovery_pr_sha }}" ]]; then
+              echo "FAIL: workflow_dispatch must supply recovery_pr_sha"
+              exit 1
+            fi
+            if [[ -z "${{ github.event.inputs.run_index }}" ]]; then
+              echo "FAIL: workflow_dispatch must supply run_index (1-of-3, 2-of-3, 3-of-3)"
+              exit 1
+            fi
+          fi
+          if [[ -z "${PINNED_SHA}" ]]; then
+            echo "FAIL: PINNED_SHA resolved empty; refusing to run against an unknown tree"
             exit 1
           fi
-          if [[ -z "${{ github.event.inputs.run_index }}" ]]; then
-            echo "FAIL: workflow_dispatch must supply run_index (1-of-3, 2-of-3, 3-of-3)"
-            exit 1
-          fi
-          echo "Pinned SHA: ${{ github.event.inputs.recovery_pr_sha }}"
-          echo "Run index:  ${{ github.event.inputs.run_index }}"
+          echo "Trigger:    ${{ github.event_name }}"
+          echo "Pinned SHA: ${PINNED_SHA}"
+          echo "Run index:  ${RUN_INDEX}"
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.recovery_pr_sha }}
+          ref: ${{ env.PINNED_SHA }}
           fetch-depth: 0
 
       - name: "Initialize external artifact root (d2b.35: physical boundary + I/O classification)"
@@ -331,11 +378,11 @@ jobs:
         run: |
           set -euo pipefail
           cur_sha=$(git rev-parse HEAD)
-          want_sha="${{ github.event.inputs.recovery_pr_sha }}"
+          want_sha="${PINNED_SHA}"
           echo "actual=$cur_sha"
           echo "want  =$want_sha"
           if [[ "$cur_sha" != "$want_sha" ]]; then
-            echo "FAIL: checkout SHA did not pin to the dispatch input"
+            echo "FAIL: checkout SHA did not pin to the requested tree"
             exit 1
           fi
 
@@ -588,7 +635,7 @@ jobs:
             echo "cilium: $(cilium version | head -1)"
             echo "k8s node image: kindest/node:v1.29.0  (script default)"
             echo "sha:  $(git rev-parse HEAD)"
-            echo "run:  ${{ github.event.inputs.run_index }}"
+            echo "run:  ${RUN_INDEX}"
             echo "artifacts_root: ${ARTIFACTS}"
             echo "pin-policy: curl retry=3 + sha256 verify of upstream-published sums"
           } > "${ARTIFACTS}/pinned-versions.txt"
@@ -618,7 +665,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cni-enforcement-logs-${{ github.event.inputs.run_index }}-${{ github.event.inputs.recovery_pr_sha }}-${{ github.run_id }}
+          name: cni-enforcement-logs-${{ env.RUN_INDEX }}-${{ env.PINNED_SHA }}-${{ github.run_id }}
           path: ${{ env.ARTIFACTS }}/
           if-no-files-found: error
           retention-days: 90

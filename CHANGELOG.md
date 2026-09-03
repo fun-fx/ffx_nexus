@@ -5,6 +5,109 @@ loosely based on [Keep a Changelog](https://keepachangelog.com), and the
 project adheres to [Semantic Versioning](https://semver.org/) for the
 Go gateway binary.
 
+## [Unreleased] — Trace content is no longer persisted by default
+
+### Breaking for anyone relying on the Traces inspector
+
+Prompt and completion bodies are **no longer written to ClickHouse** unless
+you opt in. A new `CaptureGate` strips `InputMessages`, `OutputMessages` and
+`RetrievalContexts` from the trace on its way to durable storage, so after
+upgrading, the console's trace inspector shows metadata (model, tokens,
+latency, cost, verdicts) with empty message bodies.
+
+Turn it back on with either:
+
+- `NEXUS_CAPTURE_TRACE_CONTENT=true` on the pod, or
+- `config.captureTraceContent: true` in the Helm chart.
+
+**Evaluators are unaffected.** The gate wraps only the ClickHouse recorder,
+and `MultiRecorder` passes the trace by value, so in-process evaluators
+(PII, completeness, heuristic metrics) still receive full bodies. Scores do
+not change; only what is written to disk does. If your eval scores move
+after this upgrade, that is a bug, not this change.
+
+Default-off was chosen because the alternative default is one that stores
+customer prompts indefinitely without the operator having asked for it.
+Operators who need body retention for debugging now make that a recorded
+decision in their values file.
+
+- `internal/observability/capture.go` — the gate, with a
+  `contentFieldCount` guard that fails the build if a content field is added
+  to `Trace` without being considered here.
+- `cmd/nexus/compose.go` — recorder assembly extracted into `traceFanout`
+  so the wiring is testable without a live ClickHouse connection. Tests
+  assert the ClickHouse branch is never ungated and the eval worker is never
+  gated.
+- `deploy/helm/nexus/values.yaml`, `values.schema.json`,
+  `templates/configmap.yaml` — the knob, typed as a boolean.
+
+### Security
+
+Six open Dependabot alerts closed; `npm audit` now reports zero at every
+severity including dev dependencies.
+
+- `aquasecurity/trivy-action` → `0.35.0`, pinned to a **commit** rather than
+  a tag. The Trivy release pipeline was briefly compromised
+  (GHSA-69fq-xp46-6x23), which made a mutable third-party tag a
+  supply-chain hole in the job whose purpose is finding supply-chain holes.
+- `react-router-dom` → `^7.18.3`. The 6.30.x line has no patched release, so
+  the major bump was the only available fix for three router advisories. The
+  console uses declarative APIs only and no data router, so
+  GHSA-337j-9hxr-rhxg (`deserializeErrors` constructor injection) was never
+  reachable here.
+- `browserslist` pinned to `^4.28.7` via `overrides` (GHSA-73wf-gq98-2v4g).
+- **Open redirect actually fixed at the sink.** The post-login `?next=`
+  guard existed in two copies, both testing `startsWith("//")` and neither
+  testing for a backslash — which is the bypass the advisories use.
+  `/\evil.com` starts with one slash, is not `//`, and browsers normalise it
+  to `//evil.com`. Both guards read like protection and neither was. They
+  are now one implementation in `web/src/lib/safeNext.ts`, which holds
+  regardless of the router version underneath.
+
+### Installation
+
+- `values-staging.example.yaml` and `values-production.example.yaml` were
+  **not installable**. Both inherit `profile=enterprise` and neither set
+  `networkPolicy.enforcementAcknowledged`, so `helm install` failed outright
+  for anyone who copied them. Both now carry a `networkPolicy` block that
+  explains what the acknowledgement means and that the Postgres namespace is
+  a chart default rather than a detected value.
+- **The chart refuses `profile=enterprise` with `mode=disabled`.** Every
+  validation sat inside `if eq .mode "enforce"`, making `mode=disabled` a
+  single switch that skipped all of them including the acknowledgement
+  requirement — the strictest profile silently produced the weakest result.
+  `values.yaml` and both upgrade-rehearsal scripts already documented this
+  refusal; the template never performed it.
+- **The chart refuses external features with no egress path.** Under
+  `profile=enterprise`, `features.sso` and `features.emailResend` need
+  either the egress proxy or a declared `serviceTargets.<feature>.namespace`.
+  With neither, the install succeeded and the feature broke at runtime — SSO
+  redirecting to an issuer the pod cannot reach looks like an outage rather
+  than a misconfiguration. Declaring a namespace is a complete answer, so
+  operators routing egress themselves are unaffected.
+
+### CI
+
+Three gates that looked green were not running:
+
+- The `kubeconform` step piped `helm template` into the validator without
+  `pipefail`. Since neither example values file rendered, it validated empty
+  input, reported "0 resource found parsing stdin", and passed. It now
+  validates 13 and 14 resources.
+- The `web` job ran `npm build` but never `npm test`, so 183 console tests
+  went unrun and rotted; a missing Web Storage shim in `vitest.setup.ts`
+  failed 125 of them. Fixed and wired in.
+- Eight offline policy harnesses were committed and executed by nothing,
+  appearing only in `cni-nightly.yml` path filters. Eleven now run as
+  `Policy contracts (offline)` on every pull request in about three minutes.
+
+Also: `main` now has branch protection with nine required checks (see
+`.github/branch-protection.md`), twelve path-filter entries naming
+nonexistent files were corrected — including `internal/urlpolicy/**`, where
+the real packages are `internal/ippolicy` and `internal/netpolicy`, so the
+gate was silent on the code it exists to guard — and the CNI enforcement
+gate now runs nightly in addition to manual dispatch, closing D-2b.
+
 ## [v0.6.12] — Resizable columns on the Traces page
 
 Operators reported that the `Time` column on the Traces page was being

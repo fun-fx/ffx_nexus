@@ -208,26 +208,57 @@ if [[ "$FOUND" == "true" ]]; then
 else
   bad "cni-enforcement-gate job block missing"
 fi
-if [[ "$IFLINE" == "github.event_name == 'workflow_dispatch'" ]]; then
-  ok "cni-enforcement-gate if: = $IFLINE"
-else
-  bad "cni-enforcement-gate if: drifted (got '$IFLINE')"
-fi
+# The guard used to be pinned to the literal string
+# `github.event_name == 'workflow_dispatch'`, and the synthetic evaluation
+# below re-declared that same literal in Python instead of reading the one
+# extracted from the workflow. So it asserted a constant against itself: the
+# workflow's condition could have changed to anything and this test would
+# still have reported "synthetic push event evaluates heavy guard = False".
+#
+# What actually matters is which events can reach a job that stands up a
+# cluster: push and pull_request must not, because a pull request can change
+# between runs and neither can pin a SHA. So evaluate the extracted
+# condition against each event and assert the verdicts.
+T2_EVAL=$(IFLINE="$IFLINE" python3 - <<'PY'
+import os, re
 
-# Synthetic push-event eval for the heavy guard
-SYNTH=$(python3 - <<'PY'
-event_name = "push"
-cond = "github.event_name == 'workflow_dispatch'"
-val = (event_name == "workflow_dispatch")
-print(f"cond={cond!r} on event=push -> {val}")
+cond = os.environ.get("IFLINE", "")
+# The conditions used here are disjunctions of `github.event_name == '<x>'`,
+# which is worth parsing precisely rather than substring-matching: an
+# accidental `!=` or an unrelated clause would otherwise read as a match.
+allowed = set(re.findall(r"github\.event_name\s*==\s*'([a-z_]+)'", cond))
+stray = re.sub(r"github\.event_name\s*==\s*'[a-z_]+'|\|\||\s|\(|\)", "", cond)
+
+print("PARSED:" + ",".join(sorted(allowed)))
+print("STRAY:" + stray)
+for ev, want in (
+    ("push", False),
+    ("pull_request", False),
+    ("workflow_dispatch", True),
+):
+    got = ev in allowed
+    print(f"EVENT:{ev}:{'OK' if got == want else 'BAD'}:{got}")
 PY
 )
-echo "$SYNTH" | sed 's/^/       /'
-if echo "$SYNTH" | grep -q -- '-> False'; then
-  ok "synthetic push event evaluates heavy guard = False"
+echo "$T2_EVAL" | sed -n 's/^PARSED:/       reachable events: /p'
+
+T2_STRAY=$(echo "$T2_EVAL" | sed -n 's/^STRAY://p')
+if [[ -z "$T2_STRAY" ]]; then
+  ok "heavy guard is a plain event_name disjunction (no unparsed clause)"
 else
-  bad "synthetic push event eval did not yield False"
+  bad "heavy guard contains an unparsed clause; verdicts below cannot be trusted: '$T2_STRAY'"
 fi
+
+while IFS= read -r line; do
+  ev=$(echo "$line" | cut -d: -f2)
+  verdict=$(echo "$line" | cut -d: -f3)
+  reach=$(echo "$line" | cut -d: -f4)
+  if [[ "$verdict" == "OK" ]]; then
+    ok "event=${ev} reaches heavy gate: ${reach} (as required)"
+  else
+    bad "event=${ev} reaches heavy gate: ${reach} — a cluster-provisioning job must be unreachable from push/pull_request and reachable from workflow_dispatch"
+  fi
+done < <(echo "$T2_EVAL" | grep '^EVENT:')
 
 # =============================================================================
 # Test 3: manual API input parity (workflow_dispatch schema)

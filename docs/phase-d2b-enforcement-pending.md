@@ -1,5 +1,46 @@
 # Phase D-2b — Enforcement Verification Tracker
 
+> **STATUS — CLOSED on 2026-09-03**
+>
+> The condition set by the 2026-08-21 invalidation below has been met. Five
+> consecutive `workflow_dispatch` runs of the enforcement gate succeeded
+> against a single pinned SHA — three were required:
+>
+> | SHA | Run |
+> | --- | --- |
+> | `69c75bf` | [33754919869](https://github.com/fun-fx/ffx_nexus/actions/runs/33754919869) |
+> | `69c75bf` | [33758182748](https://github.com/fun-fx/ffx_nexus/actions/runs/33758182748) |
+> | `69c75bf` | [33766780330](https://github.com/fun-fx/ffx_nexus/actions/runs/33766780330) |
+> | `69c75bf` | [33781917109](https://github.com/fun-fx/ffx_nexus/actions/runs/33781917109) |
+> | `69c75bf` | [33783150371](https://github.com/fun-fx/ffx_nexus/actions/runs/33783150371) |
+>
+> `69c75bf` is the merge of [#291](https://github.com/fun-fx/ffx_nexus/pull/291)
+> and is an ancestor of `main`, so unlike the 2026-08-21 runs these are
+> reproducible from history: the chart, the values block and the
+> non-skipping conformance tests are all present in that tree. That was the
+> specific defect the invalidation named, and it is the reason the SHA is
+> recorded here rather than just the count.
+>
+> Two things about this closure are worth stating plainly, because a reader
+> arriving later will otherwise assume more coverage than exists:
+>
+> 1. **The enforcement gate is not a merge gate.** It cannot be — its
+>    evidence is three runs against a hand-pinned SHA, and a pull request
+>    has no such SHA. It is excluded from branch protection; see
+>    `.github/branch-protection.md` for why a path-filtered job cannot be a
+>    required check without hanging unrelated pull requests. The hermetic
+>    subset runs on every pull request as `Policy contracts (offline)`.
+> 2. **It now also runs nightly.** Until 2026-09-03 the gate ran on
+>    `workflow_dispatch` only, so between manual campaigns nothing exercised
+>    the enforcing-CNI path at all and a regression on `main` would wait for
+>    someone to remember. The nightly cron runs it against the default-branch
+>    tip, which bounds that window to a day without pretending to be the
+>    three-run evidence.
+>
+> The invalidation notice is kept below rather than deleted: it is the reason
+> this closure records a tracked SHA, and re-deriving that lesson from a
+> clean file would be expensive.
+
 > **STATUS — INVALIDATED on 2026-08-21**
 >
 > This file is SUPERSEDED by D-2b being reopened in
