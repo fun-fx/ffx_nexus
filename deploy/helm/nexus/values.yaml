@@ -11,6 +11,14 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Container args for the gateway container. Empty renders no `args` key at
+# all, so the image entrypoint decides. This exists so a test harness can
+# substitute a placeholder image that still answers the readinessProbe
+# httpGet /readyz and livenessProbe httpGet /healthz this chart declares:
+# an image swap alone cannot satisfy those probes, and dropping the probes
+# would make the rehearsal stop checking the thing it exists to check.
+args: []
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""

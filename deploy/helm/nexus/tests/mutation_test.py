@@ -32,6 +32,28 @@ Mutations tested:
   M8: profile=enterprise + selector disabled
        AND cidr disabled → fail closed (no
        egress target).
+  M9: an ingress peer namespace that is not a
+       namespace — empty, whitespace, uppercase,
+       underscored, hyphen-led, over-length →
+       fail closed. An entry in these arrays is
+       an explicit grant, and an unusable entry
+       renders `kubernetes.io/metadata.name:` with
+       no value, which the API stores as the empty
+       string. That selector matches no namespace,
+       so the peer the operator believed they
+       authorized is silently dropped and the
+       install still reports success. The upgrade
+       rehearsal asserts the empty case is refused
+       (run 33743750984 caught the chart accepting
+       it); M9 is the same assertion without a
+       cluster, and it covers the near-miss shapes
+       the rehearsal does not send.
+  M10: the empty string stays VALID on the scalar
+       `namespace` fields that pair with an empty
+       `host`/`issuer`/`fromAddress` to mean "this
+       dependency is not configured". M9 must not
+       be tightened into these, or every default
+       install breaks. M10 is the opposing bound.
 """
 
 import os
@@ -228,6 +250,84 @@ expect_refused(
     ],
     lambda msg: "either" in msg or "selector" in msg or "cidr" in msg,
 )
+
+
+# M9: an ingress peer namespace that is not a namespace name.
+# `namespaces[0]=` is the exact argv the upgrade rehearsal sends
+# in its "invalid upgrade must be REJECTED" step; the rest are the
+# near-miss shapes an operator actually types. All three arrays are
+# grants, so all three are checked — a constraint added to one and
+# forgotten on the others is the failure mode being closed here.
+_PEER_NS_ARRAYS = (
+    "networkPolicy.ingressController.namespaces",
+    "networkPolicy.prometheus.namespaces",
+    "gateway.ingressControllerNamespaces",
+)
+_NOT_A_NAMESPACE = (
+    "",             # the rehearsal's argv: renders an empty label value
+    " ",            # whitespace reads as "set" to a shell but is unusable
+    "Foo",          # DNS-1123 labels are lowercase
+    "a_b",          # underscore is not a DNS-1123 character
+    "-lead",        # must start alphanumeric
+    "trail-",       # must end alphanumeric
+    "a" * 64,       # one over the 63-character label limit
+)
+for _arr in _PEER_NS_ARRAYS:
+    for _bad in _NOT_A_NAMESPACE:
+        expect_refused(
+            [
+                "--set", "networkPolicy.mode=enforce",
+                "--set", "networkPolicy.profile=enterprise",
+                "--set", "networkPolicy.enforcementAcknowledged=true",
+                "--set", "networkPolicy.postgres.selector.enabled=true",
+                "--set", "networkPolicy.postgres.selector.namespace=database",
+                "--set", "dependencies.postgres.host=postgres",
+                "--set", "dependencies.postgres.port=5432",
+                "--set", f"{_arr}[0]={_bad}",
+            ],
+            lambda msg: "schema" in msg or "namespace" in msg,
+        )
+
+
+# M10: the unset sentinel must survive M9. These are the scalar
+# fields whose chart default IS the empty string, so a constraint
+# that rejected it would break every default install rather than
+# any misconfiguration. Rendering is the assertion: render() raises
+# on a non-zero helm exit.
+_UNSET_SENTINEL_FIELDS = (
+    "dependencies.postgres.namespace",
+    "serviceTargets.postgres.namespace",
+    "serviceTargets.redis.namespace",
+    "serviceTargets.clickhouse.namespace",
+    "serviceTargets.sso.namespace",
+    "serviceTargets.resend.namespace",
+    "serviceTargets.egressProxy.namespace",
+    "networkPolicy.egress.proxy.namespace",
+)
+for _field in _UNSET_SENTINEL_FIELDS:
+    render([
+        "--set", "networkPolicy.mode=enforce",
+        "--set", "networkPolicy.profile=enterprise",
+        "--set", "networkPolicy.enforcementAcknowledged=true",
+        "--set", "networkPolicy.postgres.selector.enabled=true",
+        "--set", "networkPolicy.postgres.selector.namespace=database",
+        "--set", "dependencies.postgres.host=postgres",
+        "--set", "dependencies.postgres.port=5432",
+        "--set", f"{_field}=",
+    ])
+# And a real namespace name must still be accepted on a grant array,
+# including both length boundaries, or M9 has over-tightened.
+for _good in ("ingress-nginx", "a", "a" * 63):
+    render([
+        "--set", "networkPolicy.mode=enforce",
+        "--set", "networkPolicy.profile=enterprise",
+        "--set", "networkPolicy.enforcementAcknowledged=true",
+        "--set", "networkPolicy.postgres.selector.enabled=true",
+        "--set", "networkPolicy.postgres.selector.namespace=database",
+        "--set", "dependencies.postgres.host=postgres",
+        "--set", "dependencies.postgres.port=5432",
+        "--set", f"networkPolicy.ingressController.namespaces[0]={_good}",
+    ])
 
 
 print("phase D-2b.7 mutation tests: PASS")

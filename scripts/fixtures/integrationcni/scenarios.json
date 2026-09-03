@@ -422,6 +422,38 @@
       "requires_features": [],
       "ignores_l1": true,
       "ignores_l2": true
+    },
+    {
+      "id": "s14",
+      "description": "migration -> cni-postgres:5432",
+      "role": "migration",
+      "action": "tcp_connect",
+      "source": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-migration",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
+      "target_kind": "service",
+      "target": {
+        "namespace": "database",
+        "pod_name": "cni-mock-postgres",
+        "service_fqdn": "cni-postgres.database.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
+      "target_svc": "cni-postgres.database.svc.cluster.local",
+      "target_port": 5432,
+      "expected": "ALLOW",
+      "chart_intent": "ALLOW_IMPLIED",
+      "upstream_reason": "migration-egress admits the database namespace on 5432; the migration role is the only workload that reaches the schema owner, so this is the one datapath proof that the migration egress policy works under enforce",
+      "requires_features": [],
+      "ignores_l1": false,
+      "ignores_l2": false
     }
   ],
   "control_probe_contract": {
@@ -435,5 +467,5 @@
     ],
     "description": "controller=true ReplicaSet owned by Deployment cni-control-probe in ns=cni-control"
   },
-  "schema_version": "d2b.55"
+  "schema_version": "d2b.56"
 }
