@@ -732,11 +732,11 @@ GATE8_CANONICAL_12_PAIRS=(
   "default|cni-mock-nexus-gateway"
   "default|cni-mock-nexus-worker"
   "default|cni-mock-nexus-migration"
-  "default|cni-mock-egress-proxy"
-  "default|cni-mock-postgres"
-  "default|cni-mock-redis"
-  "default|cni-mock-clickhouse"
-  "default|cni-mock-arbitrary"
+  "cni-test-proxy|cni-mock-egress-proxy"
+  "database|cni-mock-postgres"
+  "database|cni-mock-redis"
+  "database|cni-mock-clickhouse"
+  "cni-test-proxy|cni-mock-arbitrary"
   "cni-control|cni-control-target"
 )
 GATE8_DYNAMIC_PROBE_REGEX='^cni-control-probe-[a-z0-9]+-[a-z0-9]+$'

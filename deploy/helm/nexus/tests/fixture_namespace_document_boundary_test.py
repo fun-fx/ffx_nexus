@@ -29,17 +29,20 @@ Section A — D-2b.38 Namespace/Service document-boundary invariants
   * Every ``Namespace`` document MUST omit ``spec`` entirely.
   * ``spec.selector`` / ``spec.ports`` / ``spec.clusterIP`` / ``spec.type``
     under any Namespace is rejected by name.
-  * Service/cni-arbitrary lives in its own default-namespace document
-    with selector ``component=arbitrary`` and TCP 9090 port matching
-    Pod/cni-mock-arbitrary's named container port.
+  * Service/cni-arbitrary lives in its own cni-test-proxy-namespace
+    document with selector ``component=arbitrary`` and TCP 9090 port
+    matching Pod/cni-mock-arbitrary's named container port.
 
 Section B — D-2b.42 prerequisite-coverage invariants
 ====================================================
   * The parsed 00-prereq-namespaces.yaml MUST contain all of:
     cni-test-ingress, cni-test-prometheus, cni-test-untrusted,
-    cni-test-postgres, cni-test-redis, cni-test-clickhouse,
-    cni-test-proxy, cni-control (with the documented label set,
-    no spec).
+    database, cni-test-proxy, cni-control (with the documented
+    label set, no spec). The dependency stubs share `database`
+    (stateful deps, matching the chart's own
+    networkPolicy.postgres.selector.namespace default) and
+    `cni-test-proxy` (network-path deps); none may sit in the
+    release namespace, where default-deny denies all ingress.
   * The parsed full corpus MUST contain exactly one
     Namespace/cni-control, only in 00-prereq-namespaces.yaml.
   * 03, 04, 05 MUST contain zero kind: Namespace documents.
@@ -91,9 +94,7 @@ EXPECTED_PREREQ_NAMESPACES = {
     "cni-test-ingress",
     "cni-test-prometheus",
     "cni-test-untrusted",
-    "cni-test-postgres",
-    "cni-test-redis",
-    "cni-test-clickhouse",
+    "database",
     "cni-test-proxy",
     "cni-control",
 }
@@ -111,7 +112,7 @@ EXPECTED_CONTROL_OBJECTS = (
 NAMESPACE_FORBIDDEN_SPEC_KEYS = ("selector", "ports", "clusterIP", "type")
 
 ARBITRARY_NAME = "cni-arbitrary"
-ARBITRARY_NAMESPACE = "default"
+ARBITRARY_NAMESPACE = "cni-test-proxy"
 ARBITRARY_COMPONENT = "arbitrary"
 ARBITRARY_PORT_NAME = "tcp"
 ARBITRARY_PORT_NUMBER = 9090
@@ -121,7 +122,7 @@ INGRESS_LABEL_KEY = "kubernetes.io/metadata.name"
 INGRESS_LABEL_VALUE = "cni-test-ingress"
 
 ARBITRARY_POD_NAME = "cni-mock-arbitrary"
-ARBITRARY_POD_NAMESPACE = "default"
+ARBITRARY_POD_NAMESPACE = "cni-test-proxy"
 
 HISTORICAL_DEFECT_CONTEXT = (
     "selector/ports nested under Namespace is the d2b.38 "

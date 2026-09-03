@@ -54,19 +54,19 @@ networkPolicy:
   egress:
     proxy:
       enabled: true
-      host: cni-proxy.default.svc.cluster.local
+      host: cni-proxy.cni-test-proxy.svc.cluster.local
       port: 3128
-      namespace: default
+      namespace: cni-test-proxy
       podSelector: {}
 
 dependencies:
   postgres:
     enabled: true
-    host: stub-postgres.default.svc.cluster.local
+    host: cni-postgres.database.svc.cluster.local
     port: 5432
     namespace: database
   redis:
     enabled: true
-    host: stub-redis.default.svc.cluster.local
+    host: cni-redis.database.svc.cluster.local
     port: 6379
     namespace: database
