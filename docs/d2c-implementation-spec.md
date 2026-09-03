@@ -1,18 +1,57 @@
 # D-2c Content Capture Control — Implementation Plan
 
-> **Status**: plan. Production code does NOT
-> ship until this plan is approved by the
-> user and PR #262 (D-2b amend) is merged.
-> The implementation phases D-2c.1 … D-2c.N
-> are mapped one-to-one to the assertion
-> numbers below so a CI run that finds a
-> missing assertion fails the PR.
+> **Status**: plan, and **partly superseded**.
+> D-2c.1 landed; §1.3 and §2 below did not
+> survive contact with the tree. Read
+> `docs/d2c-design-inventory.md` first — it is
+> verified against source, this file is not,
+> and where they disagree the inventory wins.
+>
+> **What was found when D-2c.1 broke ground**
+> (details and file:line in the inventory):
+> - This file's declared source of truth,
+>   `docs/d2c-design-inventory.md`, did not
+>   exist, while the prerequisite checklist at
+>   the bottom marked it reviewed. It exists
+>   now, written from the tree.
+> - §1.3 names seven hook points. One exists.
+> - §2 lists twelve capture surfaces. Object
+>   storage, backup bundle, support bundle,
+>   per-request body table, body hashing and
+>   per-org policy are all absent, so most of
+>   that table describes work not yet started
+>   rather than surfaces to gate.
+> - The migration numbering in "Migration
+>   ordering" assumes a tree four migrations
+>   ahead of this one (Postgres is at 021,
+>   ClickHouse at 010).
+> - §6.1's `networkPolicy.egress` sub-blocks
+>   do not exist and cannot be added without
+>   schema entries, because
+>   `networkPolicyEgress` is
+>   `additionalProperties: false`.
+> - §3.1's blanket OFF default would disable
+>   the judge and heuristic evaluators, which
+>   read the fields it blanks. The inventory
+>   records why gating persistence instead of
+>   the trace avoids that.
+>
+> The phase order and the intent of §3–§7 stand.
+> The paths, table names and migration numbers
+> do not. Any phase citing them must be
+> re-grounded on the inventory before it is
+> written.
 >
 > **Inputs / Source of truth**:
-> - `docs/d2c-design-inventory.md` (inventory)
+> - `docs/d2c-design-inventory.md` — **verified
+>   inventory; authoritative**
 > - `docs/phase-d2b-enforcement-pending.md` (gate)
-> - `docs/d2b-egress-proxy-contract.md`
 > - `.github/branch-protection.md` (gate names)
+> - `docs/d2b-egress-proxy-contract.md` —
+>   **does not exist**; the egress proxy
+>   contract lives in the chart itself
+>   (`networkPolicy.egress.proxy`, rendered by
+>   `templates/networkpolicy.yaml`)
 >
 > **Out of scope**: GDPR/CCPA jurisdictional
 > specifics, BYOK (customer-managed keys),
@@ -467,18 +506,73 @@ policy.
 
 ## Prerequisites to break ground
 
-- [x] D-2b enforcement gate closed (PR
-      #262 merges + 3 consecutive green
-      runs with the new s11 verdict
-      grammar).
-- [x] D-2c-design-inventory.md
-      reviewed.
-- [ ] User approves this plan.
-- [ ] User approves CSV export
-      redaction default.
-- [ ] User approves legal hold
-      granularity.
+- [x] D-2b enforcement gate closed.
+      Closed 3/3 on merge commit `69c75bf`:
+      runs 33754919869, 33781917109,
+      33783150371. Each recorded
+      `PASS_OK=14 FAIL=0 RULE_GAP=0
+      DENY_LEAK=0 RULE_LEAK=0
+      ACCOUNTING_CLASS=PASS`, identical
+      per-scenario verdicts across all
+      three, and all four upgrade-rehearsal
+      sentinels. (The original text cited
+      PR #262 and "the new s11 verdict
+      grammar"; the gate actually closed
+      after #288/#290/#291, and s11's
+      `CHART_INTENTIONAL_DENY` verdict is
+      one of the fourteen.)
+- [x] `docs/d2c-design-inventory.md`
+      written and verified against the
+      tree. It did **not** exist when this
+      box was first ticked.
+- [x] Scope decision: re-ground the plan
+      on verified reality before writing
+      capture code.
+- [x] Default for durable body capture:
+      **OFF**. Needs a release note —
+      existing installs lose dashboard body
+      columns on upgrade. Evaluators are
+      unaffected; see the inventory's
+      "Coupling the plan missed".
+- [ ] CSV export redaction default —
+      **not yet needed.** `ExportAudit`
+      exists as a library reachable from no
+      console route, so there is no export
+      to redact. Decide when it is wired.
+- [ ] Legal hold granularity — **not yet
+      needed.** No capture policy table
+      exists to hold the flag. Decide in
+      D-2c.4.
+- [ ] Daily sweep timezone — **not yet
+      needed**, and note that no scheduler
+      invokes `nexus_audit_purge_rows()`
+      today, so "the daily cron" in §4.2 is
+      a component to build, not to schedule.
 
-After approval, D-2c.1 starts. Until
-then, this file is the only D-2c
-artifact that changes.
+### D-2c.1 — done
+
+Landed on the D-2b closing SHA:
+
+- `docs/d2c-design-inventory.md` — the
+  verified inventory this file should have
+  been built on.
+- `internal/gateway/capture_leak_before_test.go`
+  — §7.1 leak reproduction for the trace
+  bodies, the only surface where "capture
+  off" is currently unrepresentable because
+  nothing is consulted. Passes by
+  demonstrating the leak; **invert, do not
+  delete**, when D-2c.3 lands the gate.
+- `internal/observability/capture_boundary_test.go`
+  — defence for the first-party OTLP
+  omission, which was correct and had no
+  test.
+
+Both suites were verified to fail under
+mutation. They run in the default
+`go test ./...` job, so §7.3's
+`-tags=capture_negative` gate is unnecessary
+and is dropped.
+
+D-2c.2 starts from the inventory's tables,
+not §2 of this file.
