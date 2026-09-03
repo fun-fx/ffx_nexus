@@ -430,6 +430,17 @@ mandated.
 | Backup bundle payload                    | `TestCaptureBackup_LeakBefore`               |
 | Support bundle                           | `TestCaptureSupportBundle_LeakBefore`        |
 
+> **Outcome (D-2c.1, D-2c.3).** Nine of the ten surfaces
+> above do not exist in this codebase — see "Claimed and
+> absent" in `docs/d2c-design-inventory.md`. The real
+> surface is `gateway_traces.input_messages` /
+> `output_messages`, reproduced in D-2c.1 and closed in
+> D-2c.3 by `observability.CaptureGate`. The reproduction
+> lives at
+> `internal/gateway/capture_content_coupling_test.go`; the
+> inventory's "What D-2c.3 delivers" section lists the
+> tests and the surfaces still open.
+
 ### 7.2 After-fix tests
 
 After D-2c.1 … D-2c.6 land, the same tests
@@ -440,6 +451,16 @@ the file is not created / etc.). The
 logic of "this row is the audit trail
 proving we used to leak" remains
 intact in git history.
+
+> **Outcome (D-2c.3).** The flip happened at a different
+> layer than assumed here. The gate wraps the ClickHouse
+> recorder inside the fan-out rather than sitting in the
+> handler, because the in-process evaluators read the
+> bodies off the same `Trace`. So the reproduction's
+> assertions did not invert — the handler still populates
+> the bodies, and that is now required. Retention is
+> asserted separately, against the gate and against the
+> fan-out wiring. Git history holds the original.
 
 ### 7.3 CI gate
 
@@ -556,13 +577,14 @@ Landed on the D-2b closing SHA:
 - `docs/d2c-design-inventory.md` — the
   verified inventory this file should have
   been built on.
-- `internal/gateway/capture_leak_before_test.go`
-  — §7.1 leak reproduction for the trace
+- the §7.1 leak reproduction for the trace
   bodies, the only surface where "capture
-  off" is currently unrepresentable because
-  nothing is consulted. Passes by
-  demonstrating the leak; **invert, do not
-  delete**, when D-2c.3 lands the gate.
+  off" was unrepresentable because nothing
+  was consulted. Passed by demonstrating
+  the leak. Now
+  `internal/gateway/capture_content_coupling_test.go`;
+  D-2c.3 kept the assertions and changed
+  their purpose, per §7.2.
 - `internal/observability/capture_boundary_test.go`
   — defence for the first-party OTLP
   omission, which was correct and had no
@@ -576,3 +598,27 @@ and is dropped.
 
 D-2c.2 starts from the inventory's tables,
 not §2 of this file.
+
+### D-2c.3 — done
+
+The unconditional leak is closed.
+`observability.CaptureGate` strips prompts,
+completions, and retrieval contexts on the
+copy of the `Trace` bound for ClickHouse,
+and `config.captureTraceContent` /
+`NEXUS_CAPTURE_TRACE_CONTENT` defaults to
+false. The eval worker is a sibling in the
+fan-out rather than downstream of the gate,
+so scoring is unaffected — that is the whole
+reason the gate could default OFF without
+removing a feature.
+
+Scope was limited to that one surface on
+purpose. It was the only one persisting
+content with no policy at all. The semantic
+cache, judge rationales, vendor plugin
+egress, and the console's read path each
+need their own decision; the inventory's
+"What D-2c.3 delivers" section says why for
+each, and carries the release note this
+change requires.

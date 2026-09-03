@@ -131,6 +131,14 @@ data:
        seed-suppression and row-deletion as separable intentional actions. */}}
   NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT: {{ .Values.config.purgeLegacyProfilesOnBoot | default false | quote }}
 
+  {{- /* Durable capture of prompts, completions, and retrieval contexts.
+       Default false: traces still carry bodies in memory so the evaluators
+       can score them, but observability.CaptureGate strips the bodies before
+       the ClickHouse recorder writes a row. Turning this on makes the
+       console trace inspector show request and response text, and makes
+       that text subject to the gateway_traces retention window. */}}
+  NEXUS_CAPTURE_TRACE_CONTENT: {{ .Values.config.captureTraceContent | default false | quote }}
+
   {{- /* Semantic cache */}}
   NEXUS_SEMANTIC_CACHE_ENABLED: {{ .Values.config.semanticCache.enabled | quote }}
   {{- with .Values.config.semanticCache.ttl }}

@@ -604,6 +604,10 @@
         "purgeLegacyProfilesOnBoot": {
           "type": "boolean"
         },
+        "captureTraceContent": {
+          "type": "boolean",
+          "description": "Persist prompts, completions, and retrieval contexts to durable trace storage. Default false; evaluation is unaffected either way because traces carry bodies in memory regardless."
+        },
         "semanticCache": {
           "type": "object",
           "additionalProperties": false,

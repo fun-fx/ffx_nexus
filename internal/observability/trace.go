@@ -54,7 +54,13 @@ type Trace struct {
 	// ClickHouse trace table.
 	GuardrailAction string `json:"guardrail_action,omitempty"`
 
-	// Captured content (opt-in; may be empty when content capture is disabled).
+	// Customer content. Always populated on the in-memory Trace, because
+	// the evaluators cannot score a request whose bodies are blank, and
+	// stripped by CaptureGate before any recorder that retains sees it
+	// unless NEXUS_CAPTURE_TRACE_CONTENT is set. So "is this populated"
+	// depends on which side of the fan-out is asking, and a recorder that
+	// starts persisting these must be placed behind the gate in
+	// cmd/nexus's traceFanout. See capture.go.
 	InputMessages  string `json:"gen_ai.input.messages,omitempty"`
 	OutputMessages string `json:"gen_ai.output.messages,omitempty"`
 
