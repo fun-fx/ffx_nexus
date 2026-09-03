@@ -1,129 +1,100 @@
-# GitHub branch protection for CNI gate
+# Branch protection on `main`
 
-> Why this file exists: writing a workflow
-> `.github/workflows/cni-nightly.yml` with the
-> right job names is not enough. GitHub's
-> branch-protection "required status checks"
-> only enforce the names declared in
-> **Settings → Branches → Branch protection
-> rules → Require status checks to pass before
-> merging → Search for status checks** — they
-> do NOT auto-mirror job names from a workflow
-> file. Without that GUI step, a workflow can be
-> deleted or renamed and merge remains
-> unblocked.
->
-> This file is the operator-facing runbook.
-> It also lists the **exact** job names so the
-> run-book matches the workflow file textually
-> and a future grep will catch drift.
+This file records what is configured, and why the obvious configuration is
+the wrong one. Read it before adding a check to the required list.
 
-## Required check names (textual match)
+Protection is live on `main`. Query it rather than trusting this file if the
+two disagree:
 
-The following required status checks must be
-configured under branch protection:
-
-| Required check name (literal)            | Workflow file              | Trigger                                              | What it proves                                                                                                                         |
-| ---------------------------------------- | -------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `cni-policy-gate / cni-policy-required`  | `cni-nightly.yml`          | pull_request touching networkpolicy / template / contract | The full 13-scenario suite passed on multi-node Kind+Cilium and the upgrade rehearsal produced a green atomic rollback                 |
-| `cni-policy-gate / cni-lightweight-gate` | `cni-nightly.yml`          | always (every PR)                                     | NetworkPolicy.yaml renders without error and the static label conformance (`TestFixtureLabelsConformToChart`) passes                  |
-
-### Naming rule
-
-GitHub's required-check matcher is **case-sensitive
-substring match** on the full job name:
-`<workflow-name> / <job-id>`. The workflow name is
-the top-level `name:` key in the YAML, the job-id
-is the top-level `id:` key under `jobs:`. We use
-`name: cni-policy-required` and
-`jobs.<X>.name: cni-enforcement` so the literal
-status check string is `cni-policy-required / cni-enforcement`.
-
-### Path triggers
-
-We condition the heavy gate on a path filter that
-mirrors the user's explicit ask: NP template and
-helpers, files that change feature-to-destination
-mapping (`features.*`, `networkPolicy.*`,
-`internal/netpolicy/*`, `internal/urlpolicy/*`),
-gateway/worker/migration port/Service/ServiceMonitor,
-the CNI test scripts/fixtures/workflow.
-
-```
-paths:
-  - 'deploy/helm/nexus/templates/networkpolicy.yaml'
-  - 'deploy/helm/nexus/templates/_helpers.tpl'
-  - 'deploy/helm/nexus/values.yaml'
-  - 'deploy/helm/nexus/values.schema.json'
-  - 'deploy/helm/nexus/templates/deployment*.yaml'
-  - 'deploy/helm/nexus/templates/service*.yaml'
-  - 'deploy/helm/nexus/templates/servicemonitor.yaml'
-  - 'deploy/helm/nexus/templates/migration-job.yaml'
-  - 'deploy/helm/nexus/templates/pre-install-validation.yaml'
-  - 'internal/netpolicy/**'
-  - 'internal/urlpolicy/**'
-  - 'internal/featureflag/**'
-  - 'internal/depcontract/**'
-  - '.github/workflows/cni-nightly.yml'
-  - 'scripts/d2b-twelve-scenarios.sh'
-  - 'scripts/install-nexus-test.sh'
-  - 'scripts/test-cluster-up.sh'
-  - 'scripts/test-cluster-down.sh'
-  - 'scripts/test-upgrade-rehearsal-up.sh'
-  - 'scripts/wait-cilium-endpoints.sh'
-  - 'scripts/fixtures/integrationcni/**'
-  - 'docs/phase-d2b-*.md'
-  - 'docs/cni-*.md'
-  - 'docs/network-*.md'
-  - 'docs/d2b-*.md'
+```bash
+gh api repos/fun-fx/ffx_nexus/branches/main/protection \
+  --jq '.required_status_checks.contexts'
 ```
 
-### Concurrency
+## Required checks
 
-`concurrency: { group: cni-gate-${{ github.event.pull_request.head.ref || github.ref }}, cancel-in-progress: true }`.
-This ensures the latest commit on a branch is the
-one whose result is unblocked; older runs are
-cancelled and excluded from the merge decision.
+Ten, all from `ci.yml` and `integration.yml`:
 
-### Branch protection setup steps
+| Check | Workflow |
+| --- | --- |
+| `Go` | `ci.yml` |
+| `Helm chart` | `ci.yml` |
+| `Schema migrations (real Postgres)` | `ci.yml` |
+| `Eval regression gate` | `ci.yml` |
+| `Eval service (Python)` | `ci.yml` |
+| `Secret and image scanning` | `ci.yml` |
+| `Web dashboard` | `ci.yml` |
+| `Policy contracts (offline)` | `ci.yml` |
+| `E2E (full suite)` | `integration.yml` |
+| `Bench live contracts (PG/CH)` | `integration.yml` |
 
-1. https://github.com/<org>/<repo>/settings/branches
-2. Add a branch protection rule on `main`:
-   - Require a pull request before merging: **enabled**
-   - Require approvals: **1+**
-   - Dismiss stale pull request approvals: **enabled**
-   - Require status checks to pass before merging: **enabled**
-   - **Search for status checks** → add each literal name listed in the table above
-   - Require linear history: **enabled**
-   - Allow force pushes: **disabled**
-3. Save.
-4. Create a draft PR with a temporary commit that
-   only modifies a path under the filter to confirm
-   the heavy job actually runs. Cancel and close it.
+Also set: force pushes and branch deletion are blocked, and conversation
+resolution is required. Review approval is **not** required, so a maintainer
+can merge their own pull request once the checks pass.
 
-### Verifying after a workflow rename
+`enforce_admins` is **off**, so an administrator can override. That is a
+deliberate escape hatch for the case where a required check breaks in a way
+that cannot be fixed through a pull request. Turning it on is one call:
 
-If a workflow file is renamed or the `name:` key
-is changed, the previously-required check name no
-longer exists and merging becomes blocked. Mitigation:
+```bash
+gh api -X PATCH repos/fun-fx/ffx_nexus/branches/main/protection/enforce_admins
+```
 
-- The literal required check name is documented
-  in this file. Maintainers reference this file
-  before any workflow rename.
-- A static test does NOT substitute for this GUI
-  step. GitHub does not auto-detect job names.
+## Why the CNI checks are not required
 
-### What protected CI does NOT prove
+`CNI lightweight gate (always)` and `CNI enforcement gate (3× runs on pinned
+SHA)` are deliberately excluded, and this is the part most likely to be
+"fixed" by someone who has not hit the failure mode.
 
-- The branch-protection rule only enforces that the
-  **named** check passed. It does NOT verify that
-  the named check is the gate the operator
-  intended. A malicious or sloppy rename can on
-  the surface keep the rule green while the
-  intended cluster test no longer runs.
-- We mitigate this with **path-triggered PR
-  comments**: every policy-changing PR is required
-  to link to a `cni-policy-required / cni-enforcement`
-  run URL in the merge box. Reviewers must visually
-  confirm the run actually executed. This is
-  enforced by the PR template.
+A required status check must report a conclusion on **every** pull request.
+Both CNI jobs live in `cni-nightly.yml` behind a `paths:` filter, so on a
+pull request that touches neither the chart nor the policy code the job never
+starts, never reports, and the pull request waits for a check that will never
+arrive. It does not fail — it hangs, with no way to proceed except an
+administrator override. The name "(always)" refers to it always producing a
+conclusion *when it runs*, not to it running on every pull request.
+
+The enforcement gate additionally cannot be a merge gate by construction: it
+runs against a SHA the operator pins by hand, three times, and its evidence
+is those three runs. A `pull_request` trigger has no pinned SHA to attest to.
+
+`Policy contracts (offline)` exists for this reason. It carries the hermetic
+subset of the same contracts — chart fail-closed behaviour, artifact routing,
+trigger surface — with no cluster, so it can run unconditionally on every
+pull request and therefore can be required.
+
+## What this does and does not prove
+
+A required check proves the check passed. It does not prove the check is the
+gate anyone intended, and this repository has produced both failure modes
+worth naming:
+
+- **A green check that validated nothing.** The `kubeconform` step piped
+  `helm template` into the validator without `pipefail`. Neither example
+  values file rendered, so kubeconform read empty input, reported "0 resource
+  found parsing stdin", and exited 0. It was green for as long as it existed.
+- **A suite that was never invoked.** The `web` job ran `npm build` but not
+  `npm test`, so 183 console tests went unrun and rotted until 125 of them
+  failed. Eight offline policy harnesses had the same problem: committed,
+  referenced only in path filters, executed by nothing.
+
+Both were invisible from the pull request page, because a check that does not
+run and a check with nothing to say look identical there. So when adding a
+gate, verify it fails on a deliberately broken input before trusting it.
+
+## Adding a required check
+
+1. Merge the workflow change first, so the check has run at least once on
+   `main` and its exact name is known.
+2. Confirm it reports on a pull request that touches nothing related to it.
+   If it does not, it cannot be required — see above.
+3. Add it by name:
+
+```bash
+gh api -X PATCH repos/fun-fx/ffx_nexus/branches/main/protection/required_status_checks \
+  -f 'contexts[]=<exact check name>'
+```
+
+The name is the job's `name:` value, not its key under `jobs:`. GitHub
+matches it literally, so renaming a job removes the required check and
+silently unblocks merges rather than failing them.
