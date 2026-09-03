@@ -4,6 +4,7 @@ import { fetchAuthConfig, fetchMe, login, register, type AuthConfig, type User }
 import { GradientText } from "../components/GradientText";
 import { TierCard } from "../components/TierCard";
 import { Icon } from "../components/icons";
+import { safeNext } from "../lib/safeNext";
 
 export function Login() {
   const [cfg, setCfg] = useState<AuthConfig | null>(null);
@@ -18,13 +19,10 @@ export function Login() {
   // If the user clicked a deep link while signed-out, RequireAuth redirected
   // us here with ?next=<original-path>. Honor it after a successful login so
   // the operator lands back where they intended.
-  const nextTarget = (() => {
-    const raw = searchParams.get("next");
-    if (!raw) return null;
-    // Only allow same-origin relative paths to avoid open-redirect issues.
-    if (!raw.startsWith("/") || raw.startsWith("//")) return null;
-    return raw;
-  })();
+  // This is the attacker-reachable guard, not RequireAuth's: `next` comes off
+  // the query string, so a crafted login link supplies it directly. See
+  // ../lib/safeNext for why a "//" check alone is not enough.
+  const nextTarget = safeNext(searchParams.get("next"));
 
   useEffect(() => {
     fetchAuthConfig().then(setCfg).catch(() => setCfg(null));
