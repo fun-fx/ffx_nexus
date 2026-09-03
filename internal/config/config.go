@@ -205,6 +205,21 @@ type Config struct {
 	// the zero-dep boot path free of goroutines.
 	MetricsAddr string
 
+	// CaptureTraceContent controls whether prompts, completions, and
+	// retrieval contexts are written to durable trace storage. Default
+	// false: the gateway still carries them in memory, because the
+	// evaluators cannot score a trace whose bodies are blank, but
+	// observability.CaptureGate strips them before the ClickHouse
+	// recorder sees them. Set true to retain bodies for the console
+	// trace inspector and for replay.
+	//
+	// Default-off is the deliberate choice, not a conservative
+	// placeholder: a customer who never edits a value file should not
+	// find ninety days of their users' prompts in a table they did not
+	// know had those columns. Operators who want the inspector opt in
+	// and, in doing so, make retention a decision someone recorded.
+	CaptureTraceContent bool
+
 	// Failover alert sinks (V4). Both are independently opt-in; an
 	// empty URL disables the corresponding sink entirely (no
 	// goroutines spun up, no DNS resolution attempted). Multiple sinks
@@ -560,6 +575,7 @@ func load() Config {
 		OTLPEnabled:               envBool("NEXUS_OTLP_ENABLED", false),
 		OTLPEndpoint:              env("NEXUS_OTLP_ENDPOINT", ""),
 		MetricsAddr:               env("NEXUS_METRICS_ADDR", ""),
+		CaptureTraceContent:       envBool("NEXUS_CAPTURE_TRACE_CONTENT", false),
 		FailoverWebhookURL:        env("NEXUS_FAILOVER_WEBHOOK", ""),
 		FailoverSlackURL:          env("NEXUS_FAILOVER_SLACK_WEBHOOK", ""),
 		FailoverAlertCooldown:     envDuration("NEXUS_FAILOVER_ALERT_COOLDOWN", 0),

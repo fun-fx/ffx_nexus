@@ -56,12 +56,10 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	var stack NexusStack
 	stack.TraceStore = traceStoreLiveOnly
 
-	recorders := []observability.Recorder{hub}
 	if chRec != nil {
 		stack.Reader = chRec.NewReader()
 		stack.TraceOrgs = chRec.NewTraceOrgLookup()
 		stack.TraceStore = traceStoreClickHouse
-		recorders = append(recorders, chRec)
 	}
 
 	// Prometheus /metrics scrape endpoint — opt-in via NEXUS_METRICS_ADDR. The
@@ -70,9 +68,6 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	// stays nil when the env var is empty, leaving the zero-dep fast path
 	// unchanged.
 	metricsRec := observability.NewMetricsRecorder(cfg.MetricsAddr, log)
-	if metricsRec != nil {
-		recorders = append(recorders, metricsRec)
-	}
 	// OTLP exporter (observability adapter spec): opt-in. When
 	// NEXUS_OTLP_ENABLED=true AND NEXUS_OTLP_ENDPOINT is set, the same
 	// Trace stream is fanned out to a long-lived batch sender that POSTs
@@ -84,6 +79,7 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	// / `nexus_otlp_export_traces_total` show up in `/metrics` and can
 	// drive a Grafana alert. Hooks are nil-safe so the OTLP path stays
 	// functional with the zero-dep fast path (no MetricsRecorder).
+	var otlpRec observability.Recorder
 	if cfg.OTLPEnabled && cfg.OTLPEndpoint != "" {
 		opts := observability.OTLPOptions{
 			Endpoint: cfg.OTLPEndpoint,
@@ -93,8 +89,10 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 			opts.FailureHook = metricsRec.RecordOTLPExportFailure
 			opts.SuccessHook = metricsRec.RecordOTLPExportSuccess
 		}
-		if otlpRec := observability.NewOTLPRecorder(opts, log); otlpRec != nil {
-			recorders = append(recorders, otlpRec)
+		// Assigned only when non-nil: a typed nil pointer stored in the
+		// interface would read as non-nil in traceFanout.
+		if rec := observability.NewOTLPRecorder(opts, log); rec != nil {
+			otlpRec = rec
 			log.Info("otlp exporter enabled", "endpoint", cfg.OTLPEndpoint, "metrics_hook", metricsRec != nil)
 		}
 	}
@@ -107,7 +105,6 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 		// surface as nexus_eval_quality_score gauges in the Grafana panel.
 		// Safe no-op when metricsRec is nil (zero-dep fast path unchanged).
 		stack.EvalWorker.SetMetricsRecorder(metricsRec)
-		recorders = append(recorders, stack.EvalWorker)
 	} else {
 		log.Info("eval worker disabled (NEXUS_EVAL_ENABLED=false)")
 	}
@@ -125,7 +122,7 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	}
 	stack.scoreSink = evals.NewScoreSink(stack.ScoreStore, deps)
 
-	stack.Recorder = observability.NewMultiRecorder(recorders...)
+	stack.Recorder = observability.NewMultiRecorder(traceFanout(cfg, hub, chRec, metricsRec, otlpRec, stack.EvalWorker, log)...)
 
 	if provider, src := routingStatsProvider(chRec, store, stack.ScoreStore); provider != nil {
 		stack.RoutingStatsStore = src
@@ -163,6 +160,68 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	}
 
 	return stack
+}
+
+// traceFanout assembles the recorder list every Trace is delivered to, in
+// delivery order, and decides which branches sit behind the capture gate.
+//
+// It is a separate function from buildStack for two reasons. It is the one
+// place that answers "does a prompt reach durable storage", which is worth
+// reading on its own. And buildStack goes on to start the routing stats
+// provider, which opens a live ClickHouse query loop, so asserting this
+// wiring inside buildStack would mean standing up a database to check a
+// decision that involves none.
+//
+// Each optional recorder is a concrete pointer and is nil-checked here
+// rather than passed to NewMultiRecorder to be filtered: a nil *evals.Worker
+// placed in a Recorder slot is a non-nil interface holding a nil pointer,
+// which NewMultiRecorder would keep and then call Record on.
+func traceFanout(
+	cfg config.Config,
+	hub *console.Hub,
+	chRec *observability.CHRecorder,
+	metricsRec *observability.MetricsRecorder,
+	otlpRec observability.Recorder,
+	evalWorker *evals.Worker,
+	log *slog.Logger,
+) []observability.Recorder {
+	// The live console hub. Fans each Trace out to the WebSocket clients
+	// currently watching and keeps nothing, so it is not a retention
+	// surface and is not gated — gating it would blank the live trace feed
+	// for the operator watching their own traffic.
+	recorders := []observability.Recorder{hub}
+
+	if chRec != nil {
+		// ClickHouse is the only recorder here that retains, so it is the
+		// only one behind the gate. With NEXUS_CAPTURE_TRACE_CONTENT unset
+		// the gate blanks prompts, completions, and retrieval contexts on
+		// its own copy of each Trace, while the eval worker below still
+		// receives the full bodies it needs to produce a score. Gating
+		// here rather than where the Trace is built is what lets both of
+		// those be true at once.
+		recorders = append(recorders, observability.NewCaptureGate(chRec, cfg.CaptureTraceContent))
+		if !cfg.CaptureTraceContent {
+			log.Info("trace content capture disabled: prompts and completions are not persisted",
+				"enable_with", "NEXUS_CAPTURE_TRACE_CONTENT=true")
+		}
+	}
+	if metricsRec != nil {
+		// Counters and histograms only; it reads token counts and
+		// latencies off the Trace and never the bodies.
+		recorders = append(recorders, metricsRec)
+	}
+	if otlpRec != nil {
+		// The OTLP envelope omits bodies unless the caller passes them
+		// explicitly, which this path does not — see the boundary tests in
+		// internal/observability.
+		recorders = append(recorders, otlpRec)
+	}
+	if evalWorker != nil {
+		// Deliberately not gated. The judge and remote evaluators return
+		// without a score when the prompt or completion is blank.
+		recorders = append(recorders, evalWorker)
+	}
+	return recorders
 }
 
 func routingStatsProvider(chRec *observability.CHRecorder, store *core.Store, scoreStore evals.StoreKind) (router.StatsProvider, string) {

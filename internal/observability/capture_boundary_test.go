@@ -21,7 +21,8 @@ import (
 // reach for when a dashboard wants prompt text — would have shipped
 // customer prompts to every configured OTLP receiver with a green test
 // suite, which is how the sibling defect in the ClickHouse write path
-// survived (see internal/gateway/capture_leak_before_test.go).
+// survived until CaptureGate closed it (see capture.go, and
+// internal/gateway/capture_content_coupling_test.go for the history).
 //
 // Both directions are pinned, because the contract is not "never send
 // bodies" but "send them only when the caller asks". A test that only

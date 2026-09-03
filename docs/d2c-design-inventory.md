@@ -21,10 +21,20 @@
 
 ---
 
-## The one unconditional leak
+## The one unconditional leak — closed in D-2c.3
 
-Raw prompts and completions are persisted with no
-policy consulted anywhere on the path.
+**Status: closed.** The table below is the state as
+audited in D-2c.1. `observability.CaptureGate` now sits
+between the fan-out and the ClickHouse recorder, and
+`config.CaptureTraceContent` (`NEXUS_CAPTURE_TRACE_CONTENT`,
+chart `config.captureTraceContent`) defaults to false, so
+the "Persist" and "Schema" rows below are no longer
+reached unless an operator opts in. Rows 1–3 are
+unchanged and deliberately so — see "Coupling the plan
+missed".
+
+The audited state, retained because it is the reason the
+gate exists and the shape the gate has to cover:
 
 | Stage | Location | What happens |
 | ----- | -------- | ------------ |
@@ -41,10 +51,16 @@ comment describes a control that was never written —
 the same failure mode D-2b hit twice, where a rule was
 documented and left unenforced.
 
-Reproduced by `internal/gateway/capture_leak_before_test.go`
-per the plan's §7.1. Those tests pass by demonstrating the
-leak; when the gate lands they must be **inverted**, not
-deleted, so the history keeps the proof.
+Reproduced in D-2c.1 per the plan's §7.1. Those tests
+now live at `internal/gateway/capture_content_coupling_test.go`,
+and they did not invert — the gate landed one layer below
+the handler, so the handler still puts bodies on the Trace
+and the assertions still hold. What changed is what they
+are for: they are now the guard that the evaluators keep
+receiving bodies. Retention is asserted separately by
+`internal/observability/capture_gate_test.go` and
+`cmd/nexus/compose_capture_test.go`. Git history holds the
+original leak reproduction.
 
 ### Why "by value" is the load-bearing detail
 
@@ -133,6 +149,48 @@ and called it progress.
 (D-2c.3). Existing installs lose dashboard body columns
 on upgrade, so this needs a release note; evaluators are
 unaffected for the reason above.
+
+**Implemented (D-2c.3)** exactly as described:
+
+- `observability.CaptureGate` (`internal/observability/capture.go`)
+  strips `InputMessages`, `OutputMessages`, and
+  `RetrievalContexts` from its own copy of the Trace.
+  `EvalReference` — the fourth and last content column
+  `CHRecorder.insert` writes — is kept, because it is a
+  caller-supplied ground-truth label the console reads back
+  to explain a score, not conversation content.
+- `traceFanout` (`cmd/nexus/compose.go`) wraps only the
+  ClickHouse recorder. The console hub is a live fan-out
+  that retains nothing, the metrics recorder reads counters,
+  the OTLP exporter already omits bodies, and the eval
+  worker is deliberately left ungated.
+- `config.CaptureTraceContent` defaults false, surfaced as
+  `NEXUS_CAPTURE_TRACE_CONTENT` and chart
+  `config.captureTraceContent` (boolean-constrained in
+  `values.schema.json`). Boot logs the disabled state so
+  the seam is visible without grepping env.
+
+The two properties that make this safe are asserted rather
+than reviewed, because a wiring mistake here is invisible
+at runtime — the gateway serves traffic identically and the
+bodies simply land in ClickHouse:
+
+| Property | Test |
+| -------- | ---- |
+| Content stripped on the retaining branch, metadata intact | `TestCaptureGate_StripsContentWhenDisabled`, `TestCaptureGate_PreservesMetadataWhenDisabled` |
+| One Trace, stripped for storage and intact for scoring | `TestCaptureGate_FanoutIsolation` |
+| ClickHouse gated by default and never wired raw | `TestTraceFanout_GatesClickHouseByDefault`, `TestTraceFanout_ClickHouseIsNeverUngated` |
+| Eval worker never gated, either setting | `TestTraceFanout_EvalWorkerIsNeverGated` |
+| Bodies still reach the recorder chain | `TestCaptureTrace_InputReachesRecorderChain`, `TestCaptureTrace_OutputReachesRecorderChain` |
+| A new content field on `Trace` cannot skip the gate | `TestCaptureGate_ContentFieldCountMatchesTrace` |
+
+The drift guard in that last row is the one worth knowing
+about: `Trace` will keep growing, and the next field that
+carries customer text has to be stripped explicitly. The
+test counts what the gate clears against
+`contentFieldCount` so adding such a field without
+touching the gate fails in CI rather than surfacing in a
+customer's trace table.
 
 ---
 
@@ -227,10 +285,12 @@ and the append-only audit log with an `action` column
 ## What D-2c.1 delivers
 
 1. This inventory, verified rather than proposed.
-2. `internal/gateway/capture_leak_before_test.go` — the
-   §7.1 leak reproduction for the one surface where
-   "capture off" is currently unrepresentable, because
-   nothing is consulted.
+2. The §7.1 leak reproduction for the one surface where
+   "capture off" was unrepresentable, because nothing was
+   consulted. Now
+   `internal/gateway/capture_content_coupling_test.go`;
+   see "The one unconditional leak" for why it kept its
+   assertions and changed its purpose.
 3. `internal/observability/capture_boundary_test.go` —
    defence for the boundary that was already correct and
    undefended.
@@ -245,3 +305,35 @@ tag can be dropped.
 
 D-2c.2 cannot restate §2 from the plan; it must start from
 the tables above.
+
+---
+
+## What D-2c.3 delivers
+
+The gate described under "Coupling the plan missed", which
+closes the one unconditional leak. Scope was deliberately
+limited to that surface: it is the only one that persisted
+content with no policy at all, and it is the one the
+audited migration schema retains for the full trace
+window.
+
+Still open, and each needs its own decision rather than
+this flag extended over it:
+
+| Surface | Why it is not covered here |
+| ------- | -------------------------- |
+| Semantic cache entries | The cached body *is* the feature; gating it disables the cache rather than making it private. Needs a TTL and key-scope decision, not a boolean. |
+| `eval_scores.rationale` | Judge rationales can quote the prompt. Blanking them removes the explanation the score exists to provide. |
+| Vendor plugin egress | Already opt-in per manifest, and the operator who wrote the manifest chose the vendor. Worth an audit that redaction is reachable, not a gate. |
+| Console reads of persisted bodies | With capture off there is nothing to read, so the inspector degrades rather than leaking. Worth a UI affordance explaining why the panel is empty. |
+
+**Release note required.** An existing install that
+upgrades and does not set `config.captureTraceContent=true`
+stops persisting bodies, so the console trace inspector
+shows metadata without request or response text for traces
+recorded after the upgrade. Rows already written are
+untouched and still age out on the existing TTL. This is
+the same shape as the `NEXUS_EVAL_PLUGIN_ONLY` /
+`PURGE_LEGACY_PROFILES_ON_BOOT` split: the non-destructive
+default changes behaviour going forward and leaves history
+alone.
