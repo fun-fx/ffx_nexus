@@ -1569,11 +1569,11 @@ cni-test-untrusted	cni-untrusted-default
 default	cni-mock-nexus-gateway
 default	cni-mock-nexus-worker
 default	cni-mock-nexus-migration
-default	cni-mock-egress-proxy
-default	cni-mock-postgres
-default	cni-mock-redis
-default	cni-mock-clickhouse
-default	cni-mock-arbitrary
+cni-test-proxy	cni-mock-egress-proxy
+database	cni-mock-postgres
+database	cni-mock-redis
+database	cni-mock-clickhouse
+cni-test-proxy	cni-mock-arbitrary
 cni-control	cni-control-target'
 
 # Realistic Deployment-generated probe name.
@@ -2268,13 +2268,13 @@ build_ns_names_from_space() {
       cni-control-target)          printf 'cni-control\t%s\n' "${n}" ;;
       cni-control-probe-*)         printf 'cni-control\t%s\n' "${n}" ;;
       cni-mock-arbitrary|\
+      cni-mock-egress-proxy)       printf 'cni-test-proxy\t%s\n' "${n}" ;;
       cni-mock-clickhouse|\
-      cni-mock-egress-proxy|\
+      cni-mock-postgres|\
+      cni-mock-redis)              printf 'database\t%s\n' "${n}" ;;
       cni-mock-nexus-gateway|\
       cni-mock-nexus-migration|\
-      cni-mock-nexus-worker|\
-      cni-mock-postgres|\
-      cni-mock-redis)              printf 'default\t%s\n' "${n}" ;;
+      cni-mock-nexus-worker)       printf 'default\t%s\n' "${n}" ;;
       *)                           printf 'random-ns\t%s\n' "${n}" ;;
     esac
   done
@@ -2304,11 +2304,11 @@ make_generated_probe_tsv() {
 # come from the tracked fixture manifests; the
 # dynamic probe uses HARNESS_DYNAMIC_PROBE_NAME.
 # Modes:
-#   FAKE_STALE_OLD_SUB  : replace default/cni-mock-arbitrary
+#   FAKE_STALE_OLD_SUB  : replace cni-test-proxy/cni-mock-arbitrary
 #                         with default/cni-mock-old.
-#   FAKE_WRONG_NS_SUB   : move default/cni-mock-postgres
+#   FAKE_WRONG_NS_SUB   : move database/cni-mock-postgres
 #                         to random-ns.
-#   FAKE_TWO_PROBES     : remove default/cni-mock-postgres
+#   FAKE_TWO_PROBES     : remove database/cni-mock-postgres
 #                         static pair; add two distinct
 #                         generated probes in cni-control.
 make_canonical_13_tsv() {
@@ -2321,11 +2321,11 @@ make_canonical_13_tsv() {
       build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${out_path}"
       ;;
     FAKE_STALE_OLD_SUB)
-      grep -v '^default	cni-mock-arbitrary$' "${tmpa}__notyet" >/dev/null 2>&1 || true
+      grep -v '^cni-test-proxy	cni-mock-arbitrary$' "${tmpa}__notyet" >/dev/null 2>&1 || true
       build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${tmpa}"
       awk -F'\t' '
         BEGIN {OFS="\t"}
-        $1=="default" && $2=="cni-mock-arbitrary" {
+        $1=="cni-test-proxy" && $2=="cni-mock-arbitrary" {
           print "default","cni-mock-old","1/1","Running","0","7m"; next
         }
         {print}
@@ -2336,7 +2336,7 @@ make_canonical_13_tsv() {
       build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${tmpa}"
       awk -F'\t' '
         BEGIN {OFS="\t"}
-        $1=="default" && $2=="cni-mock-postgres" {
+        $1=="database" && $2=="cni-mock-postgres" {
           print "random-ns",$2,"1/1","Running","0","7m"; next
         }
         {print}
@@ -2347,7 +2347,7 @@ make_canonical_13_tsv() {
     FAKE_TWO_PROBES)
       rm -f "${tmpa}"
       awk -F'\t' -v OFS='\t' '
-        NF==2 && !($1=="default" && $2=="cni-mock-postgres") {
+        NF==2 && !($1=="database" && $2=="cni-mock-postgres") {
           print $1, $2, "1/1", "Running", "0", "7m"
         }
       ' <<<"$(printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}")" > "${tmpa}"
@@ -2401,11 +2401,11 @@ manifest_vocab_selfcheck() {
     "default|cni-mock-nexus-gateway"
     "default|cni-mock-nexus-worker"
     "default|cni-mock-nexus-migration"
-    "default|cni-mock-egress-proxy"
-    "default|cni-mock-postgres"
-    "default|cni-mock-redis"
-    "default|cni-mock-clickhouse"
-    "default|cni-mock-arbitrary"
+    "cni-test-proxy|cni-mock-egress-proxy"
+    "database|cni-mock-postgres"
+    "database|cni-mock-redis"
+    "database|cni-mock-clickhouse"
+    "cni-test-proxy|cni-mock-arbitrary"
     "cni-control|cni-control-target"
   )
   local forbidden_tokens=(
@@ -2902,7 +2902,7 @@ C1_MISMATCH="$(echo "${R1}" | awk -F'|' '{print $6}')"
 S2="${TOP_TMP}/stage-C2"
 mkdir -p "${S2}"
 FAKE_13_ONE_MOCK_NOT_READY=$(printf '%s' "${FAKE_13_READY_TSV}" | awk -F'\t' '
-  $2 == "cni-mock-arbitrary" { print "default\tcni-mock-arbitrary\t0/1\tPending\t0\t7m"; next }
+  $2 == "cni-mock-arbitrary" { print "cni-test-proxy\tcni-mock-arbitrary\t0/1\tPending\t0\t7m"; next }
   { print }
 ')
 write_stage_files "${S2}" "${FAKE_13_ONE_MOCK_NOT_READY}" "${REAL_GATE_BIN}"
@@ -2963,7 +2963,7 @@ C3_HAS_NAME="$(grep -q "cni-untrusted-default" "${S3}/fixture-pod-readiness-time
 S4="${TOP_TMP}/stage-C4"
 mkdir -p "${S4}"
 FAKE_13_IMAGE_PULL_BACKOFF=$(printf '%s' "${FAKE_13_READY_TSV}" | awk -F'\t' '
-  $2 == "cni-mock-arbitrary" { print "default\tcni-mock-arbitrary\t0/1\tImagePullBackOff\t0\t7m"; next }
+  $2 == "cni-mock-arbitrary" { print "cni-test-proxy\tcni-mock-arbitrary\t0/1\tImagePullBackOff\t0\t7m"; next }
   { print }
 ')
 write_stage_files "${S4}" "${FAKE_13_IMAGE_PULL_BACKOFF}" "${REAL_GATE_BIN}"
@@ -3230,7 +3230,7 @@ if [ -f "${S6Q}/fixture-pod-readiness.poll.summary.json" ]; then
     C6Q_POLL2_HAS_ARBITRARY="Y"
   fi
 fi
-C6Q_NEEDS_LABEL="resolve-labels-default/cni-mock-arbitrary"
+C6Q_NEEDS_LABEL="resolve-labels-cni-test-proxy/cni-mock-arbitrary"
 C6Q_HAS_LABEL="N"
 if [ -f "${S6Q}/cilium-endpoint.expected.out" ]; then
   if grep -qF "${C6Q_NEEDS_LABEL}" "${S6Q}/cilium-endpoint.expected.out"; then
@@ -3390,14 +3390,14 @@ print('N' if present else 'Y')
     C6R_TROJAN_EXCLUDED="Y"
   fi
   # Canonical-pair-missing evidence:
-  # `default/cni-mock-arbitrary` must appear
+  # `cni-test-proxy/cni-mock-arbitrary` must appear
   # in missing_static_pairs because the LAST
   # poll never saw that pair (it was replaced
   # by random-ns/cni-mock-arbitrary).
   if python3 -c "
 import json,sys
 d=json.load(open(sys.argv[1]))
-print('Y' if any(p.get('name')=='cni-mock-arbitrary' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[])) else 'N')
+print('Y' if any(p.get('name')=='cni-mock-arbitrary' and p.get('namespace')=='cni-test-proxy' for p in d.get('missing_static_pairs',[])) else 'N')
 " "${S6R}/fixture-pod-readiness.poll.summary.json" \
      | grep -q '^Y$'; then
     C6R_MISSING_PAIR_PRESENT="Y"
@@ -3537,7 +3537,7 @@ fi
 # d2b.48 Block C6 mutation controls.
 #
 # C6t: stale cni-mock-old substitution.
-# Drop default/cni-mock-arbitrary from
+# Drop cni-test-proxy/cni-mock-arbitrary from
 # the Pod inventory and replace it with
 # default/cni-mock-old (a stale Pod whose
 # name pretends to be a fixture). The
@@ -3545,7 +3545,7 @@ fi
 # canonical 12+1 contract has no
 # cni-mock-old pair, so install Step G
 # must report a missing canonical pair
-# (default/cni-mock-arbitrary) AND an
+# (cni-test-proxy/cni-mock-arbitrary) AND an
 # unexpected fixture-like pair
 # (default/cni-mock-old). Target rc=12
 # FIXTURE_NOT_READY; handoff count=0;
@@ -3587,7 +3587,7 @@ if [ -f "${S6T}/fixture-pod-readiness.poll.summary.json" ]; then
   if python3 -c "
 import json,sys
 d=json.load(open(sys.argv[1]))
-print('Y' if any(p.get('name')=='cni-mock-arbitrary' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[])) else 'N')
+print('Y' if any(p.get('name')=='cni-mock-arbitrary' and p.get('namespace')=='cni-test-proxy' for p in d.get('missing_static_pairs',[])) else 'N')
 " "${S6T}/fixture-pod-readiness.poll.summary.json" \
      | grep -q '^Y$'; then
     C6T_MISSING_PAIR="Y"
@@ -3606,7 +3606,7 @@ elif [ -f "${S6T}/fixture-pod-readiness-timeout.json" ]; then
 import json,sys
 try:
   d=json.load(open(sys.argv[1]))
-  miss = any(p.get('name')=='cni-mock-arbitrary' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[]))
+  miss = any(p.get('name')=='cni-mock-arbitrary' and p.get('namespace')=='cni-test-proxy' for p in d.get('missing_static_pairs',[]))
   uex = any(p.get('name')=='cni-mock-old' and p.get('namespace')=='default' for p in d.get('unexpected_fixture_like_pairs',[]))
   print('Y' if (miss and uex) else 'N')
 except Exception:
@@ -3619,12 +3619,12 @@ except Exception:
 fi
 
 # C6u: wrong-namespace substitution.
-# Replace default/cni-mock-postgres with
+# Replace database/cni-mock-postgres with
 # random-ns/cni-mock-postgres. Same name
 # but wrong namespace does NOT satisfy
 # the canonical pair; install Step G
 # must report a missing canonical pair
-# (default/cni-mock-postgres) AND an
+# (database/cni-mock-postgres) AND an
 # unexpected fixture-like pair labelled
 # wrong_namespace (random-ns/cni-mock-
 # postgres). Target rc=12.
@@ -3663,7 +3663,7 @@ if [ -f "${S6U}/fixture-pod-readiness.poll.summary.json" ]; then
   if python3 -c "
 import json,sys
 d=json.load(open(sys.argv[1]))
-print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[])) else 'N')
+print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='database' for p in d.get('missing_static_pairs',[])) else 'N')
 " "${S6U}/fixture-pod-readiness.poll.summary.json" \
      | grep -q '^Y$'; then
     C6U_MISSING_PAIR="Y"
@@ -3682,7 +3682,7 @@ elif [ -f "${S6U}/fixture-pod-readiness-timeout.json" ]; then
 import json,sys
 try:
   d=json.load(open(sys.argv[1]))
-  miss = any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[]))
+  miss = any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='database' for p in d.get('missing_static_pairs',[]))
   uex = any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='random-ns' for p in d.get('unexpected_fixture_like_pairs',[]))
   print('Y' if (miss and uex) else 'N')
 except Exception:
@@ -3695,7 +3695,7 @@ except Exception:
 fi
 
 # C6v: two-probe substitution.
-# Remove default/cni-mock-postgres and
+# Remove database/cni-mock-postgres and
 # supply TWO distinct Deployment-
 # generated cni-control-probe Pods so
 # the fixture-like count still reads
@@ -3739,7 +3739,7 @@ if [ -f "${S6V}/fixture-pod-readiness.poll.summary.json" ]; then
   if python3 -c "
 import json,sys
 d=json.load(open(sys.argv[1]))
-print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[])) else 'N')
+print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='database' for p in d.get('missing_static_pairs',[])) else 'N')
 " "${S6V}/fixture-pod-readiness.poll.summary.json" \
      | grep -q '^Y$'; then
     C6V_MISSING_PAIR="Y"
@@ -3762,7 +3762,7 @@ except Exception:
 import json,sys
 try:
   d=json.load(open(sys.argv[1]))
-  miss = any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[]))
+  miss = any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='database' for p in d.get('missing_static_pairs',[]))
   print('Y' if miss else 'N')
 except Exception:
   print('N')
@@ -4208,11 +4208,11 @@ printf 'cni-test-untrusted\tcni-untrusted-default\t1/1\tRunning\t0\t1d\n' >>"${F
 printf 'default\tcni-mock-nexus-gateway\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
 printf 'default\tcni-mock-nexus-worker\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
 printf 'default\tcni-mock-nexus-migration\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
-printf 'default\tcni-mock-egress-proxy\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
-printf 'default\tcni-mock-postgres\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
-printf 'default\tcni-mock-redis\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
-printf 'default\tcni-mock-clickhouse\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
-printf 'default\tcni-mock-arbitrary\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-test-proxy\tcni-mock-egress-proxy\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'database\tcni-mock-postgres\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'database\tcni-mock-redis\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'database\tcni-mock-clickhouse\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
+printf 'cni-test-proxy\tcni-mock-arbitrary\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
 printf 'cni-control\tcni-control-target\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
 printf 'cni-control\tcni-control-probe-5d5fb89454-7cjss\t1/1\tRunning\t0\t1d\n' >>"${FAKE_GATE8_INVENTORY_TSV}"
 write_env_file "${G8A}/env.list" \
@@ -4294,19 +4294,22 @@ make_cilium_default_tsv() {
   local out_path="$1"
   : > "${out_path}"
   # Manifest-aligned namespace mapping.
-  # Postgres/redis/clickhouse live in
-  # `default` per the tracked fixture
-  # manifests, not under stale test-
-  # specific namespaces.
+  # Postgres/redis/clickhouse share `database`
+  # and the proxy/arbitrary pair shares
+  # `cni-test-proxy` per the tracked fixture
+  # manifests; no dependency stub may sit in the
+  # release namespace, where the chart's
+  # default-deny policy denies all ingress.
   for n in ${CILIUM_DEFAULT}; do
     case "${n}" in
       cni-mock-ingress-controller) ns="cni-test-ingress" ;;
       cni-mock-prometheus)         ns="cni-test-prometheus" ;;
-      cni-mock-postgres)           ns="default" ;;
-      cni-mock-redis)              ns="default" ;;
-      cni-mock-clickhouse)         ns="default" ;;
+      cni-mock-postgres)           ns="database" ;;
+      cni-mock-redis)              ns="database" ;;
+      cni-mock-clickhouse)         ns="database" ;;
       cni-untrusted-default)       ns="cni-test-untrusted" ;;
-      cni-mock-arbitrary)          ns="default" ;;
+      cni-mock-arbitrary)          ns="cni-test-proxy" ;;
+      cni-mock-egress-proxy)       ns="cni-test-proxy" ;;
       cni-control-target)          ns="cni-control" ;;
       cni-control-probe-*)         ns="cni-control" ;;
       *)                           ns="default" ;;
@@ -5008,7 +5011,7 @@ printf 'C8d: rc=%s summary=%s logcls=%s sderr-art=%s rc9=%s op=%s exp-path=%s ob
 
 # --- C8t --- stale cni-mock-old substitution
 # (real Gate 8 path): default/cni-mock-old
-# replaces default/cni-mock-arbitrary; Gate 8
+# replaces cni-test-proxy/cni-mock-arbitrary; Gate 8
 # vocabulary projection must reject before
 # endpoint comparison closes, exiting 10
 # CLUSTER_OR_CNI_NOT_READY before Gate 9.
@@ -5044,7 +5047,7 @@ if [ -s "${C8T_VOCAB_JSON}" ]; then
   if python3 -c "
 import json,sys
 d=json.load(open(sys.argv[1]))
-print('Y' if any(p.get('name')=='cni-mock-arbitrary' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[])) else 'N')
+print('Y' if any(p.get('name')=='cni-mock-arbitrary' and p.get('namespace')=='cni-test-proxy' for p in d.get('missing_static_pairs',[])) else 'N')
 " "${C8T_VOCAB_JSON}" | grep -q '^Y$'; then
     C8T_MISSING_PAIR="Y"
   fi
@@ -5057,7 +5060,7 @@ grep -qE '^\[step 09\] 09-control-path-validated : ok' "${G8T_BASE_S}/readiness.
 
 # --- C8u --- wrong-namespace substitution
 # (real Gate 8 path): random-ns/cni-mock-postgres
-# replaces default/cni-mock-postgres; Gate 8 must
+# replaces database/cni-mock-postgres; Gate 8 must
 # fail 10 with wrong-namespace pair in unexpected.
 C8U_TSV="${TOP_TMP}/gate8-C8u-wrong-ns.tsv"
 C8U="${TOP_TMP}/stage-C8u"
@@ -5091,7 +5094,7 @@ if [ -s "${C8U_VOCAB_JSON}" ]; then
   if python3 -c "
 import json,sys
 d=json.load(open(sys.argv[1]))
-print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[])) else 'N')
+print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='database' for p in d.get('missing_static_pairs',[])) else 'N')
 " "${C8U_VOCAB_JSON}" | grep -q '^Y$'; then
     C8U_MISSING_PAIR="Y"
   fi
@@ -5105,7 +5108,7 @@ print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='ran
 fi
 
 # --- C8v --- two probes replacing a static pair
-# (real Gate 8 path): default/cni-mock-postgres
+# (real Gate 8 path): database/cni-mock-postgres
 # removed; two distinct probes exist; Gate 8
 # must fail 10 with dynamic_probe_cardinality=2.
 C8V_TSV="${TOP_TMP}/gate8-C8v-two-probes.tsv"
@@ -5140,7 +5143,7 @@ if [ -s "${C8V_VOCAB_JSON}" ]; then
   if python3 -c "
 import json,sys
 d=json.load(open(sys.argv[1]))
-print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='default' for p in d.get('missing_static_pairs',[])) else 'N')
+print('Y' if any(p.get('name')=='cni-mock-postgres' and p.get('namespace')=='database' for p in d.get('missing_static_pairs',[])) else 'N')
 " "${C8V_VOCAB_JSON}" | grep -q '^Y$'; then
     C8V_MISSING_PAIR="Y"
   fi
@@ -5291,7 +5294,7 @@ write_stage_files "${S8}" "" "${REAL_GATE_BIN}"
 # absent from both expected AND observed.
 # C7o: install Step G under a wrong-namespace
 # substitution (replace
-# `default/cni-mock-postgres` with
+# `database/cni-mock-postgres` with
 # `random-ns/cni-mock-postgres`). Still 13
 # unique controllers in total, but the
 # identity contract fails because the wrong
@@ -5319,14 +5322,14 @@ resolve-labels-cni-control/${HARNESS_DYNAMIC_PROBE_NAME}
 resolve-labels-cni-test-ingress/cni-mock-ingress-controller
 resolve-labels-cni-test-prometheus/cni-mock-prometheus
 resolve-labels-cni-test-untrusted/cni-untrusted-default
-resolve-labels-default/cni-mock-arbitrary
-resolve-labels-default/cni-mock-clickhouse
-resolve-labels-default/cni-mock-egress-proxy
+resolve-labels-cni-test-proxy/cni-mock-arbitrary
+resolve-labels-database/cni-mock-clickhouse
+resolve-labels-cni-test-proxy/cni-mock-egress-proxy
 resolve-labels-default/cni-mock-nexus-gateway
 resolve-labels-default/cni-mock-nexus-migration
 resolve-labels-default/cni-mock-nexus-worker
-resolve-labels-default/cni-mock-postgres
-resolve-labels-default/cni-mock-redis
+resolve-labels-database/cni-mock-postgres
+resolve-labels-database/cni-mock-redis
 EOF
 )
 # Namespace-aware 13 (ns, name) raw streams. Reused
@@ -5335,12 +5338,12 @@ EOF
 NAMESPACE_AWARE_13_NS_NAMES="$(build_canonical_13_ns_names)"
 
 # Wrong-namespace substitution list:
-# `default/cni-mock-postgres` becomes
+# `database/cni-mock-postgres` becomes
 # `random-ns/cni-mock-postgres`. Exactly 13 unique
 # controller labels, but wrong namespace, so it
 # cannot satisfy the canonical pair identity.
 WRONG_NAMESPACE_13_NAMES="$(printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
-  | awk -F'\t' -v bad='default	cni-mock-postgres' \
+  | awk -F'\t' -v bad='database	cni-mock-postgres' \
         'BEGIN{OFS="\t"} {if ($0==bad) {print "random-ns","cni-mock-postgres"; next} {print}}' \
   )"
 WRONG_NAMESPACE_13_NAMES="${WRONG_NAMESPACE_13_NAMES}
@@ -5698,7 +5701,7 @@ C9F_TSV="${TOP_TMP}/gate9f-realns.tsv"
 C9F_NS_FILE="${TOP_TMP}/gate9f-realns.txt"
 {
   printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
-    | awk -F'\t' -v bad='default	cni-mock-postgres' \
+    | awk -F'\t' -v bad='database	cni-mock-postgres' \
           'BEGIN{OFS="\t"} {if ($0==bad) {print "real-namespace","unexpected"; next} {print}}'
   printf 'cni-control\t%s\n' "${HARNESS_DYNAMIC_PROBE_NAME}"
 } > "${C9F_NS_FILE}"
@@ -6635,7 +6638,7 @@ fi)
 # namespaces + generated probe in cni-control)
 # so install's vocabulary acceptance passes.
 # Only the FAKE_CILIUM_NS_NAMES_FILE is
-# mutated: `default/cni-mock-postgres` is
+# mutated: `database/cni-mock-postgres` is
 # replaced with `random-ns/cni-mock-postgres`,
 # so Cilium emits the wrong-namespace controller
 # while the inventory-side pod is canonical.
@@ -6644,7 +6647,7 @@ build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C7O_TSV}"
 C7O_NS_FILE="${TOP_TMP}/gate7o-wrongns-ns.txt"
 {
   printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
-    | awk -F'\t' -v bad='default	cni-mock-postgres' \
+    | awk -F'\t' -v bad='database	cni-mock-postgres' \
           'BEGIN{OFS="\t"} {if ($0==bad) {print "random-ns","cni-mock-postgres"; next} {print}}'
   printf 'cni-control\t%s\n' "${HARNESS_DYNAMIC_PROBE_NAME}"
 } > "${C7O_NS_FILE}"
@@ -6669,7 +6672,7 @@ drive_control C7o "${C7O}" "${C7O}/run_g.sh" "${C7O}/env.list"
 C7O_RC="$(awk -F'=' '/^rc=/ {print $2; exit}' "${C7O}/child.rc" 2>/dev/null)"
 # C7o: install Step G must ABORT (rc=10) and
 # the structured convergence JSON must show BOTH
-# missing canonical `default/cni-mock-postgres`
+# missing canonical `database/cni-mock-postgres`
 # AND unexpected `random-ns/cni-mock-postgres`.
 C7O_HAS_MISSING_POSTGRES="N"
 C7O_HAS_UNEXPECTED_POSTGRES="N"
@@ -6678,7 +6681,7 @@ if [ -s "${C7O}/cilium-endpoint-convergence.json" ]; then
 import json, sys
 d = json.load(open(sys.argv[1]))
 missing = ' '.join(d.get('missing_labels', []) or [])
-print('Y' if 'resolve-labels-default/cni-mock-postgres' in missing else 'N')
+print('Y' if 'resolve-labels-database/cni-mock-postgres' in missing else 'N')
 " "${C7O}/cilium-endpoint-convergence.json" 2>/dev/null || echo N)
   C7O_HAS_UNEXPECTED_POSTGRES=$(python3 -c "
 import json, sys
@@ -6747,13 +6750,13 @@ fi
 # Fixture inventory TSV stays canonical; only
 # the Cilium publication is mutated to publish
 # `random-ns/cni-mock-postgres` instead of
-# `default/cni-mock-postgres`.
+# `database/cni-mock-postgres`.
 C8O_TSV="${TOP_TMP}/gate8o-wrongns.tsv"
 build_canonical_13 "${HARNESS_DYNAMIC_PROBE_NAME}" > "${C8O_TSV}"
 C8O_NS_FILE="${TOP_TMP}/gate8o-wrongns-ns.txt"
 {
   printf '%s\n' "${HARNESS_CANONICAL_12_PAIRS}" \
-    | awk -F'\t' -v bad='default	cni-mock-postgres' \
+    | awk -F'\t' -v bad='database	cni-mock-postgres' \
           'BEGIN{OFS="\t"} {if ($0==bad) {print "random-ns","cni-mock-postgres"; next} {print}}'
   printf 'cni-control\t%s\n' "${HARNESS_DYNAMIC_PROBE_NAME}"
 } > "${C8O_NS_FILE}"
@@ -6784,7 +6787,7 @@ if [ -s "${G8O_BASE}/gate08-endpoint-convergence.json" ]; then
 import json, sys
 d = json.load(open(sys.argv[1]))
 missing = ' '.join(d.get('missing_labels', []) or [])
-print('Y' if 'resolve-labels-default/cni-mock-postgres' in missing else 'N')
+print('Y' if 'resolve-labels-database/cni-mock-postgres' in missing else 'N')
 " "${G8O_BASE}/gate08-endpoint-convergence.json" 2>/dev/null || echo N)
   C8O_UNEXPECTED_POSTGRES=$(python3 -c "
 import json, sys
@@ -9027,7 +9030,7 @@ if [ "${C6Q_RC}" = "0" ] \
 # summary present.
 # d2b.48 : C6r is a FAIL control (because
 # the mutation removes the canonical
-# `default/cni-mock-arbitrary` pair and
+# `cni-test-proxy/cni-mock-arbitrary` pair and
 # substitutes `random-ns/cni-mock-arbitrary`,
 # so canonical_population_ready is False and
 # the bounded poll aborts as
@@ -9101,7 +9104,7 @@ fi
 # C6v: two-probe substitution. Target
 # rc=12 FIXTURE_NOT_READY. Missing
 # canonical pair
-# default/cni-mock-postgres AND
+# database/cni-mock-postgres AND
 # dynamic_probe_cardinality==2.
 if [ "${C6V_RC}" = "12" ] \
    && [ "${C6V_SUMMARY}" = "FIXTURE_NOT_READY" ] \
@@ -9114,7 +9117,7 @@ fi
 # Gate 8). Gate 8 must exit 10 with
 # CLUSTER_OR_CNI_NOT_READY classifier BEFORE
 # Gate 9 ok; vocabulary JSON must record
-# missing default/cni-mock-arbitrary AND
+# missing cni-test-proxy/cni-mock-arbitrary AND
 # unexpected default/cni-mock-old.
 if [ "${C8T_RC}" = "10" ] \
    && [ "${C8T_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
@@ -9125,7 +9128,7 @@ if [ "${C8T_RC}" = "10" ] \
 
 # C8u: wrong-namespace substitution (real
 # Gate 8). Gate 8 must exit 10 with vocab
-# JSON showing missing default/cni-mock-postgres
+# JSON showing missing database/cni-mock-postgres
 # AND unexpected random-ns/cni-mock-postgres.
 if [ "${C8U_RC}" = "10" ] \
    && [ "${C8U_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
@@ -9136,7 +9139,7 @@ if [ "${C8U_RC}" = "10" ] \
 # C8v: two probes replacing a static pair
 # (real Gate 8). Gate 8 must exit 10 with
 # vocab JSON showing dynamic_probe_cardinality=2
-# AND missing default/cni-mock-postgres. Gate 8
+# AND missing database/cni-mock-postgres. Gate 8
 # MUST NOT have recorded Step 8 ok.
 if [ "${C8V_RC}" = "10" ] \
    && [ "${C8V_SUMMARY}" = "CLUSTER_OR_CNI_NOT_READY" ] \
@@ -10116,7 +10119,7 @@ c12_count() {
 # scenario plus the ALLOW_FEATURE_OFF redis case is refused; everything else
 # connects. Keyed "<source-pod>><host>:<port>" so the stub models policy per
 # scenario rather than per protocol.
-C12S_DENY_TUPLES="cni-untrusted-default>cni-worker-metrics.default.svc.cluster.local:9101 cni-untrusted-default>cni-gateway.default.svc.cluster.local:8080 cni-mock-prometheus>cni-gateway.default.svc.cluster.local:8080 cni-mock-ingress-controller>cni-worker-metrics.default.svc.cluster.local:9101 cni-mock-nexus-gateway>cni-arbitrary.default.svc.cluster.local:9090 cni-mock-nexus-gateway>169.254.169.254:80 cni-mock-nexus-gateway>cni-redis.default.svc.cluster.local:6379 cni-mock-nexus-gateway>192.0.2.10:443"
+C12S_DENY_TUPLES="cni-untrusted-default>cni-worker-metrics.default.svc.cluster.local:9101 cni-untrusted-default>cni-gateway.default.svc.cluster.local:8080 cni-mock-prometheus>cni-gateway.default.svc.cluster.local:8080 cni-mock-ingress-controller>cni-worker-metrics.default.svc.cluster.local:9101 cni-mock-nexus-gateway>cni-arbitrary.cni-test-proxy.svc.cluster.local:9090 cni-mock-nexus-gateway>169.254.169.254:80 cni-mock-nexus-gateway>cni-redis.database.svc.cluster.local:6379 cni-mock-nexus-gateway>192.0.2.10:443"
 
 # Fake kubectl. ONE fully-quoted heredoc so bash never expands $ ; ( ) { }
 # inside the stub body.

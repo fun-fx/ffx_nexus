@@ -9,13 +9,26 @@
 #
 # Sources live in their own namespaces so the
 # rendered NetworkPolicy can match
-# per-namespace (namespaceSelector). Targets
-# for which the chart's egress rule needs
-# a namespace selector (postgres / redis /
-# clickhouse / proxy) live in default; DNS lives
-# in kube-system. cni-control namespace hosts
-# the L2 (cluster DNS) probe; it is intentionally
-# NOT selected by any rendered NetworkPolicy.
+# per-namespace (namespaceSelector).
+#
+# Dependency targets MUST NOT live in the release
+# namespace (default). The chart renders a
+# `<release>-default-deny` policy with an empty
+# podSelector, which denies ingress to EVERY Pod
+# in the release namespace; a stub parked there is
+# unreachable no matter what the gateway's egress
+# allowlist says, which silently converts an
+# egress-allowlist assertion into a false RULE_GAP.
+# Stateful deps therefore live in `database` (the
+# namespace the chart's own
+# networkPolicy.postgres.selector.namespace default
+# names, i.e. the bundled Postgres operator's
+# namespace) and the network-path deps live in
+# cni-test-proxy. DNS lives in kube-system.
+#
+# cni-control namespace hosts the L2 (cluster DNS)
+# probe; it is intentionally NOT selected by any
+# rendered NetworkPolicy.
 #
 # Step B applies this file with `kubectl apply`
 # (not dry-run), persisting every Namespace in
@@ -52,23 +65,9 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: cni-test-postgres
+  name: database
   labels:
-    kubernetes.io/metadata.name: cni-test-postgres
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: cni-test-redis
-  labels:
-    kubernetes.io/metadata.name: cni-test-redis
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: cni-test-clickhouse
-  labels:
-    kubernetes.io/metadata.name: cni-test-clickhouse
+    kubernetes.io/metadata.name: database
 ---
 apiVersion: v1
 kind: Namespace

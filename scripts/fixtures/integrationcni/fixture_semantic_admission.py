@@ -74,14 +74,49 @@ ROLE_INVENTORY = {
     "ingress-controller":   {"role": "ingress",     "namespace": "cni-test-ingress",    "port_http": 8080, "port_metrics": None, "expect_product_selector_match": True},
     "prometheus":           {"role": "prometheus",  "namespace": "cni-test-prometheus", "port_http": 9100, "port_metrics": 9100, "expect_product_selector_match": True},
     "untrusted":            {"role": "untrusted",   "namespace": "cni-test-untrusted",  "port_http": 9111, "port_metrics": None, "expect_product_selector_match": False},
+    "migration":            {"role": "migration",   "namespace": "default",   "port_http": 8082, "port_metrics": None, "expect_product_selector_match": True},
     "egress-proxy":         {"role": "egress-proxy","namespace": "cni-test-proxy",      "port_http": 3128, "port_metrics": None, "expect_product_selector_match": False},
-    "postgres":             {"role": "postgres",    "namespace": "cni-test-postgres",   "port_http": 5432, "port_metrics": None, "expect_product_selector_match": False},
-    "redis":                {"role": "redis",       "namespace": "cni-test-redis",      "port_http": 6379, "port_metrics": None, "expect_product_selector_match": False},
-    "clickhouse":           {"role": "clickhouse",  "namespace": "cni-test-clickhouse", "port_http": 9000, "port_metrics": None, "expect_product_selector_match": False},
+    "postgres":             {"role": "postgres",    "namespace": "database",            "port_http": 5432, "port_metrics": None, "expect_product_selector_match": False},
+    "redis":                {"role": "redis",       "namespace": "database",            "port_http": 6379, "port_metrics": None, "expect_product_selector_match": False},
+    "clickhouse":           {"role": "clickhouse",  "namespace": "database",            "port_http": 9000, "port_metrics": None, "expect_product_selector_match": False},
     "arbitrary":            {"role": "arbitrary",   "namespace": "cni-test-proxy",      "port_http": 9090, "port_metrics": None, "expect_product_selector_match": False},
     "control-probe":        {"role": "control",     "namespace": "cni-control",         "port_http": 8080, "port_metrics": None, "expect_product_selector_match": False},
     "control-target":       {"role": "control",     "namespace": "cni-control",         "port_http": 18080, "port_metrics": None, "expect_product_selector_match": False},
 }
+
+# ROLE_INVENTORY answers "which namespace does role R live in". This
+# answers "which role is Pod P", so check_pod_namespace_binding can prove
+# the two agree. Kept adjacent to ROLE_INVENTORY so a fixture Pod cannot
+# be added or renamed without declaring its role here.
+ROLE_POD_NAMES = {
+    "gateway":            "cni-mock-nexus-gateway",
+    "worker":             "cni-mock-nexus-worker",
+    "migration":          "cni-mock-nexus-migration",
+    "ingress-controller": "cni-mock-ingress-controller",
+    "prometheus":         "cni-mock-prometheus",
+    "untrusted":          "cni-untrusted-default",
+    "egress-proxy":       "cni-mock-egress-proxy",
+    "postgres":           "cni-mock-postgres",
+    "redis":              "cni-mock-redis",
+    "clickhouse":         "cni-mock-clickhouse",
+    "arbitrary":          "cni-mock-arbitrary",
+    "control-probe":      "cni-control-probe",
+    "control-target":     "cni-control-target",
+}
+
+# The namespace the chart is released into.
+RELEASE_NAMESPACE = "default"
+
+# Roles whose Pods stand in for dependencies the chart reaches over the
+# network rather than owning. None of them may sit in RELEASE_NAMESPACE:
+# the chart renders `<release>-default-deny` with an empty podSelector,
+# which denies ingress to every Pod in the release namespace, so a stub
+# parked there is unreachable no matter what the gateway's egress
+# allowlist permits — which silently reports a false RULE_GAP instead of
+# an allowlist defect.
+DEPENDENCY_STUB_ROLES = frozenset({
+    "egress-proxy", "postgres", "redis", "clickhouse", "arbitrary",
+})
 
 # Allowed Service targetPort exceptions.
 # External services are PinnedServiceAllowedExternal
@@ -404,6 +439,84 @@ def check_role_inventory_enforced(fixture_dir):
     return True
 
 
+def check_pod_namespace_binding(fixture_dir):
+    """Bind every canonical fixture Pod to exactly one namespace.
+
+    check_role_inventory_enforced only proves each namespace string is
+    DRAWN FROM the inventory, which cannot catch a Pod parked in the
+    wrong inventory namespace. That is precisely how the five dependency
+    stubs came to sit in `default` while ROLE_INVENTORY declared
+    dedicated namespaces for them: `default` is in the inventory (the
+    gateway and worker use it), so set membership held while the
+    per-role binding was silently violated.
+    """
+    want = {}
+    for role, pod_name in ROLE_POD_NAMES.items():
+        entry = ROLE_INVENTORY.get(role)
+        if entry is None:
+            fail(f"ROLE_POD_NAMES declares role {role!r} with no "
+                 f"ROLE_INVENTORY entry")
+            return False
+        want[pod_name] = (role, entry["namespace"])
+    seen = {}
+    all_ok = True
+    for path in sorted(fixture_dir.glob("*.yaml")):
+        for d in load_documents(path):
+            kind = d.get("kind")
+            if kind not in ("Pod", "Deployment", "StatefulSet", "DaemonSet"):
+                continue
+            name = (d.get("metadata") or {}).get("name", "?")
+            if name not in want:
+                fail(f"{path}: {kind}/{name} is not bound to any "
+                     f"ROLE_POD_NAMES entry; declare its role or rename "
+                     f"it to a canonical fixture Pod name")
+                all_ok = False
+                continue
+            role, want_ns = want[name]
+            got_ns = (d.get("metadata") or {}).get("namespace") or ""
+            seen.setdefault(name, []).append(got_ns)
+            if got_ns != want_ns:
+                fail(f"{path}: {kind}/{name} (role={role}) is in namespace "
+                     f"{got_ns!r} but ROLE_INVENTORY declares {want_ns!r}")
+                all_ok = False
+    for pod_name, (role, want_ns) in sorted(want.items()):
+        count = len(seen.get(pod_name, []))
+        if count != 1:
+            fail(f"role={role} pod={pod_name} (namespace {want_ns!r}) "
+                 f"appears {count} times in the fixture corpus; "
+                 f"expected exactly 1")
+            all_ok = False
+    if all_ok:
+        ok(f"per-role namespace binding: {len(want)} canonical Pods each "
+           f"in exactly the namespace ROLE_INVENTORY declares")
+    return all_ok
+
+
+def check_dependency_stubs_outside_release_namespace(fixture_dir):
+    """No dependency stub may live in the release namespace.
+
+    Independent of ROLE_INVENTORY so that relaxing an inventory entry
+    back to `default` cannot re-open the hole: the rendered
+    `<release>-default-deny` policy selects every Pod in the release
+    namespace and grants it no ingress, which converts every
+    egress-allowlist ALLOW assertion against that stub into a false
+    RULE_GAP.
+    """
+    all_ok = True
+    for role in sorted(DEPENDENCY_STUB_ROLES):
+        entry = ROLE_INVENTORY.get(role) or {}
+        ns = entry.get("namespace")
+        if ns == RELEASE_NAMESPACE:
+            fail(f"dependency stub role={role} is declared in the release "
+                 f"namespace {RELEASE_NAMESPACE!r}; the chart's "
+                 f"default-deny policy denies ingress to every Pod there")
+            all_ok = False
+    if all_ok:
+        ok(f"all {len(DEPENDENCY_STUB_ROLES)} dependency stubs live outside "
+           f"the release namespace {RELEASE_NAMESPACE!r}")
+    return all_ok
+
+
 # ---------------------------------------------------------------------
 # d2b.29 hardened-fixture contract.
 #
@@ -565,7 +678,9 @@ def main():
     s4 = check_role_inventory_enforced(fixture_dir)
     s5 = check_pod_security_context_hardened(fixture_dir)
     s6 = check_dockerfile_user_present(fixture_dir)
-    if s1 and s2 and s3 and s4 and s5 and s6:
+    s7 = check_pod_namespace_binding(fixture_dir)
+    s8 = check_dependency_stubs_outside_release_namespace(fixture_dir)
+    if s1 and s2 and s3 and s4 and s5 and s6 and s7 and s8:
         print()
         print("fixture_semantic_admission: PASS")
         return 0

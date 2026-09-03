@@ -599,13 +599,17 @@ step_no=7
 run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
 if run_in_phase; then
 
+# This list is the runtime mirror of the Namespace
+# documents in fixtures/integrationcni/00-prereq-namespaces.yaml.
+# Drift between the two is a silent egress-disabling
+# false negative, so fixture_namespace_document_boundary_test.py
+# parses this very array and fails when it diverges
+# from the manifest. Keep the two in lockstep.
 EXPECTED_NS=(
   cni-test-ingress
   cni-test-prometheus
   cni-test-untrusted
-  cni-test-postgres
-  cni-test-redis
-  cni-test-clickhouse
+  database
   cni-test-proxy
   cni-control
 )
@@ -732,11 +736,11 @@ GATE8_CANONICAL_12_PAIRS=(
   "default|cni-mock-nexus-gateway"
   "default|cni-mock-nexus-worker"
   "default|cni-mock-nexus-migration"
-  "default|cni-mock-egress-proxy"
-  "default|cni-mock-postgres"
-  "default|cni-mock-redis"
-  "default|cni-mock-clickhouse"
-  "default|cni-mock-arbitrary"
+  "cni-test-proxy|cni-mock-egress-proxy"
+  "database|cni-mock-postgres"
+  "database|cni-mock-redis"
+  "database|cni-mock-clickhouse"
+  "cni-test-proxy|cni-mock-arbitrary"
   "cni-control|cni-control-target"
 )
 GATE8_DYNAMIC_PROBE_REGEX='^cni-control-probe-[a-z0-9]+-[a-z0-9]+$'

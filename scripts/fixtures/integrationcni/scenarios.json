@@ -246,15 +246,15 @@
       },
       "target_kind": "service",
       "target": {
-        "namespace": "default",
+        "namespace": "cni-test-proxy",
         "pod_name": "cni-mock-arbitrary",
-        "service_fqdn": "cni-arbitrary.default.svc.cluster.local",
+        "service_fqdn": "cni-arbitrary.cni-test-proxy.svc.cluster.local",
         "owner_contract": {
           "kind": "OWNER_FREE",
           "description": "ownerReferences must be absent/empty; inject fail-closed"
         }
       },
-      "target_svc": "cni-arbitrary.default.svc.cluster.local",
+      "target_svc": "cni-arbitrary.cni-test-proxy.svc.cluster.local",
       "target_port": 9090,
       "expected": "DENY",
       "chart_intent": "DENY_DEFAULT_DENY",
@@ -309,19 +309,19 @@
       },
       "target_kind": "service",
       "target": {
-        "namespace": "default",
+        "namespace": "database",
         "pod_name": "cni-mock-postgres",
-        "service_fqdn": "cni-postgres.default.svc.cluster.local",
+        "service_fqdn": "cni-postgres.database.svc.cluster.local",
         "owner_contract": {
           "kind": "OWNER_FREE",
           "description": "ownerReferences must be absent/empty; inject fail-closed"
         }
       },
-      "target_svc": "cni-postgres.default.svc.cluster.local",
+      "target_svc": "cni-postgres.database.svc.cluster.local",
       "target_port": 5432,
       "expected": "ALLOW",
       "chart_intent": "ALLOW_IMPLIED",
-      "upstream_reason": "postgres namespace selector + role role=postgres selector admit",
+      "upstream_reason": "postgres namespaceSelector admits the database namespace on 5432",
       "requires_features": [],
       "ignores_l1": false,
       "ignores_l2": false
@@ -341,15 +341,15 @@
       },
       "target_kind": "service",
       "target": {
-        "namespace": "default",
+        "namespace": "database",
         "pod_name": "cni-mock-redis",
-        "service_fqdn": "cni-redis.default.svc.cluster.local",
+        "service_fqdn": "cni-redis.database.svc.cluster.local",
         "owner_contract": {
           "kind": "OWNER_FREE",
           "description": "ownerReferences must be absent/empty; inject fail-closed"
         }
       },
-      "target_svc": "cni-redis.default.svc.cluster.local",
+      "target_svc": "cni-redis.database.svc.cluster.local",
       "target_port": 6379,
       "expected": "ALLOW",
       "chart_intent": "ALLOW_FEATURE_OFF",
@@ -375,19 +375,19 @@
       },
       "target_kind": "service",
       "target": {
-        "namespace": "default",
+        "namespace": "cni-test-proxy",
         "pod_name": "cni-mock-egress-proxy",
-        "service_fqdn": "cni-proxy.default.svc.cluster.local",
+        "service_fqdn": "cni-proxy.cni-test-proxy.svc.cluster.local",
         "owner_contract": {
           "kind": "OWNER_FREE",
           "description": "ownerReferences must be absent/empty; inject fail-closed"
         }
       },
-      "target_svc": "cni-proxy.default.svc.cluster.local",
+      "target_svc": "cni-proxy.cni-test-proxy.svc.cluster.local",
       "target_port": 3128,
       "expected": "ALLOW",
       "chart_intent": "ALLOW_IMPLIED",
-      "upstream_reason": "egress proxy is on Gateway egress default allowlist",
+      "upstream_reason": "egress proxy namespaceSelector admits cni-test-proxy on 3128",
       "requires_features": [],
       "ignores_l1": false,
       "ignores_l2": false
@@ -435,5 +435,5 @@
     ],
     "description": "controller=true ReplicaSet owned by Deployment cni-control-probe in ns=cni-control"
   },
-  "schema_version": "d2b.54"
+  "schema_version": "d2b.55"
 }
