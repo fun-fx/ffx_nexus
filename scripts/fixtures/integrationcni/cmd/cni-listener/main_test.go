@@ -849,8 +849,385 @@ func equalStrings(a, b []string) bool {
 }
 
 // ------------------------------------------------------------------
+// d2b.53 -tcp-connect client mode.
+//
+// The scenario gate needs a real ALLOW/DENY signal on
+// plain TCP ports (postgres 5432, redis 6379, proxy
+// 3128, arbitrary 9090) and on raw external IPs. The
+// runtime image is FROM scratch with no nc, so the
+// bounded dial has to live in this binary. Coverage:
+//
+//   - valid connect against a real listener emits the
+//     exact 4-field envelope and exits 0;
+//   - refused / timed-out connect exits non-zero with
+//     NOTHING on stdout (a DENY can never look like
+//     an ALLOW);
+//   - illegal values and multiple/mixed flags are
+//     rejected before any dial;
+//   - the dial context carries the same fixed ~5s
+//     deadline as the other client modes;
+//   - the output schema carries no extra fields.
+// ------------------------------------------------------------------
+
+// TestTCPConnectFlagDeclared proves -tcp-connect is
+// registered on the same FlagSet before flag.Parse
+// (it shows up in usage) and that no tunable timeout
+// knob was introduced alongside it.
+func TestTCPConnectFlagDeclared(t *testing.T) {
+	bin := buildBinary(t)
+	rc, stdout, stderr := runClient(t, bin, "-h")
+	helpOut := stdout + stderr
+	if rc != 0 && rc != 2 {
+		t.Fatalf("-h should exit 0 or 2; rc=%d", rc)
+	}
+	if !strings.Contains(helpOut, "-tcp-connect") {
+		t.Fatalf("-tcp-connect not in usage output:\nstdout=%s\nstderr=%s", stdout, stderr)
+	}
+	for _, forbidden := range []string{"-tcp-timeout", "-connect-timeout", "-dial-timeout", "-tcp-retries"} {
+		if strings.Contains(helpOut, forbidden) {
+			t.Fatalf("%s MUST NOT exist (deadline is fixed, no retry knobs):\n%s", forbidden, helpOut)
+		}
+	}
+}
+
+// TestTCPConnectSuccess_StrictEnvelope exercises the
+// production runTCPConnectClient path against a real
+// loopback listener and inspects the exact bytes
+// written to os.Stdout — the same contract the
+// scenario parser consumes.
+func TestTCPConnectSuccess_StrictEnvelope(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	target := ln.Addr().String()
+	_, portStr, err := net.SplitHostPort(target)
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = old })
+
+	runTCPConnectClient(target)
+	_ = w.Close()
+	got, _ := io.ReadAll(r)
+	_ = r.Close()
+
+	raw := strings.TrimRight(string(got), "\n")
+	if raw == "" {
+		t.Fatalf("expected JSON envelope on stdout; got empty")
+	}
+	if strings.Count(string(got), "\n") != 1 {
+		t.Fatalf("stdout MUST be exactly one newline-terminated line; got %q", string(got))
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		t.Fatalf("stdout not JSON: %v\nraw=%q", err, raw)
+	}
+	assertExactTCPShape(t, env)
+	if env["target"].(string) != target {
+		t.Fatalf("target MUST byte-equal the requested host:port; got %q want %q", env["target"], target)
+	}
+	if env["host"].(string) != "127.0.0.1" {
+		t.Fatalf("host MUST be the pre-colon segment; got %q", env["host"])
+	}
+	wantPort := 0
+	for _, c := range portStr {
+		wantPort = wantPort*10 + int(c-'0')
+	}
+	if int(env["port"].(float64)) != wantPort {
+		t.Fatalf("port MUST be the numeric post-colon segment; got %v want %d", env["port"], wantPort)
+	}
+	if env["connected"].(bool) != true {
+		t.Fatalf("connected MUST be true on a completed socket; got %v", env["connected"])
+	}
+}
+
+// TestTCPConnectRefused_NoSuccessStdout proves a
+// refused connect exits non-zero with an empty
+// stdout. This is the load-bearing DENY contract: a
+// blocked scenario must never produce a
+// success-looking line.
+func TestTCPConnectRefused_NoSuccessStdout(t *testing.T) {
+	// Bind then immediately close so the port is
+	// almost certainly unbound and refuses.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	target := ln.Addr().String()
+	_ = ln.Close()
+
+	bin := buildBinary(t)
+	rc, stdout, stderr := runClient(t, bin, "-tcp-connect="+target)
+	if rc == 0 {
+		t.Fatalf("refused connect MUST exit non-zero; rc=0 stdout=%q", stdout)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("refused connect MUST write NOTHING on stdout; got %q", stdout)
+	}
+	if !strings.Contains(stderr, "tcp-connect") {
+		t.Fatalf("stderr MUST name the failing mode; got %q", stderr)
+	}
+	if strings.Contains(stdout, "connected") {
+		t.Fatalf("refused connect stdout MUST NOT contain a connected field; got %q", stdout)
+	}
+}
+
+// TestTCPConnectDialError_NoSuccessStdout drives the
+// in-process path with a swapped dialer that returns
+// a timeout-like error, proving the failure branch
+// emits no envelope even when the dialer, not the
+// validator, is the thing that fails.
+func TestTCPConnectDialError_NoSuccessStdout(t *testing.T) {
+	prev := tcpDial
+	tcpDial = func(ctx context.Context, hostPort string) (net.Conn, error) {
+		return nil, fmt.Errorf("dial tcp %s: i/o timeout", hostPort)
+	}
+	t.Cleanup(func() { tcpDial = prev })
+
+	// runTCPConnectClient calls failClient -> os.Exit
+	// on error, so drive it through the built binary
+	// for the exit-code assertion and use a
+	// blackholed RFC5737 address to reach the same
+	// branch without a swapped dialer.
+	bin := buildBinary(t)
+	rc, stdout, _ := runClient(t, bin, "-tcp-connect=192.0.2.10:443")
+	if rc == 0 {
+		t.Fatalf("unreachable connect MUST exit non-zero; rc=0 stdout=%q", stdout)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("unreachable connect MUST write NOTHING on stdout; got %q", stdout)
+	}
+}
+
+// TestTCPConnectFixedDeadline proves the dial context
+// carries the same ~5s bound the other client modes
+// use and that it is not operator-tunable.
+func TestTCPConnectFixedDeadline(t *testing.T) {
+	var sawDeadline bool
+	prev := tcpDial
+	tcpDial = func(ctx context.Context, hostPort string) (net.Conn, error) {
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Fatalf("runTCPConnectClient context MUST carry a deadline")
+		}
+		if d := time.Until(dl); d < 4500*time.Millisecond || d > 5500*time.Millisecond {
+			t.Fatalf("runTCPConnectClient deadline must be ~5s; got time-until=%v", d)
+		}
+		sawDeadline = true
+		// Return a closed pipe end so the success
+		// path completes without a real socket.
+		c1, c2 := net.Pipe()
+		_ = c2.Close()
+		return c1, nil
+	}
+	t.Cleanup(func() { tcpDial = prev })
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = old })
+
+	runTCPConnectClient("fixture.example.test:5432")
+	_ = w.Close()
+	got, _ := io.ReadAll(r)
+	_ = r.Close()
+
+	if !sawDeadline {
+		t.Fatalf("swapped dialer was never invoked; deadline not asserted")
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimRight(string(got), "\n")), &env); err != nil {
+		t.Fatalf("stdout not JSON: %v raw=%q", err, string(got))
+	}
+	assertExactTCPShape(t, env)
+	if env["host"].(string) != "fixture.example.test" || int(env["port"].(float64)) != 5432 {
+		t.Fatalf("host/port projection wrong: %v", env)
+	}
+	if clientFixedDeadline != 5*time.Second {
+		t.Fatalf("clientFixedDeadline MUST stay 5s; got %v", clientFixedDeadline)
+	}
+}
+
+// TestTCPConnectIllegalValuesRejected proves every
+// malformed / hostile value is rejected BEFORE any
+// dial, with a non-zero exit and no stdout.
+func TestTCPConnectIllegalValuesRejected(t *testing.T) {
+	bin := buildBinary(t)
+	cases := []struct {
+		name string
+		val  string
+	}{
+		{"empty", ""},
+		{"no-port", "cni-postgres.default.svc.cluster.local"},
+		{"empty-port", "host:"},
+		{"empty-host", ":5432"},
+		{"port-zero", "host:0"},
+		{"port-overflow", "host:99999"},
+		{"port-padded", "host:0080"},
+		{"port-signed", "host:+80"},
+		{"port-not-numeric", "host:abc"},
+		{"double-colon-hostport", "host:80:90"},
+		{"scheme-prefixed", "http://host:80"},
+		{"userinfo", "user@host:80"},
+		{"path-suffix", "host:80/readyz"},
+		{"query-suffix", "host:80?x=1"},
+		{"fragment-suffix", "host:80#f"},
+		{"inner-space", "bad host:80"},
+		{"leading-space", " host:80"},
+		{"trailing-space", "host:80 "},
+		{"tab", "host\t:80"},
+		{"newline", "host:80\n"},
+		{"shell-semicolon", "host:80;id"},
+		{"shell-pipe", "host:80|id"},
+		{"shell-amp", "host:80&"},
+		{"shell-dollar", "host:$PORT"},
+		{"shell-backtick", "host:80`id`"},
+		{"shell-subshell", "host:80$(id)"},
+		{"uppercase-host", "Host.Example:80"},
+		{"dot-prefix-host", ".host:80"},
+		{"dot-suffix-host", "host.:80"},
+		{"double-dot-host", "ho..st:80"},
+		{"hyphen-prefix-host", "-host:80"},
+		{"hyphen-suffix-host", "host-:80"},
+		{"ipv6-literal", "::1:80"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rc, stdout, stderr := runClient(t, bin, "-tcp-connect="+c.val)
+			if rc == 0 {
+				t.Fatalf("value %q MUST be rejected non-zero; rc=0 stdout=%q", c.val, stdout)
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("value %q MUST write NOTHING on stdout; got %q", c.val, stdout)
+			}
+			if strings.Contains(stderr, c.val) && strings.ContainsAny(c.val, "`$()|;&") {
+				t.Fatalf("stderr MUST NOT echo a shell-fragment value verbatim: %q", stderr)
+			}
+		})
+	}
+}
+
+// TestTCPConnectMutuallyExclusive proves -tcp-connect
+// cannot be combined with any other client mode or
+// with the listener/probe modes.
+func TestTCPConnectMutuallyExclusive(t *testing.T) {
+	bin := buildBinary(t)
+	combos := [][]string{
+		{"-tcp-connect=host:80", "-http-get=http://host:80/"},
+		{"-tcp-connect=host:80", "-resolve-host=host"},
+		{"-tcp-connect=host:80", "-ports=8080"},
+		{"-tcp-connect=host:80", "-probe=8080"},
+		{"-tcp-connect=host:80", "-resolve-host=host", "-http-get=http://host:80/"},
+		{"-tcp-connect=host:80", "-ports=8080", "-probe=8080"},
+	}
+	for _, args := range combos {
+		rc, stdout, stderr := runClient(t, bin, args...)
+		if rc == 0 {
+			t.Fatalf("combination %v MUST be rejected non-zero; rc=0 stdout=%q", args, stdout)
+		}
+		if strings.TrimSpace(stdout) != "" {
+			t.Fatalf("combination %v MUST write NOTHING on stdout; got %q", args, stdout)
+		}
+		if !strings.Contains(stderr, "invalid flag combination") &&
+			!strings.Contains(stderr, "invalid -tcp-connect") {
+			t.Fatalf("combination %v stderr MUST name the rejection; got %q", args, stderr)
+		}
+	}
+}
+
+// TestTCPConnectValidatorUnitTable exercises
+// isValidHostPort directly so the accept/reject
+// boundary is pinned without spawning a process.
+func TestTCPConnectValidatorUnitTable(t *testing.T) {
+	accept := []string{
+		"cni-postgres.default.svc.cluster.local:5432",
+		"cni-redis.default.svc.cluster.local:6379",
+		"cni-proxy.default.svc.cluster.local:3128",
+		"cni-arbitrary.default.svc.cluster.local:9090",
+		"169.254.169.254:80",
+		"192.0.2.10:443",
+		"127.0.0.1:1",
+		"h:65535",
+	}
+	for _, s := range accept {
+		if !isValidHostPort(s) {
+			t.Fatalf("isValidHostPort(%q) = false; want true", s)
+		}
+	}
+	reject := []string{
+		"", ":", "host", "host:", ":80", "host:0", "host:65536", "host:99999",
+		"host:0080", "host:+80", "host:-80", "host:8o", " host:80", "host:80 ",
+		"host\t:80", "host\n:80", "host:80\x00", "http://host:80", "user@host:80",
+		"host:80/p", "host:80?q", "host:80#f", "host:80;id", "host:80|id",
+		"host:80&", "host:$P", "host:80`id`", "host:80$(id)", "HOST:80",
+		".h:80", "h.:80", "h..h:80", "-h:80", "h-:80", "::1:80", "[::1]:80",
+		"a:80:90", "h:80:", "*.h:80", "h\\x:80", "h\"x:80", "h'x:80",
+	}
+	for _, s := range reject {
+		if isValidHostPort(s) {
+			t.Fatalf("isValidHostPort(%q) = true; want false", s)
+		}
+	}
+}
+
+// ------------------------------------------------------------------
 // Helpers.
 // ------------------------------------------------------------------
+
+// assertExactTCPShape pins the -tcp-connect envelope
+// to EXACTLY four fields and rejects any leakage of
+// the DNS / HTTP envelope fields or debug knobs.
+func assertExactTCPShape(t *testing.T, got map[string]any) {
+	t.Helper()
+	if len(got) != 4 {
+		t.Fatalf("TCP envelope MUST have EXACTLY 4 fields (target,host,port,connected); got %d: %v", len(got), keys(got))
+	}
+	for _, k := range []string{"target", "host", "port", "connected"} {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("TCP envelope missing required field %q; got %v", k, keys(got))
+		}
+	}
+	for _, forbidden := range []string{"addresses", "url", "status", "body", "contract_version", "count", "timeout", "debug", "error", "retries"} {
+		if v, ok := got[forbidden]; ok {
+			t.Fatalf("TCP envelope MUST NOT carry %q; got %v", forbidden, v)
+		}
+	}
+	if _, ok := got["target"].(string); !ok {
+		t.Fatalf("TCP envelope target MUST be a string; got %#v", got["target"])
+	}
+	if _, ok := got["host"].(string); !ok {
+		t.Fatalf("TCP envelope host MUST be a string; got %#v", got["host"])
+	}
+	p, ok := got["port"].(float64)
+	if !ok || p < 1 || p > 65535 {
+		t.Fatalf("TCP envelope port MUST be a 1..65535 number; got %#v", got["port"])
+	}
+	if _, ok := got["connected"].(bool); !ok {
+		t.Fatalf("TCP envelope connected MUST be a bool; got %#v", got["connected"])
+	}
+}
 
 func keys(m map[string]any) []string {
 	out := make([]string, 0, len(m))

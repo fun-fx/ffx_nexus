@@ -8814,7 +8814,11 @@ PASS=$((PASS + C8_LEDS_PASS))
 # of the 61 pre-existing control predicates is
 # retained verbatim and none was renamed or
 # dropped to keep the denominator flat.
-TOTAL=62 # d2b.49 (39 + C7n/C7o + C8n/C8o) + d2b.51 C9a..C9f + d2b.51-final C9g..C9j + C9k + C9l + d2b.51-final C8i..C8p = 55 + 6, + d2b.52 C9m = 62
+# d2b.53: 62 -> 73. Eleven genuinely new controls (C12a..C12k) cover the
+# enforcing-CNI scenario gate and the bounded Helm client transport. All 62
+# pre-existing control predicates are retained verbatim; none was renamed,
+# merged, or dropped to keep the denominator flat.
+TOTAL=73 # d2b.49 (39 + C7n/C7o + C8n/C8o) + d2b.51 C9a..C9f + d2b.51-final C9g..C9j + C9k + C9l + d2b.51-final C8i..C8p = 55 + 6, + d2b.52 C9m = 62, + d2b.53 C12a..C12k = 73
 # Per-control pass ledger (collects results so the
 # final summary can name which controls failed).
 # Bash 3.2 (macOS /bin/bash) does not support
@@ -8877,6 +8881,19 @@ C9J_PASS=N
 C9K_PASS=N
 C9L_PASS=N
 C9M_PASS=N
+# d2b.53 scenario-gate + Helm-transport controls. Named C12* so they do not
+# collide with the pre-existing C10_* / C11_* control variables.
+C12A_PASS=N
+C12B_PASS=N
+C12C_PASS=N
+C12D_PASS=N
+C12E_PASS=N
+C12F_PASS=N
+C12G_PASS=N
+C12H_PASS=N
+C12I_PASS=N
+C12J_PASS=N
+C12K_PASS=N
 # C1 success: gate stub invoked exactly once,
 # no mismatch, target rc=0. C1 also proves
 # the 13 fixture vocabulary includes
@@ -9556,7 +9573,9 @@ printf 'M1: summary_path_file_present=%s abort_log_line=%s log_label=%s log_expe
   "${M1_CANONICAL_PRESENT}"
 
 PASS=$((${PASS} + 0))
-TOTAL=62
+# d2b.53: re-pin follows the new denominator (62 + C12a..C12k = 73).
+# d2b.54: 73 -> 84. Eleven new controls (C13a..C13k).
+TOTAL=73
 if [ "${M1_RC}" = "16" ] \
    && [ "${M1_INVOKED}" = "Y" ] \
    && [ "${M1_JSON_PARSEABLE}" = "Y" ] \
@@ -9732,7 +9751,9 @@ printf 'M2b: rc=%s stderr-named-gate=%s stderr-named-nonexec=%s stub-sentinel-pr
   "${M2B_READINESS_LOG_PRESENT}" "${M2B_MISMATCH_JSON_PRESENT}" \
   "${M2B_BIT_FILE}"
 
-TOTAL=62
+# d2b.53: re-pin follows the new denominator (62 + C12a..C12k = 73).
+# d2b.54: 73 -> 84. Eleven new controls (C13a..C13k).
+TOTAL=73
 # d2b.49 namespace-aware regression suite
 # per-control verdicts (C7n/C7o/C8n/C8o):
 if [ "${C7N_RC}" = "0" ] \
@@ -10037,12 +10058,811 @@ if [ "${C9M1_RC}" = "0" ] \
   PASS=$((PASS+1))
   C9M_PASS=Y
 fi
+# ---------------------------------------------------------------------------
+# d2b.53 C12a..C12k — enforcing-CNI scenario gate + bounded Helm transport.
+#
+# Heavy run 33642318757 reported PASS_OK=0 CHART_INTENTIONAL_DENY=0 FAIL=0
+# TOTAL=0 and exited 0 because scripts/d2b-twelve-scenarios.sh resolved its
+# fixture sources through `app=cni-source` / `app=cni-target` label selectors
+# that do not exist in the tracked fixture manifests. Every declared scenario
+# SKIPped and the zero-work run was graded green.
+#
+# These controls drive the REAL scenario script against a fake kubectl that
+# fabricates the exact tracked fixture topology, then perturb one thing at a
+# time. Every existing control above is retained verbatim; the denominator
+# rises by exactly the number of genuinely new controls.
+#
+#   C12a  happy execution: all declared ids resolve exact Ready source/target
+#         and produce one JSON result each; rc=0; clean stderr
+#   C12b  zero work: empty scenario set / TOTAL=0 is non-zero, never green
+#   C12c  identity: wrong namespace, wrong name, duplicate pod, non-ready,
+#         terminating, pending, absent Ready condition, malformed JSON and
+#         kubectl command failure all stop with ZERO L1/L2/L3 exec
+#   C12d  target parsing: cni-gateway.default.svc.cluster.local resolves the
+#         namespace `default`, never the first label `cni-gateway`
+#   C12e  scratch compatibility: nc / nslookup / curl / `sh -c` absent from
+#         both the executed argv ledger and the script's non-comment source
+#   C12f  counter integrity: result-count mismatch and a zero declared set
+#         fail closed; the accounting projection enumerates duplicate /
+#         missing / unexpected / malformed result ids and folds them into
+#         the structural verdict
+#   C12g  layer + client + exec errors are terminal, never a policy pass
+#   C12h  an all-open datapath is graded as a policy failure (DENY_LEAK)
+#   C12i  obsolete label-selector rediscovery is absent and every declared
+#         scenario carries exact manifest-aligned source/target identity
+#   C12j  the -tcp-connect client mode carries the bounded contract and is
+#         the only non-HTTP L3 path the scenario script uses
+#   C12k  Helm rehearsal transport: Steps 1-3 argv, validation-before-helm,
+#         no retry loop, sentinel behaviour unchanged
+# ---------------------------------------------------------------------------
+C12S_ROOT="${TOP_TMP}/c10-scenarios"
+C12S_SCEN_TARGET="${REPO_ROOT}/scripts/d2b-twelve-scenarios.sh"
+C12S_SCEN_JSON="${REPO_ROOT}/scripts/fixtures/integrationcni/scenarios.json"
+C12S_HELM_TARGET="${REPO_ROOT}/scripts/test-upgrade-rehearsal-up.sh"
+C12S_LISTENER_GO="${REPO_ROOT}/scripts/fixtures/integrationcni/cmd/cni-listener/main.go"
+C12S_LISTENER_TEST="${REPO_ROOT}/scripts/fixtures/integrationcni/cmd/cni-listener/main_test.go"
+mkdir -p "${C12S_ROOT}"
 
-printf '\n# C1..C11 + C6p..C6v + C7a..C7i + C8r..C8x + C7n/C7o/C8n/C8o + C9a..C9m + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
+# set -e / pipefail safe match counter (grep -c prints 0 and exits 1 on no
+# match, which would kill the assignment under pipefail).
+c12_count() {
+  local pattern="$1" file="$2" n
+  n="$(grep -cE -- "${pattern}" "${file}" 2>/dev/null || true)"
+  n="${n//[^0-9]/}"
+  printf '%s' "${n:-0}"
+}
+
+# The enforced chart truth for the fake datapath: every declared DENY
+# scenario plus the ALLOW_FEATURE_OFF redis case is refused; everything else
+# connects. Keyed "<source-pod>><host>:<port>" so the stub models policy per
+# scenario rather than per protocol.
+C12S_DENY_TUPLES="cni-untrusted-default>cni-worker-metrics.default.svc.cluster.local:9101 cni-untrusted-default>cni-gateway.default.svc.cluster.local:8080 cni-mock-prometheus>cni-gateway.default.svc.cluster.local:8080 cni-mock-ingress-controller>cni-worker-metrics.default.svc.cluster.local:9101 cni-mock-nexus-gateway>cni-arbitrary.default.svc.cluster.local:9090 cni-mock-nexus-gateway>169.254.169.254:80 cni-mock-nexus-gateway>cni-redis.default.svc.cluster.local:6379 cni-mock-nexus-gateway>192.0.2.10:443"
+
+# Fake kubectl. ONE fully-quoted heredoc so bash never expands $ ; ( ) { }
+# inside the stub body.
+c12_write_stub() {
+  local dir="$1"
+  mkdir -p "${dir}/stub_path"
+  cat > "${dir}/stub_path/kubectl" <<'C12S_STUB_KC_EOF'
+#!/usr/bin/env bash
+LEDGER="${C12S_KC_LEDGER:-/dev/null}"
+{ IFS=$'\t'; printf 'kubectl\t%s\n' "$*"; } >> "$LEDGER"
+ARGS=("$@")
+NS=""
+for ((i=0; i<${#ARGS[@]}; i++)); do
+  if [[ "${ARGS[$i]}" == "-n" ]]; then NS="${ARGS[$((i+1))]}"; fi
+done
+
+if [[ "${ARGS[0]:-}" == "get" && "${ARGS[1]:-}" == "nodes" ]]; then
+  printf 'NAME   STATUS   ROLES   AGE   VERSION\nfake   Ready    none    1m    v1.29.0\n'
+  exit 0
+fi
+
+if [[ "${ARGS[0]:-}" == "exec" ]]; then
+  SRC_POD="${ARGS[3]:-}"
+  MODE=""
+  SAW_SHELL=0
+  for a in "$@"; do
+    case "$a" in
+      -probe=*)        MODE="probe:${a#-probe=}" ;;
+      -resolve-host=*) MODE="resolve:${a#-resolve-host=}" ;;
+      -http-get=*)     MODE="http:${a#-http-get=}" ;;
+      -tcp-connect=*)  MODE="tcp:${a#-tcp-connect=}" ;;
+      sh|/bin/sh|-c|nc|nslookup|curl) SAW_SHELL=1 ;;
+    esac
+  done
+  if [[ "$SAW_SHELL" -eq 1 ]]; then
+    printf 'error: scratch image has no shell / nc / nslookup / curl\n' >&2
+    exit 126
+  fi
+  c12_deny() {
+    case " ${C12S_DENY:-} " in *" $1 "*) return 0 ;; esac
+    return 1
+  }
+  case "$MODE" in
+    probe:*)
+      if [[ "${C12S_L1:-ok}" == "down" ]]; then
+        printf 'probe %s failed after 60s\n' "${MODE#probe:}" >&2; exit 1
+      fi
+      printf 'probe %s ok after 0s\n' "${MODE#probe:}" >&2; exit 0
+      ;;
+    resolve:*)
+      if [[ "${C12S_L2:-ok}" == "fail" ]]; then
+        printf 'cni-listener client mode failed: resolve-host %s failed: no such host\n' "${MODE#resolve:}" >&2
+        exit 2
+      fi
+      printf '{"addresses":["10.96.0.10"],"host":"%s"}\n' "${MODE#resolve:}"
+      exit 0
+      ;;
+    http:*)
+      URL="${MODE#http:}"
+      REST="${URL#http://}"; HP="${REST%%/*}"
+      case "${C12S_L3:-}" in
+        clienterr) printf 'cni-listener client mode failed: invalid -http-get value: not an absolute http:// URL\n' >&2; exit 2 ;;
+        execerr)   printf 'error: unable to upgrade connection: container not found\n' >&2; exit 1 ;;
+        badstdout) printf 'garbage-not-json\n'; exit 0 ;;
+        allopen)   printf '{"body":"{}","status":200,"url":"%s"}\n' "$URL"; exit 0 ;;
+      esac
+      if c12_deny "${SRC_POD}>${HP}"; then
+        printf 'cni-listener client mode failed: http-get %s failed: dial tcp: i/o timeout\n' "$URL" >&2
+        exit 2
+      fi
+      printf '{"body":"{}","status":200,"url":"%s"}\n' "$URL"
+      exit 0
+      ;;
+    tcp:*)
+      HP="${MODE#tcp:}"
+      H="${HP%%:*}"; P="${HP##*:}"
+      case "${C12S_L3:-}" in
+        clienterr) printf 'cni-listener client mode failed: invalid -tcp-connect value: not a bare host:port\n' >&2; exit 2 ;;
+        execerr)   printf 'error: unable to upgrade connection: container not found\n' >&2; exit 1 ;;
+        badstdout) printf 'garbage-not-json\n'; exit 0 ;;
+        allopen)   printf '{"connected":true,"host":"%s","port":%s,"target":"%s"}\n' "$H" "$P" "$HP"; exit 0 ;;
+      esac
+      if c12_deny "${SRC_POD}>${HP}"; then
+        printf 'cni-listener client mode failed: tcp-connect %s failed: dial tcp: connect: connection refused\n' "$HP" >&2
+        exit 2
+      fi
+      printf '{"connected":true,"host":"%s","port":%s,"target":"%s"}\n' "$H" "$P" "$HP"
+      exit 0
+      ;;
+  esac
+  printf 'error: no recognised cni-listener mode in exec argv\n' >&2
+  exit 1
+fi
+
+if [[ "${ARGS[0]:-}" == "get" || "${ARGS[2]:-}" == "get" ]]; then
+  HAS_L=0; FIELD=""
+  for ((i=0; i<${#ARGS[@]}; i++)); do
+    [[ "${ARGS[$i]}" == "-l" ]] && HAS_L=1
+    [[ "${ARGS[$i]}" == "--field-selector" ]] && FIELD="${ARGS[$((i+1))]}"
+  done
+  if [[ "$HAS_L" -eq 1 ]]; then
+    case "${C12S_CONTROL_MODE:-happy}" in
+      cmderr)    printf 'error from server: connection refused\n' >&2; exit 1 ;;
+      malformed) printf '{"items": [ {"metadata": \n'; exit 0 ;;
+      zero)      printf '{"apiVersion":"v1","kind":"List","items":[]}\n'; exit 0 ;;
+      notready)  printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"cni-control-probe-5d5fb89454-8tvnr","namespace":"cni-control"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"False"}]}}]}\n'; exit 0 ;;
+      two)       printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"cni-control-probe-5d5fb89454-8tvnr","namespace":"cni-control"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"cni-control-probe-5d5fb89454-zzzzz","namespace":"cni-control"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}\n'; exit 0 ;;
+      *)         printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"cni-control-probe-5d5fb89454-8tvnr","namespace":"cni-control","ownerReferences":[{"controller":true,"kind":"ReplicaSet","name":"cni-control-probe-5d5fb89454","namespace":"cni-control","uid":"3f53e8a7-c8c2-4d2f-a5d4-7a5b0e3c0aaa"}]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}\n'; exit 0 ;;
+    esac
+  fi
+  if [[ -n "$FIELD" ]]; then
+    WANT="${FIELD#metadata.name=}"
+    case "${C12S_POD_MODE:-happy}" in
+      cmderr)    printf 'error from server: the server was unable to return a response\n' >&2; exit 1 ;;
+      malformed) printf '{"items":[{"metadata":\n'; exit 0 ;;
+    esac
+    case " ${C12S_POD_ZERO:-} " in *" $WANT "*)
+      printf '{"apiVersion":"v1","kind":"List","items":[]}\n'; exit 0 ;;
+    esac
+    case " ${C12S_POD_DUP:-} " in *" $WANT "*)
+      printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"%s","namespace":"%s"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"%s","namespace":"%s"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}\n' "$WANT" "$NS" "$WANT" "$NS"; exit 0 ;;
+    esac
+    case " ${C12S_POD_NOTREADY:-} " in *" $WANT "*)
+      printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"%s","namespace":"%s"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"False"}]}}]}\n' "$WANT" "$NS"; exit 0 ;;
+    esac
+    case " ${C12S_POD_TERMINATING:-} " in *" $WANT "*)
+      printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"%s","namespace":"%s","deletionTimestamp":"2026-09-02T00:00:00Z"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}\n' "$WANT" "$NS"; exit 0 ;;
+    esac
+    case " ${C12S_POD_PENDING:-} " in *" $WANT "*)
+      printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"%s","namespace":"%s"},"status":{"phase":"Pending","conditions":[{"type":"Ready","status":"False"}]}}]}\n' "$WANT" "$NS"; exit 0 ;;
+    esac
+    case " ${C12S_POD_NSWRONG:-} " in *" $WANT "*)
+      printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"%s","namespace":"wrong-namespace"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}\n' "$WANT"; exit 0 ;;
+    esac
+    case " ${C12S_POD_NAMEWRONG:-} " in *" $WANT "*)
+      printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"some-other-pod","namespace":"%s"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}\n' "$NS"; exit 0 ;;
+    esac
+    case " ${C12S_POD_NOREADYCOND:-} " in *" $WANT "*)
+      printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"%s","namespace":"%s"},"status":{"phase":"Running","conditions":[{"type":"PodScheduled","status":"True"}]}}]}\n' "$WANT" "$NS"; exit 0 ;;
+    esac
+    printf '{"apiVersion":"v1","kind":"List","items":[{"metadata":{"name":"%s","namespace":"%s"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}\n' "$WANT" "$NS"
+    exit 0
+  fi
+fi
+
+printf 'error: fake kubectl: unhandled argv: %s\n' "$*" >&2
+exit 64
+C12S_STUB_KC_EOF
+  chmod +x "${dir}/stub_path/kubectl"
+}
+
+# c12_drive <label> <scenarios-json> [ENV=VAL ...]
+# Runs the REAL scenario script once in a subshell with the fake kubectl on
+# PATH, and records rc / listener-exec count / forbidden-tool count /
+# result count / accounting class / TOTAL into C12S_* globals.
+c12_drive() {
+  local label="$1" json="$2"; shift 2
+  local d="${C12S_ROOT}/${label}"
+  rm -rf "${d}"; mkdir -p "${d}"
+  c12_write_stub "${d}"
+  : > "${d}/kc.ledger"
+  (
+    export PATH="${d}/stub_path:${PATH}"
+    export ARTIFACTS="${d}/art"
+    export SCENARIOS_JSON="${json}"
+    export C12S_KC_LEDGER="${d}/kc.ledger"
+    export C12S_DENY="${C12S_DENY_TUPLES}"
+    for kv in "$@"; do export "${kv?}"; done
+    cd "${REPO_ROOT}" || exit 90
+    # The harness runs under `set -e`, which a subshell inherits. Every
+    # interesting subcase here EXPECTS a non-zero target exit, so errexit is
+    # relaxed for exactly the one target invocation; otherwise the subshell
+    # would die before recording the rc and the whole harness would abort
+    # with the target's own code.
+    set +e
+    bash "${C12S_SCEN_TARGET}" > "${d}/out" 2> "${d}/err"
+    printf '%s\n' "$?" > "${d}/rc"
+    set -e
+    exit 0
+  ) >/dev/null 2>&1 || true
+  C12S_RC="$(cat "${d}/rc" 2>/dev/null || echo NONE)"
+  C12S_LISTENER_EXECS="$(c12_count 'cni-listener' "${d}/kc.ledger")"
+  C12S_BADTOOL="$(c12_count 'nslookup|curl|[[:space:]]nc[[:space:]]|sh[[:space:]]-c' "${d}/kc.ledger")"
+  C12S_RESULTS="$(c12_count '.' "${d}/art/probes.jsonl")"
+  C12S_ERRLINES="$(c12_count '.' "${d}/err")"
+  C12S_CLASS="$(grep -E '^ACCOUNTING_CLASS=' "${d}/art/scenario-summary.txt" 2>/dev/null | cut -d= -f2 || true)"
+  C12S_TOTAL="$(grep -E '^TOTAL=' "${d}/art/scenario-summary.txt" 2>/dev/null | cut -d= -f2 || true)"
+  C12S_DIR="${d}"
+}
+
+# --- C12a: happy execution ------------------------------------------------
+c12_drive happy "${C12S_SCEN_JSON}"
+C12A_RC="${C12S_RC}"
+C12A_CLASS="${C12S_CLASS}"
+C12A_RESULTS="${C12S_RESULTS}"
+C12A_TOTAL="${C12S_TOTAL}"
+C12A_ERRLINES="${C12S_ERRLINES}"
+C12A_DIR="${C12S_DIR}"
+C12A_DECLARED="$(grep -E '^DECLARED_COUNT=' "${C12A_DIR}/art/scenario-summary.txt" 2>/dev/null | cut -d= -f2 || true)"
+C12A_EXECUTED="$(grep -E '^EXECUTED_COUNT=' "${C12A_DIR}/art/scenario-summary.txt" 2>/dev/null | cut -d= -f2 || true)"
+# Every declared id appears exactly once and every verdict is an accepted one.
+C12A_IDS_OK="N"
+C12A_VERDICTS_OK="N"
+if [ -s "${C12A_DIR}/art/scenario-accounting.json" ]; then
+  if python3 - "${C12A_DIR}/art/scenario-accounting.json" >/dev/null 2>&1 <<'C12A_PY_EOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["verdict"] == "pass", d["verdict"]
+assert d["declared_count"] == d["executed_count"] == d["result_count"] == d["total"]
+assert d["declared_count"] > 0
+assert sorted(d["declared_ids"]) == sorted(d["result_ids"])
+assert d["duplicate_result_ids"] == []
+assert d["missing_result_ids"] == []
+assert d["unexpected_result_ids"] == []
+assert d["errors"] == []
+assert all(v == 0 for v in d["counters"].values())
+C12A_PY_EOF
+  then C12A_IDS_OK="Y"; fi
+fi
+if [ -s "${C12A_DIR}/art/probes.jsonl" ]; then
+  if python3 - "${C12A_DIR}/art/probes.jsonl" "${C12S_SCEN_JSON}" >/dev/null 2>&1 <<'C12A_PY2_EOF'
+import json, sys
+ok = {"ALLOW_OK", "DENY_OK", "CHART_INTENTIONAL_DENY"}
+recs = [json.loads(l) for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
+decl = json.load(open(sys.argv[2], encoding="utf-8"))["scenarios"]
+by_id = {s["id"]: s for s in decl}
+assert len(recs) == len(decl), (len(recs), len(decl))
+for r in recs:
+    assert r["verdict"] in ok, (r["id"], r["verdict"])
+    d = by_id[r["id"]]
+    # The emitted result must carry the EXACT declared identity, not a
+    # rediscovered one.
+    assert r["source"] == d["source"], (r["id"], r["source"], d["source"])
+    if d["target_kind"] == "service":
+        assert r["target"]["namespace"] == d["target"]["namespace"]
+        assert r["target"]["pod_name"] == d["target"]["pod_name"]
+        assert r["target"]["service_fqdn"] == d["target"]["service_fqdn"]
+        assert r["L1"] == "OK" and r["L2"] == "OK"
+    else:
+        assert r["target"]["pod_name"] is None
+        assert r["L1"] == "N/A" and r["L2"] == "N/A"
+    assert r["L3"] not in ("NOT_RUN", "CLIENT_ERROR", "EXEC_ERROR", "SKIP", "")
+C12A_PY2_EOF
+  then C12A_VERDICTS_OK="Y"; fi
+fi
+# Identity preservation as its own signal: the argv actually handed to the
+# apiserver must name the declared Pod, in the declared namespace, for every
+# declared scenario. This is the specific thing run 33642318757 got wrong —
+# it resolved nothing and executed nothing.
+C12A_IDENT_OK="N"
+if [ -s "${C12A_DIR}/kc.ledger" ] && [ -s "${C12A_DIR}/art/probes.jsonl" ]; then
+  if python3 - "${C12S_SCEN_JSON}" "${C12A_DIR}/kc.ledger" >/dev/null 2>&1 <<'C12A_PY3_EOF'
+import json, sys
+
+decl = json.load(open(sys.argv[1], encoding="utf-8"))["scenarios"]
+rows = [r.split("\t") for r in open(sys.argv[2], encoding="utf-8").read().splitlines() if r]
+execs = [r for r in rows if len(r) > 1 and r[0] == "kubectl" and r[1] == "exec"]
+assert execs, "ledger recorded no exec argv at all"
+
+# Every exec argv is `kubectl exec -n <ns> <pod> -- /cni-listener <mode>=...`.
+seen = set()
+for r in execs:
+    assert r[2] == "-n", r
+    assert r[5] == "--" and r[6] == "/cni-listener", r
+    seen.add((r[3], r[4]))
+
+for s in decl:
+    src = (s["source"]["namespace"], s["source"]["pod_name"])
+    assert src in seen, ("source never exec'd", s["id"], src)
+    if s["target_kind"] == "service":
+        tgt = (s["target"]["namespace"], s["target"]["pod_name"])
+        assert tgt in seen, ("target never exec'd", s["id"], tgt)
+
+# And nothing outside the declared identity set (plus the control probe) was
+# ever exec'd — no rediscovery, no guessing.
+allowed = set()
+for s in decl:
+    allowed.add((s["source"]["namespace"], s["source"]["pod_name"]))
+    if s["target_kind"] == "service":
+        allowed.add((s["target"]["namespace"], s["target"]["pod_name"]))
+for ns, pod in seen:
+    assert (ns, pod) in allowed or pod.startswith("cni-control"), ("stray exec", ns, pod)
+C12A_PY3_EOF
+  then C12A_IDENT_OK="Y"; fi
+fi
+
+# --- C12b: zero work is never green --------------------------------------
+python3 - "${C12S_SCEN_JSON}" "${C12S_ROOT}/empty.json" >/dev/null 2>&1 <<'C12B_PY_EOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+d["scenarios"] = []
+json.dump(d, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
+C12B_PY_EOF
+c12_drive zerowork "${C12S_ROOT}/empty.json"
+C12B_RC="${C12S_RC}"
+C12B_EXECS="${C12S_LISTENER_EXECS}"
+C12B_RESULTS="${C12S_RESULTS}"
+C12B_REASON="$(head -c 120 "${C12S_DIR}/art/scenario-schema.stderr" 2>/dev/null | tr -d '\n' || true)"
+
+# --- C12c: identity failures stop with zero L1/L2/L3 exec ----------------
+C12C_CASES=0
+C12C_FAILCLOSED=0
+C12C_ZEROEXEC=0
+C12C_DETAIL=""
+for spec in \
+  "nswrong|C12S_POD_NSWRONG=cni-mock-prometheus" \
+  "namewrong|C12S_POD_NAMEWRONG=cni-untrusted-default" \
+  "dup|C12S_POD_DUP=cni-mock-nexus-worker" \
+  "notready|C12S_POD_NOTREADY=cni-mock-redis" \
+  "terminating|C12S_POD_TERMINATING=cni-mock-arbitrary" \
+  "pending|C12S_POD_PENDING=cni-mock-egress-proxy" \
+  "noreadycond|C12S_POD_NOREADYCOND=cni-mock-ingress-controller" \
+  "zerocand|C12S_POD_ZERO=cni-mock-postgres" \
+  "malformed|C12S_POD_MODE=malformed" \
+  "cmderr|C12S_POD_MODE=cmderr" \
+  "ctl-zero|C12S_CONTROL_MODE=zero" \
+  "ctl-two|C12S_CONTROL_MODE=two" \
+  "ctl-notready|C12S_CONTROL_MODE=notready" \
+  "ctl-malformed|C12S_CONTROL_MODE=malformed" \
+  "ctl-cmderr|C12S_CONTROL_MODE=cmderr" \
+; do
+  lbl="${spec%%|*}"; envkv="${spec#*|}"
+  c12_drive "ident-${lbl}" "${C12S_SCEN_JSON}" "${envkv}"
+  C12C_CASES=$((C12C_CASES+1))
+  if [ "${C12S_RC}" = "3" ]; then C12C_FAILCLOSED=$((C12C_FAILCLOSED+1)); fi
+  if [ "${C12S_LISTENER_EXECS}" = "0" ]; then C12C_ZEROEXEC=$((C12C_ZEROEXEC+1)); fi
+  C12C_DETAIL="${C12C_DETAIL}${lbl}:rc=${C12S_RC}/exec=${C12S_LISTENER_EXECS} "
+done
+
+# --- C12d: Service FQDN namespace projection ------------------------------
+# The L1 exec for a cni-gateway / cni-worker-metrics target MUST run in the
+# namespace `default` (the SECOND dotted label), never in a namespace named
+# after the first label.
+C12D_L1_DEFAULT="$(c12_count $'exec\t-n\tdefault\t' "${C12A_DIR}/kc.ledger")"
+C12D_L1_FIRSTLABEL="$(c12_count $'\t-n\t(cni-gateway|cni-worker-metrics|cni-arbitrary|cni-postgres|cni-redis|cni-proxy)\t' "${C12A_DIR}/kc.ledger")"
+# And a metadata document that puts the first label in the namespace slot is
+# rejected by the schema gate.
+python3 - "${C12S_SCEN_JSON}" "${C12S_ROOT}/nsfirstlabel.json" >/dev/null 2>&1 <<'C12D_PY_EOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+for s in d["scenarios"]:
+    if s["target_kind"] == "service":
+        s["target"]["namespace"] = s["target"]["service_fqdn"].split(".")[0]
+        break
+json.dump(d, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
+C12D_PY_EOF
+c12_drive nsfirstlabel "${C12S_ROOT}/nsfirstlabel.json"
+C12D_REJECT_RC="${C12S_RC}"
+C12D_REJECT_EXECS="${C12S_LISTENER_EXECS}"
+C12D_REJECT_REASON="$(head -c 160 "${C12S_DIR}/art/scenario-schema.stderr" 2>/dev/null | tr -d '\n' || true)"
+
+# --- C12e: scratch compatibility -----------------------------------------
+# No forbidden tool appears in the executed argv, and none appears on a
+# non-comment source line of the scenario script.
+C12E_ARGV_BADTOOL="$(c12_count 'nslookup|curl|[[:space:]]nc[[:space:]]|sh[[:space:]]-c' "${C12A_DIR}/kc.ledger")"
+C12E_SRC_BADTOOL=0
+while IFS= read -r ln; do
+  case "${ln}" in
+    \#*) continue ;;
+  esac
+  case "${ln}" in
+    *nslookup*|*curl*|*"sh -c"*|*"nc -"*)
+      C12E_SRC_BADTOOL=$((C12E_SRC_BADTOOL+1)) ;;
+  esac
+done < <(sed 's/^[[:space:]]*//' "${C12S_SCEN_TARGET}")
+# Every client exec goes through /cni-listener with a recognised mode.
+C12E_LISTENER_MODES="$(c12_count '/cni-listener\t-(probe|resolve-host|http-get|tcp-connect)=' "${C12A_DIR}/kc.ledger")"
+C12E_EXEC_TOTAL="$(c12_count $'kubectl\texec\t' "${C12A_DIR}/kc.ledger")"
+
+# --- C12f: counter integrity ---------------------------------------------
+# (i) Result-count mismatch: make probes.jsonl unwritable (a directory) so
+#     the driver executes every scenario but persists zero results. The
+#     accounting must report RESULT_COUNT_MISMATCH and fail closed.
+C12F_MM_DIR="${C12S_ROOT}/countmismatch"
+rm -rf "${C12F_MM_DIR}"; mkdir -p "${C12F_MM_DIR}/art/probes.jsonl"
+c12_write_stub "${C12F_MM_DIR}"
+: > "${C12F_MM_DIR}/kc.ledger"
+(
+  export PATH="${C12F_MM_DIR}/stub_path:${PATH}"
+  export ARTIFACTS="${C12F_MM_DIR}/art"
+  export SCENARIOS_JSON="${C12S_SCEN_JSON}"
+  export C12S_KC_LEDGER="${C12F_MM_DIR}/kc.ledger"
+  export C12S_DENY="${C12S_DENY_TUPLES}"
+  cd "${REPO_ROOT}" || exit 90
+  set +e
+  bash "${C12S_SCEN_TARGET}" > "${C12F_MM_DIR}/out" 2> "${C12F_MM_DIR}/err"
+  printf '%s\n' "$?" > "${C12F_MM_DIR}/rc"
+  set -e
+  exit 0
+) >/dev/null 2>&1 || true
+C12F_MM_RC="$(cat "${C12F_MM_DIR}/rc" 2>/dev/null || echo NONE)"
+C12F_MM_MISMATCH="N"
+if grep -q 'RESULT_COUNT_MISMATCH' "${C12F_MM_DIR}/art/scenario-accounting.json" 2>/dev/null; then
+  C12F_MM_MISMATCH="Y"
+fi
+# (ii) A duplicate declared id is rejected at the schema gate, so a duplicate
+#      result id can never be produced in the first place.
+python3 - "${C12S_SCEN_JSON}" "${C12S_ROOT}/dupid.json" >/dev/null 2>&1 <<'C12F_PY_EOF'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+d["scenarios"][1]["id"] = d["scenarios"][0]["id"]
+json.dump(d, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
+C12F_PY_EOF
+c12_drive dupid "${C12S_ROOT}/dupid.json"
+C12F_DUP_RC="${C12S_RC}"
+C12F_DUP_EXECS="${C12S_LISTENER_EXECS}"
+C12F_DUP_REASON="$(head -c 80 "${C12S_DIR}/art/scenario-schema.stderr" 2>/dev/null | tr -d '\n' || true)"
+# (iii) The accounting projection must enumerate every count-integrity error
+#       category and fold them into the structural verdict.
+C12F_STATIC=0
+for tok in 'DUPLICATE_RESULT_IDS' 'MISSING_RESULT_IDS' 'UNEXPECTED_RESULT_IDS' \
+           'MALFORMED_RESULT_LINE' 'MALFORMED_RESULTS' 'RESULT_COUNT_MISMATCH' \
+           'EXECUTED_COUNT_MISMATCH' 'TOTAL_COUNT_MISMATCH' 'TOTAL_ZERO' \
+           'DECLARED_COUNT_ZERO' 'structural_failure = bool(errors)'; do
+  if grep -qF -- "${tok}" "${C12S_SCEN_TARGET}"; then
+    C12F_STATIC=$((C12F_STATIC+1))
+  fi
+done
+
+# --- C12g: layer / client / exec errors are terminal ---------------------
+C12G_CASES=0
+C12G_TERMINAL=0
+C12G_DETAIL=""
+for spec in \
+  "l1down|C12S_L1=down|4" \
+  "l2fail|C12S_L2=fail|4" \
+  "clienterr|C12S_L3=clienterr|4" \
+  "execerr|C12S_L3=execerr|4" \
+  "badstdout|C12S_L3=badstdout|4" \
+; do
+  lbl="${spec%%|*}"; rest="${spec#*|}"; envkv="${rest%%|*}"; want="${rest##*|}"
+  c12_drive "layer-${lbl}" "${C12S_SCEN_JSON}" "${envkv}"
+  C12G_CASES=$((C12G_CASES+1))
+  if [ "${C12S_RC}" = "${want}" ] && [ "${C12S_CLASS}" = "STRUCTURAL" ]; then
+    C12G_TERMINAL=$((C12G_TERMINAL+1))
+  fi
+  C12G_DETAIL="${C12G_DETAIL}${lbl}:rc=${C12S_RC}/class=${C12S_CLASS} "
+done
+
+# --- C12h: an all-open datapath is a policy failure ----------------------
+c12_drive allopen "${C12S_SCEN_JSON}" "C12S_L3=allopen"
+C12H_RC="${C12S_RC}"
+C12H_CLASS="${C12S_CLASS}"
+C12H_LEAKS="$(grep -E '^DENY_LEAK=' "${C12S_DIR}/art/scenario-summary.txt" 2>/dev/null | cut -d= -f2 || true)"
+C12H_TOTAL="${C12S_TOTAL}"
+
+# --- C12i: no obsolete label rediscovery; exact declared identity --------
+C12I_OBSOLETE=0
+while IFS= read -r ln; do
+  case "${ln}" in
+    \#*) continue ;;
+  esac
+  case "${ln}" in
+    *"app=cni-source"*|*"app=cni-target"*|*"resolve_source"*|*"resolve_target_pod"*)
+      C12I_OBSOLETE=$((C12I_OBSOLETE+1)) ;;
+  esac
+done < <(sed 's/^[[:space:]]*//' "${C12S_SCEN_TARGET}")
+C12I_JSONPATH="$(c12_count 'jsonpath' "${C12S_SCEN_TARGET}")"
+C12I_RECONCILED="N"
+if python3 - "${C12S_SCEN_JSON}" \
+     "${REPO_ROOT}/scripts/fixtures/integrationcni/01-test-pods.yaml" \
+     "${REPO_ROOT}/scripts/fixtures/integrationcni/02-stub-deps.yaml" \
+     >/dev/null 2>&1 <<'C12I_PY_EOF'
+import json, re, sys
+
+# Reconcile every declared source/target Pod against the tracked manifests
+# WITHOUT PyYAML (the CI image may not carry it): the fixture Pod documents
+# are flat enough that a name/namespace/containerPort scan is exact.
+pods = {}
+for path in sys.argv[2:]:
+    ns = name = None
+    kind = None
+    ports = []
+    for raw in open(path, encoding="utf-8").read().split("\n"):
+        if raw.startswith("---"):
+            if kind == "Pod" and ns and name:
+                pods[(ns, name)] = ports
+            ns = name = kind = None
+            ports = []
+            continue
+        m = re.match(r"^kind:\s*(\S+)", raw)
+        if m:
+            kind = m.group(1)
+        m = re.match(r"^  name:\s*(\S+)", raw)
+        if m and name is None:
+            name = m.group(1)
+        m = re.match(r"^  namespace:\s*(\S+)", raw)
+        if m and ns is None:
+            ns = m.group(1)
+        m = re.match(r"^\s*-?\s*containerPort:\s*(\d+)", raw)
+        if m:
+            ports.append(int(m.group(1)))
+    if kind == "Pod" and ns and name:
+        pods[(ns, name)] = ports
+
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+scen = doc["scenarios"]
+assert len(scen) > 0
+ids = [s["id"] for s in scen]
+assert len(ids) == len(set(ids))
+for s in scen:
+    src = (s["source"]["namespace"], s["source"]["pod_name"])
+    assert src in pods, ("source unreconciled", s["id"], src)
+    if s["target_kind"] == "service":
+        t = s["target"]
+        tgt = (t["namespace"], t["pod_name"])
+        assert tgt in pods, ("target unreconciled", s["id"], tgt)
+        # The FQDN's second label IS the target namespace.
+        parts = t["service_fqdn"].split(".")
+        assert parts[1] == t["namespace"], (s["id"], parts, t["namespace"])
+        assert parts[2] == "svc", (s["id"], t["service_fqdn"])
+        # The target Pod really listens on the probed port.
+        assert s["target_port"] in pods[tgt], (s["id"], s["target_port"], pods[tgt])
+        assert s["target_svc"] == t["service_fqdn"]
+    else:
+        t = s["target"]
+        assert t["l1_l2_exempt"] is True
+        assert t["pod_name"] is None and t["namespace"] is None
+        assert t["host"] == s["target_host"] and t["port"] == s["target_port"]
+        assert s["ignores_l1"] and s["ignores_l2"]
+C12I_PY_EOF
+then C12I_RECONCILED="Y"; fi
+
+# --- C12j: -tcp-connect client contract ----------------------------------
+C12J_GO=0
+for tok in '-tcp-connect' 'runTCPConnectClient' 'isValidHostPort' \
+           'clientFixedDeadline' 'tcpDial' \
+           'invalid flag combination: -resolve-host, -http-get and -tcp-connect are mutually exclusive' \
+           '-tcp-connect is mutually exclusive with -ports/-probe'; do
+  if grep -qF -- "${tok}" "${C12S_LISTENER_GO}"; then C12J_GO=$((C12J_GO+1)); fi
+done
+C12J_TESTS=0
+for tok in 'TestTCPConnectSuccess_StrictEnvelope' 'TestTCPConnectRefused_NoSuccessStdout' \
+           'TestTCPConnectFixedDeadline' 'TestTCPConnectIllegalValuesRejected' \
+           'TestTCPConnectMutuallyExclusive' 'TestTCPConnectValidatorUnitTable' \
+           'assertExactTCPShape'; do
+  if grep -qF -- "${tok}" "${C12S_LISTENER_TEST}"; then C12J_TESTS=$((C12J_TESTS+1)); fi
+done
+# No tunable deadline / retry knob was introduced alongside it.
+C12J_KNOBS=0
+for tok in '-tcp-timeout' '-connect-timeout' '-dial-timeout' '-tcp-retries'; do
+  if grep -qF -- "${tok}" "${C12S_LISTENER_GO}"; then C12J_KNOBS=$((C12J_KNOBS+1)); fi
+done
+# The scenario script uses -tcp-connect for the non-HTTP L3 path and the
+# happy run actually exercised it.
+C12J_ARGV_TCP="$(c12_count '\-tcp-connect=' "${C12A_DIR}/kc.ledger")"
+C12J_ARGV_HTTP="$(c12_count '\-http-get=http://' "${C12A_DIR}/kc.ledger")"
+
+# --- C12k: Helm rehearsal bounded transport ------------------------------
+C12K_CONSTS=0
+for kv in 'D2B_HELM_TIMEOUT:-10m' 'D2B_HELM_QPS:-50' 'D2B_HELM_BURST_LIMIT:-100'; do
+  if grep -qF -- "\${${kv}}" "${C12S_HELM_TARGET}"; then C12K_CONSTS=$((C12K_CONSTS+1)); fi
+done
+C12K_MUTATING=0
+C12K_FLAGGED=0
+while IFS=: read -r ln _; do
+  blk="$(awk -v start="${ln}" 'NR>=start { print; if ($0 ~ /\)[[:space:]]*$/) exit }' "${C12S_HELM_TARGET}")"
+  C12K_MUTATING=$((C12K_MUTATING+1))
+  hits=0
+  for flag in '--wait' '--timeout "$D2B_HELM_TIMEOUT"' '--qps "$D2B_HELM_QPS"' '--burst-limit "$D2B_HELM_BURST_LIMIT"'; do
+    case "${blk}" in
+      *"${flag}"*) hits=$((hits+1)) ;;
+    esac
+  done
+  if [ "${hits}" = "4" ]; then C12K_FLAGGED=$((C12K_FLAGGED+1)); fi
+done < <(grep -nE '^[[:space:]]*helm (install|upgrade) "\$\{RELEASE\}"' "${C12S_HELM_TARGET}")
+C12K_ATOMIC=0
+while IFS=: read -r ln _; do
+  blk="$(awk -v start="${ln}" 'NR>=start { print; if ($0 ~ /\)[[:space:]]*$/) exit }' "${C12S_HELM_TARGET}")"
+  case "${blk}" in
+    *--atomic*) C12K_ATOMIC=$((C12K_ATOMIC+1)) ;;
+  esac
+done < <(grep -nE '^[[:space:]]*helm upgrade "\$\{RELEASE\}"' "${C12S_HELM_TARGET}")
+C12K_VALIDATE_LN="$(grep -nE '^transport_die\(\)' "${C12S_HELM_TARGET}" | head -n1 | cut -d: -f1 || true)"
+C12K_FIRST_HELM_LN="$(grep -nE '^[[:space:]]*helm (install|upgrade|uninstall)' "${C12S_HELM_TARGET}" | head -n1 | cut -d: -f1 || true)"
+C12K_ORDER="N"
+if [ -n "${C12K_VALIDATE_LN}" ] && [ -n "${C12K_FIRST_HELM_LN}" ] \
+   && [ "${C12K_VALIDATE_LN}" -lt "${C12K_FIRST_HELM_LN}" ]; then
+  C12K_ORDER="Y"
+fi
+C12K_RETRYLOOP="$(c12_count '^[[:space:]]*(for|while|until)\b.*\b(attempt|retry|tries|helm)\b' "${C12S_HELM_TARGET}")"
+# The original sentinel discipline is unchanged: each sentinel is still
+# written by exactly one printf, and no `|| true` guards an asserted helm.
+C12K_SENTINELS=0
+for s in 'install-disabled-ok' 'upgrade-enforce-ok' 'rejected-invalid-upgrade-ok' \
+         'state-preserved-after-rejected-upgrade'; do
+  if grep -qF "printf '${s}\\n' > \"\${ARTIFACTS}/" "${C12S_HELM_TARGET}"; then
+    C12K_SENTINELS=$((C12K_SENTINELS+1))
+  fi
+done
+# Live-cluster Helm was NOT run: this control is source-level only, and the
+# runtime argv proof lives in test_upgrade_rehearsal_failclosed_contract.sh
+# (controls 19-22) which drives the target against a stub helm.
+C12K_RUNTIME_PROOF="$(c12_count 'Control 19: static transport-flag contract|Control 20: runtime transport argv' "${REPO_ROOT}/scripts/test_upgrade_rehearsal_failclosed_contract.sh")"
+
+# ---------------------------------------------------------------------------
+# d2b.53 C12a..C12k verdicts — enforcing-CNI scenario gate + Helm transport.
+# ---------------------------------------------------------------------------
+# C12a: the happy scenario run must be REAL WORK. declared == executed ==
+# results == TOTAL, all > 0; the accounting verdict is pass with every error
+# category zero; every declared id appears exactly once; every verdict is an
+# accepted one; every emitted result carries the EXACT declared identity; and
+# the parent stderr is clean.
+if [ "${C12A_RC}" = "0" ] \
+   && [ "${C12A_CLASS}" = "PASS" ] \
+   && [ "${C12A_IDS_OK}" = "Y" ] \
+   && [ "${C12A_VERDICTS_OK}" = "Y" ] \
+   && [ "${C12A_IDENT_OK}" = "Y" ] \
+   && [ -n "${C12A_DECLARED}" ] && [ "${C12A_DECLARED}" -gt 0 ] \
+   && [ "${C12A_EXECUTED}" = "${C12A_DECLARED}" ] \
+   && [ "${C12A_RESULTS}" = "${C12A_DECLARED}" ] \
+   && [ "${C12A_TOTAL}" = "${C12A_DECLARED}" ] \
+   && [ "${C12A_ERRLINES}" = "0" ]; then PASS=$((PASS+1)); C12A_PASS=Y; fi
+
+# C12b: an empty declared set can only produce TOTAL=0, which is precisely the
+# zero-work success run 33642318757 reported. It MUST exit non-zero, must never
+# reach a summary, and must issue zero client execs.
+if [ "${C12B_RC}" = "2" ] \
+   && [ "${C12B_EXECS}" = "0" ] \
+   && [ "${C12B_RESULTS}" = "0" ] \
+   && printf '%s' "${C12B_REASON}" | grep -q 'SCENARIOS_EMPTY'; then
+  PASS=$((PASS+1)); C12B_PASS=Y
+fi
+
+# C12c: all fifteen identity perturbations (wrong namespace, wrong name,
+# duplicate Pod, non-ready, terminating, pending, absent Ready condition,
+# zero candidates, malformed JSON, kubectl command failure, plus the five
+# control-probe variants) exit 3 with ZERO L1/L2/L3 exec handoff.
+if [ "${C12C_CASES}" = "15" ] \
+   && [ "${C12C_FAILCLOSED}" = "15" ] \
+   && [ "${C12C_ZEROEXEC}" = "15" ]; then PASS=$((PASS+1)); C12C_PASS=Y; fi
+
+# C12d: the Service FQDN's SECOND dotted label is the namespace. The happy run
+# must exec L1 in `default` and never in a namespace named after the first
+# label, and a document that puts the first label in the namespace slot must
+# be rejected before any traffic.
+if [ "${C12D_L1_DEFAULT}" -gt 0 ] \
+   && [ "${C12D_L1_FIRSTLABEL}" = "0" ] \
+   && [ "${C12D_REJECT_RC}" = "2" ] \
+   && [ "${C12D_REJECT_EXECS}" = "0" ] \
+   && printf '%s' "${C12D_REJECT_REASON}" | grep -q 'TARGET_FQDN_NAMESPACE_MISMATCH'; then
+  PASS=$((PASS+1)); C12D_PASS=Y
+fi
+
+# C12e: the image is FROM scratch. No forbidden tool may appear in the
+# executed argv or on a non-comment source line, and every exec must be a
+# /cni-listener invocation with a recognised bounded mode.
+if [ "${C12E_ARGV_BADTOOL}" = "0" ] \
+   && [ "${C12E_SRC_BADTOOL}" = "0" ] \
+   && [ "${C12E_EXEC_TOTAL}" -gt 0 ] \
+   && [ "${C12E_LISTENER_MODES}" = "${C12E_EXEC_TOTAL}" ]; then
+  PASS=$((PASS+1)); C12E_PASS=Y
+fi
+
+# C12f: a persisted-result count that disagrees with the declared count fails
+# closed with RESULT_COUNT_MISMATCH; a duplicate declared id is rejected at
+# the schema gate with zero execs; and the accounting projection enumerates
+# every count-integrity category and folds them into the structural verdict.
+if [ "${C12F_MM_RC}" != "0" ] \
+   && [ "${C12F_MM_MISMATCH}" = "Y" ] \
+   && [ "${C12F_DUP_RC}" = "2" ] \
+   && [ "${C12F_DUP_EXECS}" = "0" ] \
+   && printf '%s' "${C12F_DUP_REASON}" | grep -q 'DUPLICATE_ID' \
+   && [ "${C12F_STATIC}" = "11" ]; then PASS=$((PASS+1)); C12F_PASS=Y; fi
+
+# C12g: L1 down, L2 failed, a client input error, an exec/API error, and a
+# zero-exit-but-unparseable stdout are ALL terminal. None may be graded as a
+# policy outcome.
+if [ "${C12G_CASES}" = "5" ] && [ "${C12G_TERMINAL}" = "5" ]; then
+  PASS=$((PASS+1)); C12G_PASS=Y
+fi
+
+# C12h: if the datapath lets everything through, every declared DENY becomes a
+# DENY_LEAK and the gate closes with the policy exit code — not the structural
+# one, and never zero.
+if [ "${C12H_RC}" = "6" ] \
+   && [ "${C12H_CLASS}" = "POLICY" ] \
+   && [ -n "${C12H_LEAKS}" ] && [ "${C12H_LEAKS}" -gt 0 ] \
+   && [ -n "${C12H_TOTAL}" ] && [ "${C12H_TOTAL}" -gt 0 ]; then
+  PASS=$((PASS+1)); C12H_PASS=Y
+fi
+
+# C12i: the obsolete app=cni-source / app=cni-target rediscovery switch is
+# gone (including the jsonpath first-item reads it used), and every declared
+# scenario reconciles 1:1 to a tracked fixture Pod that really listens on the
+# probed port.
+if [ "${C12I_OBSOLETE}" = "0" ] \
+   && [ "${C12I_JSONPATH}" = "0" ] \
+   && [ "${C12I_RECONCILED}" = "Y" ]; then PASS=$((PASS+1)); C12I_PASS=Y; fi
+
+# C12j: the -tcp-connect mode exists with the bounded contract, carries direct
+# Go tests, introduces no tunable deadline or retry knob, and is the path the
+# scenario script actually used for the non-HTTP L3 cases.
+if [ "${C12J_GO}" = "7" ] \
+   && [ "${C12J_TESTS}" = "7" ] \
+   && [ "${C12J_KNOBS}" = "0" ] \
+   && [ "${C12J_ARGV_TCP}" -gt 0 ] \
+   && [ "${C12J_ARGV_HTTP}" -gt 0 ]; then PASS=$((PASS+1)); C12J_PASS=Y; fi
+
+# C12k: the rehearsal declares the three validated transport constants,
+# applies --wait plus all three flags to all 3 mutating Helm argv, retains
+# --atomic on both upgrades, validates BEFORE the first Helm command,
+# introduces no retry loop, and keeps all four sentinel writes intact.
+# Source-level only — the runtime argv proof is controls 19-22 of
+# test_upgrade_rehearsal_failclosed_contract.sh, which drives the target
+# against a stub helm. No live cluster is touched here.
+if [ "${C12K_CONSTS}" = "3" ] \
+   && [ "${C12K_MUTATING}" = "3" ] \
+   && [ "${C12K_FLAGGED}" = "3" ] \
+   && [ "${C12K_ATOMIC}" = "2" ] \
+   && [ "${C12K_ORDER}" = "Y" ] \
+   && [ "${C12K_RETRYLOOP}" = "0" ] \
+   && [ "${C12K_SENTINELS}" = "4" ] \
+   && [ "${C12K_RUNTIME_PROOF}" -ge 2 ]; then PASS=$((PASS+1)); C12K_PASS=Y; fi
+printf '\n# --- d2b.53 enforcing-CNI scenario gate + bounded Helm transport transcript ---\n'
+printf 'C12a: rc=%s class=%s declared=%s executed=%s results=%s total=%s ids-exact-once=%s verdicts-accepted=%s identity-preserved=%s stderr-lines=%s\n' \
+  "${C12A_RC}" "${C12A_CLASS}" "${C12A_DECLARED}" "${C12A_EXECUTED}" "${C12A_RESULTS}" "${C12A_TOTAL}" \
+  "${C12A_IDS_OK}" "${C12A_VERDICTS_OK}" "${C12A_IDENT_OK}" "${C12A_ERRLINES}"
+printf 'C12b: zero-work rc=%s(want 2) execs=%s(want 0) results=%s(want 0) reason=%s\n' \
+  "${C12B_RC}" "${C12B_EXECS}" "${C12B_RESULTS}" "${C12B_REASON}"
+printf 'C12c: identity cases=%s fail-closed-rc3=%s zero-L1L2L3-exec=%s\n' \
+  "${C12C_CASES}" "${C12C_FAILCLOSED}" "${C12C_ZEROEXEC}"
+printf 'C12c: detail=%s\n' "${C12C_DETAIL}"
+printf 'C12d: L1-in-default=%s L1-in-first-label-ns=%s(want 0) reject-rc=%s reject-execs=%s reason=%s\n' \
+  "${C12D_L1_DEFAULT}" "${C12D_L1_FIRSTLABEL}" "${C12D_REJECT_RC}" "${C12D_REJECT_EXECS}" "${C12D_REJECT_REASON}"
+printf 'C12e: argv-forbidden-tools=%s(want 0) src-forbidden-tools=%s(want 0) execs=%s listener-mode-execs=%s\n' \
+  "${C12E_ARGV_BADTOOL}" "${C12E_SRC_BADTOOL}" "${C12E_EXEC_TOTAL}" "${C12E_LISTENER_MODES}"
+printf 'C12f: result-mismatch rc=%s flagged=%s | dup-id rc=%s execs=%s reason=%s | static-counter-terms=%s(want 11)\n' \
+  "${C12F_MM_RC}" "${C12F_MM_MISMATCH}" "${C12F_DUP_RC}" "${C12F_DUP_EXECS}" "${C12F_DUP_REASON}" "${C12F_STATIC}"
+printf 'C12g: layer/client/exec cases=%s terminal=%s detail=%s\n' \
+  "${C12G_CASES}" "${C12G_TERMINAL}" "${C12G_DETAIL}"
+printf 'C12h: all-open datapath rc=%s(want 6) class=%s(want POLICY) deny-leaks=%s total=%s\n' \
+  "${C12H_RC}" "${C12H_CLASS}" "${C12H_LEAKS}" "${C12H_TOTAL}"
+printf 'C12i: obsolete-label-selectors=%s(want 0) jsonpath-reads=%s(want 0) manifest-reconciled=%s\n' \
+  "${C12I_OBSOLETE}" "${C12I_JSONPATH}" "${C12I_RECONCILED}"
+printf 'C12j: go-contract-terms=%s(want 7) go-test-terms=%s(want 7) tunable-knobs=%s(want 0) argv-tcp=%s argv-http=%s\n' \
+  "${C12J_GO}" "${C12J_TESTS}" "${C12J_KNOBS}" "${C12J_ARGV_TCP}" "${C12J_ARGV_HTTP}"
+printf 'C12k: consts=%s(want 3) mutating-helm=%s(want 3) fully-flagged=%s(want 3) atomic-upgrades=%s(want 2) validate-before-helm=%s retry-loops=%s(want 0) sentinels=%s(want 4) runtime-proof-controls=%s\n' \
+  "${C12K_CONSTS}" "${C12K_MUTATING}" "${C12K_FLAGGED}" "${C12K_ATOMIC}" "${C12K_ORDER}" \
+  "${C12K_RETRYLOOP}" "${C12K_SENTINELS}" "${C12K_RUNTIME_PROOF}"
+
+printf '\n# C1..C11 + C6p..C6v + C7a..C7i + C8r..C8x + C7n/C7o/C8n/C8o + C9a..C9m + C12a..C12k + M1 + M2a + M2b PASS=%d/TOTAL=%d\n' "${PASS}" "${TOTAL}"
 # Per-control pass table. Lets the operator
 # attribute a regression to one control name
 # without re-greping the harness source.
-printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c8i=%s c8j=%s c8k=%s c8l=%s c8m=%s c8p=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s c9a=%s c9b=%s c9c=%s c9d=%s c9e=%s c9f=%s c9g=%s c9h=%s c9i=%s c9j=%s c9k=%s c9l=%s c9m=%s\n' \
+printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%s c6r=%s c6s=%s c6t=%s c6u=%s c6v=%s c7a=%s c7b=%s c7c=%s c7k=%s c7r=%s c7s=%s c7d=%s c7g=%s c7h=%s c7i=%s c8r=%s c8s=%s c8d=%s c8t=%s c8u=%s c8v=%s c8w=%s c8x=%s c8i=%s c8j=%s c8k=%s c8l=%s c8m=%s c8p=%s c7n=%s c7o=%s c8n=%s c8o=%s c8=%s c9=%s c10=%s c11=%s m1=%s m2a=%s m2b=%s c9a=%s c9b=%s c9c=%s c9d=%s c9e=%s c9f=%s c9g=%s c9h=%s c9i=%s c9j=%s c9k=%s c9l=%s c9m=%s c12a=%s c12b=%s c12c=%s c12d=%s c12e=%s c12f=%s c12g=%s c12h=%s c12i=%s c12j=%s c12k=%s\n' \
   "${C1_PASS}" "${VOCAB_PASS}" "${C2_PASS}" "${C3_PASS}" "${C4_PASS}" "${C5_PASS}" "${C6_PASS}" \
   "${C6P_PASS}" "${C6Q_PASS}" "${C6R_PASS}" "${C6S_PASS}" "${C6T_PASS}" "${C6U_PASS}" "${C6V_PASS}" \
   "${C7A_PASS}" "${C7B_PASS}" "${C7C_PASS}" "${C7K_PASS}" "${C7R_PASS}" "${C7S_PASS}" "${C7D_PASS}" \
@@ -10054,7 +10874,9 @@ printf '# per-control: c1=%s vocab=%s c2=%s c3=%s c4=%s c5=%s c6=%s c6p=%s c6q=%
   "${M1_PASS}" "${M2A_PASS}" "${M2B_PASS}" \
   "${C9A_PASS}" "${C9B_PASS}" "${C9C_PASS}" "${C9D_PASS}" "${C9E_PASS}" "${C9F_PASS}" \
   "${C9G_PASS}" "${C9H_PASS}" "${C9I_PASS}" "${C9J_PASS}" "${C9K_PASS}" "${C9L_PASS}" \
-  "${C9M_PASS}"
+  "${C9M_PASS}" \
+  "${C12A_PASS}" "${C12B_PASS}" "${C12C_PASS}" "${C12D_PASS}" "${C12E_PASS}" \
+  "${C12F_PASS}" "${C12G_PASS}" "${C12H_PASS}" "${C12I_PASS}" "${C12J_PASS}" "${C12K_PASS}"
 
 # d2b.51: the previous second `# per-control:`
 # emitter is intentionally removed so the raw

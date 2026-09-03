@@ -1471,6 +1471,222 @@ else
     fail "control 18: stderr did not include transition-missing / surface-empty diagnostic; got '${ERR_C18}'"
 fi
 
+# ============================================================================
+# Controls 19-22 — d2b.53 bounded Helm client transport.
+#
+# Heavy run 33642318757 failed Step 1 with "client rate limiter Wait returned
+# an error: context deadline exceeded". The repair declares validated
+# transport constants and applies
+#   --wait --timeout <T> --qps <Q> --burst-limit <B>
+# to every mutating helm install / upgrade in Steps 1-3. These controls prove
+# the flags are actually on the argv, that an invalid override issues ZERO
+# Helm calls, that no retry loop was introduced, and that the original
+# install-failure sentinel behaviour is unchanged.
+# ============================================================================
+echo
+echo "== Control 19: static transport-flag contract =="
+
+# 19a. The three constants are declared with the required defaults.
+for kv in "D2B_HELM_TIMEOUT:-10m" "D2B_HELM_QPS:-50" "D2B_HELM_BURST_LIMIT:-100"; do
+    if grep -qF "\${${kv}}" "$TARGET"; then
+        pass "control 19a: constant declared with required default: \${${kv}}"
+    else
+        fail "control 19a: constant missing or wrong default: \${${kv}}"
+    fi
+done
+
+# 19b. Every mutating helm install / upgrade carries --wait and all three
+#      transport flags within its own continued-line argv block.
+C19_MUTATING=0
+C19_MISSING=""
+while IFS=: read -r ln _; do
+    # An argv block is the helm line plus its backslash-continued lines up to
+    # the closing paren of run_helm_capture's command substitution.
+    blk=$(awk -v start="$ln" 'NR>=start { print; if ($0 ~ /\)[[:space:]]*$/) exit }' "$TARGET")
+    C19_MUTATING=$((C19_MUTATING + 1))
+    for flag in '--wait' '--timeout "$D2B_HELM_TIMEOUT"' '--qps "$D2B_HELM_QPS"' '--burst-limit "$D2B_HELM_BURST_LIMIT"'; do
+        case "$blk" in
+            *"$flag"*) : ;;
+            *) C19_MISSING="${C19_MISSING} line${ln}:${flag}" ;;
+        esac
+    done
+done < <(grep -nE '^\s*helm (install|upgrade) "\$\{RELEASE\}"' "$TARGET")
+if [[ "$C19_MUTATING" -eq 3 ]]; then
+    pass "control 19b: exactly 3 mutating helm argv blocks found (Steps 1-3)"
+else
+    fail "control 19b: expected 3 mutating helm argv blocks, found ${C19_MUTATING}"
+fi
+if [[ -z "$C19_MISSING" ]]; then
+    pass "control 19b: every mutating helm argv carries --wait --timeout --qps --burst-limit"
+else
+    fail "control 19b: transport flags missing:${C19_MISSING}"
+fi
+
+# 19c. --atomic is retained on the two upgrade steps alongside the transport
+#      flags (the atomic invalid-upgrade proof must not be weakened).
+C19_ATOMIC=0
+while IFS=: read -r ln _; do
+    blk=$(awk -v start="$ln" 'NR>=start { print; if ($0 ~ /\)[[:space:]]*$/) exit }' "$TARGET")
+    case "$blk" in
+        *--atomic*) C19_ATOMIC=$((C19_ATOMIC + 1)) ;;
+    esac
+done < <(grep -nE '^\s*helm upgrade "\$\{RELEASE\}"' "$TARGET")
+if [[ "$C19_ATOMIC" -eq 2 ]]; then
+    pass "control 19c: --atomic retained on both upgrade steps alongside transport flags"
+else
+    fail "control 19c: expected --atomic on 2 upgrade steps, found ${C19_ATOMIC}"
+fi
+
+# 19d. Validation precedes the first Helm command in source order.
+C19_VALIDATE_LN=$(grep -nE '^transport_die\(\)' "$TARGET" | head -n1 | cut -d: -f1)
+C19_FIRST_HELM_LN=$(grep -nE '^\s*helm (install|upgrade|uninstall)' "$TARGET" | head -n1 | cut -d: -f1)
+if [[ -n "$C19_VALIDATE_LN" && -n "$C19_FIRST_HELM_LN" && "$C19_VALIDATE_LN" -lt "$C19_FIRST_HELM_LN" ]]; then
+    pass "control 19d: transport validation (line ${C19_VALIDATE_LN}) precedes the first helm invocation (line ${C19_FIRST_HELM_LN})"
+else
+    fail "control 19d: transport validation does not precede the first helm invocation (validate=${C19_VALIDATE_LN} helm=${C19_FIRST_HELM_LN})"
+fi
+
+# 19e. No retry loop / rerun wrapper around an asserted Helm operation.
+if grep -nE '^\s*(for|while|until)\b.*\b(attempt|retry|tries|helm)\b' "$TARGET" >/dev/null 2>&1; then
+    fail "control 19e: a loop construct references helm/attempt/retry — retry-until-green is forbidden"
+else
+    pass "control 19e: no retry/rerun loop wraps an asserted helm operation"
+fi
+
+echo
+echo "== Control 20: runtime transport argv on the happy path =="
+run_control "C20-transport-argv" 0 0 7 same
+T20=$(cat /tmp/.d2b-up-last-tmp)
+RC20=$(cat "$T20/result.rc")
+LOG20="$T20/stub.log"
+[[ "$RC20" -eq 0 ]] && pass "control 20: script rc=0 with transport flags applied" || fail "control 20: expected rc=0, got ${RC20}; stderr=$(cat "$T20/result.err.txt" 2>/dev/null)"
+
+# Exactly one install and exactly two upgrades reached the stub: one attempt
+# per step, no retry.
+C20_INSTALLS=$(grep -c 'args: install ' "$LOG20" 2>/dev/null | tr -d ' \n'); [[ "$C20_INSTALLS" =~ ^[0-9]+$ ]] || C20_INSTALLS=0
+C20_UPGRADES=$(grep -c 'args: upgrade ' "$LOG20" 2>/dev/null | tr -d ' \n'); [[ "$C20_UPGRADES" =~ ^[0-9]+$ ]] || C20_UPGRADES=0
+[[ "$C20_INSTALLS" -eq 1 ]] && pass "control 20: exactly 1 helm install attempt (no retry)" || fail "control 20: expected 1 helm install attempt, saw ${C20_INSTALLS}"
+[[ "$C20_UPGRADES" -eq 2 ]] && pass "control 20: exactly 2 helm upgrade attempts (Steps 2 and 3, no retry)" || fail "control 20: expected 2 helm upgrade attempts, saw ${C20_UPGRADES}"
+
+# Every mutating argv line observed by the stub carries all four flags.
+C20_BAD=0
+C20_SEEN=0
+while IFS= read -r line; do
+    C20_SEEN=$((C20_SEEN + 1))
+    for flag in '--wait' '--timeout 10m' '--qps 50' '--burst-limit 100'; do
+        case "$line" in
+            *"$flag"*) : ;;
+            *) C20_BAD=$((C20_BAD + 1)) ;;
+        esac
+    done
+done < <(grep -E 'args: (install|upgrade) ' "$LOG20" 2>/dev/null || true)
+[[ "$C20_SEEN" -eq 3 ]] && pass "control 20: 3 mutating argv lines captured by the stub" || fail "control 20: expected 3 mutating argv lines, saw ${C20_SEEN}"
+[[ "$C20_BAD" -eq 0 ]] && pass "control 20: observed argv carries --wait --timeout 10m --qps 50 --burst-limit 100 on all 3 mutating calls" || fail "control 20: ${C20_BAD} transport flag(s) absent from observed mutating argv"
+
+# --atomic still present on both upgrades in the observed argv.
+C20_ATOMIC=$(grep -E 'args: upgrade ' "$LOG20" 2>/dev/null | grep -c -- '--atomic' | tr -d ' \n'); [[ "$C20_ATOMIC" =~ ^[0-9]+$ ]] || C20_ATOMIC=0
+[[ "$C20_ATOMIC" -eq 2 ]] && pass "control 20: --atomic observed on both upgrade argv lines" || fail "control 20: --atomic observed on ${C20_ATOMIC}/2 upgrade argv lines"
+
+# The transport record artifact documents the single-attempt contract.
+ADIR20=$(cat "$T20/result.artdir")
+if [[ -s "$ADIR20/upgrade-helm-transport.txt" ]] \
+   && grep -qx 'timeout=10m' "$ADIR20/upgrade-helm-transport.txt" \
+   && grep -qx 'qps=50' "$ADIR20/upgrade-helm-transport.txt" \
+   && grep -qx 'burst_limit=100' "$ADIR20/upgrade-helm-transport.txt" \
+   && grep -qx 'retry_loop=none' "$ADIR20/upgrade-helm-transport.txt" \
+   && grep -qx 'attempts_per_step=1' "$ADIR20/upgrade-helm-transport.txt"; then
+    pass "control 20: upgrade-helm-transport.txt records the validated bounds and the single-attempt contract"
+else
+    fail "control 20: upgrade-helm-transport.txt missing or incomplete: $(cat "$ADIR20/upgrade-helm-transport.txt" 2>/dev/null | tr '\n' ' ')"
+fi
+
+echo
+echo "== Control 21: invalid transport override issues ZERO helm calls =="
+run_invalid_transport() {
+    set +e              # d2b.54 / machine-local fix: this function uses subshell
+    set +u              # rc/calls capture patterns; some hosts / bash 3.2 subshell
+    set +o pipefail     # chains die because $? on a piped stage trips set -e inherited.
+    local label="$1" var="$2" val="$3"
+    local tmp artdir clusterdir
+    tmp="$(mktemp -d -t d2b-up-t-XXXXXX)"
+    artdir="$tmp/external_artifacts"
+    clusterdir="$tmp/cluster_state"
+    mkdir -p "$artdir" "$clusterdir"
+    write_stubs "$tmp"
+    seed_cluster_state "$clusterdir" same
+    printf 'before=5\nafter=6\n' > "$tmp/list_rev"
+    printf 'cluster-up-ok\n' > "$artdir/cluster-up.txt"
+    mkdir -p "$tmp/fake_chart" "$tmp/fixtures/integrationcni"
+    printf 'networkPolicy:\n  allowedPeerPorts: []\n' > "$tmp/fixtures/integrationcni/values-extra-cni.yaml"
+    : > "$tmp/stub.log"
+
+    local rc=0
+    (
+      export PATH="$tmp/stub_path:$PATH"
+      export ARTIFACTS="$artdir"
+      export CHART_PATH="$tmp/fake_chart"
+      export RELEASE="nexus-cni-upgrade"
+      export VALUES_EXTRA="$tmp/fixtures/integrationcni/values-extra-cni.yaml"
+      export STUB_LOG_PATH="$tmp/stub.log"
+      export STUB_STATE_PATH="$tmp/state"; : > "$tmp/state"
+      export STUB_LIST_REV_PATH="$tmp/list_rev"
+      export STUB_NP_PATH="$clusterdir/np.json"
+      export STUB_RELEASE_NAME="nexus-cni-upgrade"
+      export "${var}=${val}"
+      bash "$TARGET" > "$tmp/out" 2> "$tmp/err"
+    ) || rc=$?
+
+    local calls
+    calls=$(grep -c 'args: ' "$tmp/stub.log" 2>/dev/null | tr -d ' \n'); [[ "$calls" =~ ^[0-9]+$ ]] || calls=0
+    printf '  [%s] %s=%s -> rc=%s helm_calls=%s\n' "$label" "$var" "$val" "$rc" "$calls"
+    [[ "$rc" -ne 0 ]] && pass "control 21 ${label}: non-zero exit on invalid ${var}='${val}' (rc=${rc})" \
+                      || fail "control 21 ${label}: expected non-zero exit for ${var}='${val}', got rc=0"
+    [[ "$calls" -eq 0 ]] && pass "control 21 ${label}: ZERO helm calls issued for invalid ${var}='${val}'" \
+                         || fail "control 21 ${label}: ${calls} helm call(s) issued despite invalid ${var}='${val}'"
+    local sent=0
+    for s in upgrade-step1.txt upgrade-step2.txt upgrade-step3.txt upgrade-step4.txt; do
+        [[ -f "$artdir/$s" ]] && sent=$((sent + 1))
+    done
+    [[ "$sent" -eq 0 ]] && pass "control 21 ${label}: no sentinel written for invalid ${var}='${val}'" \
+                        || fail "control 21 ${label}: ${sent} sentinel(s) written despite invalid ${var}='${val}'"
+    if grep -q 'invalid Helm transport configuration' "$tmp/err" 2>/dev/null; then
+        pass "control 21 ${label}: stderr names the invalid-transport diagnostic"
+    else
+        fail "control 21 ${label}: stderr missing invalid-transport diagnostic: $(head -c 200 "$tmp/err" 2>/dev/null)"
+    fi
+}
+run_invalid_transport "timeout-seconds"  D2B_HELM_TIMEOUT      "30s"
+run_invalid_transport "timeout-zero"     D2B_HELM_TIMEOUT      "0m"
+run_invalid_transport "timeout-bare-int" D2B_HELM_TIMEOUT      "10"
+run_invalid_transport "timeout-overmax"  D2B_HELM_TIMEOUT      "999m"
+run_invalid_transport "qps-zero"         D2B_HELM_QPS          "0"
+run_invalid_transport "qps-negative"     D2B_HELM_QPS          "-5"
+run_invalid_transport "qps-decimal"      D2B_HELM_QPS          "50.5"
+run_invalid_transport "qps-padded"       D2B_HELM_QPS          "050"
+run_invalid_transport "qps-overmax"      D2B_HELM_QPS          "100000"
+run_invalid_transport "burst-zero"       D2B_HELM_BURST_LIMIT  "0"
+run_invalid_transport "burst-word"       D2B_HELM_BURST_LIMIT  "many"
+run_invalid_transport "burst-below-qps"  D2B_HELM_BURST_LIMIT  "10"
+run_invalid_transport "burst-overmax"    D2B_HELM_BURST_LIMIT  "999999"
+
+echo
+echo "== Control 22: transport flags do not rescue a failing install =="
+run_control "C22-install-fail-with-transport" 2 0 7 same
+T22=$(cat /tmp/.d2b-up-last-tmp)
+RC22=$(cat "$T22/result.rc")
+ADIR22=$(cat "$T22/result.artdir")
+ERR22=$(cat "$T22/result.err.txt" 2>/dev/null)
+[[ "$RC22" -ne 0 ]] && pass "control 22: non-zero exit when install fails despite transport flags (rc=${RC22})" || fail "control 22: expected non-zero exit, got rc=0"
+[[ ! -f "$ADIR22/upgrade-step1.txt" ]] && pass "control 22: install-disabled-ok sentinel absent (original rc semantics preserved)" || fail "control 22: step1 sentinel written despite install failure"
+RCF22=$(cat "$ADIR22/upgrade-step1.rc" 2>/dev/null || echo missing)
+[[ "$RCF22" == "2" ]] && pass "control 22: upgrade-step1.rc captured the original install exit code (2)" || fail "control 22: upgrade-step1.rc='${RCF22}', expected the original 2"
+case "$ERR22" in
+    *"refusing to write install-disabled-ok sentinel"*) pass "control 22: stderr names the original fail-closed diagnostic" ;;
+    *) fail "control 22: stderr missing the original fail-closed diagnostic: '${ERR22}'" ;;
+esac
+C22_INSTALLS=$(grep -c 'args: install ' "$T22/stub.log" 2>/dev/null | tr -d ' \n'); [[ "$C22_INSTALLS" =~ ^[0-9]+$ ]] || C22_INSTALLS=0
+[[ "$C22_INSTALLS" -eq 1 ]] && pass "control 22: the failing install was attempted exactly once (no retry-until-green)" || fail "control 22: install attempted ${C22_INSTALLS} time(s); expected exactly 1"
+
 echo
 echo "d2b-upgrade-rehearsal failclosed contract: PASS"
 if (( ${#_FAIL_LIST[@]} > 0 )); then

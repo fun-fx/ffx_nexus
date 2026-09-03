@@ -101,12 +101,101 @@ ARTIFACTS="${ARTIFACTS:-${PWD}/artifacts/integrationcni}"
 CHART_PATH="${CHART_PATH:-${PWD}/deploy/helm/nexus}"
 RELEASE="${RELEASE:-nexus-cni-upgrade}"
 
+# --------------------------------------------------------------------------
+# d2b.53 — bounded Helm client transport.
+#
+# Heavy run 33642318757 failed Step 1 with
+#   Error: INSTALLATION FAILED: client rate limiter Wait returned an error:
+#   context deadline exceeded
+# before install-disabled-ok was written. That is a CLIENT-SIDE transport
+# deadline: Helm's default client throttle (QPS 5 / burst 100) plus the
+# default --wait timeout of 5m could not push the enterprise-profile object
+# graph through the discovery/apply path in time on a three-node kind
+# cluster. It is NOT evidence of a chart contract failure — the chart had
+# already rendered and Step 09 had already passed on the same SHA.
+#
+# The repair is to declare the transport explicitly and apply it to every
+# MUTATING helm install / helm upgrade in Steps 1-3:
+#
+#   --wait --timeout <T> --qps <Q> --burst-limit <B>
+#
+# This is NOT a retry loop, NOT a rerun, and NOT a weakened release-state
+# assertion. Each Helm invocation still runs EXACTLY ONCE, its original exit
+# code is still captured verbatim by run_helm_capture, and every sentinel is
+# still written only after its contract is satisfied. Raising the client
+# throttle changes how fast the single attempt may talk to the API server;
+# it does not change what counts as success.
+#
+# Values are validated BEFORE the first Helm command so an invalid local
+# override fails with zero Helm calls and no sentinel.
+# --------------------------------------------------------------------------
+D2B_HELM_TIMEOUT="${D2B_HELM_TIMEOUT:-10m}"
+D2B_HELM_QPS="${D2B_HELM_QPS:-50}"
+D2B_HELM_BURST_LIMIT="${D2B_HELM_BURST_LIMIT:-100}"
+
+# Explicit reasonable upper bounds. A local override outside these bounds is
+# a configuration error, not something to clamp silently.
+D2B_HELM_TIMEOUT_MAX_MINUTES=60
+D2B_HELM_QPS_MAX=500
+D2B_HELM_BURST_LIMIT_MAX=2000
+
 mkdir -p "$ARTIFACTS"
 
 if [[ ! -f "${ARTIFACTS}/cluster-up.txt" ]]; then
   echo "[upgrade] ERROR: cluster not up; run test-cluster-up.sh first"
   exit 2
 fi
+
+# --------------------------------------------------------------------------
+# Transport validation — runs before ANY Helm invocation.
+#
+#   timeout : a positive whole-minute duration, i.e. /^[1-9][0-9]*m$/, at
+#             most D2B_HELM_TIMEOUT_MAX_MINUTES. Seconds/hours forms and a
+#             bare integer are rejected so the value is unambiguous in the
+#             captured argv.
+#   qps     : positive decimal integer, no sign, no zero padding, <= max.
+#   burst   : positive decimal integer, no sign, no zero padding, <= max.
+#             Must be >= qps; a burst below the sustained rate cannot be
+#             honoured and would silently re-throttle the single attempt.
+#
+# Any violation exits non-zero with NO sentinel written, before Helm runs.
+# --------------------------------------------------------------------------
+transport_die() {
+  echo "FAIL: invalid Helm transport configuration: $*" >&2
+  echo "      no Helm command was issued and no sentinel was written" >&2
+  exit 21
+}
+
+if [[ ! "${D2B_HELM_TIMEOUT}" =~ ^[1-9][0-9]*m$ ]]; then
+  transport_die "D2B_HELM_TIMEOUT='${D2B_HELM_TIMEOUT}' must be a positive whole-minute duration such as 10m"
+fi
+_d2b_timeout_minutes="${D2B_HELM_TIMEOUT%m}"
+if [[ "${_d2b_timeout_minutes}" -gt "${D2B_HELM_TIMEOUT_MAX_MINUTES}" ]]; then
+  transport_die "D2B_HELM_TIMEOUT='${D2B_HELM_TIMEOUT}' exceeds the ${D2B_HELM_TIMEOUT_MAX_MINUTES}m upper bound"
+fi
+if [[ ! "${D2B_HELM_QPS}" =~ ^[1-9][0-9]*$ ]]; then
+  transport_die "D2B_HELM_QPS='${D2B_HELM_QPS}' must be a positive decimal integer with no sign or zero padding"
+fi
+if [[ "${D2B_HELM_QPS}" -gt "${D2B_HELM_QPS_MAX}" ]]; then
+  transport_die "D2B_HELM_QPS='${D2B_HELM_QPS}' exceeds the ${D2B_HELM_QPS_MAX} upper bound"
+fi
+if [[ ! "${D2B_HELM_BURST_LIMIT}" =~ ^[1-9][0-9]*$ ]]; then
+  transport_die "D2B_HELM_BURST_LIMIT='${D2B_HELM_BURST_LIMIT}' must be a positive decimal integer with no sign or zero padding"
+fi
+if [[ "${D2B_HELM_BURST_LIMIT}" -gt "${D2B_HELM_BURST_LIMIT_MAX}" ]]; then
+  transport_die "D2B_HELM_BURST_LIMIT='${D2B_HELM_BURST_LIMIT}' exceeds the ${D2B_HELM_BURST_LIMIT_MAX} upper bound"
+fi
+if [[ "${D2B_HELM_BURST_LIMIT}" -lt "${D2B_HELM_QPS}" ]]; then
+  transport_die "D2B_HELM_BURST_LIMIT='${D2B_HELM_BURST_LIMIT}' must be >= D2B_HELM_QPS='${D2B_HELM_QPS}'"
+fi
+
+# The validated transport is recorded so a heavy-run artifact reviewer can
+# see exactly which client bounds the single attempt used.
+printf 'timeout=%s\nqps=%s\nburst_limit=%s\ntimeout_max_minutes=%s\nqps_max=%s\nburst_limit_max=%s\nretry_loop=none\nattempts_per_step=1\n' \
+  "${D2B_HELM_TIMEOUT}" "${D2B_HELM_QPS}" "${D2B_HELM_BURST_LIMIT}" \
+  "${D2B_HELM_TIMEOUT_MAX_MINUTES}" "${D2B_HELM_QPS_MAX}" "${D2B_HELM_BURST_LIMIT_MAX}" \
+  > "${ARTIFACTS}/upgrade-helm-transport.txt"
+echo "[upgrade] helm client transport: --wait --timeout ${D2B_HELM_TIMEOUT} --qps ${D2B_HELM_QPS} --burst-limit ${D2B_HELM_BURST_LIMIT} (single attempt per step, no retry)"
 
 # --------------------------------------------------------------------------
 # Capture helpers — preserve the actual exit code of the underlying command
@@ -460,7 +549,10 @@ S1RC=$(run_helm_capture "${ARTIFACTS}/upgrade-step1.log" \
     --set image.repository=busybox \
     --set image.tag=1.36 \
     --set dependencies.postgres.url="postgres://nexus:nopassword@postgres.default.svc.cluster.local:5432/nexus" \
-    --wait)
+    --wait \
+    --timeout "$D2B_HELM_TIMEOUT" \
+    --qps "$D2B_HELM_QPS" \
+    --burst-limit "$D2B_HELM_BURST_LIMIT")
 S1RC=$(cat "${ARTIFACTS}/upgrade-step1.rc")
 S1RC=${S1RC:-1}
 
@@ -500,7 +592,11 @@ S2RC=$(run_helm_capture "${ARTIFACTS}/upgrade-step2.log" \
     --set image.repository=busybox \
     --set image.tag=1.36 \
     --set dependencies.postgres.url="postgres://nexus:nopassword@postgres.default.svc.cluster.local:5432/nexus" \
-    --atomic)
+    --atomic \
+    --wait \
+    --timeout "$D2B_HELM_TIMEOUT" \
+    --qps "$D2B_HELM_QPS" \
+    --burst-limit "$D2B_HELM_BURST_LIMIT")
 S2RC=$(cat "${ARTIFACTS}/upgrade-step2.rc")
 S2RC=${S2RC:-1}
 
@@ -575,7 +671,11 @@ S3RC=$(run_helm_capture "${ARTIFACTS}/upgrade-step3.log" \
     --set image.repository=busybox \
     --set image.tag=1.36 \
     --set dependencies.postgres.url="postgres://nexus:nopassword@postgres.default.svc.cluster.local:5432/nexus" \
-    --atomic)
+    --atomic \
+    --wait \
+    --timeout "$D2B_HELM_TIMEOUT" \
+    --qps "$D2B_HELM_QPS" \
+    --burst-limit "$D2B_HELM_BURST_LIMIT")
 S3RC=$(cat "${ARTIFACTS}/upgrade-step3.rc")
 S3RC=${S3RC:-0}
 
