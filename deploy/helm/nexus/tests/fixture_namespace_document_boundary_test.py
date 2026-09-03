@@ -62,6 +62,7 @@ fixtures. Four additional controls (C11-C14) cover Section B's
 prerequisite-coverage invariants on deep-copied mutations.
 """
 import copy
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -72,6 +73,7 @@ REPO = Path(__file__).resolve().parent.parent.parent.parent.parent
 FIXTURE_DIR = REPO / "scripts" / "fixtures" / "integrationcni"
 TARGET_FIXTURE = FIXTURE_DIR / "02-stub-deps.yaml"
 ALL_FIXTURE_FILES = sorted(p for p in FIXTURE_DIR.glob("*.yaml"))
+READINESS_GATE = REPO / "scripts" / "cni-readiness-gate.sh"
 
 PREREQ_FIXTURE = "00-prereq-namespaces.yaml"
 CONTROL_POD_FIXTURE = "03-control-pod.yaml"
@@ -625,9 +627,10 @@ def run_control_pristine():
         )
     return _ok(
         "C1-pristine",
-        "02-stub-deps.yaml: 1 Ingress NS without spec, 1 "
-        "Svc/cni-arbitrary in default, 1 Pod/cni-mock-arbitrary in "
-        "default; selector/port/named-container invariants hold",
+        f"02-stub-deps.yaml: 1 Ingress NS without spec, 1 "
+        f"Svc/{ARBITRARY_NAME} in {ARBITRARY_NAMESPACE}, 1 "
+        f"Pod/{ARBITRARY_POD_NAME} in {ARBITRARY_POD_NAMESPACE}; "
+        f"selector/port/named-container invariants hold",
     )
 
 
@@ -985,6 +988,88 @@ def run_control_undeclared_namespace_use():
     return _ok("C14-undeclared-namespace", "validator rejected: " + diag)
 
 
+def _parse_gate_expected_ns(text):
+    """Extract the EXPECTED_NS=( ... ) array from cni-readiness-gate.sh.
+
+    Fail-closed: a missing, empty, or duplicated array raises instead of
+    yielding a set that would silently satisfy the mirror comparison.
+    """
+    m = re.search(r"^EXPECTED_NS=\(\s*$(.*?)^\)\s*$", text, re.M | re.S)
+    if m is None:
+        raise RuntimeError(
+            f"{READINESS_GATE.name}: EXPECTED_NS=( ... ) array not found"
+        )
+    names = []
+    for raw in m.group(1).splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            names.append(line)
+    if not names:
+        raise RuntimeError(f"{READINESS_GATE.name}: EXPECTED_NS is empty")
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise RuntimeError(
+            f"{READINESS_GATE.name}: EXPECTED_NS has duplicates: {dupes}"
+        )
+    return set(names)
+
+
+def _gate_mirror_issues(gate_ns, prereq_ns):
+    """Both directions of drift between the gate array and the manifest."""
+    issues = []
+    only_gate = sorted(gate_ns - prereq_ns)
+    if only_gate:
+        issues.append(
+            f"{READINESS_GATE.name}: EXPECTED_NS requires namespaces absent "
+            f"from {PREREQ_FIXTURE}: {only_gate}; step 07 would report them "
+            f"missing and fail-closed at runtime"
+        )
+    only_manifest = sorted(prereq_ns - gate_ns)
+    if only_manifest:
+        issues.append(
+            f"{PREREQ_FIXTURE}: declares namespaces {only_manifest} that "
+            f"{READINESS_GATE.name} step 07 never verifies; readiness "
+            f"coverage gap"
+        )
+    return issues
+
+
+def run_control_readiness_gate_namespace_mirror():
+    """C15 positive + negative: gate EXPECTED_NS must mirror 00-prereq."""
+    prereq_ns = _gather_prereq_names(_load_fixture(PREREQ_FIXTURE))
+    gate_ns = _parse_gate_expected_ns(READINESS_GATE.read_text())
+
+    issues = _gate_mirror_issues(gate_ns, prereq_ns)
+    if issues:
+        return _fail("C15-readiness-gate-ns-mirror", "; ".join(issues))
+    if gate_ns != EXPECTED_PREREQ_NAMESPACES:
+        return _fail(
+            "C15-readiness-gate-ns-mirror",
+            f"EXPECTED_NS {sorted(gate_ns)} agrees with {PREREQ_FIXTURE} but "
+            f"diverges from the pinned expectation "
+            f"{sorted(EXPECTED_PREREQ_NAMESPACES)}",
+        )
+    # Negative: a retired namespace left behind in the gate must be caught.
+    if not _gate_mirror_issues(gate_ns | {"cni-test-postgres"}, prereq_ns):
+        return _fail(
+            "C15-readiness-gate-ns-mirror",
+            "mirror check failed to reject a retired namespace left in "
+            "EXPECTED_NS",
+        )
+    # Negative: a newly declared namespace the gate forgets must be caught.
+    if not _gate_mirror_issues(gate_ns, prereq_ns | {"cni-test-newdep"}):
+        return _fail(
+            "C15-readiness-gate-ns-mirror",
+            "mirror check failed to reject a prerequisite namespace the gate "
+            "does not verify",
+        )
+    return _ok(
+        "C15-readiness-gate-ns-mirror",
+        f"EXPECTED_NS mirrors {PREREQ_FIXTURE} exactly "
+        f"({len(gate_ns)} namespaces: {sorted(gate_ns)})",
+    )
+
+
 CONTROLS = [
     ("C1-pristine",          run_control_pristine),
     ("C2-doc-separation",    run_control_document_separation),
@@ -1000,6 +1085,7 @@ CONTROLS = [
     ("C12-declaration-out-of-order", run_control_declaration_out_of_order),
     ("C13-duplicate-declaration",    run_control_duplicate_declaration),
     ("C14-undeclared-namespace",     run_control_undeclared_namespace_use),
+    ("C15-readiness-gate-ns-mirror", run_control_readiness_gate_namespace_mirror),
 ]
 
 

@@ -23,7 +23,7 @@
 #     (chart product policy, deploy/helm/nexus/
 #       templates/networkpolicy.yaml) - admits
 #       cni-test-ingress / cni-test-prometheus
-#       and egress to cni-test-postgres / etc.
+#       and egress to database / cni-test-proxy.
 #
 #   Both policies are present in the cluster
 #   during the scenario probes. A chart-side

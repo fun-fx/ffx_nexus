@@ -599,13 +599,17 @@ step_no=7
 run_in_phase() { (( step_no >= PHASE_FIRST_STEP && step_no <= PHASE_LAST_STEP )); }
 if run_in_phase; then
 
+# This list is the runtime mirror of the Namespace
+# documents in fixtures/integrationcni/00-prereq-namespaces.yaml.
+# Drift between the two is a silent egress-disabling
+# false negative, so fixture_namespace_document_boundary_test.py
+# parses this very array and fails when it diverges
+# from the manifest. Keep the two in lockstep.
 EXPECTED_NS=(
   cni-test-ingress
   cni-test-prometheus
   cni-test-untrusted
-  cni-test-postgres
-  cni-test-redis
-  cni-test-clickhouse
+  database
   cni-test-proxy
   cni-control
 )
