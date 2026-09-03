@@ -178,7 +178,7 @@ describe("<Eval /> weights sliders", () => {
     fireEvent.change(sliders[2], { target: { value: "0.2" } });
     await waitFor(() => screen.getByText("Save weights"));
     fireEvent.click(screen.getByText(/Save weights/i));
-    await waitFor(() => captured !== null);
+    await waitFor(() => expect(captured).not.toBeNull());
     const sent = captured!.routing.weights;
     const sum = sent.quality + sent.cost + sent.latency;
     expect(Math.abs(sum - 1)).toBeLessThanOrEqual(0.005);
@@ -204,8 +204,21 @@ describe("<Eval /> weights sliders", () => {
     // distribution. Save should send a normalised row where latency is 0
     // and q + c = 1.
     fireEvent.change(sliders[2], { target: { value: "0" } });
+    // Wait for the change to reach committed state before saving. The
+    // sliders are controlled, so the percentage label is the signal that
+    // React has applied it — the same idiom the drag-isolation test above
+    // uses. Clicking Save immediately after fireEvent reads whatever state
+    // the click handler sees, which on a slower runner is still the previous
+    // value: the assertion below then receives latency 0.2, the default,
+    // and reads as a product bug rather than a test that did not wait.
+    await waitFor(() => {
+      const labels = Array.from(
+        document.querySelectorAll<HTMLElement>(".weight-slider-value"),
+      );
+      expect(labels[2].textContent).toMatch(/^0%$/);
+    });
     fireEvent.click(screen.getByText(/Save weights/i));
-    await waitFor(() => captured !== null);
+    await waitFor(() => expect(captured).not.toBeNull());
     const sent = captured!.routing.weights;
     expect(sent.latency).toBe(0);
     expect(sent.quality).toBeCloseTo(0.6 / 0.8, 2);
@@ -226,8 +239,18 @@ describe("<Eval /> weights sliders", () => {
     sliders.forEach((el) => {
       fireEvent.change(el, { target: { value: "0" } });
     });
+    // Same reason as the zero-axis test: wait for all three to commit
+    // before saving. This assertion happens to hold on stale state too
+    // (0.6/0.2/0.2 also sums to 1), so without the wait it would pass while
+    // testing the default rather than the all-zero drag it names.
+    await waitFor(() => {
+      const labels = Array.from(
+        document.querySelectorAll<HTMLElement>(".weight-slider-value"),
+      );
+      expect(labels.map((l) => l.textContent)).toEqual(["0%", "0%", "0%"]);
+    });
     fireEvent.click(screen.getByText(/Save weights/i));
-    await waitFor(() => captured !== null);
+    await waitFor(() => expect(captured).not.toBeNull());
     const sent = captured!.routing.weights;
     // Either the historical default OR a "100% 로 저장되었습니다" toast,
     // but we expect the server-visible sum to be 1 either way.

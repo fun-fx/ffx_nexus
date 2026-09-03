@@ -321,7 +321,15 @@ jobs:
         run: docker build -t nexus:ci-scan .
 
       - name: trivy image scan
-        uses: aquasecurity/trivy-action@v0.31.0
+        # Pinned to the 0.35.0 commit, not the tag. GHSA-69fq-xp46-6x23: the
+        # Trivy release pipeline was briefly compromised, so a mutable tag on
+        # a third-party action is a supply-chain hole in the job whose whole
+        # purpose is finding supply-chain holes. A commit SHA cannot be moved
+        # under us. 0.35.0 also carries the fix for GHSA-9p44-j4g5-cfx5
+        # (script injection via a sourced env file in the composite action).
+        # Renovate/Dependabot still bump this because the version is in the
+        # trailing comment.
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           image-ref: nexus:ci-scan
           # Pin the scanner version. The action's default of v0.63.0 was
@@ -349,7 +357,8 @@ jobs:
         # fixed there without breaking the dev workflow. eval-service/Dockerfile
         # is now run-as-nobody in CI (see file). The skip list is therefore
         # only the devcontainer image, not anything a customer ships.
-        uses: aquasecurity/trivy-action@v0.31.0
+        # SHA-pinned for the same reason as the image scan above.
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           scan-type: config
           scan-ref: .
@@ -406,6 +415,15 @@ jobs:
 
       - name: npm build
         run: npm run build
+
+      - name: npm test
+        # The console had 183 vitest tests that nothing ever ran, so they
+        # rotted: a missing Web Storage shim in vitest.setup.ts failed 125 of
+        # them on main and no CI job noticed. Building the bundle proves it
+        # compiles, not that the routing guards, the resize persistence or the
+        # eval page behave — so the build step alone let the suite decay to
+        # the point where its own failures were the expected state.
+        run: npm test
 
       - name: npm audit
         # Production deps only. We don't gate on dev-dep CVEs that are

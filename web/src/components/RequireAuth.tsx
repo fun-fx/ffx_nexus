@@ -2,6 +2,7 @@ import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { fetchMe } from "../api";
+import { safeNext } from "../lib/safeNext";
 
 /**
  * Guards the authenticated console shell.
@@ -22,19 +23,12 @@ import { fetchMe } from "../api";
  */
 const SESSION_CHECK_MS = 60_000;
 
-// safeNext keeps /login's ?next= parameter constrained to a same-origin
-// relative path. GHSA-jjmj-jmhj-qwj2 (open-redirect leading to XSS) in
-// react-router 6.x allows attacker-supplied navigate() targets to reach
-// external URLs; we want any user whose session expired mid-action to land
-// back on their original internal page, never on a phishing decoy. Returning
-// "/" as the default when the path is malformed ensures the login flow still
-// works without ever surfacing attacker-controlled bytes to react-router's
-// navigate().
-function safeNext(path: string): string {
-  if (!path.startsWith("/") || path.startsWith("//")) {
-    return "/";
-  }
-  return path;
+// Fall back to the console root when the current location is not a target we
+// would redirect to. safeNext returns null in that case; here that means
+// "send them home after login" rather than "do not redirect", because the
+// user is on their way to the login screen either way.
+function nextFrom(pathAndSearch: string): string {
+  return safeNext(pathAndSearch) ?? "/";
 }
 
 export function RequireAuth() {
@@ -58,7 +52,7 @@ export function RequireAuth() {
   // the page is no longer rendered with stale assumptions.
   useEffect(() => {
     if (isError) {
-      const target = safeNext(location.pathname + location.search);
+      const target = nextFrom(location.pathname + location.search);
       qc.clear();
       navigate(`/login?next=${encodeURIComponent(target)}`, { replace: true });
     }
@@ -77,7 +71,7 @@ export function RequireAuth() {
   }
 
   if (!data) {
-    const target = safeNext(location.pathname + location.search);
+    const target = nextFrom(location.pathname + location.search);
     return <Navigate to={`/login?next=${encodeURIComponent(target)}`} replace />;
   }
 
