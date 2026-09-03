@@ -34,9 +34,30 @@
 //	                         line envelope: status 200
 //	                         is a Gate 09 predicate,
 //	                         not a client predicate.
+//	-tcp-connect=<host:port> -> d2b.53 bounded TCP
+//	                         dial for non-HTTP L3
+//	                         scenarios (postgres 5432,
+//	                         redis 6379, proxy 3128,
+//	                         arbitrary 9090, and raw
+//	                         external IPs). The image
+//	                         is FROM scratch and has no
+//	                         nc, so the enforcing-CNI
+//	                         scenario gate has no other
+//	                         way to observe a real
+//	                         ALLOW/DENY on a plain TCP
+//	                         port. Same fixed 5-second
+//	                         context deadline; no
+//	                         fallback resolver, no
+//	                         retry, no partial-write
+//	                         path. Only a COMPLETED
+//	                         socket outcome emits the
+//	                         strict one-line JSON
+//	                         envelope; every connect
+//	                         error exits non-zero with
+//	                         nothing on stdout.
 //
 // All declared flags are registered BEFORE the
-// single flag.Parse() call. The two client flags
+// single flag.Parse() call. The three client flags
 // are mutually exclusive with each other and with
 // the historical -ports/-probe/-readyz/-role/
 // -target modes. The fixed 5-second deadline is
@@ -94,6 +115,7 @@ func main() {
 	// narrow the deadline; the 5-second bound is fixed.
 	resolveHost := flag.String("resolve-host", "", "FQDN to resolve via the Pod network; emits a single JSON object on stdout then exits (client mode)")
 	httpGet := flag.String("http-get", "", "absolute http:// URL to GET against; emits a single JSON object on stdout then exits (client mode)")
+	tcpConnect := flag.String("tcp-connect", "", "host:port to dial over TCP; emits a single JSON object on stdout then exits (client mode)")
 
 	flag.Parse()
 
@@ -101,6 +123,7 @@ func main() {
 	hasProbe := *probe != ""
 	hasResolve := *resolveHost != ""
 	hasHTTPGet := *httpGet != ""
+	hasTCPConnect := *tcpConnect != ""
 
 	// d2b.51 corrected: pre-network validation.
 	// Empty/whitespace/control character hosts and
@@ -122,14 +145,23 @@ func main() {
 			failClient("invalid -http-get value: not an absolute http:// URL")
 		}
 	}
+	if hasTCPConnect {
+		modes++
+		if !isValidHostPort(*tcpConnect) {
+			failClient("invalid -tcp-connect value: not a bare host:port (whitespace / control chars / userinfo / shell fragments / malformed host or port rejected)")
+		}
+	}
 	if modes > 1 {
-		failClient("invalid flag combination: -resolve-host and -http-get cannot both be set")
+		failClient("invalid flag combination: -resolve-host, -http-get and -tcp-connect are mutually exclusive")
 	}
 	if hasResolve && (hasPorts || hasProbe) {
 		failClient("invalid flag combination: -resolve-host is mutually exclusive with -ports/-probe")
 	}
 	if hasHTTPGet && (hasPorts || hasProbe) {
 		failClient("invalid flag combination: -http-get is mutually exclusive with -ports/-probe")
+	}
+	if hasTCPConnect && (hasPorts || hasProbe) {
+		failClient("invalid flag combination: -tcp-connect is mutually exclusive with -ports/-probe")
 	}
 
 	if hasResolve {
@@ -140,13 +172,17 @@ func main() {
 		runHTTPClient(*httpGet)
 		return
 	}
+	if hasTCPConnect {
+		runTCPConnectClient(*tcpConnect)
+		return
+	}
 
 	if hasProbe {
 		probePort(*probe)
 		return
 	}
 	if !hasPorts {
-		fmt.Fprintf(os.Stderr, "cni-listener: no -ports / -probe / -resolve-host / -http-get flag passed\n")
+		fmt.Fprintf(os.Stderr, "cni-listener: no -ports / -probe / -resolve-host / -http-get / -tcp-connect flag passed\n")
 		os.Exit(2)
 	}
 
@@ -397,6 +433,157 @@ func isValidHTTPURL(s string) bool {
 	return true
 }
 
+// isValidHostPort accepts the EXACT original input
+// bytes for -tcp-connect. The accepted surface is a
+// bare "<host>:<port>" with:
+//
+//   - no leading / trailing whitespace (no silent
+//     TrimSpace) and no whitespace or control
+//     character anywhere in the input;
+//   - EXACTLY one colon, so an IPv6 literal, a
+//     "scheme://host:port" form, and a doubled
+//     "host:port:port" are all rejected. The
+//     fixture surface only needs IPv4 literals and
+//     cluster FQDNs, and a closed surface is the
+//     point;
+//   - no userinfo, no path / query / fragment and no
+//     shell metacharacter: the rejected byte set is
+//     @ / ? # ; | & $ ` ( ) < > * ! \ " ' — a
+//     substitution attempt must not reach the dialer;
+//   - host is either a lowercase DNS name (labels of
+//     [a-z0-9-] joined by '.', no leading/trailing
+//     '.' or '-', no "..") or a dotted-quad IPv4
+//     literal;
+//   - port is 1..65535 decimal with no sign, no
+//     leading '+', and no leading zero padding.
+func isValidHostPort(s string) bool {
+	if s != strings.TrimSpace(s) {
+		return false
+	}
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		// Printable ASCII only: rejects SPACE, TAB,
+		// NUL, NL, CR, DEL and every other control
+		// character in one predicate.
+		if r < 0x21 || r > 0x7E {
+			return false
+		}
+	}
+	if strings.ContainsAny(s, "@/?#;|&$`()<>*!\\\"'") {
+		return false
+	}
+	if strings.Count(s, ":") != 1 {
+		return false
+	}
+	host, port, ok := strings.Cut(s, ":")
+	if !ok {
+		return false
+	}
+	if !isValidDialHost(host) {
+		return false
+	}
+	return isValidDialPort(port)
+}
+
+// isValidDialHost accepts a lowercase DNS name or a
+// dotted-quad IPv4 literal. Uppercase is rejected so
+// the scenario metadata and the observed argv are
+// byte-comparable.
+func isValidDialHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") ||
+		strings.HasPrefix(host, "-") || strings.HasSuffix(host, "-") ||
+		strings.Contains(host, "..") {
+		return false
+	}
+	// An IPv4 literal is accepted through net.ParseIP
+	// only in its 4-octet dotted form; net.ParseIP
+	// also accepts IPv6, which the single-colon rule
+	// above has already excluded.
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.To4() != nil
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" {
+			return false
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if !(r == '-' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isValidDialPort accepts 1..65535 decimal with no
+// sign and no zero padding.
+func isValidDialPort(port string) bool {
+	if port == "" || len(port) > 5 {
+		return false
+	}
+	if port[0] == '0' {
+		return false
+	}
+	n := 0
+	for _, r := range port {
+		if r < '0' || r > '9' {
+			return false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n >= 1 && n <= 65535
+}
+
+// runTCPConnectClient performs ONE bounded TCP dial
+// against an already-validated "host:port". The fixed
+// 5-second deadline is carried by the dial context —
+// there is no operator-tunable timeout, no retry, and
+// no fallback address family or resolver. A refused,
+// timed-out, unreachable, or otherwise failed connect
+// calls failClient: exit non-zero with a redacted
+// stderr line and NOTHING on stdout, so a DENY can
+// never look like an ALLOW to the scenario parser.
+// Only a completed socket produces the envelope:
+//
+//	{"target":"<host:port>","host":"<host>","port":<port>,"connected":true}
+func runTCPConnectClient(target string) {
+	ctx, cancel := context.WithTimeout(context.Background(), clientFixedDeadline)
+	defer cancel()
+
+	host, portStr, _ := strings.Cut(target, ":")
+	port := 0
+	for _, r := range portStr {
+		port = port*10 + int(r-'0')
+	}
+
+	conn, err := tcpDial(ctx, target)
+	if err != nil {
+		failClient(fmt.Sprintf("tcp-connect %s failed: %v", redactHost(target), err))
+	}
+	if conn == nil {
+		failClient(fmt.Sprintf("tcp-connect %s failed: nil connection with nil error", redactHost(target)))
+	}
+	// The socket is only observed as established; no
+	// payload is written and no response is read, so
+	// the outcome is a pure reachability fact.
+	_ = conn.Close()
+
+	emitClientJSON(map[string]any{
+		"target":    target,
+		"host":      host,
+		"port":      port,
+		"connected": true,
+	})
+}
+
 // redactHost strips path, query, userinfo, fragment.
 func redactHost(s string) string {
 	if i := strings.IndexAny(s, "/?#@"); i >= 0 {
@@ -546,4 +733,18 @@ func dedupStrings(in []string) []string {
 var resolveLookup = func(ctx context.Context, host string) ([]string, error) {
 	resolver := &net.Resolver{PreferGo: true}
 	return resolver.LookupHost(ctx, host)
+}
+
+// tcpDial performs the actual bounded TCP dial for
+// -tcp-connect. Like resolveLookup it is an
+// unexported package-level variable so the production
+// CLI signature stays unchanged while tests can swap
+// in a deterministic dialer without build tags or
+// environment variables. net.Dialer carries no
+// per-dial fallback: DualStack/FallbackDelay are left
+// at their zero values and the context supplies the
+// only deadline, so the 5-second bound is exact.
+var tcpDial = func(ctx context.Context, hostPort string) (net.Conn, error) {
+	d := &net.Dialer{}
+	return d.DialContext(ctx, "tcp", hostPort)
 }

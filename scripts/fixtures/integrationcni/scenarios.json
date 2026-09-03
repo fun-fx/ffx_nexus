@@ -1,12 +1,29 @@
 {
-  "_about": "Phase D-2b scenario metadata.  The d2b-twelve-scenarios.sh bash script\n  reads this file INSTEAD of inferring verdict expectations from baked-in branches\n  inside the script.  Two reasons:\n  (a) chart-policy-driven CLOSED verdicts are graded CHART_INTENTIONAL_DENY\n      so PASS_OK math is well-defined and chart-policy regressions are loud\n      (they flip CHART_INTENTIONAL_DENY to DENY_LEAK);\n  (b) fixture label selectors, namespaces, etc. are pulled from this single\n      file so CNI tests and fixture YAMLs cannot drift.\n\n  Each entry has:\n    id:            stable scenario id used in the run record\n    description:   human-readable summary\n    role:          gateway | worker | ingress-controller | prometheus | untrusted\n    action:        what the source pod does (http_get, tcp_connect, dns_lookup)\n    target_kind:   service | pod | external_ip\n    target_svc:    ClusterIP service name (if target_kind=service)\n    target_pod_selector: selector pinning the target pod if target_kind != service\n    target_pod_name_or_typed_localhost: when \"local\" means the source must target\n                       its own pod (cni-arbitrary fixture) via Pod IP\n    target_host:   hostname or IP the source connects to\n    target_port:   int\n    expected:      ALLOW | DENY\n    chart_intent:  ALLOW_IMPLIED | ALLOW_FEATURE_OFF | DENY_DEFAULT_DENY | DENY_DIRECT_EGRESS\n                    | DENY_PORT_MISUSE | DENY_EXTERNAL_IP | DENY_METADATA | DENY_OPEN_INTENT\n    upstream_reason:        short text used for hints when regressed\n    requires_features:      list<name> — keys in values.yaml that must be true\n    ignores_l1:   bool — true when the target has no localhost listener by definition\n    ignores_l2:   bool — true when the host is a raw IP / not a service hostname\n",
+  "_about": "Phase D-2b scenario metadata.  The d2b-twelve-scenarios.sh bash script\n  reads this file INSTEAD of inferring verdict expectations from baked-in branches\n  inside the script.  Two reasons:\n  (a) chart-policy-driven CLOSED verdicts are graded CHART_INTENTIONAL_DENY\n      so PASS_OK math is well-defined and chart-policy regressions are loud\n      (they flip CHART_INTENTIONAL_DENY to DENY_LEAK);\n  (b) fixture source/target identity, namespaces, etc. are pulled from this\n      single file so CNI tests and fixture YAMLs cannot drift.\n\n  d2b.53: `source` and `target` carry EXACT manifest-aligned Pod identity.\n  The runner no longer rediscovers fixture Pods through label selectors \u2014 the\n  historical `app=cni-source` / `app=cni-target` selectors never existed in\n  01-test-pods.yaml / 02-stub-deps.yaml, so every scenario silently SKIPped\n  and the gate reported a zero-work TOTAL=0 success.  Identity now comes from\n  this document and is independently re-validated against Kubernetes JSON\n  (exact namespace/name, not deleting, phase=Running, Ready=True, exactly one\n  match) before any traffic is requested.\n\n  Each entry has:\n    id:            stable scenario id used in the run record\n    description:   human-readable summary\n    role:          gateway | worker | ingress-controller | prometheus | untrusted\n    action:        what the source pod does (http_get, tcp_connect, dns_lookup)\n    source:        { namespace, pod_name } \u2014 EXACT tracked fixture Pod that\n                   originates the L3 request.  Reconciled 1:1 against\n                   01-test-pods.yaml.\n    target_kind:   service | pod | external_ip\n    target:        for target_kind=service:\n                     { namespace, pod_name, service_fqdn } \u2014 EXACT tracked\n                     fixture Pod behind the Service, reconciled 1:1 by\n                     resolving the Service selector against the fixture Pod\n                     label sets.  L1 execs inside this Pod.\n                   for target_kind=external_ip:\n                     { kind: external_ip, host, port, l1_l2_exempt: true,\n                       namespace: null, pod_name: null } \u2014 the literal external\n                       address/port is retained and the L1/L2 exemption is\n                       explicit.  No target Pod is invented.\n    target_svc:    ClusterIP service FQDN (if target_kind=service)\n    target_host:   hostname or IP the source connects to\n    target_port:   int\n    expected:      ALLOW | DENY\n    chart_intent:  ALLOW_IMPLIED | ALLOW_FEATURE_OFF | DENY_DEFAULT_DENY | DENY_DIRECT_EGRESS\n                    | DENY_PORT_MISUSE | DENY_EXTERNAL_IP | DENY_METADATA | DENY_OPEN_INTENT\n    upstream_reason:        short text used for hints when regressed\n    requires_features:      list<name> \u2014 keys in values.yaml that must be true\n    ignores_l1:   bool \u2014 true when the target has no localhost listener by definition\n    ignores_l2:   bool \u2014 true when the host is a raw IP / not a service hostname\n\n  Expected counts are DERIVED from this document (len(scenarios)); the gate\n  never hard-codes 12 or 13 even though the historical script filename and the\n  workflow step text say \"twelve\".\n",
   "scenarios": [
     {
       "id": "s1",
       "description": "ingress-controller pod -> Gateway API port",
       "role": "ingress-controller",
       "action": "http_get",
+      "source": {
+        "namespace": "cni-test-ingress",
+        "pod_name": "cni-mock-ingress-controller",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "service_fqdn": "cni-gateway.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-gateway.default.svc.cluster.local",
       "target_port": 8080,
       "expected": "ALLOW",
@@ -21,13 +38,32 @@
       "description": "prometheus pod -> Gateway metrics port",
       "role": "prometheus",
       "action": "http_get",
+      "source": {
+        "namespace": "cni-test-prometheus",
+        "pod_name": "cni-mock-prometheus",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "service_fqdn": "cni-gateway.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-gateway.default.svc.cluster.local",
       "target_port": 9101,
       "expected": "ALLOW",
       "chart_intent": "ALLOW_IMPLIED",
       "upstream_reason": "prometheus namespace is in gateway ingress list",
-      "requires_features": ["metrics"],
+      "requires_features": [
+        "metrics"
+      ],
       "ignores_l1": false,
       "ignores_l2": false
     },
@@ -36,13 +72,32 @@
       "description": "prometheus pod -> Worker metrics port",
       "role": "prometheus",
       "action": "http_get",
+      "source": {
+        "namespace": "cni-test-prometheus",
+        "pod_name": "cni-mock-prometheus",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-worker",
+        "service_fqdn": "cni-worker-metrics.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-worker-metrics.default.svc.cluster.local",
       "target_port": 9101,
       "expected": "ALLOW",
       "chart_intent": "ALLOW_IMPLIED",
       "upstream_reason": "prometheus namespace is in worker ingress list",
-      "requires_features": ["metrics"],
+      "requires_features": [
+        "metrics"
+      ],
       "ignores_l1": false,
       "ignores_l2": false
     },
@@ -51,7 +106,24 @@
       "description": "untrusted pod -> Worker metrics port",
       "role": "untrusted",
       "action": "http_get",
+      "source": {
+        "namespace": "cni-test-untrusted",
+        "pod_name": "cni-untrusted-default",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-worker",
+        "service_fqdn": "cni-worker-metrics.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-worker-metrics.default.svc.cluster.local",
       "target_port": 9101,
       "expected": "DENY",
@@ -66,7 +138,24 @@
       "description": "untrusted pod -> Gateway API port",
       "role": "untrusted",
       "action": "http_get",
+      "source": {
+        "namespace": "cni-test-untrusted",
+        "pod_name": "cni-untrusted-default",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "service_fqdn": "cni-gateway.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-gateway.default.svc.cluster.local",
       "target_port": 8080,
       "expected": "DENY",
@@ -81,13 +170,32 @@
       "description": "prometheus -> Gateway API:8080 (port-misuse)",
       "role": "prometheus",
       "action": "http_get",
+      "source": {
+        "namespace": "cni-test-prometheus",
+        "pod_name": "cni-mock-prometheus",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "service_fqdn": "cni-gateway.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-gateway.default.svc.cluster.local",
       "target_port": 8080,
       "expected": "DENY",
       "chart_intent": "DENY_PORT_MISUSE",
       "upstream_reason": "prometheus is allowed only on gateway metrics 9101, not API 8080",
-      "requires_features": ["metrics"],
+      "requires_features": [
+        "metrics"
+      ],
       "ignores_l1": false,
       "ignores_l2": false
     },
@@ -96,7 +204,24 @@
       "description": "ingress-controller -> Worker metrics (peer-misuse)",
       "role": "ingress-controller",
       "action": "http_get",
+      "source": {
+        "namespace": "cni-test-ingress",
+        "pod_name": "cni-mock-ingress-controller",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-worker",
+        "service_fqdn": "cni-worker-metrics.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-worker-metrics.default.svc.cluster.local",
       "target_port": 9101,
       "expected": "DENY",
@@ -111,7 +236,24 @@
       "description": "gateway -> cni-arbitrary (any service)",
       "role": "gateway",
       "action": "tcp_connect",
+      "source": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-arbitrary",
+        "service_fqdn": "cni-arbitrary.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-arbitrary.default.svc.cluster.local",
       "target_port": 9090,
       "expected": "DENY",
@@ -126,7 +268,23 @@
       "description": "gateway -> 169.254.169.254:80 (cloud metadata)",
       "role": "gateway",
       "action": "tcp_connect",
+      "source": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "external_ip",
+      "target": {
+        "kind": "external_ip",
+        "host": "169.254.169.254",
+        "port": 80,
+        "l1_l2_exempt": true,
+        "namespace": null,
+        "pod_name": null
+      },
       "target_host": "169.254.169.254",
       "target_port": 80,
       "expected": "DENY",
@@ -141,7 +299,24 @@
       "description": "gateway -> cni-postgres:5432",
       "role": "gateway",
       "action": "tcp_connect",
+      "source": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-postgres",
+        "service_fqdn": "cni-postgres.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-postgres.default.svc.cluster.local",
       "target_port": 5432,
       "expected": "ALLOW",
@@ -156,13 +331,32 @@
       "description": "gateway -> cni-redis:6379 (rateLimitRedis feature OFF)",
       "role": "gateway",
       "action": "tcp_connect",
+      "source": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-redis",
+        "service_fqdn": "cni-redis.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-redis.default.svc.cluster.local",
       "target_port": 6379,
       "expected": "ALLOW",
       "chart_intent": "ALLOW_FEATURE_OFF",
       "upstream_reason": "redis egress rule is rendered only when features.rateLimitRedis=true",
-      "requires_features": ["rateLimitRedis"],
+      "requires_features": [
+        "rateLimitRedis"
+      ],
       "ignores_l1": false,
       "ignores_l2": false
     },
@@ -171,7 +365,24 @@
       "description": "gateway -> egress proxy mock :3128",
       "role": "gateway",
       "action": "tcp_connect",
+      "source": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "service",
+      "target": {
+        "namespace": "default",
+        "pod_name": "cni-mock-egress-proxy",
+        "service_fqdn": "cni-proxy.default.svc.cluster.local",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_svc": "cni-proxy.default.svc.cluster.local",
       "target_port": 3128,
       "expected": "ALLOW",
@@ -186,7 +397,23 @@
       "description": "gateway -> 192.0.2.10:443 (RFC5737 doc IP, direct external)",
       "role": "gateway",
       "action": "tcp_connect",
+      "source": {
+        "namespace": "default",
+        "pod_name": "cni-mock-nexus-gateway",
+        "owner_contract": {
+          "kind": "OWNER_FREE",
+          "description": "ownerReferences must be absent/empty; inject fail-closed"
+        }
+      },
       "target_kind": "external_ip",
+      "target": {
+        "kind": "external_ip",
+        "host": "192.0.2.10",
+        "port": 443,
+        "l1_l2_exempt": true,
+        "namespace": null,
+        "pod_name": null
+      },
       "target_host": "192.0.2.10",
       "target_port": 443,
       "expected": "DENY",
@@ -196,5 +423,17 @@
       "ignores_l1": true,
       "ignores_l2": true
     }
-  ]
+  ],
+  "control_probe_contract": {
+    "kind": "OWNED_BY_REPLICASET_OF_DEPLOYMENT",
+    "deployment_namespace": "cni-control",
+    "deployment_name": "cni-control-probe",
+    "controller_required": true,
+    "kind_chain": [
+      "Deployment",
+      "ReplicaSet"
+    ],
+    "description": "controller=true ReplicaSet owned by Deployment cni-control-probe in ns=cni-control"
+  },
+  "schema_version": "d2b.54"
 }
