@@ -10492,7 +10492,11 @@ while IFS= read -r ln; do
   esac
 done < <(sed 's/^[[:space:]]*//' "${C12S_SCEN_TARGET}")
 # Every client exec goes through /cni-listener with a recognised mode.
-C12E_LISTENER_MODES="$(c12_count '/cni-listener\t-(probe|resolve-host|http-get|tcp-connect)=' "${C12A_DIR}/kc.ledger")"
+# $'...' so the shell substitutes a real tab, as the three sibling counts
+# already do. Left in plain quotes the \t reaches the regex engine intact,
+# where BSD grep reads it as a tab and GNU grep as a literal 't' — so this
+# count was 38 on a Mac and 0 on a Linux runner.
+C12E_LISTENER_MODES="$(c12_count $'/cni-listener\t-(probe|resolve-host|http-get|tcp-connect)=' "${C12A_DIR}/kc.ledger")"
 C12E_EXEC_TOTAL="$(c12_count $'kubectl\texec\t' "${C12A_DIR}/kc.ledger")"
 
 # --- C12f: counter integrity ---------------------------------------------

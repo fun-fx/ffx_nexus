@@ -114,6 +114,27 @@ dependencies:
   redis:
     enabled: true
 
+# --- NetworkPolicy -----------------------------------------------------------
+# [PROD] Required, not optional. The chart defaults to profile=enterprise with
+# mode=enforce, and the enterprise profile refuses to render until you
+# acknowledge this line — so without it `helm install` fails outright rather
+# than quietly shipping a release with no policy.
+#
+# What you are acknowledging: a default-deny NetworkPolicy is applied to the
+# gateway and worker pods, and anything not named as a peer below cannot be
+# reached. If postgres.selector.namespace does not match where your Postgres
+# Service actually lives, the gateway will start and then fail readiness
+# because it cannot open a database connection.
+#
+# Confirm the namespace before your first install. `database` is only the
+# chart default; it is not a detected value.
+networkPolicy:
+  enforcementAcknowledged: true
+  postgres:
+    selector:
+      enabled: true
+      namespace: database        # namespace holding your Postgres Service
+
 # --- Secrets -----------------------------------------------------------------
 # [PROD] Manage this Secret with External Secrets Operator / Vault Agent so no
 # credential is ever written to a values file or git history. Required keys are

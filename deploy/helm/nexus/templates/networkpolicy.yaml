@@ -1,3 +1,30 @@
+{{- /*
+  Enterprise-profile validation deliberately sits OUTSIDE the mode==enforce
+  guard below.
+
+  Every other check in this file is inside that guard, which made
+  networkPolicy.mode=disabled a single switch that skipped all of them —
+  including the enforcementAcknowledged requirement. An enterprise operator
+  who set mode=disabled got no policies, no acknowledgement prompt and no
+  error: the strictest profile silently produced the weakest result, and the
+  more guards were added inside the guard, the more mode=disabled bypassed.
+
+  values.yaml already describes this refusal ("schema and validation reject
+  disabled in profile=enterprise"), and both upgrade-rehearsal scripts
+  explicitly install with profile=development because they expect it, so this
+  reconciles the template with what the rest of the chart states.
+
+  The conditional lives here rather than in values.schema.json because Helm
+  reports a schema violation as "Must not be valid against schema" against
+  the offending path, which tells an operator nothing about which value to
+  change. The schema still pins the value sets so a typo like mode=Enforce
+  cannot silently disable enforcement.
+*/}}
+{{- if eq .Values.networkPolicy.profile "enterprise" }}
+{{- if ne .Values.networkPolicy.mode "enforce" }}
+{{- fail (printf "D-2b networkPolicy: profile=enterprise requires networkPolicy.mode=enforce, but mode=disabled was requested (got %q). mode=disabled renders no NetworkPolicy at all, so the enterprise profile would claim enforcement while allowing unrestricted pod egress. Set networkPolicy.profile=development if you intend to run without policy enforcement." .Values.networkPolicy.mode) }}
+{{- end }}
+{{- end }}
 {{- if eq .Values.networkPolicy.mode "enforce" }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -23,6 +50,35 @@ spec:
 {{- end }}
 {{- if and $sel $cidr }}
 {{- fail "D-2b networkPolicy.postgres: enterprise profile allows only one Postgres target mode. Set networkPolicy.postgres.selector.enabled=true OR networkPolicy.postgres.cidr.enabled=true, not both." }}
+{{- end }}
+{{- /*
+  Features that talk to something off-cluster need a way out through the
+  default-deny policy. Under profile=enterprise there are exactly two: the
+  egress proxy, or a declared per-target namespace.
+
+  With neither, the install succeeds and the feature is broken at runtime —
+  SSO redirects the operator to an issuer the pod cannot reach, so login
+  fails with a timeout that looks like an outage rather than a
+  misconfiguration. Refusing at template time costs one clear error instead.
+
+  Note what this does NOT do: it does not require a proxy. Declaring
+  serviceTargets.<feature>.namespace is a complete answer, so operators who
+  route egress themselves are unaffected. That distinction matters —
+  mutation_test.py's M1 and M4 assert that SSO and emailResend render with
+  the proxy disabled, and they pass because both declare a namespace. The
+  rule is "no egress path at all", not "no proxy".
+*/}}
+{{- if not .Values.networkPolicy.egress.proxy.enabled }}
+{{- $unreachable := list }}
+{{- if and .Values.features.sso (not .Values.serviceTargets.sso.namespace) }}
+{{- $unreachable = append $unreachable "features.sso (declare serviceTargets.sso.namespace)" }}
+{{- end }}
+{{- if and .Values.features.emailResend (not .Values.serviceTargets.resend.namespace) }}
+{{- $unreachable = append $unreachable "features.emailResend (declare serviceTargets.resend.namespace)" }}
+{{- end }}
+{{- if $unreachable }}
+{{- fail (printf "D-2b networkPolicy: profile=enterprise refuses external features without an egress proxy unless each declares its own egress target, and these have neither: %s. Either set networkPolicy.egress.proxy.enabled=true (with networkPolicy.egress.proxy.namespace), or declare the per-feature namespace shown above. Left as-is the default-deny policy would render, the release would install, and the feature would fail at runtime with no route out of the pod." (join "; " $unreachable)) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if eq .Values.networkPolicy.profile "enterprise" }}

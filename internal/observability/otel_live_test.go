@@ -38,7 +38,16 @@ func TestProdOTLPRecorderLiveBody(t *testing.T) {
 	})
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(listener)
-	defer srv.Shutdown(nil)
+	// Shutdown must get a real context. It returns early only if every
+	// connection is already idle; otherwise it waits on ctx.Done(), which
+	// panics on a nil context. The recorder's keep-alive connection is
+	// what decides which branch we take, so a nil context here is a flake
+	// that reproduces on a loaded runner and not on a quiet laptop.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
 
 	addr := "http://" + listener.Addr().String() + "/v1/traces"
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
