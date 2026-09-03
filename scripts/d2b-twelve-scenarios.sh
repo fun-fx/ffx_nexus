@@ -650,8 +650,18 @@ else:
     rs = controllers[0]
     if rs.get("kind") != "ReplicaSet":
         out("POD_OWNER_NOT_REPLICASET:%r" % (rs.get("kind"),))
-    if rs.get("namespace") != ns:
-        out("POD_OWNER_WRONG_NAMESPACE:%r!=%r" % (rs.get("namespace"), ns))
+    # K8s spec: ownerReferences.namespace is OPTIONAL and the API server
+    # omits the field when the namespaced owner lives in the same
+    # namespace as the child. Treat absence as "inherits the Pod's
+    # namespace" so the legitimate Deployment→ReplicaSet→Pod chain
+    # passes, while an explicit wrong namespace is still refused.
+    rs_ns_raw = rs.get("namespace")
+    if rs_ns_raw is None or rs_ns_raw == "":
+        rs_ns = ns
+    else:
+        rs_ns = rs_ns_raw
+    if rs_ns != ns:
+        out("POD_OWNER_WRONG_NAMESPACE:%r!=%r" % (rs_ns, ns))
     rs_name = rs.get("name")
     if not (isinstance(rs_name, str) and rs_name):
         out("POD_OWNER_NO_NAME")
@@ -774,7 +784,17 @@ for p in items:
     rs = controllers[0]
     if rs.get("kind") != "ReplicaSet":
         continue
-    if rs.get("namespace") != want_ns:
+    # K8s spec: ownerReferences.namespace is OPTIONAL and, when the
+    # owner is a namespaced object in the same namespace as the child,
+    # the API server omits the field. Treat absence as "inherits the
+    # Pod's namespace" so an explicit wrong namespace is still refused
+    # while the legitimate Deployment→ReplicaSet→Pod chain is accepted.
+    rs_ns_raw = rs.get("namespace")
+    if rs_ns_raw is None or rs_ns_raw == "":
+        rs_ns = want_ns
+    else:
+        rs_ns = rs_ns_raw
+    if rs_ns != want_ns:
         continue
     rs_name = rs.get("name") or u""
     if not rs_name.startswith(RS_PREFIX):
