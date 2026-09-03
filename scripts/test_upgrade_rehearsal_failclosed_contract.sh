@@ -548,7 +548,7 @@ NP4=$(cat "$ADIR1/upgrade-step4-np-post-id" 2>/dev/null || echo missing)
 [[ -n "$NP1" && "$NP1" != "missing" ]] && pass "control 1: step1 NetPol identity present (${NP1:0:12})" || fail "control 1: step1 NetPol identity missing (assert_np_transition was bypassed)"
 # Step-2 raw JSON must parse and have at least one NetworkPolicy item.
 NP2_RAW="$ADIR1/upgrade-step2-np.json"
-NP2_ITEMS_LEN="$("${PYTHON3_PATH_BIN:-/opt/homebrew/bin/python3}" - "$NP2_RAW" <<'PY_LEN'
+NP2_ITEMS_LEN="$("${PYTHON3_BIN:-python3}" - "$NP2_RAW" <<'PY_LEN'
 import sys, json
 with open(sys.argv[1], "r", encoding="utf-8") as f:
     raw = f.read()
