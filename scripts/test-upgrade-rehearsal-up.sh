@@ -740,6 +740,21 @@ S3RC=${S3RC:-0}
 # Require non-zero AT THIS POINT, before any post-rejection state capture.
 # A zero exit is a CONTRACT FAILURE — the chart accepted a broken peer list.
 if [[ "$S3RC" -eq 0 ]]; then
+  # The chart just applied a peer list it should have refused, so the live
+  # NetworkPolicy is the only place that says what the API actually stored
+  # for the unusable peer — an empty label value (matches nothing, silently
+  # drops an authorized peer) and a dropped selector key (matches every
+  # namespace) are the same helm exit code and opposite security outcomes.
+  # Run 33743750984 hit this branch with no such capture, so the direction
+  # had to be inferred rather than read. Unasserted: it cannot soften the
+  # contract failure below, it only makes the next one diagnosable.
+  (
+    set +e
+    echo "=== live gateway NetworkPolicy (what the API stored for the invalid peer) ==="
+    kubectl get networkpolicy -A -l "app.kubernetes.io/instance=${RELEASE}" -o json 2>&1
+    echo "=== helm values as accepted ==="
+    helm get values "${RELEASE}" --all 2>&1
+  ) > "${ARTIFACTS}/upgrade-step3-accepted-invalid.json" 2>&1
   die "step 3 (invalid upgrade) helm exit code = 0; the chart accepted broken NetworkPolicy peer references — this is a contract failure; refusing to write rejected-invalid-upgrade-ok sentinel"
 fi
 printf '%s\n' "${S3RC}" | tr -dc '0-9\n' > "${ARTIFACTS}/upgrade-step3.rc"

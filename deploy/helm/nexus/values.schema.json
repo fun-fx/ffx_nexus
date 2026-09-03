@@ -3,6 +3,19 @@
   "title": "Nexus Helm chart values",
   "description": "Strict schema for the Nexus chart. `additionalProperties: false` is deliberate on every object an operator is expected to edit: it turns a mis-indented or misspelled key into a `helm install`/`helm template` failure instead of a silently ignored setting. This exists because SSO, email, Metabase, failover, runtime and concurrency settings were once documented one indent level too deep (under `metrics:`) while the templates read them from `config:`; the chart rendered cleanly, `helm lint` passed, and the operator's IdP configuration was dropped on the floor with no diagnostic. Adding a new setting therefore requires adding it here too - that coupling is the point.",
   "definitions": {
+    "namespaceNameStrict": {
+      "type": "string",
+      "description": "A Kubernetes namespace name, DNS-1123 label. Used where the value is an explicit authorization grant naming a peer allowed to reach this release, so the empty string is NOT accepted: an empty entry renders a namespaceSelector whose kubernetes.io/metadata.name label is the empty string, which matches no namespace and therefore silently drops a peer the operator believes they granted. Rejecting the value at install time converts that silent availability loss into a refused upgrade.",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "namespaceNameOrUnset": {
+      "type": "string",
+      "description": "A Kubernetes namespace name, DNS-1123 label, or the empty string. Used where the field pairs with an empty `host`/`issuer`/`fromAddress` to mean the dependency is not configured, so the empty string is the documented unset sentinel and must stay valid. Any non-empty value is still required to be a real namespace name, which rejects the whitespace, uppercase, underscore, and over-length input that would otherwise reach a NetworkPolicy peer selector as an unmatchable label.",
+      "maxLength": 63,
+      "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
     "dependency": {
       "type": "object",
       "additionalProperties": false,
@@ -12,7 +25,7 @@
         "url": {"type": "string"},
         "host": {"type": "string"},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "namespace": {"type": "string"},
+        "namespace": {"$ref": "#/definitions/namespaceNameOrUnset"},
         "selector": {"$ref": "#/definitions/networkPolicySelectorTarget"},
         "cidr": {"$ref": "#/definitions/networkPolicyCidrTarget"}
       }
@@ -70,7 +83,7 @@
       "properties": {
         "namespaces": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {"$ref": "#/definitions/namespaceNameStrict"},
           "minItems": 1,
           "uniqueItems": true
         },
@@ -90,7 +103,7 @@
       "properties": {
         "namespaces": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {"$ref": "#/definitions/namespaceNameStrict"},
           "minItems": 1,
           "uniqueItems": true
         }
@@ -108,7 +121,7 @@
           "minProperties": 1
         },
         "namespace": {
-          "type": "string"
+          "$ref": "#/definitions/namespaceNameStrict"
         },
         "enabled": {"type": "boolean"}
       },
@@ -191,7 +204,7 @@
       "properties": {
         "host": {"type": "string"},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "namespace": {"type": "string"}
+        "namespace": {"$ref": "#/definitions/namespaceNameOrUnset"}
       }
     },
     "networkPolicyIssuer": {
@@ -199,7 +212,7 @@
       "additionalProperties": false,
       "properties": {
         "issuer": {"type": "string"},
-        "namespace": {"type": "string"}
+        "namespace": {"$ref": "#/definitions/namespaceNameOrUnset"}
       }
     },
     "networkPolicyResend": {
@@ -207,7 +220,7 @@
       "additionalProperties": false,
       "properties": {
         "fromAddress": {"type": "string"},
-        "namespace": {"type": "string"}
+        "namespace": {"$ref": "#/definitions/namespaceNameOrUnset"}
       }
     },
     "dependencyHostNS": {
@@ -216,7 +229,7 @@
       "properties": {
         "host": {"type": "string"},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "namespace": {"type": "string"}
+        "namespace": {"$ref": "#/definitions/namespaceNameOrUnset"}
       }
     },
     "dependencyHostDBNS": {
@@ -225,7 +238,7 @@
       "properties": {
         "host": {"type": "string"},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "namespace": {"type": "string"},
+        "namespace": {"$ref": "#/definitions/namespaceNameOrUnset"},
         "enabled": {"type": "boolean"}
       }
     },
@@ -237,7 +250,7 @@
         "enabled": {"type": "boolean"},
         "host": {"type": "string"},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "namespace": {"type": "string"},
+        "namespace": {"$ref": "#/definitions/namespaceNameOrUnset"},
         "podSelector": {"type": "object"}
       }
     },
@@ -249,7 +262,7 @@
         "maxConns": {"type": "integer", "minimum": 1, "maximum": 256},
         "ingressControllerNamespaces": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {"$ref": "#/definitions/namespaceNameStrict"},
           "minItems": 1,
           "uniqueItems": true
         }
@@ -1231,7 +1244,7 @@
       "maxConns": {"type": "integer", "minimum": 1, "maximum": 256},
       "ingressControllerNamespaces": {
         "type": "array",
-        "items": {"type": "string"},
+        "items": {"$ref": "#/definitions/namespaceNameStrict"},
         "minItems": 1,
         "uniqueItems": true
       }
