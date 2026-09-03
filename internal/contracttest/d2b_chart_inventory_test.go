@@ -146,15 +146,18 @@ func TestMutationModeToggleDramaticalyFails(t *testing.T) {
 	if err != nil {
 		t.Skipf("chart dir not found: %v", err)
 	}
-	// The chart requires the full enterprise settings to
-	// render — without it the template fails on the
-	// fail-closed gates, which would mask the assertion
-	// we want to make (mode toggle alters policy count).
-	// Adding `networkPolicy.profile=enterprise` and
-	// `enforcementAcknowledged=true` plus a peers list
-	// keeps the path clean.
-	enterpriseCommon := []string{
-		"--set", "networkPolicy.profile=enterprise",
+	// Held at profile=development, and the profile is the part worth
+	// explaining. This used to render both halves with profile=enterprise,
+	// which the chart now refuses in the mode=disabled half: enterprise plus
+	// mode=disabled would claim enforcement while rendering no policy at
+	// all, so it is rejected at template time. Both upgrade-rehearsal
+	// scripts already use profile=development for the same reason.
+	//
+	// Development still renders the full five policies under mode=enforce, so
+	// the toggle is isolated exactly as before — 5 against 0 — without the
+	// combination the chart declines to produce.
+	developmentCommon := []string{
+		"--set", "networkPolicy.profile=development",
 		"--set", "networkPolicy.enforcementAcknowledged=true",
 		"--set", "networkPolicy.postgres.selector.enabled=true",
 		"--set", "networkPolicy.postgres.selector.namespace=database",
@@ -162,12 +165,12 @@ func TestMutationModeToggleDramaticalyFails(t *testing.T) {
 		"--set", "dependencies.postgres.port=5432",
 		"--set", "dependencies.postgres.namespace=database",
 	}
-	on := renderTop(t, chart, append([]string{"--set", "networkPolicy.mode=enforce"}, enterpriseCommon...))
+	on := renderTop(t, chart, append([]string{"--set", "networkPolicy.mode=enforce"}, developmentCommon...))
 	// mode=disabled renders zero NetworkPolicy objects;
 	// `--show-only` errors when the template produced no
 	// output, so we use the full-render helper for the
 	// disabled case.
-	off := renderFullTop(t, chart, append([]string{"--set", "networkPolicy.mode=disabled"}, enterpriseCommon...))
+	off := renderFullTop(t, chart, append([]string{"--set", "networkPolicy.mode=disabled"}, developmentCommon...))
 	if countNP(on) == countNP(off) {
 		t.Fatalf("mutation: mode toggle MUST alter NetworkPolicy count; on=%d off=%d", countNP(on), countNP(off))
 	}

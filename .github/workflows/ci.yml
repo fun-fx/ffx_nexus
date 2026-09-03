@@ -279,6 +279,11 @@ jobs:
     # branch protection.
     steps:
       - uses: actions/checkout@v5
+        with:
+          # test_cni_workflow_trigger_reindex.sh diffs the workflow's schedule
+          # block against origin/main, which the default shallow PR checkout
+          # does not fetch.
+          fetch-depth: 0
 
       - uses: azure/setup-helm@v4
         with:
