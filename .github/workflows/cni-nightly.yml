@@ -53,30 +53,34 @@ on:
   schedule:
     - cron: "0 2 * * *"
   pull_request:
+    # Every entry below was checked to exist. Twelve did not: three chart
+    # templates from a layout that has since been consolidated
+    # (serviceaccount-worker, deployment-worker, pre-install-validation),
+    # tests/render_test.py (the suite lives at scripts/test_helm_render.sh),
+    # five docs that were never written, a Makefile this repo does not have,
+    # a duplicate networkpolicy.yaml entry, and internal/depinventory.
+    #
+    # The consequential one was internal/urlpolicy/**, which does not exist:
+    # the real packages are internal/ippolicy and internal/netpolicy, so a
+    # change to the actual policy code matched nothing here and the gate
+    # stayed silent on exactly the code it exists to guard. A path filter
+    # naming a nonexistent path fails open and says nothing about it, so
+    # these are worth re-checking whenever the tree is rearranged.
     paths:
       - "deploy/helm/nexus/templates/networkpolicy.yaml"
-      - "deploy/helm/nexus/templates/serviceaccount-worker.yaml"
       - "deploy/helm/nexus/templates/deployment.yaml"
-      - "deploy/helm/nexus/templates/deployment-worker.yaml"
-      - "deploy/helm/nexus/templates/pre-install-validation.yaml"
       - "deploy/helm/nexus/templates/servicemonitor.yaml"
-      - "deploy/helm/nexus/templates/networkpolicy.yaml"
       - "deploy/helm/nexus/templates/migration-job.yaml"
       - "deploy/helm/nexus/values.yaml"
       - "deploy/helm/nexus/values.schema.json"
-      - "deploy/helm/nexus/tests/render_test.py"
+      - "deploy/helm/nexus/values-staging.example.yaml"
+      - "deploy/helm/nexus/values-production.example.yaml"
       - "deploy/helm/nexus/tests/mutation_test.py"
       - "internal/netpolicy/**"
-      - "internal/urlpolicy/**"
-      - "internal/depinventory/**"
+      - "internal/ippolicy/**"
       - "internal/contracttest/integrationcni/**"
       - "internal/contracttest/d2b_*_test.go"
       - "internal/config/**"
-      - "docs/network-allowlist.md"
-      - "docs/dependency-contract.md"
-      - "docs/d2b-egress-proxy-contract.md"
-      - "docs/cni-comparison.md"
-      - "docs/cni-environment-changes.md"
       - "docs/phase-d2b-*"
       - "scripts/test-cluster-up.sh"
       - "scripts/test-cluster-down.sh"
@@ -87,7 +91,6 @@ on:
       - "scripts/d2b-failure-reproduction.py"
       - "scripts/fixtures/integrationcni/**"
       - "scripts/wait-cilium-endpoints.sh"
-      - "Makefile"
       - ".github/workflows/cni-nightly.yml"
       - "go.mod"
   # Phase D-2b.34 (reindex) — narrow push trigger limited to main branch

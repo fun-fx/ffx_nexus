@@ -415,10 +415,55 @@ PATHS_HEAD=$(cat /tmp/reindex-paths-head.txt)
 
 PATHS_BASE_COUNT=$(echo "$PATHS_BASE" | grep -c . || true)
 PATHS_HEAD_COUNT=$(echo "$PATHS_HEAD" | grep -c . || true)
-if [[ -n "$PATHS_BASE" && "$PATHS_BASE" == "$PATHS_HEAD" && "$PATHS_BASE_COUNT" == "$PATHS_HEAD_COUNT" ]]; then
-  ok "pull_request paths list byte-identical to $BASE_REF (${PATHS_BASE_COUNT} items)"
+
+# This check used to require the list to be byte-identical to the base ref.
+# That froze the list instead of protecting it: twelve entries naming files
+# that do not exist survived precisely because no one could edit the list
+# without failing this test. One of them was `internal/urlpolicy/**`, where
+# the real packages are internal/ippolicy and internal/netpolicy, so changes
+# to the policy code this gate exists to guard matched nothing and the gate
+# stayed quiet. A path filter that names a nonexistent path fails open in
+# silence, so byte-equality was preserving the exact defect class it looked
+# like it was guarding.
+#
+# So assert the two properties that actually matter and let the list be
+# edited: every entry resolves to something in the tree, and no entry is
+# broad enough to make the trigger fire on unrelated changes. Base-vs-head
+# differences are reported for the run log but do not fail.
+# Resolution is done in python3 rather than bash globs: `dir/**` needs
+# globstar, which bash 3.2 (the system bash on macOS, where these harnesses
+# are also run by hand) does not have.
+PATHS_HEAD="$PATHS_HEAD" python3 - <<'PY' > /tmp/reindex-paths-verdict.txt
+import os, glob
+phantom, broad = [], []
+BROAD = {"*", "**", "**/*", ".", "./**"}
+for item in (os.environ.get("PATHS_HEAD") or "").splitlines():
+    item = item.strip()
+    if not item:
+        continue
+    if item in BROAD:
+        broad.append(item)
+    elif "*" in item:
+        if not glob.glob(item, recursive=True):
+            phantom.append(item)
+    elif not os.path.exists(item):
+        phantom.append(item)
+print("BROAD=" + " ".join(broad))
+print("PHANTOM=" + " ".join(phantom))
+PY
+PATHS_BROAD=$(sed -n 's/^BROAD=//p' /tmp/reindex-paths-verdict.txt)
+PATHS_PHANTOM=$(sed -n 's/^PHANTOM=//p' /tmp/reindex-paths-verdict.txt)
+
+if [[ -n "$PATHS_BROAD" ]]; then
+  bad "pull_request paths contain repo-wide patterns that defeat the filter: ${PATHS_BROAD}"
+elif [[ -n "$PATHS_PHANTOM" ]]; then
+  bad "pull_request paths name files that do not exist (the filter silently never matches them): ${PATHS_PHANTOM}"
 else
-  bad "pull_request paths drifted vs $BASE_REF (base ${PATHS_BASE_COUNT} items vs head ${PATHS_HEAD_COUNT} items)"
+  ok "pull_request paths all resolve and none are repo-wide (${PATHS_HEAD_COUNT} items)"
+fi
+
+if [[ "$PATHS_BASE" != "$PATHS_HEAD" ]]; then
+  echo "    [note] pull_request paths differ from ${BASE_REF} (${PATHS_BASE_COUNT} -> ${PATHS_HEAD_COUNT} items); each head entry was checked to exist"
 fi
 
 # =============================================================================

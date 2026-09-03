@@ -233,6 +233,15 @@ jobs:
         # template` happily renders. Prometheus Operator / grafana-operator
         # CRs are skipped: their CRDs are not part of core Kubernetes.
         run: |
+          # pipefail is load-bearing. Without it this step validated nothing
+          # for as long as it existed: neither example values file rendered
+          # (both inherit profile=enterprise and neither set
+          # enforcementAcknowledged), helm's failure was swallowed by the
+          # pipe, and kubeconform reported "0 resource found parsing stdin"
+          # and exited 0. A green check on an empty document set is worse
+          # than no check, because it also certified that a customer copying
+          # values-production.example.yaml could install it.
+          set -o pipefail
           KV=v0.6.7
           curl -fsSL -o /tmp/kubeconform.tar.gz \
             "https://github.com/yannh/kubeconform/releases/download/${KV}/kubeconform-linux-amd64.tar.gz"
@@ -248,6 +257,76 @@ jobs:
                 -skip ServiceMonitor,GrafanaDashboard,GrafanaContactPoint,GrafanaAlertRuleGroup \
                 -
           done
+
+  policy-contracts:
+    name: Policy contracts (offline)
+    runs-on: ubuntu-latest
+    # The D-2b work produced a set of offline harnesses that assert the
+    # chart's fail-closed behaviour and the heavy workflow's artifact and
+    # trigger contracts. Every one of them was written, committed, and then
+    # never run by CI: they appeared only in cni-nightly.yml path filters and
+    # one commented-out line. So the contracts they encode were unenforced,
+    # and two of them had drifted out of agreement with the chart without
+    # anyone finding out.
+    #
+    # They are all hermetic — no cluster, no Docker, no network — which is
+    # what makes them suitable as a required check where the heavy enforcing
+    # CNI gate is not. Together they run in about three minutes.
+    #
+    # This is deliberately not gated behind path filters. A required check
+    # that does not report on some pull requests blocks those pull requests
+    # forever, which is the same reason the two CNI jobs are excluded from
+    # branch protection.
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: chart fail-closed contracts
+        # Asserts the chart refuses the configurations it documents as
+        # refused: enterprise without acknowledgement, enterprise with
+        # mode=disabled, enterprise with an external feature that has no
+        # egress path, and a single Postgres target. The mode=disabled and
+        # external-feature cases were both failing before this job existed.
+        run: |
+          python3 scripts/d2b-failure-reproduction.py
+          python3 deploy/helm/nexus/tests/mutation_test.py
+
+      - name: chart fixture and image contracts
+        run: |
+          python3 deploy/helm/nexus/tests/cni_readiness_gate_test.py
+          python3 deploy/helm/nexus/tests/fixture_namespace_document_boundary_test.py
+          python3 deploy/helm/nexus/tests/fixture_semantic_admission_test.py
+          python3 deploy/helm/nexus/tests/fixture_yaml_structure_test.py
+          python3 deploy/helm/nexus/tests/image_pipeline_mutation_test.py
+
+      - name: heavy-workflow artifact and trigger contracts
+        # These read cni-nightly.yml as data and execute its extracted shell
+        # blocks, so they catch a regression in the heavy gate's artifact
+        # routing or trigger surface on the pull request that introduces it,
+        # without waiting for the nightly cluster run.
+        run: |
+          bash scripts/test_clean_tree_artifact_routing.sh \
+            .github/workflows/cni-nightly.yml "$PWD"
+          bash scripts/test_cni_workflow_trigger_reindex.sh
+
+      - name: upgrade rehearsal fail-closed contract
+        run: bash scripts/test_upgrade_rehearsal_failclosed_contract.sh
+
+      - name: fixture readiness observability
+        # The slowest of the set at roughly two minutes, and the one that
+        # covers the readiness-probe surface an operator actually watches
+        # during an install.
+        run: bash scripts/test_fixture_readiness_observability.sh
 
   eval-regression:
     name: Eval regression gate

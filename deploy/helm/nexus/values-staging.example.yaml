@@ -124,6 +124,30 @@ dependencies:
   redis:
     enabled: true
 
+# --- NetworkPolicy -----------------------------------------------------------
+# Required, not optional. The chart defaults to profile=enterprise with
+# mode=enforce, and the enterprise profile refuses to render until you
+# acknowledge this line, so leaving the block out makes `helm install` fail.
+#
+# What you are acknowledging: a default-deny NetworkPolicy is applied to the
+# gateway and worker pods, and anything not named as a peer below cannot be
+# reached. If postgres.selector.namespace does not match where your Postgres
+# Service actually lives, the gateway starts and then fails readiness because
+# it cannot open a database connection.
+#
+# Staging is the right place to find that out, which is the argument for
+# keeping enforcement on here rather than setting mode=disabled: a staging
+# release that skips the policy cannot tell you whether production's will
+# work. If you do need it off while debugging something unrelated, set
+# profile=development as well — enterprise with mode=disabled is refused,
+# because it would claim enforcement while allowing unrestricted egress.
+networkPolicy:
+  enforcementAcknowledged: true
+  postgres:
+    selector:
+      enabled: true
+      namespace: database        # namespace holding your Postgres Service
+
 # --- Secrets -----------------------------------------------------------------
 # Create this Secret before installing. See
 # docs/customer-self-hosted-install.md for the full key list and an External
