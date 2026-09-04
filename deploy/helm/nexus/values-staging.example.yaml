@@ -116,13 +116,28 @@ metrics:
 # Redis is REQUIRED whenever replicaCount > 1 or autoscaling is on: without it
 # rate limits and budgets are enforced per-pod, so N replicas mean N x the
 # intended limit.
+# `host`, `port` and `namespace` are not optional here, even though the
+# credentials arrive in the Secret. NetworkPolicy builds its egress peer from
+# these fields and cannot read the url out of a Secret while rendering, so a
+# dependency enabled with only a url is a pod allowed to resolve DNS and reach
+# nothing. Keep these identical in shape to production — an upgrade rehearsal
+# in staging is only meaningful if the policy set matches.
 dependencies:
   postgres:
     enabled: true
+    host: postgres.database.svc.cluster.local   # <PLACEHOLDER> your Postgres Service
+    port: 5432
+    namespace: database                          # must equal networkPolicy.postgres.selector.namespace
   clickhouse:
     enabled: true
+    host: clickhouse.analytics.svc.cluster.local # <PLACEHOLDER> your ClickHouse Service
+    port: 9000
+    namespace: analytics
   redis:
     enabled: true
+    host: redis-master.cache.svc.cluster.local   # <PLACEHOLDER> your Redis Service
+    port: 6379
+    namespace: cache
 
 # --- NetworkPolicy -----------------------------------------------------------
 # Required, not optional. The chart defaults to profile=enterprise with
@@ -141,12 +156,25 @@ dependencies:
 # work. If you do need it off while debugging something unrelated, set
 # profile=development as well — enterprise with mode=disabled is refused,
 # because it would claim enforcement while allowing unrestricted egress.
+#
+# The egress proxy is the pod's only route off-cluster. Without it the
+# default-deny policy has no rule for TCP 443, so the gateway starts, passes
+# readiness against its databases, and then fails every request that has to
+# reach a provider.
 networkPolicy:
   enforcementAcknowledged: true
   postgres:
     selector:
       enabled: true
       namespace: database        # namespace holding your Postgres Service
+  egress:
+    proxy:
+      enabled: true
+      host: squid.egress.svc.cluster.local   # <PLACEHOLDER> your forward proxy
+      port: 3128
+      namespace: egress
+      podSelector:
+        app.kubernetes.io/name: squid
 
 # --- Secrets -----------------------------------------------------------------
 # Create this Secret before installing. See

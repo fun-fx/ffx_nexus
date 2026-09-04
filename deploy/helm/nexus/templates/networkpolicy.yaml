@@ -88,6 +88,51 @@ spec:
 {{- end }}
 {{- end }}
 {{- end }}
+{{- /*
+  An enabled datastore with no egress peer.
+
+  Every rule below is gated on `dependencies.<dep>.host`, because the peer has
+  to be built from a host the chart can read at render time and the connection
+  url lives in a Secret it cannot. The gates above check only the policy half —
+  whether selector or cidr mode is on — so a dependency that was enabled with a
+  url and no host slipped through both: the release installed, all five
+  policies rendered, and the pod could resolve DNS and reach nothing.
+
+  That is the worst shape this file can produce. A refused render costs one
+  error message. This shape costs a migration hook that hangs until its
+  deadline, or a gateway that comes up healthy and fails every request, with a
+  default-deny policy as the only evidence and nothing in the chart output
+  pointing at the missing field.
+
+  Checked per dependency and only when that dependency is enabled, so the
+  development profile and the fixture installs — which enable none of them —
+  are unaffected.
+*/}}
+{{- $noEgress := list }}
+{{- if .Values.dependencies.postgres.enabled }}
+{{- if not .Values.dependencies.postgres.host }}
+{{- $noEgress = append $noEgress "dependencies.postgres.enabled=true but dependencies.postgres.host is empty (set it to the Postgres Service host; the url in your Secret is not readable at render time)" }}
+{{- else if and (not .Values.networkPolicy.postgres.selector.enabled) (not .Values.networkPolicy.postgres.cidr.enabled) }}
+{{- $noEgress = append $noEgress "dependencies.postgres.enabled=true but neither networkPolicy.postgres.selector.enabled nor networkPolicy.postgres.cidr.enabled is set" }}
+{{- end }}
+{{- end }}
+{{- if .Values.dependencies.clickhouse.enabled }}
+{{- if not .Values.dependencies.clickhouse.host }}
+{{- $noEgress = append $noEgress "dependencies.clickhouse.enabled=true but dependencies.clickhouse.host is empty" }}
+{{- else if and (not .Values.dependencies.clickhouse.namespace) (not .Values.dependencies.clickhouse.cidr.enabled) }}
+{{- $noEgress = append $noEgress "dependencies.clickhouse.enabled=true but neither dependencies.clickhouse.namespace (in-cluster Service) nor dependencies.clickhouse.cidr.enabled (managed/off-cluster) is set" }}
+{{- end }}
+{{- end }}
+{{- if .Values.dependencies.redis.enabled }}
+{{- if not .Values.dependencies.redis.host }}
+{{- $noEgress = append $noEgress "dependencies.redis.enabled=true but dependencies.redis.host is empty" }}
+{{- else if not .Values.dependencies.redis.namespace }}
+{{- $noEgress = append $noEgress "dependencies.redis.enabled=true but dependencies.redis.namespace is empty" }}
+{{- end }}
+{{- end }}
+{{- if $noEgress }}
+{{- fail (printf "networkPolicy: mode=enforce renders a default-deny policy, and these dependencies are enabled with no egress peer to reach them, so the release would install and then fail at runtime: %s. Fix the fields named above, or set networkPolicy.mode=disabled if you do not want policy enforcement." (join "; " $noEgress)) }}
+{{- end }}
 {{- $metricsPort := .Values.metrics.port }}
 {{- $dnsPort := .Values.networkPolicy.dns.matchPorts }}
 {{- $dnsProto := .Values.networkPolicy.dns.matchProtocols }}
@@ -182,6 +227,7 @@ spec:
         - protocol: TCP
           port: {{ .Values.networkPolicy.postgres.cidr.port }}
     {{- end }}
+    {{- include "nexus.clickhouseEgress" . | nindent 4 }}
     {{- /* Redis egress — feature-gated (rate-limit-redis). The chart sets
        the same selector/CIDR dual-mode pattern as Postgres: in-cluster
        operator OR managed/external ipBlock. The selector approach
@@ -207,23 +253,7 @@ spec:
           port: {{ .Values.dependencies.redis.port }}
       {{- end }}
     {{- end }}
-    {{- if .Values.networkPolicy.egress.proxy.enabled }}
-    # Egress proxy
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.networkPolicy.egress.proxy.namespace }}
-        {{- if gt (len .Values.networkPolicy.egress.proxy.podSelector) 0 }}
-        - podSelector:
-            matchLabels:
-              {{- range $k, $v := .Values.networkPolicy.egress.proxy.podSelector }}
-              {{ $k }}: {{ $v }}
-              {{- end }}
-        {{- end }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.networkPolicy.egress.proxy.port }}
-    {{- end }}
+    {{- include "nexus.egressProxy" . | nindent 4 }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -283,6 +313,7 @@ spec:
         - protocol: TCP
           port: {{ .Values.networkPolicy.postgres.cidr.port }}
     {{- end }}
+    {{- include "nexus.clickhouseEgress" . | nindent 4 }}
 {{- /* Source-of-truth marker for static label
    conformance. This verbatim line is what the
    migration-label test reads back out of the
@@ -354,4 +385,6 @@ spec:
         - protocol: TCP
           port: {{ .Values.networkPolicy.postgres.cidr.port }}
     {{- end }}
+    {{- include "nexus.clickhouseEgress" . | nindent 4 }}
+    {{- include "nexus.egressProxy" . | nindent 4 }}
 {{- end }}

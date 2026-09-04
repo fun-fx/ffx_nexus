@@ -491,10 +491,18 @@ migrations:
 # Set `enabled: true` and provide a connection URL. URLs contain credentials,
 # so they are stored in the chart Secret (or your existingSecret).
 dependencies:
-  # --- Connection detail. The chart guarantees that the SAME host/port/namespace
-  # tuple drives the runtime DATABASE_URL on the Deployment AND the NetworkPolicy
-  # egress peer for the Gateway/Worker/migration Job. They cannot drift unless the
-  # operator explicitly diverges them at install-time.
+  # --- Connection detail, in two halves you have to keep consistent.
+  #
+  # `url` carries the credentials and is what the process dials. `host`, `port`
+  # and `namespace` are what NetworkPolicy uses to build the egress peer, and
+  # they are NOT derived from the url — the url lives in a Secret the chart
+  # cannot read while rendering.
+  #
+  # So under networkPolicy.mode=enforce, a dependency with a url but no host is
+  # a pod allowed to resolve DNS and nothing else: the release installs, every
+  # policy renders, and the connection times out at runtime. The chart refuses
+  # that combination at template time (see templates/networkpolicy.yaml), which
+  # is why these fields stop being optional once you enable enforcement.
   postgres:
     enabled: false
     url: "" # postgres://user:pass@host:5432/nexus?sslmode=require
@@ -504,14 +512,31 @@ dependencies:
   clickhouse:
     enabled: false
     url: "" # clickhouse://user:pass@host:9000/nexus
-  redis:
-    enabled: false
-    host: ""
-    port: 6379
-    namespace: ""
+    host: ""                # Service host, or the endpoint hostname for managed ClickHouse
+    port: 9000              # native protocol; managed TLS endpoints are usually 9440
+    # Pick exactly one target once networkPolicy.mode=enforce: `namespace` for
+    # a ClickHouse Service inside the cluster, or `cidr` for a managed endpoint
+    # outside it. Until now the NetworkPolicy template had no ClickHouse rule
+    # at all, so under enforcement the default-deny policy blocked every trace
+    # and eval-score write with nothing to allow them.
+    namespace: ""           # in-cluster ClickHouse Service namespace
+    cidr:
+      enabled: false
+      cidrs:
+        # e.g. "10.44.0.0/16" — managed ClickHouse reachable only as an
+        # outbound IP range. Pure IP+port; does NOT depend on cluster DNS.
+        - ""
+      port: 9440
+  # One block, not two. This key was declared twice, and since the later
+  # declaration wins in YAML, `host`, `port` and `namespace` silently
+  # disappeared — which meant the Redis egress rule could never render and
+  # rate limiting could not reach Redis under enforcement.
   redis:
     enabled: false
     url: "" # redis://:pass@host:6379/0
+    host: ""
+    port: 6379
+    namespace: ""
 
 # --- Secrets -----------------------------------------------------------------
 # Provide secret values here to have the chart create a Secret, OR set
