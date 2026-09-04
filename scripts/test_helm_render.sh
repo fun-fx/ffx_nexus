@@ -288,8 +288,15 @@ head_ "8. Migration hook Job"
 # The Job must exist, run as a pre-install/pre-upgrade hook so Helm aborts the
 # release on failure, use the SAME image and env sources as the Deployment, and
 # keep a failed pod around for its logs.
+# `host` is required alongside `enabled` under mode=enforce: NetworkPolicy
+# builds the migration Job's egress peer from it, and enabling a datastore
+# without one used to render a Job that could resolve DNS and never open a
+# connection. The chart refuses that now, so a fixture that omits it is
+# refused too — and this suite would have reported the refusal as five
+# unrelated assertion failures.
 render "${WORK}/mig.yaml" \
   --set dependencies.postgres.enabled=true \
+  --set dependencies.postgres.host=postgres.database.svc.cluster.local \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
   --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
@@ -329,12 +336,19 @@ else
 fi
 
 # Disabling it must remove it entirely (for DBA-gated change processes).
+# The host matters here too, and for a subtler reason: this asserts an
+# absence, so a render that fails outright satisfies it for the wrong reason.
+# Without the host the whole manifest was empty and this passed while proving
+# nothing about migrations.enabled.
 render "${WORK}/mig_off.yaml" \
   --set dependencies.postgres.enabled=true \
+  --set dependencies.postgres.host=postgres.database.svc.cluster.local \
   --set migrations.enabled=false \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
   --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
+assert_contains "${WORK}/mig_off.yaml" "kind: Deployment" \
+  "migrations.enabled=false still renders the release"
 assert_absent "${WORK}/mig_off.yaml" "kind: Job" \
   "migrations.enabled=false renders no Job"
 
