@@ -24,6 +24,22 @@ spec:
         {{- end }}
       labels:
         {{- include "nexus.selectorLabels" . | nindent 8 }}
+        # The role label the NetworkPolicy set selects on.
+        #
+        # Every other workload in this chart already sets it — the migration
+        # Job declares `component: migration`, the Grafana auth proxy declares
+        # `component: grafana-auth-proxy` — and this Deployment was the one
+        # that did not. The gateway and worker policies both select
+        # `component: <role>`, so without it they matched no pod at all, while
+        # the default-deny policy (podSelector: {}) matched this one. Under
+        # mode=enforce that left the only pod that serves traffic with every
+        # allow rule attached to a selector it did not satisfy.
+        #
+        # It goes here and NOT in nexus.selectorLabels, which feeds
+        # .spec.selector above. A Deployment's selector is immutable, so
+        # widening the helper would make `helm upgrade` fail on every existing
+        # release. Pod template labels are free to grow; the selector must not.
+        app.kubernetes.io/component: gateway
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

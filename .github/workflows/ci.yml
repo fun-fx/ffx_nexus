@@ -313,6 +313,7 @@ jobs:
           python3 deploy/helm/nexus/tests/fixture_semantic_admission_test.py
           python3 deploy/helm/nexus/tests/fixture_yaml_structure_test.py
           python3 deploy/helm/nexus/tests/image_pipeline_mutation_test.py
+          python3 deploy/helm/nexus/tests/workload_policy_selector_test.py
 
       - name: heavy-workflow artifact and trigger contracts
         # These read cni-nightly.yml as data and execute its extracted shell
