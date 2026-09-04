@@ -495,7 +495,7 @@ policy.
   walkthrough.
 - `docs/network-policy-prerequisites.md`
   updated to mention capture gating.
-- `docs/branch-protection.md` if a
+- `.github/branch-protection.md` if a
   new required check (`cni-policy-capture`)
   appears.
 - CLI man page for `nexus-capture-cli`.

@@ -1425,8 +1425,16 @@ chart at your own cluster, datastores, and provider policy — see the chart
 ```bash
 helm upgrade --install nexus deploy/helm/nexus \
   --namespace nexus --create-namespace \
-  --set image.tag=v0.5.1
+  --set image.tag=<APP_VERSION> \
+  --set networkPolicy.profile=development \
+  --set networkPolicy.mode=disabled
 ```
+
+`image.tag` defaults to the chart's `appVersion`; pin it explicitly so the
+image does not move on the next chart bump. The two `networkPolicy` flags are
+what make this a *minimal* deploy — the chart defaults to a default-deny
+policy set and refuses to install until every peer is named. See
+[`docs/network-policy-prerequisites.md`](docs/network-policy-prerequisites.md).
 
 The chart's `version` and `appVersion` are kept in lock-step with the
 gateway binary — bumping a gateway release is a single chart bump in
