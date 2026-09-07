@@ -1,6 +1,11 @@
 package egress
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"net/netip"
+	"testing"
+)
 
 // This file exists because the guard's correct behaviour is inconvenient for
 // tests in exactly one way: httptest servers listen on 127.0.0.1, and a
@@ -81,4 +86,34 @@ func AllowLoopbackForPackageTests() {
 // unexported function means a grep for allowLoopback finds every relaxation.
 func loopbackPolicy() Policy {
 	return Policy{allowLoopback: true}
+}
+
+// TestingSetResolver replaces g's hostname resolver with `table`,
+// where table maps an FQDN to a fixed list of literal IP answers,
+// and returns a Cleanup that restores the previous resolver.
+//
+// Use it in tests that have to exercise the in_cluster_only or
+// proxy modes without depending on net.DefaultResolver, which is
+// not part of the unit under test and has been observed to
+// behave inconsistently across CI runner images (systemd-resolved
+// returns "server misbehaving" on certain cluster.local queries,
+// for example). This helper keeps the "the unit" surface smaller.
+func TestingSetResolver(tb testing.TB, g *Guard, table map[string][]string) func() {
+	tb.Helper()
+	if g == nil {
+		tb.Fatal("TestingSetResolver called with nil guard")
+	}
+	prev := g.resolver
+	g.resolver = func(_ context.Context, host string) ([]netip.Addr, error) {
+		raw, ok := table[host]
+		if !ok {
+			return nil, fmt.Errorf("test resolver: no entry for host: %s", host)
+		}
+		out := make([]netip.Addr, 0, len(raw))
+		for _, r := range raw {
+			out = append(out, netip.MustParseAddr(r))
+		}
+		return out, nil
+	}
+	return func() { g.resolver = prev }
 }

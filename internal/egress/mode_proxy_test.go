@@ -61,14 +61,23 @@ func TestInClusterOnly_AllowsListedCIDR(t *testing.T) {
 	guard := egress.New(egress.Policy{
 		PublicDestinationsBlocked: true,
 		// In_cluster_only widens the static tenant-block
-		// toward the CIDRs/hosts the operator typed. Loopback
-		// is unlikely to be listed here; we use a 10.x host
-		// like production would.
+		// toward the CIDRs/hosts the operator typed. We mirror
+		// this on the IP side via TenantAllowedCIDRs so the
+		// literal-IP route also passes — production in_cluster_only
+		// deployments lift both knobs together.
+		TenantAllowedCIDRs: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
 		AllowedInternalHosts: []string{
 			"10.0.0.0/8",
 			"vllm.models.svc.cluster.local",
 		},
 	})
+	defer egress.TestingSetResolver(t, guard, map[string][]string{
+		// The FQDN resolves to a 10.x in-cluster IP so the
+		// allow-list semantics can be exercised deterministically,
+		// without depending on the CI runner's resolver (which
+		// is not part of the contract under test).
+		"vllm.models.svc.cluster.local": {"10.7.7.7"},
+	})()
 	if err := guard.CheckURL(context.Background(),
 		"http://10.7.7.7/", egress.Tenant); err != nil {
 		t.Fatalf("10.0.0.0/8 IP not allowed in in_cluster_only: %v", err)
@@ -110,8 +119,18 @@ func TestInClusterOnly_RejectsOutOfCIDR(t *testing.T) {
 func TestInClusterOnly_ExactHostMatch_NoSuffixWildcarding(t *testing.T) {
 	guard := egress.New(egress.Policy{
 		PublicDestinationsBlocked: true,
-		AllowedInternalHosts:      []string{"vllm.models.svc.cluster.local"},
+		// TenantAllowedCIDRs mirrors the literal-IP side of the
+		// in_cluster_only allow-list (see AllowedInternalHosts).
+		TenantAllowedCIDRs:   []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+		AllowedInternalHosts: []string{"vllm.models.svc.cluster.local"},
 	})
+	// Stubbed resolver: each FQDN maps to a private IP that
+	// passes the static IP policy and exercises our
+	// allow-list semantics. See comment on TestingSetResolver.
+	defer egress.TestingSetResolver(t, guard, map[string][]string{
+		"vllm.models.svc.cluster.local":          {"10.7.7.7"},
+		"attacker.vllm.models.svc.cluster.local": {"10.7.7.8"},
+	})()
 	// Exact vs suffix match. "attacker.vllm.models.svc.cluster.local"
 	// is NOT a match for "vllm.models.svc.cluster.local"; the
 	// allow-list is verbatim. Check this against the URL gate:
