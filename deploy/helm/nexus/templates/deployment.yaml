@@ -134,6 +134,16 @@ spec:
           {{- $proxyURL := "" }}
           {{- $noProxy  := "" }}
           {{- $wantsProxy := false }}
+          {{- /*
+            NEXUS_EGRESS_MODE is the chart's source-of-truth
+            statement of the operator's chosen
+            networkPolicy.providerEgress.mode, mirrored into
+            an env var the gateway reads at boot. The chart's
+            render-time gate refuses incompatible values; the
+            runtime guard relies on the env value to decide
+            whether to set policy.ProxyURL or
+            policy.PublicDestinationsBlocked.
+          */}}
           {{- if eq .Values.networkPolicy.providerEgress.mode "proxy" }}
           {{-   if .Values.networkPolicy.providerEgress.proxy.host }}
           {{-     $proxyURL = printf "http://%s:%d" .Values.networkPolicy.providerEgress.proxy.host .Values.networkPolicy.providerEgress.proxy.port }}
@@ -167,7 +177,7 @@ spec:
           {{-   end }}
           {{-   $noProxy = join "," (uniq $noProxyParts) }}
           {{- end }}
-          {{- if or $wantsProxy $.Values.extraEnv }}
+          {{- if or $wantsProxy (eq .Values.networkPolicy.providerEgress.mode "in_cluster_only") $.Values.extraEnv }}
           env:
             {{- if $wantsProxy }}
             - name: HTTPS_PROXY
@@ -182,6 +192,14 @@ spec:
               value: {{ $proxyURL | quote }}
             - name: no_proxy
               value: {{ $noProxy | quote }}
+            - name: NEXUS_EGRESS_MODE
+              value: "proxy"
+            {{- end }}
+            {{- if eq .Values.networkPolicy.providerEgress.mode "in_cluster_only" }}
+            - name: NEXUS_EGRESS_MODE
+              value: "in_cluster_only"
+            - name: NEXUS_EGRESS_INTERNAL_HOSTS
+              value: {{ join "," .Values.networkPolicy.providerEgress.inCluster.allowedServiceTargets | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

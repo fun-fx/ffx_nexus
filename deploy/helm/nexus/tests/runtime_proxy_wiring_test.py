@@ -211,6 +211,59 @@ def main():
     assert_in("noProxyExtras appear in NO_PROXY",
               rendered, "my-model.svc.cluster.local")
 
+    # 6. NEXUS_EGRESS_MODE inject ties chart truth to runtime
+    #    boot path. The gateway reads this env var to decide
+    #    whether to activate policy.ProxyURL or
+    #    policy.PublicDestinationsBlocked. The chart-side
+    #    contract is "in_cluster_only mode emits
+    #    NEXUS_EGRESS_MODE=in_cluster_only AND a comma-
+    #    separated NEXUS_EGRESS_INTERNAL_HOSTS whose entries
+    #    are exactly the values of
+    #    providerEgress.inCluster.allowedServiceTargets".
+    rendered = helm(
+        ["--set", "networkPolicy.profile=enterprise",
+         "--set", "networkPolicy.mode=enforce",
+         "--set", "networkPolicy.enforcementAcknowledged=true",
+         "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+         "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
+         "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[1]=embed.internal.svc.cluster.local"])
+    assert_in(
+        "in_cluster_only injects NEXUS_EGRESS_MODE=in_cluster_only",
+        rendered, '- name: NEXUS_EGRESS_MODE')
+    assert_in(
+        "in_cluster_only injects NEXUS_EGRESS_INTERNAL_HOSTS",
+        rendered, '- name: NEXUS_EGRESS_INTERNAL_HOSTS')
+    assert_in(
+        "NEXUS_EGRESS_INTERNAL_HOSTS contains the chart-declared targets",
+        rendered,
+        'value: "vllm.models.svc.cluster.local:8000,embed.internal.svc.cluster.local"')
+
+    # 7. mode=proxy injects NEXUS_EGRESS_MODE=proxy and does NOT
+    #    emit NEXUS_EGRESS_INTERNAL_HOSTS — proxy mode's
+    #    allow-list is the proxy URL, not a host list. The
+    #    gateway boot path is expected to either ignore
+    #    NEXUS_EGRESS_INTERNAL_HOSTS or refuse it, never
+    #    mistakenly enter in_cluster_only mode because of a
+    #    leftover env from a previous chart config.
+    rendered = helm(
+        ["--set", "networkPolicy.profile=enterprise",
+         "--set", "networkPolicy.mode=enforce",
+         "--set", "networkPolicy.enforcementAcknowledged=true",
+         "--set", "networkPolicy.postgres.selector.enabled=true",
+         "--set", "networkPolicy.postgres.selector.namespace=database",
+         "--set", "networkPolicy.providerEgress.mode=proxy",
+         "--set", "networkPolicy.providerEgress.proxy.enabled=true",
+         "--set", "networkPolicy.providerEgress.proxy.host=proxy.x.svc",
+         "--set", "networkPolicy.providerEgress.proxy.port=3128",
+         "--set", "networkPolicy.providerEgress.proxy.namespace=proxy-ns",
+         "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000"])
+    assert_in(
+        "mode=proxy injects NEXUS_EGRESS_MODE=proxy",
+        rendered, '- name: NEXUS_EGRESS_MODE\n              value: "proxy"')
+    assert_absent(
+        "mode=proxy must NOT inject NEXUS_EGRESS_INTERNAL_HOSTS",
+        rendered, '- name: NEXUS_EGRESS_INTERNAL_HOSTS')
+
     print("=== runtime proxy wiring contract: all cases passed ===")
 
 
