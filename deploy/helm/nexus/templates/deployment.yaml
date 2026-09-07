@@ -81,9 +81,111 @@ spec:
             {{- with .Values.envFrom }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with .Values.extraEnv }}
+          {{- /*
+            Runtime proxy wiring for the gateway/worker pod.
+
+            Two distinct intents lead to two distinct shapes:
+
+              * providerEgress.mode == "in_cluster_only"
+                — NO proxy env at all. Public destinations are
+                refused in the runtime; the chart does not even
+                give the gateway a path through a proxy because
+                "in_cluster_only" is the operator's explicit
+                promise that there is no public egress.
+
+              * providerEgress.mode == "proxy"
+                — HTTPS_PROXY/HTTP_PROXY both point at the
+                proxy host the operator declared, plus a
+                chart-composed NO_PROXY that keeps the local
+                datastore traffic on a direct path. NO_PROXY
+                is composed automatically; the operator does
+                not override it. The composer is documented
+                here because the failure shape (datastore
+                egress quietly routing through the proxy) is
+                one of the obvious ways this can fail with
+                install success and runtime breakage.
+
+              * legacy networkPolicy.egress.proxy.enabled=true
+                — same shape as providerEgress.mode=proxy.
+                The alias will go away in the next minor;
+                we keep its behaviour identical here.
+
+            NO_PROXY automatic composition:
+              * loopback (127.0.0.1, ::1)
+              * localhost
+              * kubernetes in-cluster DNS (.svc,
+                .svc.cluster.local, .cluster.local)
+              * configured in-cluster datastore hosts
+                (dependencies.{postgres,clickhouse,redis}.host)
+                when the chart knows about them at render time
+              * the user-added networkPolicy.providerEgress.proxy
+                .noProxyExtras list, for operators who run
+                Nexus alongside an in-cluster Service the chart
+                does not know about
+
+            We deliberately do NOT include 0.0.0.0/0 in NO_PROXY.
+            The standard Kubernetes NetworkPolicy plain cannot
+            express FQDN allow-lists, and the proxy is the
+            place where external FQDN rules live. Letting "do
+            not proxy anything" become a chart default would
+            double-route the proxy and silently open every
+            outbound socket to bypass it.
+          */}}
+          {{- $proxyURL := "" }}
+          {{- $noProxy  := "" }}
+          {{- $wantsProxy := false }}
+          {{- if eq .Values.networkPolicy.providerEgress.mode "proxy" }}
+          {{-   if .Values.networkPolicy.providerEgress.proxy.host }}
+          {{-     $proxyURL = printf "http://%s:%d" .Values.networkPolicy.providerEgress.proxy.host .Values.networkPolicy.providerEgress.proxy.port }}
+          {{-     $wantsProxy = true }}
+          {{-   end }}
+          {{- else if .Values.networkPolicy.egress.proxy.enabled }}
+          {{-   if .Values.networkPolicy.egress.proxy.host }}
+          {{-     $proxyURL = printf "http://%s:%d" .Values.networkPolicy.egress.proxy.host .Values.networkPolicy.egress.proxy.port }}
+          {{-     $wantsProxy = true }}
+          {{-   end }}
+          {{- end }}
+          {{- if $wantsProxy }}
+          {{-   $noProxyParts := list "127.0.0.1" "::1" "localhost" ".svc" ".svc.cluster.local" ".cluster.local" }}
+          {{-   if .Values.dependencies.postgres.enabled }}
+          {{-     if .Values.dependencies.postgres.host }}
+          {{-       $noProxyParts = append $noProxyParts .Values.dependencies.postgres.host }}
+          {{-     end }}
+          {{-   end }}
+          {{-   if .Values.dependencies.clickhouse.enabled }}
+          {{-     if .Values.dependencies.clickhouse.host }}
+          {{-       $noProxyParts = append $noProxyParts .Values.dependencies.clickhouse.host }}
+          {{-     end }}
+          {{-   end }}
+          {{-   if .Values.dependencies.redis.enabled }}
+          {{-     if .Values.dependencies.redis.host }}
+          {{-       $noProxyParts = append $noProxyParts .Values.dependencies.redis.host }}
+          {{-     end }}
+          {{-   end }}
+          {{-   range .Values.networkPolicy.providerEgress.proxy.noProxyExtras }}
+          {{-     $noProxyParts = append $noProxyParts . }}
+          {{-   end }}
+          {{-   $noProxy = join "," (uniq $noProxyParts) }}
+          {{- end }}
+          {{- if or $wantsProxy $.Values.extraEnv }}
           env:
+            {{- if $wantsProxy }}
+            - name: HTTPS_PROXY
+              value: {{ $proxyURL | quote }}
+            - name: HTTP_PROXY
+              value: {{ $proxyURL | quote }}
+            - name: NO_PROXY
+              value: {{ $noProxy | quote }}
+            - name: http_proxy
+              value: {{ $proxyURL | quote }}
+            - name: https_proxy
+              value: {{ $proxyURL | quote }}
+            - name: no_proxy
+              value: {{ $noProxy | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}

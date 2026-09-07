@@ -315,6 +315,7 @@ jobs:
           python3 deploy/helm/nexus/tests/image_pipeline_mutation_test.py
           python3 deploy/helm/nexus/tests/workload_policy_selector_test.py
           python3 deploy/helm/nexus/tests/provider_egress_render_test.py
+          python3 deploy/helm/nexus/tests/runtime_proxy_wiring_test.py
 
       - name: heavy-workflow artifact and trigger contracts
         # These read cni-nightly.yml as data and execute its extracted shell

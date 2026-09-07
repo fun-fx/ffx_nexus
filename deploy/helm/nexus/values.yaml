@@ -928,6 +928,14 @@ networkPolicy:
       port: 3128
       namespace: ""
       podSelector: {}
+      # Operator-supplied additions to the chart-composed NO_PROXY
+      # list rendered into the gateway/worker pods when
+      # providerEgress.mode=proxy. Use this for in-cluster Services
+      # the chart does not know about — never for public IPs or
+      # FQDNs, because a public entry in NO_PROXY would route
+      # external destinations directly, bypassing the cluster-local
+      # proxy and the FQDN allow-list it carries. Default empty.
+      noProxyExtras: []   # e.g. ["my-model.svc.cluster.local"]
     # mode=in_cluster_only. Required, non-empty list. The chart will
     # raise if a value here is a public FQDN / public IP / wildcard,
     # because the whole point of this mode is that those are refused.

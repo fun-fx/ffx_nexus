@@ -433,6 +433,18 @@
         },
         "podSelector": {
           "type": "object"
+        },
+        "noProxyExtras": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)(:[0-9]{1,5})?$",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true
         }
       }
     },
@@ -644,6 +656,18 @@
         },
         "podSelector": {
           "type": "object"
+        },
+        "noProxyExtras": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)(:[0-9]{1,5})?$",
+            "minLength": 1,
+            "maxLength": 253
+          },
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true
         }
       }
     },
