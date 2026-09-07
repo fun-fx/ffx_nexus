@@ -116,6 +116,13 @@ results.append(expect_render_ok(
         "--set", "dependencies.postgres.enabled=true",
         "--set", "dependencies.postgres.host=postgres.example.com",
         "--set", "dependencies.postgres.port=5432",
+        # New provider-egress mode contract: enterprise+enforce
+        # requires an explicit mode. This test exercises
+        # broad-postgres-cidr rendering independently of that
+        # contract, so we declare the smallest valid combination
+        # here.
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
     ],
 ))
 
@@ -125,6 +132,12 @@ results.append(expect_refused(
     [
         "--set", "features.sso=true",
         "--set", "networkPolicy.egress.proxy.enabled=false",
+        # New provider-egress mode contract: enterprise+enforce
+        # without an explicit mode refuses first, so we set one
+        # here. The test still asserts the "external features
+        # without an egress proxy" rejection cause downstream.
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
     ],
     "external features without an egress proxy",
 ))

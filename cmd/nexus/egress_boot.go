@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"strings"
 
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/egress"
@@ -24,7 +25,46 @@ func installEgressGuard(cfg config.Config, log *slog.Logger) {
 			"err", err)
 		allowed = nil
 	}
-	egress.SetDefault(egress.New(egress.Policy{TenantAllowedCIDRs: allowed}))
+
+	policy := egress.Policy{TenantAllowedCIDRs: allowed}
+
+	switch cfg.EgressMode {
+	case "":
+		// direct mode. Nothing more to assemble.
+	case "proxy":
+		if cfg.EgressProxyURL == "" {
+			log.Error("NEXUS_EGRESS_MODE=proxy but HTTPS_PROXY is empty; " +
+				"provider-side requests will be sent unproxied. The chart " +
+				"gate should have refused this combination at install time")
+			break
+		}
+		policy.ProxyURL = cfg.EgressProxyURL
+		log.Info("egress proxy mode is on",
+			"proxy_url", cfg.EgressProxyURL,
+			"detail", "URL is vetted before each request; static IP policy "+
+				"still runs in full")
+	case "in_cluster_only":
+		if cfg.EgressInternalHosts == "" {
+			log.Error("NEXUS_EGRESS_MODE=in_cluster_only but " +
+				"NEXUS_EGRESS_INTERNAL_HOSTS is empty; tenant requests will " +
+				"be refused. The chart gate should have refused this " +
+				"combination at install time")
+			break
+		}
+		policy.PublicDestinationsBlocked = true
+		policy.AllowedInternalHosts = splitNonEmpty(cfg.EgressInternalHosts, ",")
+		log.Warn("egress is in_cluster_only; public destinations are refused",
+			"internal_hosts", policy.AllowedInternalHosts,
+			"detail", "the chart's networkPolicy.providerEgress.inCluster."+
+				"allowedServiceTargets values are mirrored here. Operators "+
+				"should keep the two lists in lockstep")
+	default:
+		log.Error("NEXUS_EGRESS_MODE has an unrecognised value; "+
+			"defaulting to direct outbound",
+			"value", cfg.EgressMode)
+	}
+
+	egress.SetDefault(egress.New(policy))
 
 	if len(allowed) > 0 {
 		// Worth a warning line, not just info: this is an operator widening the
@@ -39,4 +79,18 @@ func installEgressGuard(cfg config.Config, log *slog.Logger) {
 			"detail", "an org admin can point an eval profile or plugin at any address "+
 				"in these ranges; cloud instance metadata stays blocked regardless")
 	}
+}
+
+// splitNonEmpty splits s on sep and trims whitespace, dropping
+// entries that are empty after the trim.
+func splitNonEmpty(s, sep string) []string {
+	out := make([]string, 0, 4)
+	for _, raw := range strings.Split(s, sep) {
+		t := strings.TrimSpace(raw)
+		if t == "" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }

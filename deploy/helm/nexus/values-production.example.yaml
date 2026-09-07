@@ -163,7 +163,8 @@ networkPolicy:
     selector:
       enabled: true
       namespace: database        # namespace holding your Postgres Service
-  egress:
+  providerEgress:
+    mode: "proxy"
     proxy:
       enabled: true
       host: squid.egress.svc.cluster.local   # <PLACEHOLDER> your forward proxy

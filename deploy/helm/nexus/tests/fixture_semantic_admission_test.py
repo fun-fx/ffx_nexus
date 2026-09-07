@@ -184,6 +184,16 @@ def render_chart_networkpolicy(target_path):
          "--set", "networkPolicy.mode=enforce",
          "--set", "networkPolicy.profile=enterprise",
          "--set", "networkPolicy.enforcementAcknowledged=true",
+         # New provider-egress mode contract: enterprise+enforce
+         # without mode refuses at render, so tests that render
+         # only the networkpolicy.yaml under enterprise+enforce
+         # must declare an explicit mode. The semantic admission
+         # test is comparing fixture pods to rendered selectors,
+         # so the mode value itself is incidental; in_cluster_only
+         # with one declared internal target is the smallest
+         # combination that satisfies the contract gate.
+         "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+         "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
          "--show-only", "templates/networkpolicy.yaml"],
         capture_output=True, text=True, check=True,
         # Strip PATH so the rendered subprocess cannot

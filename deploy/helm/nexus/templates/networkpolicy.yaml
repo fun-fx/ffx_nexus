@@ -108,6 +108,58 @@ spec:
   development profile and the fixture installs — which enable none of them —
   are unaffected.
 */}}
+{{- /*
+  Provider-egress mode contract gate.
+
+  Render-time truth table (mode=enforce & profile=enterprise):
+
+    mode=""                   — refuse. Empty message names the missing
+                                field. An operator who has not chosen
+                                between proxy and in_cluster_only has
+                                not declared their intent, and "render
+                                success" must not silently paper over
+                                it.
+    mode="proxy"              — proxy.enabled must be true and at least
+                                host or namespace (with podSelector)
+                                must be set. Peer is otherwise
+                                unusable.
+    mode="in_cluster_only"    — allowedServiceTargets must be non-empty.
+                                Empty list silently produces "no public
+                                443 rule, no internal peer either"
+                                which is a feature dead-letter fall
+                                through to runtime validator (added in
+                                the same milestone, separate PR). Here
+                                we still gate the chart contract.
+    mode=anything_else        — schema rejects upstream; this block
+                                is a backstop for schema drift.
+
+  Co-existence rule: providerEgress.proxy.* and the (deprecated)
+  egress.proxy.* alias both emit the same NetworkPolicy peer. Setting
+  BOTH at once is the operator asking "which contract applies?" — we
+  refuse rather than guess which one wins.
+*/}}
+{{- if and (eq .Values.networkPolicy.profile "enterprise") (eq .Values.networkPolicy.mode "enforce") }}
+{{- $mode := .Values.networkPolicy.providerEgress.mode }}
+{{- if not (or (eq $mode "proxy") (eq $mode "in_cluster_only")) }}
+{{- fail (printf "networkPolicy.providerEgress.mode=%q must be one of \"proxy\" or \"in_cluster_only\" on profile=enterprise mode=enforce — operating without an explicit intent cannot render, because the two intents must produce different NetworkPolicy peers and we cannot pick one for you." $mode) }}
+{{- end }}
+{{- if eq $mode "proxy" }}
+{{- if not .Values.networkPolicy.providerEgress.proxy.enabled }}
+{{- fail "networkPolicy.providerEgress.proxy.enabled must be true on providerEgress.mode=proxy (a disabled proxy tells the chart you do not want a peer; the runtime however would then have no route out for provider/eval traffic)." }}
+{{- end }}
+{{- if and (not .Values.networkPolicy.providerEgress.proxy.host) (not (and .Values.networkPolicy.providerEgress.proxy.namespace (gt (len .Values.networkPolicy.providerEgress.proxy.podSelector) 0))) }}
+{{- fail "networkPolicy.providerEgress.proxy needs either proxy.host (a stable proxy URL) OR proxy.namespace plus a non-empty proxy.podSelector — peer without host or without selector matches nothing in the cluster." }}
+{{- end }}
+{{- end }}
+{{- if eq $mode "in_cluster_only" }}
+{{- if not (gt (len .Values.networkPolicy.providerEgress.inCluster.allowedServiceTargets) 0) }}
+{{- fail "networkPolicy.providerEgress.inCluster.allowedServiceTargets must be a non-empty list on mode=in_cluster_only — an empty list would mean the runtime refuses all public destinations AND the chart refuses all internal destinations, which is a deadlock." }}
+{{- end }}
+{{- end }}
+{{- if and .Values.networkPolicy.egress.proxy.enabled .Values.networkPolicy.providerEgress.proxy.enabled }}
+{{- fail "networkPolicy.egress.proxy.* (deprecated alias) and networkPolicy.providerEgress.proxy.* are both set with proxy.enabled=true. Pick one — the deprecated alias will be removed in the next minor release. See providerEgress docstring in values.yaml." }}
+{{- end }}
+{{- end }}
 {{- $noEgress := list }}
 {{- if .Values.dependencies.postgres.enabled }}
 {{- if not .Values.dependencies.postgres.host }}

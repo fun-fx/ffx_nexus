@@ -129,21 +129,61 @@ Not included in the migration policy — `nexus migrate` talks to the
 datastores and nothing else.
 */}}
 {{- define "nexus.egressProxy" -}}
-{{- if .Values.networkPolicy.egress.proxy.enabled }}
+{{/*
+  Emit the cluster-local proxy peer for the gateway/worker egress
+  NetworkPolicy rules.
+
+  Source of truth: `networkPolicy.providerEgress.proxy.*` (new,
+  enforced by the chart-level fail-closed gate in
+  templates/networkpolicy.yaml). The legacy
+  `networkPolicy.egress.proxy.*` block is a one-minor-release
+  alias that emits the same peer. Both at once is rejected by
+  the chart gate, so by the time we reach this template we know
+  exactly one of the two is set, and we look at both.
+*/}}
+{{- if or .Values.networkPolicy.egress.proxy.enabled .Values.networkPolicy.providerEgress.proxy.host }}
+{{- /*
+  Compute the proxy identity that the policy peer will reference.
+  Prefer the new block; fall back to the legacy alias. If host is
+  set we treat that as the configured proxy URL (operator may
+  point at any host they trust), and we also stamp port /
+  namespace / podSelector into the variables the templating
+  below consumes.
+*/}}
+{{- $host       := "" }}
+{{- $port       := 0 }}
+{{- $namespace  := "" }}
+{{- $podSel     := dict }}
+{{- if .Values.networkPolicy.egress.proxy.host }}
+{{- $host = .Values.networkPolicy.egress.proxy.host }}
+{{- $port = .Values.networkPolicy.egress.proxy.port }}
+{{- $namespace = .Values.networkPolicy.egress.proxy.namespace }}
+{{- $podSel = .Values.networkPolicy.egress.proxy.podSelector }}
+{{- end }}
+{{- if .Values.networkPolicy.providerEgress.proxy.host }}
+{{- $host = .Values.networkPolicy.providerEgress.proxy.host }}
+{{- $port = .Values.networkPolicy.providerEgress.proxy.port }}
+{{- $namespace = .Values.networkPolicy.providerEgress.proxy.namespace }}
+{{- $podSel = .Values.networkPolicy.providerEgress.proxy.podSelector }}
+{{- end }}
 # Egress proxy
 - to:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: {{ .Values.networkPolicy.egress.proxy.namespace }}
-    {{- if gt (len .Values.networkPolicy.egress.proxy.podSelector) 0 }}
+          kubernetes.io/metadata.name: {{ $namespace }}
+    {{- if gt (len $podSel) 0 }}
     - podSelector:
         matchLabels:
-          {{- range $k, $v := .Values.networkPolicy.egress.proxy.podSelector }}
+          {{- range $k, $v := $podSel }}
           {{ $k }}: {{ $v }}
           {{- end }}
     {{- end }}
   ports:
     - protocol: TCP
-      port: {{ .Values.networkPolicy.egress.proxy.port }}
+      port: {{ $port }}
 {{- end }}
+
+
+{{- /* If neither source-of-truth set a proxy, the helper renders no
+   peer. Kept as a definition that returns an empty string. */ -}}
 {{- end -}}

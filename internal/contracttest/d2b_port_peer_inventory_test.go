@@ -416,6 +416,8 @@ func renderEnterpriseChart(t *testing.T, root string) map[string]string {
 			"--set", "networkPolicy.profile=enterprise",
 			"--set", "networkPolicy.mode=enforce",
 			"--set", "networkPolicy.enforcementAcknowledged=true",
+			"--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+			"--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
 			"--set", "networkPolicy.postgres.selector.enabled=true",
 			"--set", "networkPolicy.postgres.selector.namespace=database",
 			"--set", "dependencies.postgres.host=postgres",

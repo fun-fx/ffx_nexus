@@ -50,6 +50,40 @@ type Config struct {
 	//
 	// NEXUS_EGRESS_TENANT_ALLOWED_CIDRS, e.g. "10.44.0.0/16,10.45.1.7".
 	EgressTenantAllowedCIDRs string
+
+	// EgressMode describes the chart-rendered provider-egress
+	// contract that the runtime should match. The chart's
+	// networkPolicy.providerEgress.mode value is propagated
+	// here via a Helm-rendered env var so the gateway's runtime
+	// guard and the chart's render-time gate agree.
+	//
+	// The three values are:
+	//   - "" (unset)            → direct outbound, dial-only gate
+	//   - "proxy"               → route via proxy; proxy URL is
+	//                             EgressProxyURL
+	//   - "in_cluster_only"     → refuse any destination not on
+	//                             EgressInternalHosts
+	//
+	// The chart's render-time gate refuses incompatible pairs,
+	// so this value and EgressProxyURL / EgressInternalHosts are
+	// self-consistent at boot time. Badly-typed values are
+	// treated as unset (logged at boot).
+	EgressMode string
+
+	// EgressProxyURL is the URL of the cluster-local egress
+	// proxy the chart injected. Read from HTTPS_PROXY (Go's
+	// standard env convention; the chart writes that exact
+	// variable into the gateway pod). When non-empty, the
+	// runtime guard switches its transport to the proxy and
+	// substitutes URL-vetting for the dial-time IP check.
+	EgressProxyURL string
+
+	// EgressInternalHosts is the comma-separated list of host
+	// names / CIDRs the chart injected for in_cluster_only mode.
+	// The runtime guard uses it to decide what cluster-internal
+	// destinations a Tenant request may reach.
+	EgressInternalHosts string
+
 	// PublicGrafanaURL is the browser-reachable base URL of the
 	// operator's OWN Grafana. It is used for one thing only: composing
 	// the deep links that GET /api/ui/observability hands to the
@@ -538,6 +572,9 @@ func load() Config {
 		PublicWebOrigins: splitCSV(env("NEXUS_PUBLIC_WEB_ORIGINS", "")),
 
 		EgressTenantAllowedCIDRs: env("NEXUS_EGRESS_TENANT_ALLOWED_CIDRS", ""),
+		EgressMode:               env("NEXUS_EGRESS_MODE", ""),
+		EgressProxyURL:           env("HTTPS_PROXY", ""),
+		EgressInternalHosts:      env("NEXUS_EGRESS_INTERNAL_HOSTS", ""),
 		PublicGrafanaURL:         env("NEXUS_PUBLIC_GRAFANA_URL", ""),
 		DocsDir:                  env("NEXUS_DOCS_DIR", ""),
 		PostgresURL:              env("NEXUS_POSTGRES_URL", ""),

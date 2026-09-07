@@ -36,6 +36,10 @@ func executeHelmTemplate(t *testing.T, releaseName string) (rendered string, ok 
 	out, err := exec.Command("helm", "template", releaseName, chart,
 		"--set", "networkPolicy.profile=enterprise",
 		"--set", "networkPolicy.enforcementAcknowledged=true",
+		"--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+		"--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
+		"--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+		"--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
 		"--set", "fullnameOverride="+releaseName,
 		"--show-only", "templates/networkpolicy.yaml",
 	).CombinedOutput()
