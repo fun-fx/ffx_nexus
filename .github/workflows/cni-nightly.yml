@@ -176,15 +176,16 @@ jobs:
           set -euo pipefail
           helm version --short
           # Render with enterprise enforcement.
-          helm template render-test deploy/helm/nexus \
-            --set networkPolicy.mode=enforce \
-            --set networkPolicy.profile=enterprise \
-            --set networkPolicy.enforcementAcknowledged=true \
-            --set networkPolicy.egress.proxy.enabled=true \
-            --set networkPolicy.egress.proxy.host=p.example.svc.cluster.local \
-            --set networkPolicy.egress.proxy.port=3128 \
-            --set networkPolicy.egress.proxy.namespace=p \
-            > /tmp/render.out
+            helm template render-test deploy/helm/nexus \
+              --set networkPolicy.mode=enforce \
+              --set networkPolicy.profile=enterprise \
+              --set networkPolicy.enforcementAcknowledged=true \
+              --set networkPolicy.providerEgress.mode=proxy \
+              --set networkPolicy.providerEgress.proxy.enabled=true \
+              --set networkPolicy.providerEgress.proxy.host=p.example.svc.cluster.local \
+              --set networkPolicy.providerEgress.proxy.port=3128 \
+              --set networkPolicy.providerEgress.proxy.namespace=p \
+              > /tmp/render.out
           # Count NetworkPolicy documents.
           count=$(grep -c '^kind: NetworkPolicy$' /tmp/render.out)
           echo "NetworkPolicy docs: $count"
