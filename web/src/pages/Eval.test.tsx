@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { Eval } from "../pages/Eval";
@@ -203,21 +203,27 @@ describe("<Eval /> weights sliders", () => {
     // Drag latency to 0; quality and cost keep the historical 0.6/0.2
     // distribution. Save should send a normalised row where latency is 0
     // and q + c = 1.
-    fireEvent.change(sliders[2], { target: { value: "0" } });
-    // Wait for the change to reach committed state before saving. The
-    // sliders are controlled, so the percentage label is the signal that
-    // React has applied it — the same idiom the drag-isolation test above
-    // uses. Clicking Save immediately after fireEvent reads whatever state
-    // the click handler sees, which on a slower runner is still the previous
-    // value: the assertion below then receives latency 0.2, the default,
-    // and reads as a product bug rather than a test that did not wait.
+    //
+    // Wrap fireEvent.change AND click in act(): a CI runner with a slightly
+    // longer microtask gap than the developer's macOS can let the controlled
+    // <input type=range>'s setState settle AFTER Save's click handler has
+    // already read the closure copy of state. Without act() the test then
+    // reads `latency=0.2` (the default) from the PATCH body and asserts a
+    // product bug. Wrapping the events flushes microtasks the same way
+    // react-dom-test-utils does, so the closure inside Save sees the
+    // committed 0.
+    await act(async () => {
+      fireEvent.change(sliders[2], { target: { value: "0" } });
+    });
     await waitFor(() => {
       const labels = Array.from(
         document.querySelectorAll<HTMLElement>(".weight-slider-value"),
       );
       expect(labels[2].textContent).toMatch(/^0%$/);
     });
-    fireEvent.click(screen.getByText(/Save weights/i));
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Save weights/i));
+    });
     await waitFor(() => expect(captured).not.toBeNull());
     const sent = captured!.routing.weights;
     expect(sent.latency).toBe(0);
