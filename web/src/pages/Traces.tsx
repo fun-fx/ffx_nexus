@@ -3,13 +3,16 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Chip } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
+import { FirstRequestSnippets } from "../components/FirstRequestSnippets";
 import { Icon } from "../components/icons";
 import { ResizableGrid, type ColumnSpec, type RowSpec } from "../components/ResizableGrid";
 import { StatusPill } from "../components/StatusPill";
 import { formatExact, formatTokens } from "../lib/format";
 import {
+  fetchAuthConfig,
   fetchMe,
   fetchTraces,
+  type AuthConfig,
   type TraceQuery,
   type TraceCursor,
   type TraceSummary,
@@ -21,10 +24,15 @@ import {
 // clicks call fetchTracePage directly so we can append without nuking
 // the existing in-memory list.
 async function fetchTraceBundle(query: TraceQuery) {
-  const [me, list] = await Promise.allSettled([fetchMe(), fetchTraces(query)]);
+  const [me, list, auth] = await Promise.allSettled([
+    fetchMe(),
+    fetchTraces(query),
+    fetchAuthConfig(),
+  ]);
   return {
     me: me.status === "fulfilled" ? (me.value as User | null) : null,
     page: list.status === "fulfilled" ? list.value : { items: [], next_cursor: { before: "", since: "" } as TraceCursor },
+    auth: auth.status === "fulfilled" ? (auth.value as AuthConfig) : null,
   };
 }
 
@@ -242,6 +250,13 @@ export function Traces() {
   // pulling `me` off the bundle keeps the data flight minimal while
   // letting the column handler pick the role on every render.
   const user: User | null = data?.me ?? null;
+  const auth = data?.auth ?? null;
+  const filtersActive =
+    statusFilter !== "all" ||
+    Boolean(providerFilter) ||
+    Boolean(search.trim()) ||
+    Boolean(sinceInput) ||
+    Boolean(beforeInput);
 
   // Unique providers visible in the *current* page only — handy as quick
   // chips but not authoritative. The server-side provider filter is
@@ -628,7 +643,13 @@ export function Traces() {
             }
           }}
           emptyMessage={
-            isLoading ? "Loading traces…" : "No traces match the filters."
+            isLoading ? (
+              "Loading traces…"
+            ) : filtersActive ? (
+              "No traces match the filters."
+            ) : (
+              <FirstRequestSnippets cfg={auth} heading="No traces yet" />
+            )
           }
           initialSort={{ id: "time", dir: "desc" }}
           storageKey="nexus:dt:traces"

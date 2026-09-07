@@ -99,6 +99,48 @@ func TestRegisterInvalidPasswordReturns400(t *testing.T) {
 	}
 }
 
+func TestAuthConfigLocalModeAndKeyMode(t *testing.T) {
+	srv := newTestServer()
+	srv.SetLocalMode(true)
+	srv.SetKeyMode("strict_byok")
+	mux := srv.Mux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/config", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auth config: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"local_mode":true`) {
+		t.Fatalf("expected local_mode true, got %s", body)
+	}
+	if !strings.Contains(body, `"key_mode":"strict_byok"`) {
+		t.Fatalf("expected key_mode strict_byok, got %s", body)
+	}
+	if strings.Contains(body, `"cors_configured"`) {
+		t.Fatalf("cors_configured should be omitted when no extra origins, got %s", body)
+	}
+}
+
+func TestAuthConfigCORSConfigured(t *testing.T) {
+	srv := newTestServer()
+	srv.SetCSPOrigins([]string{"https://console.example"})
+	mux := srv.Mux()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/config", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auth config: want 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"cors_configured":true`) {
+		t.Fatalf("expected cors_configured true, got %s", rec.Body.String())
+	}
+}
+
 // TestPlaygroundCatalogRequiresAuth pins the route behaviour: an
 // unauthenticated probe must be 401'd by the session guard before the
 // catalog adapter is consulted.

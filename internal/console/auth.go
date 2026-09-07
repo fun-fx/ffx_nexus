@@ -119,6 +119,13 @@ func (s *Server) authConfig(w http.ResponseWriter, _ *http.Request) {
 		"signup_enabled": s.allowSignup && s.store != nil,
 		"sso_enabled":    s.SSOEnabled(),
 		"sso_label":      s.SSOLabel(),
+		"local_mode":     s.localMode,
+	}
+	if s.keyMode != "" {
+		out["key_mode"] = s.keyMode
+	}
+	if s.origins != nil && len(s.origins.allowed) > 0 {
+		out["cors_configured"] = true
 	}
 	if s.publicGatewayURL != "" {
 		out["gateway_url"] = s.publicGatewayURL

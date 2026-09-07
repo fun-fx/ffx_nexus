@@ -372,3 +372,29 @@ describe("<Traces /> turn-grouped row", () => {
     });
   });
 });
+
+describe("<Traces /> empty first-run", () => {
+  it("shows first-request snippets when there are no traces and no filters", async () => {
+    stubFetch((url) => {
+      if (url.endsWith("/api/me")) {
+        return new Response(JSON.stringify({ ...adminMe, role: "admin" }), { status: 200 });
+      }
+      if (url.includes("/api/traces")) {
+        return new Response(
+          JSON.stringify({ items: [], next_cursor: { before: "", since: "" } }),
+          { status: 200 },
+        );
+      }
+      if (url.endsWith("/api/auth/config")) {
+        return new Response(
+          JSON.stringify({ signup_enabled: false, sso_enabled: false, local_mode: true }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    renderTraces();
+    expect(await screen.findByTestId("first-request-snippets")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /no traces yet/i })).toBeInTheDocument();
+  });
+});

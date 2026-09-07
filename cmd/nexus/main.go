@@ -381,6 +381,7 @@ func main() {
 	consoleSrvHandler.SetBuildTag(nexusBuildTag)
 	consoleSrvHandler.SetAllowSignup(cfg.AllowSignup)
 	consoleSrvHandler.SetLocalMode(cfg.LocalDB)
+	consoleSrvHandler.SetKeyMode(cfg.KeyMode)
 	consoleSrvHandler.SetEnterpriseCtaURL(cfg.EnterpriseCtaURL)
 	consoleSrvHandler.SetPublicDocs(cfg.PublicDocs)
 

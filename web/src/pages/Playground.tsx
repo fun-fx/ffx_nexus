@@ -1,25 +1,38 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import {
+  fetchAuthConfig,
   fetchGatewayModels,
   fetchMyKeys,
+  type AuthConfig,
   type GatewayModelCatalog,
   type VirtualKey,
 } from "../api";
 import { Chip } from "../components/Chip";
+import { FirstRequestSnippets } from "../components/FirstRequestSnippets";
 import { GradientText } from "../components/GradientText";
 import { Drawer } from "../components/Drawer";
 import { Icon } from "../components/icons";
 
 async function fetchBundle() {
-  const [keys, gw] = await Promise.all([fetchMyKeys(), fetchGatewayModels()]);
-  return { keys: keys as VirtualKey[], gw: gw as GatewayModelCatalog };
+  const [keys, gw, auth] = await Promise.all([
+    fetchMyKeys(),
+    fetchGatewayModels(),
+    fetchAuthConfig(),
+  ]);
+  return {
+    keys: keys as VirtualKey[],
+    gw: gw as GatewayModelCatalog,
+    auth: auth as AuthConfig,
+  };
 }
 
 export function Playground() {
   const { data } = useQuery({ queryKey: ["playground"], queryFn: fetchBundle });
   const keys = data?.keys?.filter((k) => !k.revoked) ?? [];
   const gw = data?.gw;
+  const auth = data?.auth ?? null;
 
   const [model, setModel] = useState("auto");
   const [keyId, setKeyId] = useState<string>("");
@@ -153,6 +166,20 @@ export function Playground() {
           </p>
         </div>
       </header>
+
+      {keys.length === 0 && (
+        <div className="pg-empty-setup" data-testid="playground-empty-setup">
+          <p>
+            Mint a <Link to="/keys">virtual key</Link> and add a{" "}
+            <Link to="/credentials">provider credential</Link> before you can
+            run prompts here.
+          </p>
+          <FirstRequestSnippets
+            cfg={auth}
+            heading="Or call the gateway from your SDK"
+          />
+        </div>
+      )}
 
       <div className="pg-grid">
         <div className="panel pg-input">

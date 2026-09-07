@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ThemeProvider } from "../theme/ThemeProvider";
@@ -189,5 +189,15 @@ describe("<Playground /> model picker", () => {
     await waitFor(() => {
       expect(select.value).toBe("teamprov/gpt-5");
     });
+  });
+
+  it("shows first-request snippets when no virtual keys exist", async () => {
+    renderPlayground();
+    expect(await screen.findByTestId("playground-empty-setup")).toBeInTheDocument();
+    expect(screen.getByTestId("first-request-snippets")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /virtual key/i }).getAttribute("href")).toBe("/keys");
+    expect(
+      screen.getByRole("link", { name: /provider credential/i }).getAttribute("href"),
+    ).toBe("/credentials");
   });
 });
