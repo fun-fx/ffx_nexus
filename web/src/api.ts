@@ -883,6 +883,10 @@ export interface AuthConfig {
   sso_enabled: boolean;
   sso_label: string;
   gateway_url?: string;
+  // Absent unless the operator set NEXUS_ENTERPRISE_CTA_URL. The login page
+  // shows no contact link at all when it is missing, because a self-hosted
+  // console should not carry someone else's sales link by default.
+  enterprise_cta_url?: string;
 }
 
 export async function fetchAuthConfig(): Promise<AuthConfig> {
@@ -894,6 +898,7 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
     sso_enabled: !!data.sso_enabled,
     sso_label: data.sso_label || "",
     gateway_url: data.gateway_url || "",
+    enterprise_cta_url: data.enterprise_cta_url || "",
   };
 }
 

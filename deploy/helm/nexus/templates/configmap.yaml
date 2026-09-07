@@ -60,6 +60,13 @@ data:
 
   NEXUS_ALLOW_SIGNUP: {{ .Values.config.allowSignup | quote }}
 
+  {{- /* Login-page contact link. Rendered only when set, so an unconfigured
+       install ships no key at all rather than an empty one the console has
+       to interpret. */}}
+  {{- with .Values.config.enterpriseCtaUrl }}
+  NEXUS_ENTERPRISE_CTA_URL: {{ . | quote }}
+  {{- end }}
+
   {{- /* Quality-aware routing */}}
   {{- with .Values.config.routeGroups }}
   NEXUS_ROUTE_GROUPS: {{ . | quote }}

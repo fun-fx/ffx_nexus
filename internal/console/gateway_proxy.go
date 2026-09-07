@@ -53,3 +53,25 @@ func (s *Server) SetGatewayProxy(listenAddr string) {
 func (s *Server) SetPublicGatewayURL(raw string) {
 	s.publicGatewayURL = strings.TrimRight(strings.TrimSpace(raw), "/")
 }
+
+// SetEnterpriseCtaURL sets the target of the "Talk to us" link on the login
+// page. Empty hides the link, which is the default — see
+// config.Config.EnterpriseCtaURL for why this is opt-in.
+//
+// Only http(s) is accepted. The value reaches an <a href> in the SPA, so a
+// javascript: or data: URL here would be stored XSS on the one page every
+// user of the console sees before authenticating.
+func (s *Server) SetEnterpriseCtaURL(raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		s.enterpriseCtaURL = ""
+		return
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		s.log.Error("ignoring NEXUS_ENTERPRISE_CTA_URL: not an http(s) URL", "value", raw)
+		s.enterpriseCtaURL = ""
+		return
+	}
+	s.enterpriseCtaURL = raw
+}

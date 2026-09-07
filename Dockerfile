@@ -37,9 +37,22 @@ FROM alpine:3.20
 # discovery, etc.). alpine 3.20's ca-certificates package no longer runs
 # update-ca-certificates as an install hook, so we call it explicitly
 # to populate the bundle that the runtime links against.
-RUN apk add --no-cache ca-certificates tzdata \
+#
+# postgresql16 is here for `serve --local` (the CMD below). Without it the
+# gateway would download a Postgres runtime on first start, which turns
+# `docker run` into something that needs the network for a database and fails
+# on an air-gapped host. Alpine puts the server binaries in
+# /usr/libexec/postgresql16; internal/localdb expects a directory with a bin/
+# subdirectory, hence the symlink. The version must match the pgVersion
+# constant in internal/localdb, or the runner re-runs initdb on a data
+# directory it thinks belongs to another major.
+#
+# A pod never runs any of this: the Helm chart pins args to ["serve"].
+RUN apk add --no-cache ca-certificates tzdata postgresql16 \
     && update-ca-certificates \
-    && adduser -D -H -u 65532 nexus
+    && adduser -D -H -u 65532 nexus \
+    && mkdir -p /opt/postgres \
+    && ln -s /usr/libexec/postgresql16 /opt/postgres/bin
 COPY --from=build /out/nexus /usr/local/bin/nexus
 
 # Bundled documentation tree. The console serves everything under
@@ -53,8 +66,25 @@ COPY --from=build /src/docs /etc/nexus/docs
 # write access, so a more restrictive mode here would silent-fail
 # the walk() at boot and present an empty /api/docs response.
 RUN chmod -R a+rX /etc/nexus/docs
+
+# State for `serve --local`: the Postgres data directory and the generated
+# master key. One `-v $(pwd)/data:/app/data` keeps a console's configuration
+# across container replacements; without it the credentials the user entered
+# go away with the container.
+RUN mkdir -p /app/data && chown -R 65532:65532 /app
+ENV NEXUS_LOCAL_STATE_DIR=/app/data \
+    NEXUS_LOCAL_DB_BINARIES=/opt/postgres \
+    NEXUS_DOCS_DIR=/etc/nexus/docs
+
 USER nexus
+WORKDIR /app
 EXPOSE 8080 8081
 
 # Gateway :8080, console :8081. Configure via NEXUS_* env vars.
+#
+# The default CMD runs a container-local Postgres so `docker run` reaches a
+# working console rather than one that answers 503 to every write. Anything
+# with an external database overrides it — the Helm chart pins args to
+# ["serve"], and `docker run ... nexus serve` does the same by hand.
 ENTRYPOINT ["nexus"]
+CMD ["serve", "--local"]

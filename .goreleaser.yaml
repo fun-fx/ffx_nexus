@@ -1,0 +1,75 @@
+# Cross-platform binaries for the `npx @ffxnexus/nexus` wrapper and the
+# curl installer.
+#
+# Both download from the GitHub Release this produces, so the archive names
+# below are a contract: npx/lib/download.js and scripts/install.sh build the
+# same string. Changing name_template breaks every install one-liner until
+# those two are changed with it.
+version: 2
+
+project_name: nexus
+
+before:
+  hooks:
+    - go mod download
+    # web/embed.go embeds web/dist. A release built without this step still
+    # compiles and still serves :8081 — it just answers 404 for the console,
+    # which is the whole product for a first-time user.
+    - npm --prefix web ci
+    - npm --prefix web run build
+
+builds:
+  - id: nexus
+    main: ./cmd/nexus
+    binary: nexus
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    # Same stamp the Dockerfile injects, so X-Nexus-Build identifies a
+    # binary from a release as precisely as one from an image.
+    ldflags:
+      - -s -w -X main.nexusBuildTag={{ .FullCommit }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: nexus
+    ids:
+      - nexus
+    formats:
+      - tar.gz
+    # Deliberately not the goreleaser default: the default appends the
+    # format-specific suffix differently across versions, and the npx wrapper
+    # has to predict this name before it can fetch anything.
+    name_template: "nexus_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - LICENSE-MIT
+      - README.md
+
+# The wrapper verifies the archive against this file before running it.
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+# Release notes come from CHANGELOG.md, which is maintained by hand.
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: fun-fx
+    name: ffx_nexus
+  # The Docker image and the npm package are published by sibling jobs in
+  # .github/workflows/release.yml; leaving the release as a draft would make
+  # both of them race a human clicking "publish".
+  draft: false
+  prerelease: auto

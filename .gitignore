@@ -4,6 +4,9 @@
 *.test
 *.out
 
+# goreleaser output
+/dist/
+
 # Node / dashboard
 web/node_modules/
 # web/dist is committed: it is embedded into the Go binary (web/embed.go) so the

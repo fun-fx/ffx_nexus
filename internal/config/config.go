@@ -110,6 +110,34 @@ type Config struct {
 	ClickHouseURL string // native protocol DSN, e.g. clickhouse://user:pass@host:9000/db
 	RedisURL      string
 
+	// LocalDB runs Postgres as a child process and points PostgresURL at it,
+	// so `npx @ffxnexus/nexus` and `docker run` reach a working console
+	// instead of a control plane that answers 503 to every write.
+	//
+	// Default FALSE and deliberately not inferred from an empty PostgresURL:
+	// a Kubernetes pod with no database configured must stay stateless, not
+	// quietly initialise one in an emptyDir that vanishes on reschedule. The
+	// container image opts in through its CMD; the chart overrides that CMD.
+	//
+	// Set by `nexus serve --local` as well as NEXUS_LOCAL_DB.
+	LocalDB bool
+
+	// LocalStateDir is where local mode keeps the Postgres data directory,
+	// the cached server binaries and the generated master key. Empty means
+	// ~/.nexus. The container image sets /app/data so one volume mount
+	// survives a container replacement.
+	LocalStateDir string
+
+	// LocalDBBinaries points at a pre-installed Postgres whose bin/ holds
+	// initdb and pg_ctl. Empty means download and cache them under
+	// LocalStateDir. The image sets it so `docker run` never needs the
+	// network for a database.
+	LocalDBBinaries string
+
+	// LocalDBPort is the preferred port for the child Postgres. Zero picks a
+	// default well away from 5432; a taken port moves to the next free one.
+	LocalDBPort int
+
 	// Provider credentials.
 	OpenAIAPIKey    string
 	OpenAIBaseURL   string
@@ -369,6 +397,15 @@ type Config struct {
 	// New accounts are always created with the "member" role.
 	AllowSignup bool
 
+	// EnterpriseCtaURL is the target of the "Talk to us" link on the console
+	// login page. Empty (the default) hides the link entirely.
+	//
+	// Opt-in rather than opt-out: this repository is what customers self-host,
+	// and a console running inside someone else's company should not carry our
+	// sales link because they forgot to remove it. Operators who do want it —
+	// including us, on our own deployments — set it explicitly.
+	EnterpriseCtaURL string
+
 	// DevMode relaxes browser-security defaults that are impossible to satisfy
 	// over plain HTTP on localhost: cookies stop being Secure-only, and
 	// http://localhost / http://127.0.0.1 origins are accepted.
@@ -555,6 +592,33 @@ func Load() Config {
 	return c
 }
 
+// ApplyLocalMode rewrites the settings that local mode owns, once the child
+// Postgres is up and its connection string is known.
+//
+// These live here rather than in main.go because SecureCookies is derived
+// from DevMode during Load: flipping DevMode afterwards without redoing that
+// derivation leaves a Secure-only session cookie on a plain-HTTP console,
+// which presents as a login form that accepts the password and then bounces
+// straight back to itself.
+func (c *Config) ApplyLocalMode(postgresURL string) {
+	c.LocalDB = true
+	c.PostgresURL = postgresURL
+
+	// An empty database on first run is normal, and sending the user to run
+	// `nexus migrate` before the console works would defeat the one-liner.
+	c.AutoMigrate = true
+
+	c.DevMode = true
+	c.SecureCookies = envBool("NEXUS_SECURE_COOKIES", false)
+
+	// First run has no users and no way to invite one, so the login page
+	// needs "Create account". A bootstrap admin, when configured, is the
+	// better answer and wins.
+	if c.AdminEmail == "" || c.AdminPassword == "" {
+		c.AllowSignup = true
+	}
+}
+
 func load() Config {
 	emailFromAddress := firstNonEmpty(
 		env("NEXUS_EMAIL_FROM_ADDRESS", ""),
@@ -580,6 +644,10 @@ func load() Config {
 		PostgresURL:              env("NEXUS_POSTGRES_URL", ""),
 		ClickHouseURL:            env("NEXUS_CLICKHOUSE_URL", ""),
 		RedisURL:                 env("NEXUS_REDIS_URL", ""),
+		LocalDB:                  envBool("NEXUS_LOCAL_DB", false),
+		LocalStateDir:            env("NEXUS_LOCAL_STATE_DIR", ""),
+		LocalDBBinaries:          env("NEXUS_LOCAL_DB_BINARIES", ""),
+		LocalDBPort:              envInt("NEXUS_LOCAL_DB_PORT", 0),
 		OpenAIAPIKey:             env("OPENAI_API_KEY", ""),
 		OpenAIBaseURL:            env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
 		AnthropicAPIKey:          env("ANTHROPIC_API_KEY", ""),
@@ -652,6 +720,7 @@ func load() Config {
 		AdminEmail:         env("NEXUS_ADMIN_EMAIL", ""),
 		AdminPassword:      env("NEXUS_ADMIN_PASSWORD", ""),
 		AllowSignup:        envBool("NEXUS_ALLOW_SIGNUP", false),
+		EnterpriseCtaURL:   env("NEXUS_ENTERPRISE_CTA_URL", ""),
 		PublicDocs:         envBool("NEXUS_PUBLIC_DOCS", false),
 		DevMode:            envBool("NEXUS_DEV_MODE", false),
 

@@ -58,7 +58,7 @@ func TestIndexCategoryInference(t *testing.T) {
 	withTempDocs(t, map[string]string{
 		"quickstart.md":           "# Quickstart\n\nFive minutes to first call.\n",
 		"onboarding.md":           "# Team onboarding\n\nWelcome aboard.\n",
-		"enterprise-model.md":     "# Enterprise model\n\nBYO keys, multi-tenant.\n",
+		"enterprise.md":           "# Enterprise deployments\n\nBYO keys, multi-tenant.\n",
 		"model-benchmarks.md":     "# Model benchmarks\n\nDistributed eval.\n",
 		"eval-tab.md":             "<!--\ncategory: operations\ntitle: Eval tab in the console\n-->\n# Eval tab in the console\n\nUI walkthrough.\n",
 		"benchmark-tab.md":        "<!--\ncategory: operations\ntitle: Benchmark tab in the console\n-->\n# Benchmark tab in the console\n\nUI walkthrough.\n",
@@ -71,7 +71,7 @@ func TestIndexCategoryInference(t *testing.T) {
 	// list is editor-controlled; the order in `quickWant` is the
 	// order they're promoted. A title absent from the index drops
 	// the slot rather than collapsing the grid.
-	wantQuick := []string{"Quickstart", "Eval tab in the console", "Benchmark tab in the console", "Model benchmarks", "Enterprise model", "Team onboarding"}
+	wantQuick := []string{"Quickstart", "Eval tab in the console", "Benchmark tab in the console", "Model benchmarks", "Enterprise deployments", "Team onboarding"}
 	if len(idx.QuickLinks) != len(wantQuick) {
 		t.Fatalf("quick links: want %d, got %d (%v)", len(wantQuick), len(idx.QuickLinks), quickTitles(idx))
 	}
@@ -103,7 +103,7 @@ func TestIndexCategoryInference(t *testing.T) {
 		return true
 	}
 	gotConcepts := strings.Join(catBuckets["concepts"], ",")
-	conceptsWant := []string{"quickstart", "onboarding", "enterprise-model", "model-benchmarks"}
+	conceptsWant := []string{"quickstart", "onboarding", "enterprise", "model-benchmarks"}
 	if !wantMatch(conceptsWant, catBuckets["concepts"]) {
 		t.Fatalf("concepts bucket missing a file: %s", gotConcepts)
 	}

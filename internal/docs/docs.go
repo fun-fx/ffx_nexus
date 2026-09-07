@@ -213,7 +213,7 @@ func walk(root string) (Index, error) {
 		"Eval tab in the console",
 		"Benchmark tab in the console",
 		"Model benchmarks",
-		"Enterprise model",
+		"Enterprise deployments",
 		"Team onboarding",
 	}
 	// Quick-want loop walks each desired title in the order the

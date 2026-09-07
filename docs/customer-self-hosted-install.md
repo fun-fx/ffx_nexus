@@ -10,33 +10,67 @@ Postgres, ClickHouse and Redis; the chart does not deploy databases.
 
 ---
 
-## 1. Local: `scripts/install.sh`
+## 1. Local: `scripts/install.sh`, `npx`, or `docker run`
+
+You have three options here. All three reach the same thing: a console at
+`:8081` you can log into, a gateway at `:8080` ready to mint a virtual key,
+and nothing else configured.
+
+**Option A — `npx` (zero pre-requisites):**
+
+```bash
+npx -y @ffxnexus/nexus
+```
+
+Needs `node` (18+), `tar`, and nothing else. Downloads the `nexus` binary
+for this machine, verifies it against the published `checksums.txt`, and
+runs it with its own Postgres under `~/.nexus`.
+
+**Option B — `docker run`:**
+
+```bash
+docker run -p 8080:8080 -p 8081:8081 -v "$PWD/data:/app/data" ghcr.io/fun-fx/ffx_nexus
+```
+
+Needs Docker. The image ships `postgresql16` and points at it, so the
+container has its own database and the volume keeps it across `docker run`
+invocations. Same end state as `npx`.
+
+**Option C — `scripts/install.sh`:**
 
 ```bash
 curl -fsSL install.nexus.ffx.ai | bash
 ```
 
-Needs `git`, `docker` (with Compose v2), `curl` and `go` on `PATH`. It clones
-into `~/.nexus/src`, starts Postgres, Redis, ClickHouse and Ollama with
-docker-compose, builds the binary, and runs it on `:8090` (gateway) and
-`:8091` (console).
+Needs `curl`, `tar`, and `shasum` (or `sha256sum`). Downloads a released
+binary, verifies it, and runs it with local mode.
 
-It generates a `NEXUS_MASTER_KEY` for you and sets `NEXUS_ALLOW_SIGNUP=true`,
-so first login is "Create account" in the console. Then add a provider key,
-mint a virtual key, and point your client at it:
+After any of the three:
 
 ```bash
-export OPENAI_BASE_URL=http://localhost:8090/v1
+open http://localhost:8081     # macOS
+xdg-open http://localhost:8081  # Linux
+```
+
+Create an account — the first one on the machine is the admin. Then add a
+provider key and mint a virtual key:
+
+```bash
+export OPENAI_BASE_URL=http://localhost:8080/v1
 export OPENAI_API_KEY=nxs_live_...
 ```
 
 Logs at `~/.nexus/nexus.log`, PID at `~/.nexus/nexus.pid`. Exit codes are
-specific enough to act on: `10` docker missing or daemon down, `20` git
-missing, `30` a dependency never got healthy, `40` the Go build failed, `50`
-the gateway never answered `/healthz`.
+specific enough to act on: `10` a required tool is missing, `20` could not
+resolve a release, `30` the download or checksum failed, `50` the gateway
+never answered `/healthz`.
 
 This is a development stack. It signs you up without an invite, runs
 everything on one host, and is not what §2 describes.
+
+**Resetting local mode.** `rm -rf ~/.nexus` deletes the database and the
+generated `master.key`. Copy `master.key` out first if you care — losing
+it means every provider credential you stored becomes unreadable.
 
 ---
 
