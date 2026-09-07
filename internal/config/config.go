@@ -572,9 +572,9 @@ func load() Config {
 		PublicWebOrigins: splitCSV(env("NEXUS_PUBLIC_WEB_ORIGINS", "")),
 
 		EgressTenantAllowedCIDRs: env("NEXUS_EGRESS_TENANT_ALLOWED_CIDRS", ""),
-		EgressMode:             env("NEXUS_EGRESS_MODE", ""),
-		EgressProxyURL:         env("HTTPS_PROXY", ""),
-		EgressInternalHosts:    env("NEXUS_EGRESS_INTERNAL_HOSTS", ""),
+		EgressMode:               env("NEXUS_EGRESS_MODE", ""),
+		EgressProxyURL:           env("HTTPS_PROXY", ""),
+		EgressInternalHosts:      env("NEXUS_EGRESS_INTERNAL_HOSTS", ""),
 		PublicGrafanaURL:         env("NEXUS_PUBLIC_GRAFANA_URL", ""),
 		DocsDir:                  env("NEXUS_DOCS_DIR", ""),
 		PostgresURL:              env("NEXUS_POSTGRES_URL", ""),

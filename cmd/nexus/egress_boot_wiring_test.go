@@ -53,31 +53,49 @@ func TestInstallEgressGuard_ProxyMode(t *testing.T) {
 	}
 }
 
-// TestInstallEgressGuard_InClusterOnly: listed FQDN passes,
-// unlisted FQDN refuses.
+// TestInstallEgressGuard_InClusterOnly asserts that mode=in_cluster_only
+// with a comma list sets PublicDestinationsBlocked AND mirrors the
+// list on AllowedInternalHosts verbatim. Whitespace and empty
+// entries are dropped, but order is preserved for the operator's
+// view.
+//
+// We avoid DNS in this test because the egress guard's
+// net.DefaultResolver is a runtime-resolved dependency the
+// CI image does not control. The FQDN-allow-list semantic is
+// exercised exhaustively in internal/egress/mode_proxy_test.go,
+// where the resolver is replaced with a stub. This test
+// only verifies the env-var → Policy wiring.
 func TestInstallEgressGuard_InClusterOnly(t *testing.T) {
 	t.Setenv("NEXUS_EGRESS_MODE", "in_cluster_only")
 	t.Setenv("HTTPS_PROXY", "")
 	t.Setenv("NEXUS_EGRESS_INTERNAL_HOSTS",
-		"vllm.models.svc.cluster.local:8000,embed.internal.svc.cluster.local")
+		"vllm.models.svc.cluster.local:8000, ,embed.internal.svc.cluster.local, ")
 	t.Setenv("NEXUS_EGRESS_TENANT_ALLOWED_CIDRS", "")
 
 	egress.TestingAllowLoopback(t)
 	installEgressGuard(makeCfg(), quietLog())
 
 	g := egress.Default()
-
-	if err := g.CheckURL(context.Background(),
-		"http://vllm.models.svc.cluster.local:8000/v1/embeddings",
-		egress.Tenant); err != nil {
-		t.Fatalf("listed FQDN refused in in_cluster_only: %v", err)
+	p := g.Policy()
+	if !p.PublicDestinationsBlocked {
+		t.Fatal("in_cluster_only did not set PublicDestinationsBlocked")
 	}
-
-	if err := g.CheckURL(context.Background(),
-		"http://other.svc.cluster.local/", egress.Tenant); err == nil {
-		t.Fatal("unlisted FQDN accepted in in_cluster_only")
-	} else if !errors.Is(err, egress.ErrPublicDestination) {
-		t.Fatalf("wrong error class: %v", err)
+	if len(p.AllowedInternalHosts) != 2 {
+		t.Fatalf("AllowedInternalHosts has %d entries, expected 2: %v",
+			len(p.AllowedInternalHosts), p.AllowedInternalHosts)
+	}
+	want := []string{
+		"vllm.models.svc.cluster.local:8000",
+		"embed.internal.svc.cluster.local",
+	}
+	for i, w := range want {
+		if p.AllowedInternalHosts[i] != w {
+			t.Fatalf("AllowedInternalHosts[%d]=%q want=%q", i,
+				p.AllowedInternalHosts[i], w)
+		}
+	}
+	if p.ProxyURL != "" {
+		t.Fatalf("in_cluster_only unexpectedly set ProxyURL=%q", p.ProxyURL)
 	}
 }
 

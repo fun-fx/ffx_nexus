@@ -384,19 +384,19 @@ func (g *Guard) CheckURL(ctx context.Context, rawURL string, class Class) error 
 //
 //   - the URL is unparseable / has credentials / etc.: parseDestination err.
 //   - the URL is a literal IP:
-//       * if the IP is on the static alwaysBlocked list (loopback,
-//         link-local, IMDS): ErrBlockedDestination with the static
-//         message.
-//       * otherwise evaluate AllowedInternalHosts: any CIDR match or
-//         IP match → OK.
-//       * neither → ErrPublicDestination.
+//   - if the IP is on the static alwaysBlocked list (loopback,
+//     link-local, IMDS): ErrBlockedDestination with the static
+//     message.
+//   - otherwise evaluate AllowedInternalHosts: any CIDR match or
+//     IP match → OK.
+//   - neither → ErrPublicDestination.
 //   - the URL is a hostname:
-//       * resolve; if every answer is on the static alwaysBlocked
-//         list, ErrBlockedDestination.
-//       * if every answer is on AllowedInternalHosts (IP match or
-//         CIDR match) AND the hostname itself is on
-//         AllowedInternalHosts, OK.
-//       * any other shape → ErrPublicDestination.
+//   - resolve; if every answer is on the static alwaysBlocked
+//     list, ErrBlockedDestination.
+//   - if every answer is on AllowedInternalHosts (IP match or
+//     CIDR match) AND the hostname itself is on
+//     AllowedInternalHosts, OK.
+//   - any other shape → ErrPublicDestination.
 //
 // The hostname itself being on the allow-list is necessary because
 // a CIDR match on every answer is not enough: a public hostname
@@ -567,8 +567,8 @@ func (g *Guard) Client(class Class, timeout time.Duration) *http.Client {
 	if g.policy.ProxyURL == "" && g.policy.PublicDestinationsBlocked == false {
 		// ... existing dial-only path
 		return &http.Client{
-			Timeout:   timeout,
-			Transport: g.directTransport(class, timeout),
+			Timeout:       timeout,
+			Transport:     g.directTransport(class, timeout),
 			CheckRedirect: g.checkRedirect,
 		}
 	}
@@ -585,8 +585,8 @@ func (g *Guard) Client(class Class, timeout time.Duration) *http.Client {
 	// refuses any destination outside AllowedInternalHosts. The chart
 	// is the source of trust for that list; the guard enforces it.
 	return &http.Client{
-		Timeout: timeout,
-		Transport: g.urlVettingTransport(class, timeout),
+		Timeout:       timeout,
+		Transport:     g.urlVettingTransport(class, timeout),
 		CheckRedirect: g.checkRedirect,
 	}
 }
@@ -788,6 +788,7 @@ func (g *Guard) literalInUnreservedPrivateSpace(addr netip.Addr) bool {
 	}
 	return false
 }
+
 // of AllowedInternalHosts as either an exact IP or inside a CIDR.
 // The static IP policy's alwaysBlocked prefixes still trump: an
 // address in the metadata range returns false even if the

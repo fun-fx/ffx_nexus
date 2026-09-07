@@ -33,8 +33,8 @@ func installEgressGuard(cfg config.Config, log *slog.Logger) {
 		// direct mode. Nothing more to assemble.
 	case "proxy":
 		if cfg.EgressProxyURL == "" {
-			log.Error("NEXUS_EGRESS_MODE=proxy but HTTPS_PROXY is empty; "+
-				"provider-side requests will be sent unproxied. The chart "+
+			log.Error("NEXUS_EGRESS_MODE=proxy but HTTPS_PROXY is empty; " +
+				"provider-side requests will be sent unproxied. The chart " +
 				"gate should have refused this combination at install time")
 			break
 		}
@@ -45,9 +45,9 @@ func installEgressGuard(cfg config.Config, log *slog.Logger) {
 				"still runs in full")
 	case "in_cluster_only":
 		if cfg.EgressInternalHosts == "" {
-			log.Error("NEXUS_EGRESS_MODE=in_cluster_only but "+
-				"NEXUS_EGRESS_INTERNAL_HOSTS is empty; tenant requests will "+
-				"be refused. The chart gate should have refused this "+
+			log.Error("NEXUS_EGRESS_MODE=in_cluster_only but " +
+				"NEXUS_EGRESS_INTERNAL_HOSTS is empty; tenant requests will " +
+				"be refused. The chart gate should have refused this " +
 				"combination at install time")
 			break
 		}

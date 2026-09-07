@@ -14,6 +14,17 @@ import "testing"
 //
 // The policy tests in this package deliberately do NOT use these helpers.
 
+// Policy returns the policy the guard was constructed with. Used
+// in tests where the env-var → Policy wiring is the unit under
+// test (the call sites of installEgressGuard, where reading the
+// field directly would expose internals).
+func (g *Guard) Policy() Policy {
+	if g == nil {
+		return Policy{}
+	}
+	return g.policy
+}
+
 // TestingAllowLoopback lets tenant-class destinations reach loopback for the
 // duration of tb.
 //
