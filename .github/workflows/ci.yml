@@ -64,6 +64,66 @@ jobs:
           fi
           govulncheck ./...
 
+  release-artifacts:
+    name: Release artifacts (snapshot)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # goreleaser derives the version from tags; a shallow clone makes
+          # it guess, and the guess changes the archive names this job exists
+          # to check.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # A tag push is the first time anyone would otherwise discover that the
+      # release build is broken — after the Docker image has already gone out
+      # and with the tag consumed. Building the same artefacts on every PR
+      # moves that discovery here.
+      - name: goreleaser snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish
+
+      # `npx @ffxnexus/nexus` and `curl install.sh | bash` both construct an
+      # archive URL from the release version. Nothing at runtime tells them
+      # they guessed wrong except a 404 in a user's terminal.
+      - name: installers fetch the names goreleaser publishes
+        run: ./scripts/test_release_naming.sh
+
+      - name: npm wrapper tests
+        working-directory: npx
+        run: node --test test/
+
+  local-mode:
+    name: Local mode (the npx / docker one-liner)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # The `go` job's unit tests cover the pieces of local mode. Only a real
+      # boot covers the claim the quickstart makes: that `npx` alone reaches a
+      # console where you can store a provider key and mint a virtual key.
+      # Downloads a Postgres runtime on a cold cache.
+      - name: local mode end-to-end smoke
+        run: ./scripts/test_local_mode.sh
+
   migrations:
     name: Schema migrations (real Postgres)
     runs-on: ubuntu-latest

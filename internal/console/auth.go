@@ -123,6 +123,12 @@ func (s *Server) authConfig(w http.ResponseWriter, _ *http.Request) {
 	if s.publicGatewayURL != "" {
 		out["gateway_url"] = s.publicGatewayURL
 	}
+	// Omitted when unset so the login page can distinguish "no CTA
+	// configured" from "CTA configured as an empty string" and hide the link
+	// rather than render a dead one.
+	if s.enterpriseCtaURL != "" {
+		out["enterprise_cta_url"] = s.enterpriseCtaURL
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -239,9 +245,25 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Self-signup is member-only, with one exception: the first account on a
+	// local-mode install is an admin.
+	//
+	// Local mode has no other door. Signup is the only way in, there is
+	// nobody to issue an invite, and NEXUS_ADMIN_EMAIL is unset because the
+	// point of the one-liner is that the user configured nothing. A lone
+	// member would land in a console where Eval, Users, Audit and Benchmarks
+	// all answer 403 with no way to fix it. In a cluster the first admin
+	// arrives from the bootstrap env vars or SSO, so nothing changes there.
+	role := core.RoleMember
+	if s.localMode {
+		if n, countErr := s.store.CountUsers(r.Context(), orgID(r)); countErr == nil && n == 0 {
+			role = core.RoleAdmin
+		}
+	}
+
 	// Self-signup: no caller yet, so actor is system. Store.CreateUser
 	// records user.create with actor="system" in this path.
-	u, err := s.store.CreateUser(r.Context(), orgID(r), "", req.Email, req.Password, core.RoleMember)
+	u, err := s.store.CreateUser(r.Context(), orgID(r), "", req.Email, req.Password, role)
 	if errors.Is(err, core.ErrEmailTaken) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "email already registered"})
 		return

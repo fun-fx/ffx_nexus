@@ -11,13 +11,22 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# Container args for the gateway container. Empty renders no `args` key at
-# all, so the image entrypoint decides. This exists so a test harness can
-# substitute a placeholder image that still answers the readinessProbe
-# httpGet /readyz and livenessProbe httpGet /healthz this chart declares:
-# an image swap alone cannot satisfy those probes, and dropping the probes
-# would make the rehearsal stop checking the thing it exists to check.
-args: []
+# Container args for the gateway container.
+#
+# "serve" is spelled out rather than left empty because the image default is
+# `serve --local`, which starts a Postgres inside the container. That is the
+# right default for `docker run` on a laptop and the wrong one for a pod: the
+# data directory would live in the container filesystem and disappear on the
+# next reschedule. Stating the args here means the chart never inherits it,
+# and a future change to the image CMD cannot reach a cluster.
+#
+# Overriding this is also how a test harness substitutes a placeholder image
+# that still answers the readinessProbe httpGet /readyz and livenessProbe
+# httpGet /healthz this chart declares: an image swap alone cannot satisfy
+# those probes, and dropping the probes would make the rehearsal stop
+# checking the thing it exists to check.
+args:
+  - serve
 
 imagePullSecrets: []
 nameOverride: ""
@@ -119,6 +128,12 @@ config:
 
   # Public self-service signup at POST /api/auth/register (member role only).
   allowSignup: false
+
+  # Target of the "Talk to us" link on the console login page. Empty (the
+  # default) renders no link. It is opt-in rather than opt-out because your
+  # console should not carry someone else's sales link unless you put it there.
+  # Must be http(s); anything else is rejected at boot.
+  enterpriseCtaUrl: ""
 
   # Quality-aware routing (Phase 4). Requires ClickHouse for live quality stats.
   routeGroups: ""

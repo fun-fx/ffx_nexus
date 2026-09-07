@@ -1,0 +1,37 @@
+{
+  "name": "@ffxnexus/nexus",
+  "version": "0.0.0",
+  "description": "Run the Nexus LLM gateway locally: OpenAI-compatible API, live console, no setup.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/fun-fx/ffx_nexus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fun-fx/ffx_nexus.git",
+    "directory": "npx"
+  },
+  "bugs": {
+    "url": "https://github.com/fun-fx/ffx_nexus/issues"
+  },
+  "keywords": [
+    "llm",
+    "gateway",
+    "openai",
+    "observability",
+    "proxy",
+    "ai"
+  ],
+  "bin": {
+    "nexus": "bin/nexus.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  }
+}

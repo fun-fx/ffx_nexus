@@ -83,6 +83,15 @@ if render "${WORK}/default.yaml" \
     "default values do not enable a metrics listener"
   assert_absent "${WORK}/default.yaml" "kind: ServiceMonitor" \
     "default values do not emit a ServiceMonitor"
+  # The image CMD is `serve --local`, which runs a Postgres inside the
+  # container against a data directory the pod does not persist. The chart
+  # must state plain `serve` so no pod ever inherits it.
+  assert_contains "${WORK}/default.yaml" "- serve" \
+    "deployment pins the serve subcommand"
+  assert_absent "${WORK}/default.yaml" "--local" \
+    "deployment never inherits the image's local-database CMD"
+  assert_absent "${WORK}/default.yaml" "NEXUS_LOCAL_DB" \
+    "chart does not set local-database env vars"
 else
   bad "default values failed to render"; cat "${WORK}/default.yaml.err"
 fi

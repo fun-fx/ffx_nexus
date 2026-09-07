@@ -59,6 +59,7 @@ type Server struct {
 	catalog           CatalogSource         // may be nil when the gateway is not co-located
 	reload            func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup       bool                  // public POST /api/auth/register
+	localMode         bool                  // single-machine install; first signup becomes admin
 	publicDocs        bool                  // serve /api/docs without a session (opt-in)
 	devMode           bool                  // accept loopback HTTP origins; non-Secure cookies
 	secureCookies     bool                  // Secure attribute on session/state cookies
@@ -102,6 +103,7 @@ type Server struct {
 	ssoLim               *limiter.IPLimiter                                // per-IP rate limit for /api/auth/sso/*
 	gatewayProxy         *httputil.ReverseProxy                            // optional /v1/* → co-located gateway
 	publicGatewayURL     string                                            // optional public gateway base for UI copy
+	enterpriseCtaURL     string                                            // optional "Talk to us" target on the login page; empty hides it
 	publicBaseURL        string                                            // optional public console base; used to compose invite URLs
 	publicGrafanaURL     string                                            // optional operator Grafana base; link-only, see observability_ui.go
 	ready                ReadinessReporter                                 // optional /readyz source; nil degrades to a plain "ok"
@@ -118,6 +120,12 @@ type Server struct {
 func (s *Server) SetBuildTag(tag string) { SetBuildTag(tag) }
 
 func (s *Server) SetAllowSignup(allow bool) { s.allowSignup = allow }
+
+// SetLocalMode marks this process as a single-machine install (`nexus serve
+// --local`), which promotes the first self-signup to admin. See register().
+// It must stay false anywhere a stranger can reach the console: there, the
+// first request to arrive would decide who owns the org.
+func (s *Server) SetLocalMode(local bool) { s.localMode = local }
 
 // SetPublicDocs opens /api/docs to unauthenticated callers.
 //

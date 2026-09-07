@@ -217,6 +217,11 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    # Override the image's `serve --local` CMD. This stack has a real Postgres
+    # service below, and the two are mutually exclusive: local mode refuses to
+    # start alongside NEXUS_POSTGRES_URL rather than guess which control plane
+    # the operator meant.
+    command: ["serve"]
     ports:
       - "8080:8080"
       - "8081:8081"

@@ -171,7 +171,7 @@ Authentication: `Authorization: Bearer <virtual_key>` (when Postgres is configur
 | `NEXUS_FAILOVER_SLACK_WEBHOOK` | _empty_ (`config.failoverSlack: ""`) | One-liner Slack incoming-webhook post. Same opt-in semantics. |
 | `NEXUS_FAILOVER_ALERT_COOLDOWN` | `0` (`config.failoverCool: 0`) | Coalesce back-to-back alerts onto the *same* sink so a flapping primary doesn't melt the alert inbox. Metric counter still increments. |
 
-All settings are environment variables. See [`.env.example`](.env.example) and the [README configuration table](README.md#configuration).
+All settings are environment variables. See [`.env.example`](.env.example) and [`docs/configuration.md`](docs/configuration.md).
 
 Key variables:
 

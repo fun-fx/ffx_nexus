@@ -198,10 +198,14 @@ export function Login() {
             </button>
           </form>
 
-          <div className="auth-foot">
-            <span>Need access?</span>
-            <a href="mailto:ops@nexus.local">Contact ops</a>
-          </div>
+          {cfg?.enterprise_cta_url && (
+            <div className="auth-foot">
+              <span>Deploying this for a team?</span>
+              <a href={cfg.enterprise_cta_url} target="_blank" rel="noreferrer noopener">
+                Talk to us
+              </a>
+            </div>
+          )}
         </section>
       </div>
     </div>

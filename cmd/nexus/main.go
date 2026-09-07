@@ -32,6 +32,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/guardrails"
 	"github.com/ffxnexus/nexus/internal/health"
 	"github.com/ffxnexus/nexus/internal/limiter"
+	"github.com/ffxnexus/nexus/internal/localdb"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
 	"github.com/ffxnexus/nexus/internal/semcache"
@@ -76,23 +77,41 @@ func main() {
 	// applies schema changes and exits, which is what the Helm pre-upgrade hook
 	// Job runs so a failed migration stops the rollout instead of surfacing as
 	// user-visible 500s afterwards.
-	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		switch os.Args[1] {
+	args := os.Args[1:]
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		switch args[0] {
 		case "migrate":
-			os.Exit(runMigrateCommand(os.Args[2:]))
+			os.Exit(runMigrateCommand(args[1:]))
 		case "mailtest":
-			os.Exit(runMailtestCommand(os.Args[2:]))
+			os.Exit(runMailtestCommand(args[1:]))
 		case "serve":
 			// Explicit spelling of the default, so a Kubernetes manifest can
 			// state its intent rather than relying on an empty args list.
+			args = args[1:]
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command %q; known commands: serve, migrate, mailtest\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "unknown command %q; known commands: serve, migrate, mailtest\n", args[0])
 			os.Exit(2)
 		}
 	}
 
+	// Server flags. Unknown ones are rejected rather than ignored: `--locl`
+	// silently starting a gateway with no control plane is the confusing
+	// version of this failure.
+	localFlag, wantHelp, err := parseServeFlags(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n\n%s", err, serveUsage)
+		os.Exit(2)
+	}
+	if wantHelp {
+		fmt.Print(serveUsage)
+		os.Exit(0)
+	}
+
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := config.Load()
+	if localFlag {
+		cfg.LocalDB = true
+	}
 
 	// Readiness gate. Conditions are registered below as each dependency is
 	// resolved; an unmigrated schema or a missing required datastore withholds
@@ -111,6 +130,19 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Local mode: run our own Postgres and rewrite cfg to point at it. Nothing
+	// below this block knows the difference — it reads a configured
+	// PostgresURL exactly as a Kubernetes deployment would.
+	var local *localdb.DB
+	if cfg.LocalDB {
+		db, err := startLocalMode(&cfg, log)
+		if err != nil {
+			log.Error("local mode failed to start", "err", err)
+			os.Exit(60)
+		}
+		local = db
+	}
 
 	// Control plane (optional): Postgres-backed store for virtual keys and
 	// encrypted provider credentials. Boots without it (zero-dependency mode).
@@ -348,6 +380,8 @@ func main() {
 	// means the gateway/CDN is replacing Nexus's response.
 	consoleSrvHandler.SetBuildTag(nexusBuildTag)
 	consoleSrvHandler.SetAllowSignup(cfg.AllowSignup)
+	consoleSrvHandler.SetLocalMode(cfg.LocalDB)
+	consoleSrvHandler.SetEnterpriseCtaURL(cfg.EnterpriseCtaURL)
 	consoleSrvHandler.SetPublicDocs(cfg.PublicDocs)
 
 	// Browser-security wiring, deliberately unconditional.
@@ -761,6 +795,14 @@ func main() {
 	}
 	if semCacheRedis != nil {
 		_ = semCacheRedis.Close()
+	}
+	// Last, and after store.Close(): pg_ctl stop waits for clients to
+	// disconnect, and a pool still holding sessions turns a two-second
+	// shutdown into a timeout.
+	if local != nil {
+		if err := local.Stop(); err != nil {
+			log.Error("local postgres did not stop cleanly", "err", err)
+		}
 	}
 	wg.Wait()
 }
