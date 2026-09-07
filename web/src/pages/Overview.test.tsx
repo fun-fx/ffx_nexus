@@ -40,7 +40,10 @@ function renderOverview() {
   );
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  window.localStorage.removeItem("nexus:setup-checklist:dismissed");
+});
 
 describe("<Overview /> hero CTAs", () => {
   it("'View Traces' is a Link that navigates to /traces", async () => {
@@ -54,5 +57,15 @@ describe("<Overview /> hero CTAs", () => {
     renderOverview();
     const link = await screen.findByRole("link", { name: /open playground/i });
     expect(link.getAttribute("href")).toBe("/playground");
+  });
+});
+
+describe("<Overview /> first-run empty states", () => {
+  it("shows the setup checklist and first-request snippets when nothing is configured", async () => {
+    renderOverview();
+    expect(await screen.findByTestId("setup-checklist")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /setup checklist/i })).toBeInTheDocument();
+    expect(await screen.findByTestId("first-request-snippets")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /no traffic yet/i })).toBeInTheDocument();
   });
 });

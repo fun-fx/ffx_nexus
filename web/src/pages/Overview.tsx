@@ -1,19 +1,26 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { FirstRequestSnippets } from "../components/FirstRequestSnippets";
 import { GradientText } from "../components/GradientText";
 import { ResizableGrid, type ColumnSpec, type RowSpec } from "../components/ResizableGrid";
+import { SetupChecklist } from "../components/SetupChecklist";
 import { TierCard } from "../components/TierCard";
 import { Icon } from "../components/icons";
 import { formatExact, formatTokens } from "../lib/format";
 import {
+  fetchAuthConfig,
   fetchEvalConfig,
   fetchMe,
+  fetchMyCredentials,
+  fetchMyKeys,
   fetchProviderStats,
   fetchRouting,
   fetchStats,
   fetchTraces,
   fetchTurns,
+  type AuthConfig,
+  type Credential,
   type EvalConfigSnapshot,
   type ProviderStat,
   type RoutingModel,
@@ -21,17 +28,22 @@ import {
   type TraceSummary,
   type TurnSummary,
   type User,
+  type VirtualKey,
 } from "../api";
 
 async function fetchOverview() {
-  const [me, stats, turns, routing, evalCfg, provider] = await Promise.allSettled([
-    fetchMe(),
-    fetchStats(),
-    fetchTurns({ limit: 10 }),
-    fetchRouting(),
-    fetchEvalConfig(),
-    fetchProviderStats(),
-  ]);
+  const [me, stats, turns, routing, evalCfg, provider, auth, creds, keys] =
+    await Promise.allSettled([
+      fetchMe(),
+      fetchStats(),
+      fetchTurns({ limit: 10 }),
+      fetchRouting(),
+      fetchEvalConfig(),
+      fetchProviderStats(),
+      fetchAuthConfig(),
+      fetchMyCredentials(),
+      fetchMyKeys(),
+    ]);
   return {
     me: me.status === "fulfilled" ? (me.value as User | null) : null,
     stats: stats.status === "fulfilled" ? (stats.value as Stats) : null,
@@ -46,6 +58,10 @@ async function fetchOverview() {
       provider.status === "fulfilled"
         ? (provider.value as ProviderStat[])
         : [],
+    auth: auth.status === "fulfilled" ? (auth.value as AuthConfig) : null,
+    credentials:
+      creds.status === "fulfilled" ? (creds.value as Credential[]) : [],
+    keys: keys.status === "fulfilled" ? (keys.value as VirtualKey[]) : [],
   };
 }
 
@@ -75,6 +91,9 @@ export function Overview() {
   const evalCfg: EvalConfigSnapshot | null = data?.eval ?? null;
   const user: User | null = data?.me ?? null;
   const providerStats: ProviderStat[] = data?.provider ?? [];
+  const auth = data?.auth ?? null;
+  const credentials = data?.credentials ?? [];
+  const keys = data?.keys ?? [];
 
   return (
     <div className="overview">
@@ -148,6 +167,8 @@ export function Overview() {
         />
         <Stat label="Cost" value={`$${stats.total_cost_usd.toFixed(4)}`} />
       </section>
+
+      <SetupChecklist cfg={auth} credentials={credentials} keys={keys} />
 
       <section className="why-row" aria-label="Why FFX Nexus">
         <header className="panel-head section-heading">
@@ -237,7 +258,7 @@ export function Overview() {
 
       <SpendByProvider providerStats={providerStats} />
 
-      <RecentTurnsList turns={turns} isLoading={isLoading} />
+      <RecentTurnsList turns={turns} isLoading={isLoading} auth={auth} />
     </div>
   );
 }
@@ -383,9 +404,11 @@ function buildTurnRow(
 function RecentTurnsList({
   turns,
   isLoading,
+  auth,
 }: {
   turns: TurnSummary[];
   isLoading: boolean;
+  auth: AuthConfig | null;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -413,7 +436,11 @@ function RecentTurnsList({
         />
         {turns.length === 0 ? (
           <div className="trace-row empty" role="row">
-            {isLoading ? "Loading…" : "No traffic yet."}
+            {isLoading ? (
+              "Loading…"
+            ) : (
+              <FirstRequestSnippets cfg={auth} heading="No traffic yet" />
+            )}
           </div>
         ) : (
           turns.map((t) => {

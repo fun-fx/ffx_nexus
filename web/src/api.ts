@@ -883,6 +883,12 @@ export interface AuthConfig {
   sso_enabled: boolean;
   sso_label: string;
   gateway_url?: string;
+  local_mode?: boolean;
+  // Gateway key mode (strict_byok / byok / shared). Absent means the
+  // hosted default, strict_byok.
+  key_mode?: string;
+  // True when NEXUS_PUBLIC_WEB_ORIGINS listed at least one extra origin.
+  cors_configured?: boolean;
   // Absent unless the operator set NEXUS_ENTERPRISE_CTA_URL. The login page
   // shows no contact link at all when it is missing, because a self-hosted
   // console should not carry someone else's sales link by default.
@@ -898,6 +904,9 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
     sso_enabled: !!data.sso_enabled,
     sso_label: data.sso_label || "",
     gateway_url: data.gateway_url || "",
+    local_mode: !!data.local_mode,
+    key_mode: data.key_mode || "",
+    cors_configured: !!data.cors_configured,
     enterprise_cta_url: data.enterprise_cta_url || "",
   };
 }

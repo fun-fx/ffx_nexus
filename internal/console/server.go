@@ -60,6 +60,7 @@ type Server struct {
 	reload            func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup       bool                  // public POST /api/auth/register
 	localMode         bool                  // single-machine install; first signup becomes admin
+	keyMode           string                // gateway key mode (strict_byok / byok / shared); advertised on /api/auth/config
 	publicDocs        bool                  // serve /api/docs without a session (opt-in)
 	devMode           bool                  // accept loopback HTTP origins; non-Secure cookies
 	secureCookies     bool                  // Secure attribute on session/state cookies
@@ -126,6 +127,11 @@ func (s *Server) SetAllowSignup(allow bool) { s.allowSignup = allow }
 // It must stay false anywhere a stranger can reach the console: there, the
 // first request to arrive would decide who owns the org.
 func (s *Server) SetLocalMode(local bool) { s.localMode = local }
+
+// SetKeyMode records how the co-located gateway resolves provider keys so
+// the console can tell an operator whether inference already requires a
+// virtual key (the hosted default) without grepping pod env.
+func (s *Server) SetKeyMode(mode string) { s.keyMode = strings.TrimSpace(mode) }
 
 // SetPublicDocs opens /api/docs to unauthenticated callers.
 //
