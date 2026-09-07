@@ -310,11 +310,12 @@ step_D_dryrun_namespaced() {
   local ok=1
   # Render chart-side NetworkPolicy first.
   if [[ ! -s "$ARTIFACTS/rendered-networkpolicy.yaml" ]]; then
-    # Chart's providerEgress gate (added in PR #300) fails
-    # enterprise+enforce renders that do not carry an explicit
-    # mode, even though the heavy gate also configures in-cluster
-    # proxy networking. Declare the contract here so the chart's
-    # fail-closed logic agrees with the operator's actual peer.
+    # The chart's providerEgress gate (added in PR #300) fails
+    # enterprise+enforce renders that do not carry an explicit mode.
+    # The heavy gate declares mode=proxy and the in-cluster proxy
+    # host inside scripts/fixtures/integrationcni/values-extra-cni.yaml
+    # so the chart, the scenario harness, and the runtime proxy wiring
+    # all agree on the same peer. No --set override is needed here.
     helm template "${CLUSTER_NAME}" "${CHART_PATH}" \
       --values "${VALUES_EXTRA}" \
       --set fullnameOverride="${CLUSTER_NAME}" \
@@ -325,11 +326,6 @@ step_D_dryrun_namespaced() {
       --set networkPolicy.mode=enforce \
       --set networkPolicy.profile=enterprise \
       --set networkPolicy.enforcementAcknowledged=true \
-      --set networkPolicy.providerEgress.mode=proxy \
-      --set networkPolicy.providerEgress.proxy.enabled=true \
-      --set networkPolicy.providerEgress.proxy.host=p.example.svc.cluster.local \
-      --set networkPolicy.providerEgress.proxy.port=3128 \
-      --set networkPolicy.providerEgress.proxy.namespace=p \
       --show-only templates/networkpolicy.yaml \
       > "$ARTIFACTS/rendered-networkpolicy.yaml" \
         2> "$ARTIFACTS/render-errors.log"

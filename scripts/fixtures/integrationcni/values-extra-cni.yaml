@@ -51,7 +51,14 @@ networkPolicy:
     matchProtocols:
       - UDP
       - TCP
-  egress:
+  # Provider-egress mode (PR #300). Before that PR the fixture used the
+  # legacy alias `networkPolicy.egress.proxy.*`; the chart now fails the
+  # render if both `egress.proxy.*` and `providerEgress.proxy.*` are set
+  # with proxy.enabled=true, and the chart's entire provider-egress
+  # contract is keyed off the new block, so we declare the mode here
+  # rather than overriding it at the call site.
+  providerEgress:
+    mode: proxy
     proxy:
       enabled: true
       host: cni-proxy.cni-test-proxy.svc.cluster.local
