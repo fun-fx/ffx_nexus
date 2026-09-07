@@ -122,7 +122,7 @@ if [[ -z "$VERSION" ]]; then
   VERSION="${latest_url##*/tag/v}"
   if [[ -z "$VERSION" || "$VERSION" == "$latest_url" ]]; then
     _fail "could not resolve the latest release of ${REPO}"
-    _fail "pick one explicitly: NEXUS_VERSION=0.7.0 curl -fsSL install.nexus.ffx.ai | bash"
+    _fail "pick one explicitly: NEXUS_VERSION=0.7.1 curl -fsSL install.nexus.ffx.ai | bash"
     exit 20
   fi
 fi

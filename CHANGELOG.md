@@ -108,6 +108,25 @@ the real packages are `internal/ippolicy` and `internal/netpolicy`, so the
 gate was silent on the code it exists to guard — and the CNI enforcement
 gate now runs nightly in addition to manual dispatch, closing D-2b.
 
+## [v0.7.1] — First-run setup checklist (PR #306)
+
+Empty Overview, Traces, and Playground now show a setup checklist and
+OpenAI-compatible first-request snippets (cURL / OpenAI / Anthropic) so a
+local `npx` install has a path to a provider key and a first gateway call.
+Console stays on `:8081` and the gateway on `:8080`.
+
+`/api/auth/config` advertises `local_mode`, `key_mode`, and `cors_configured`
+so the checklist can reflect the co-located gateway without grepping env.
+
+Helm chart `version` / `appVersion` bump to `0.7.1`.
+
+## [v0.7.0] — npx / Docker local quickstart (PR #305)
+
+`npx -y @ffxnexus/nexus`, `docker run ghcr.io/fun-fx/ffx_nexus`, and
+`curl -fsSL install.nexus.ffx.ai | bash` start a single-machine control
+plane (`serve --local`) with an embedded Postgres. Helm pods keep
+`args: ["serve"]` so they do not inherit `--local`.
+
 ## [v0.6.12] — Resizable columns on the Traces page
 
 Operators reported that the `Time` column on the Traces page was being
