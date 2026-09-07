@@ -73,6 +73,17 @@ FULL_RENDER = [
     "--set", "networkPolicy.profile=enterprise",
     "--set", "networkPolicy.mode=enforce",
     "--set", "networkPolicy.enforcementAcknowledged=true",
+    # Provider-egress mode contract: tests that render the chart
+    # under enterprise+enforce must declare an explicit mode and a
+    # declared internal target, otherwise the chart's render-time
+    # fail-closed gate refuses the render first. We pick
+    # in_cluster_only because that lets us also assert that the
+    # selector contract still holds when no public provider
+    # egress is permitted — the "operator with no public egress and
+    # only an internal model" shape is the one this contract
+    # specifically defends against.
+    "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+    "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
     "--set", "dependencies.postgres.enabled=true",
     "--set", "dependencies.postgres.host=postgres.database.svc.cluster.local",
     "--set", "dependencies.postgres.namespace=database",

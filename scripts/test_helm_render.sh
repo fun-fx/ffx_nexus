@@ -74,7 +74,9 @@ head_ "2. Default values render (zero-dependency mode)"
 if render "${WORK}/default.yaml" \
     --set networkPolicy.mode=enforce \
     --set networkPolicy.profile=enterprise \
-    --set networkPolicy.enforcementAcknowledged=true; then
+    --set networkPolicy.enforcementAcknowledged=true \
+    --set networkPolicy.providerEgress.mode=in_cluster_only \
+    --set networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000; then
   ok "default values render (with explicit enterprise acknowledgement)"
   # Zero-dep default must not ship a scrape surface or an email transport.
   assert_absent "${WORK}/default.yaml" "NEXUS_METRICS_ADDR" \
@@ -110,7 +112,9 @@ for env in staging production; do
   if ! render "${out}" -f "${vf}" \
       --set networkPolicy.mode=enforce \
       --set networkPolicy.profile=enterprise \
-      --set networkPolicy.enforcementAcknowledged=true; then
+      --set networkPolicy.enforcementAcknowledged=true \
+      --set networkPolicy.providerEgress.mode=in_cluster_only \
+      --set networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000; then
     bad "${env} example failed to render"; cat "${out}.err"; continue
   fi
   ok "${env} example renders"
@@ -218,7 +222,9 @@ render "${WORK}/dup.yaml" \
   --set config.metricsAddr=":9999" \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
-  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
+  --set networkPolicy.enforcementAcknowledged=true \
+  --set networkPolicy.providerEgress.mode=in_cluster_only \
+  --set networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000 >/dev/null 2>&1 || true
 python3 - "${WORK}/dup.yaml" <<'PY'
 import collections, sys, yaml
 
@@ -270,7 +276,9 @@ render "${WORK}/sm_off.yaml" --set metrics.enabled=true \
   --set metrics.serviceMonitor.enabled=false \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
-  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
+  --set networkPolicy.enforcementAcknowledged=true \
+  --set networkPolicy.providerEgress.mode=in_cluster_only \
+  --set networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000 >/dev/null 2>&1 || true
 assert_absent "${WORK}/sm_off.yaml" "kind: ServiceMonitor" \
   "metrics.enabled without serviceMonitor.enabled emits no ServiceMonitor"
 
@@ -278,7 +286,9 @@ render "${WORK}/sm_on.yaml" --set metrics.enabled=true \
   --set metrics.serviceMonitor.enabled=true \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
-  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
+  --set networkPolicy.enforcementAcknowledged=true \
+  --set networkPolicy.providerEgress.mode=in_cluster_only \
+  --set networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000 >/dev/null 2>&1 || true
 assert_contains "${WORK}/sm_on.yaml" "kind: ServiceMonitor" \
   "serviceMonitor.enabled emits a ServiceMonitor"
 
@@ -299,7 +309,9 @@ render "${WORK}/mig.yaml" \
   --set dependencies.postgres.host=postgres.database.svc.cluster.local \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
-  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
+  --set networkPolicy.enforcementAcknowledged=true \
+  --set networkPolicy.providerEgress.mode=in_cluster_only \
+  --set networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000 >/dev/null 2>&1 || true
 assert_contains "${WORK}/mig.yaml" "kind: Job" \
   "a migration Job is rendered when a datastore is enabled"
 assert_contains "${WORK}/mig.yaml" '"helm.sh/hook": pre-install,pre-upgrade' \
@@ -346,7 +358,9 @@ render "${WORK}/mig_off.yaml" \
   --set migrations.enabled=false \
   --set networkPolicy.mode=enforce \
   --set networkPolicy.profile=enterprise \
-  --set networkPolicy.enforcementAcknowledged=true >/dev/null 2>&1 || true
+  --set networkPolicy.enforcementAcknowledged=true \
+  --set networkPolicy.providerEgress.mode=in_cluster_only \
+  --set networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000 >/dev/null 2>&1 || true
 assert_contains "${WORK}/mig_off.yaml" "kind: Deployment" \
   "migrations.enabled=false still renders the release"
 assert_absent "${WORK}/mig_off.yaml" "kind: Job" \
@@ -402,7 +416,9 @@ if render "${WORK}/egress.yaml" \
     -f "${WORK}/egress_values.yaml" \
     --set networkPolicy.mode=enforce \
     --set networkPolicy.profile=enterprise \
-    --set networkPolicy.enforcementAcknowledged=true; then
+    --set networkPolicy.enforcementAcknowledged=true \
+    --set networkPolicy.providerEgress.mode=in_cluster_only \
+    --set networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000; then
   assert_contains "${WORK}/egress.yaml" 'NEXUS_EGRESS_TENANT_ALLOWED_CIDRS: "10.44.0.0/16,10.45.1.7"' \
     "an explicit egress allowlist is passed through verbatim"
 else

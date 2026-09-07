@@ -875,9 +875,64 @@ networkPolicy:
     # `.Values.metrics.port` directly. The two locations of the
     # scrape port have been unified to a single source.
   egress:
+    # ===== DEPRECATED ALIAS — kept for one minor release. =====
+    # Operators SHOULD move to `networkPolicy.providerEgress.proxy`
+    # (renamed because generic `egress.proxy` mixed internal &
+    # external destinations under a single schema, and the
+    # provider path needs distinct intent from the future
+    # generic-egress side). Both forms set the same NetworkPolicy
+    # peer; both forms count toward the truth table below; both
+    # forms rendered together fail the chart at parse time.
     proxy:
       enabled: false
       host: ""
       port: 3128
       namespace: ""
       podSelector: {}
+  # ===== NEW: explicit provider-egress mode contract =====
+  # Why a separate block exists at all
+  # ----------------------------------
+  # `egress.proxy.enabled` answered only "is there a proxy in
+  # this cluster?". It could not distinguish
+  #   (a) operator forgot the proxy; needs external provider
+  #   (b) operator uses vLLM / Ollama / self-hosted OpenAI-compatible
+  #       inside the cluster, and explicitly wants external egress
+  #       refused
+  # because both states emit identical YAML. (a) is a broken
+  # install; (b) is a healthy one. `mode` is what tells them apart.
+  #
+  # This block carries ONLY the chart-side intent declaration.
+  # The runtime wiring (HTTPS_PROXY / NO_PROXY into the pod,
+  # in-cluster destination validator for in_cluster_only) is a
+  # separate chart change in the same milestone — see the
+  # provider-egress milestone. The mode/peer pair lands FIRST so
+  # that the schema/render failures can gate installs even before
+  # runtime wiring is finished.
+  providerEgress:
+    # Operator's intent. Empty/unknown on profile=enterprise &
+    # mode=enforce is a chart render failure — see the truth
+    # table in deploy/helm/nexus/tests/provider_egress_render_test.py.
+    #
+    #   proxy            external providers/EvalPlugin vendors go
+    #                   through the cluster-local proxy peer below
+    #   in_cluster_only  external providers are refused in the
+    #                   runtime; chart will only render cluster
+    #                   internal Service peers
+    #   ""               operator intent has not been declared
+    mode: ""
+    # mode=proxy. Same shape as the deprecated egress.proxy block,
+    # except discrete — cyclic back-link to egress.proxy forbidden.
+    proxy:
+      enabled: false
+      host: ""
+      port: 3128
+      namespace: ""
+      podSelector: {}
+    # mode=in_cluster_only. Required, non-empty list. The chart will
+    # raise if a value here is a public FQDN / public IP / wildcard,
+    # because the whole point of this mode is that those are refused.
+    # The runtime destination validator (added in the next PR of the
+    # same milestone) rejects anything not on this list at request
+    # time.
+    inCluster:
+      allowedServiceTargets: []   # e.g. ["vllm.models.svc.cluster.local:8000"]

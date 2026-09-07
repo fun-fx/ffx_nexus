@@ -108,6 +108,16 @@ def test_sso_with_proxy_disabled_renders_clean():
         "--set", "networkPolicy.postgres.selector.namespace=database",
         "--set", "dependencies.postgres.host=postgres",
         "--set", "dependencies.postgres.port=5432",
+        # Most tests in this file were written before the explicit
+        # provider-egress mode contract existed. The schema and the
+        # render block both require `mode` on enterprise+enforce
+        # now, and `proxy.enabled=false` does not satisfy it. We
+        # declare an explicit in_cluster_only intent with a
+        # declared internal target so the contract gate passes and
+        # the rest of the test (plaintext-secret-detect assertions)
+        # has something to assert against.
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
         "--set", "networkPolicy.egress.proxy.enabled=false",
         "--set", "features.sso=true",
         "--set", "serviceTargets.sso.issuer=https://issuer.example",
@@ -172,6 +182,11 @@ def test_emailResend_must_use_secretRef():
         "--set", "networkPolicy.postgres.selector.namespace=database",
         "--set", "dependencies.postgres.host=postgres",
         "--set", "dependencies.postgres.port=5432",
+        # See test_sso_with_proxy_disabled_renders_clean for why
+        # this contract gate needs an explicit in_cluster_only
+        # mode here.
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
         "--set", "features.emailResend=true",
         "--set", "serviceTargets.resend.fromAddress=ops@customer.example",
         "--set", "serviceTargets.resend.namespace=resend",
@@ -196,6 +211,12 @@ expect_refused(
         "--set", "networkPolicy.postgres.selector.namespace=database",
         "--set", "dependencies.postgres.host=postgres",
         "--set", "dependencies.postgres.port=5432",
+        # Without an explicit provider-egress mode, the new chart
+        # contract refuses first. Adding the mode declaration here
+        # isolates the enforcement-ack gate the test was written
+        # for.
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
     ],
     lambda msg: "acknowledged" in msg or "enforcementacknowledged" in msg,
 )
@@ -214,6 +235,10 @@ expect_refused(
         "--set", "networkPolicy.postgres.cidr.port=5432",
         "--set", "dependencies.postgres.host=postgres",
         "--set", "dependencies.postgres.port=5432",
+        # See M5 — explicit mode declaration is required to
+        # exercise THIS gate.
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
     ],
     lambda msg: "both" in msg or "selector" in msg and "cidr" in msg,
 )
@@ -230,6 +255,8 @@ expect_refused(
         "--set", "networkPolicy.postgres.selector.namespace=",
         "--set", "dependencies.postgres.host=postgres",
         "--set", "dependencies.postgres.port=5432",
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
     ],
     lambda msg: "namespace" in msg or "selector" in msg,
 )
@@ -247,6 +274,8 @@ expect_refused(
         "--set", "networkPolicy.postgres.cidr.enabled=false",
         "--set", "dependencies.postgres.host=postgres",
         "--set", "dependencies.postgres.port=5432",
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
     ],
     lambda msg: "either" in msg or "selector" in msg or "cidr" in msg,
 )
@@ -313,6 +342,14 @@ for _field in _UNSET_SENTINEL_FIELDS:
         "--set", "networkPolicy.postgres.selector.namespace=database",
         "--set", "dependencies.postgres.host=postgres",
         "--set", "dependencies.postgres.port=5432",
+        # New provider-egress mode contract: enterprise+enforce
+        # requires an explicit mode, otherwise chart refuses at
+        # render. We pass in_cluster_only with a declared
+        # internal target so the *sentinel* being tested (the
+        # empty namespace field on the loop variable) is what
+        # governs the result.
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
         "--set", f"{_field}=",
     ])
 # And a real namespace name must still be accepted on a grant array,
@@ -326,6 +363,10 @@ for _good in ("ingress-nginx", "a", "a" * 63):
         "--set", "networkPolicy.postgres.selector.namespace=database",
         "--set", "dependencies.postgres.host=postgres",
         "--set", "dependencies.postgres.port=5432",
+        # See the sentinel loop above for why this declaration
+        # is required.
+        "--set", "networkPolicy.providerEgress.mode=in_cluster_only",
+        "--set", "networkPolicy.providerEgress.inCluster.allowedServiceTargets[0]=vllm.models.svc.cluster.local:8000",
         "--set", f"networkPolicy.ingressController.namespaces[0]={_good}",
     ])
 
