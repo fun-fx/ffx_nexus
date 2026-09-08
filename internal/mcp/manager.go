@@ -62,13 +62,13 @@ type Manager struct {
 }
 
 type clientState struct {
-	record     ServerRecord
-	spec       *ServerSpec
-	cli        *client.Client
-	tools      []Tool
-	state      string
-	lastError  string
-	lastSync   time.Time
+	record    ServerRecord
+	spec      *ServerSpec
+	cli       *client.Client
+	tools     []Tool
+	state     string
+	lastError string
+	lastSync  time.Time
 }
 
 // NewManager creates an MCP manager. Call Reload to connect configured servers.
@@ -232,12 +232,12 @@ func (m *Manager) connectServer(ctx context.Context, rec ServerRecord) error {
 
 	m.mu.Lock()
 	m.clients[rec.ID] = &clientState{
-		record:    rec,
-		spec:      spec,
-		cli:       cli,
-		tools:     tools,
-		state:     "healthy",
-		lastSync:  time.Now(),
+		record:   rec,
+		spec:     spec,
+		cli:      cli,
+		tools:    tools,
+		state:    "healthy",
+		lastSync: time.Now(),
 	}
 	m.mu.Unlock()
 	return nil

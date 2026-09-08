@@ -37,5 +37,5 @@ type MCPLogRecorder interface {
 // MCPLogNoop discards MCP logs.
 type MCPLogNoop struct{}
 
-func (MCPLogNoop) Record(MCPLog) {}
+func (MCPLogNoop) Record(MCPLog)               {}
 func (MCPLogNoop) Close(context.Context) error { return nil }

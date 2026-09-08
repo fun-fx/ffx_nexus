@@ -17,11 +17,11 @@ type ServerRecord struct {
 // ServerStatus is the runtime view returned to the console and gateway.
 type ServerStatus struct {
 	ServerRecord
-	ConnectionType string   `json:"connection_type"`
-	State          string   `json:"state"` // healthy | error | disabled | connecting
-	ToolCount      int      `json:"tool_count"`
-	Tools          []Tool   `json:"tools,omitempty"`
-	LastError      string   `json:"last_error,omitempty"`
+	ConnectionType string `json:"connection_type"`
+	State          string `json:"state"` // healthy | error | disabled | connecting
+	ToolCount      int    `json:"tool_count"`
+	Tools          []Tool `json:"tools,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
 }
 
 // Tool is a discovered MCP tool definition.
@@ -43,11 +43,11 @@ type CallContext struct {
 
 // CallRequest is the gateway wire shape for tools/call.
 type CallRequest struct {
-	Name      string         `json:"name"`
-	Arguments map[string]any `json:"arguments"`
-	LLMTraceID string        `json:"llm_trace_id,omitempty"`
-	SessionID  string        `json:"session_id,omitempty"`
-	TurnID     string        `json:"turn_id,omitempty"`
+	Name       string         `json:"name"`
+	Arguments  map[string]any `json:"arguments"`
+	LLMTraceID string         `json:"llm_trace_id,omitempty"`
+	SessionID  string         `json:"session_id,omitempty"`
+	TurnID     string         `json:"turn_id,omitempty"`
 }
 
 // CallResult is returned to gateway callers.

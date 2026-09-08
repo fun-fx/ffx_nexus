@@ -27,7 +27,7 @@ func (stubMCPRuntime) ListAllServers(string) []mcp.ServerStatus {
 	return []mcp.ServerStatus{{ServerRecord: mcp.ServerRecord{ID: "s1", Name: "demo"}, State: "healthy"}}
 }
 func (stubMCPRuntime) Upsert(context.Context, mcp.ServerRecord) error { return nil }
-func (stubMCPRuntime) Remove(string)                                    {}
+func (stubMCPRuntime) Remove(string)                                  {}
 func (stubMCPRuntime) Reconnect(context.Context, string) error        { return nil }
 func (stubMCPRuntime) TestConnection(context.Context, string) (int, error) {
 	return 1, nil

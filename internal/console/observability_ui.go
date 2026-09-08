@@ -121,8 +121,8 @@ func (s *Server) observabilityUI(w http.ResponseWriter, _ *http.Request, _ core.
 			Listen:  s.metricsAddr,
 			Path:    "/metrics",
 		},
-		Metabase:  uiObservabilityFlag{Configured: s.metabaseConfigured},
-		Traces:    uiObservabilityTraces{Clickhouse: s.reader != nil},
+		Metabase: uiObservabilityFlag{Configured: s.metabaseConfigured},
+		Traces:   uiObservabilityTraces{Clickhouse: s.reader != nil},
 		MCP: uiObservabilityMCP{
 			Enabled:    s.mcpStore != nil,
 			Clickhouse: s.reader != nil,
