@@ -111,6 +111,9 @@ type Server struct {
 	otlpEndpoint         string            // NEXUS_OTLP_ENDPOINT; empty means the exporter is off
 	metricsAddr          string            // NEXUS_METRICS_ADDR; empty means no /metrics scrape
 	metabaseConfigured   bool              // NEXUS_METABASE_URL was set; never the password
+	mcpStore             MCPServerSource   // postgres-backed MCP registry
+	mcpRuntime           MCPRuntime        // live MCP manager
+	mcpHub               *MCPHub           // live MCP log websocket feed
 	ready                ReadinessReporter // optional /readyz source; nil degrades to a plain "ok"
 	resend               *ResendClient     // deprecated; kept for backwards-compatible wiring during rollout; unused after SetMailer
 	mailer               Mailer            // active outgoing email transport for invites: Resend, SMTP, or noop
@@ -323,6 +326,13 @@ func (s *Server) SetPluginKeys(k EvalPluginKeys) {
 	s.pluginKeys = k
 }
 
+// SetMCPServers wires the MCP registry and runtime for admin/gateway routes.
+func (s *Server) SetMCPServers(store MCPServerSource, runtime MCPRuntime, hub *MCPHub) {
+	s.mcpStore = store
+	s.mcpRuntime = runtime
+	s.mcpHub = hub
+}
+
 // NewServer builds the console server. reader and store may be nil.
 func NewServer(hub *Hub, reader *observability.Reader, store *core.Store, log *slog.Logger) *Server {
 	s := &Server{
@@ -437,6 +447,24 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/eval/config", s.requireAdmin(s.getEvalConfig))
 		r.Patch("/eval/config", s.requireAdmin(s.patchEvalConfig))
 		r.Get("/live", s.requireUser(s.live))
+		r.Get("/live/mcp", s.requireUser(s.liveMCP))
+
+		r.Route("/mcp-logs", func(r chi.Router) {
+			r.Get("/", s.requireUser(s.listMCPLogs))
+			r.Get("/filterdata", s.requireUser(s.mcpLogFilterData))
+			r.Get("/stats", s.requireUser(s.mcpLogStats))
+			r.Get("/{id}", s.requireUser(s.getMCPLog))
+		})
+
+		r.Route("/mcp/servers", func(r chi.Router) {
+			r.Get("/", s.requireAdmin(s.listMCPServers))
+			r.Post("/", s.requireAdmin(s.createMCPServer))
+			r.Get("/{id}", s.requireAdmin(s.getMCPServer))
+			r.Patch("/{id}", s.requireAdmin(s.patchMCPServer))
+			r.Delete("/{id}", s.requireAdmin(s.deleteMCPServer))
+			r.Post("/{id}/reconnect", s.requireAdmin(s.reconnectMCPServer))
+			r.Post("/{id}/test", s.requireAdmin(s.testMCPServer))
+		})
 
 		// Session auth + self-service (requires Postgres).
 		r.Get("/auth/config", s.authConfig)

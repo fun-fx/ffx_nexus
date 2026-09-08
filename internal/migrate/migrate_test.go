@@ -57,6 +57,7 @@ var mustHaveMigrations = []struct {
 		"postgres/019_audit_aggregation.sql",
 		"postgres/020_audit_roles.sql",
 		"postgres/021_audit_view_indexes.sql",
+		"postgres/022_mcp_servers.sql",
 	}},
 	{migrate.EngineClickHouse, []string{
 		"clickhouse/001_init.sql",
@@ -64,6 +65,7 @@ var mustHaveMigrations = []struct {
 		// Was unreachable behind a duplicate 007 ordinal previously.
 		"clickhouse/009_benchmark_runs.sql",
 		"clickhouse/010_eval_scores_org.sql",
+		"clickhouse/011_mcp_tool_logs.sql",
 	}},
 }
 

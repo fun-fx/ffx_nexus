@@ -54,7 +54,7 @@ import (
 // Force-fail testing: bumping this constant by 1 makes the test pass
 // from 1 through the pinned count; dropping it by 1 makes the test
 // fail conditionally on the actual hits being below.
-const pinHitCount = 139
+const pinHitCount = 153
 
 func TestConsoleErrorPathsBypassApierr(t *testing.T) {
 	if pinHitCount == 0 {

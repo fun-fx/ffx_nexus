@@ -112,8 +112,10 @@ var clickhouseNamingConvention = regexp.MustCompile(`clickhouse[^/]*\.go$|_ch\.g
 
 // clickhouseExceptions are ClickHouse-querying files whose names do not say so.
 var clickhouseExceptions = []string{
-	"internal/observability/reader.go",    // console read paths, all ClickHouse
-	"internal/observability/trace_org.go", // trace org resolution
+	"internal/observability/reader.go",       // console read paths, all ClickHouse
+	"internal/observability/trace_org.go",    // trace org resolution
+	"internal/observability/mcp_reader.go",   // MCP log read paths
+	"internal/observability/mcp_recorder.go", // MCP log batch insert
 }
 
 func isClickHouse(path string) bool {

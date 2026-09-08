@@ -108,6 +108,17 @@ the real packages are `internal/ippolicy` and `internal/netpolicy`, so the
 gate was silent on the code it exists to guard — and the CNI enforcement
 gate now runs nightly in addition to manual dispatch, closing D-2b.
 
+## [v0.8.0] — MCP gateway + tool logs (PR #309)
+
+MCP server registry (stdio / HTTP), gateway proxy (`/v1/mcp/*`), dedicated
+ClickHouse `mcp_tool_logs`, console `/mcp` and `/mcp/logs`, live WebSocket
+feed, Prometheus counters, and OTLP export for tool spans. Correlates MCP
+executions with LLM traces via `llm_trace_id`, `turn_id`, and `session_id`.
+
+Opt-in payload retention: `NEXUS_CAPTURE_MCP_CONTENT=true`.
+
+Helm chart `version` / `appVersion` bump to `0.8.0`.
+
 ## [v0.7.1] — First-run setup checklist (PR #306)
 
 Empty Overview, Traces, and Playground now show a setup checklist and

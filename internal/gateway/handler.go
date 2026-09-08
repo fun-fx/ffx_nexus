@@ -47,6 +47,7 @@ type Handler struct {
 	replicaID      string               // per-process id stamped on every Trace (multi-node grouping)
 	failoverNotify router.Notifier      // optional webhook/Slack sink for router failover events (V4)
 	concurrency    ConcurrencyCapIface  // V5 per-vkey in-flight cap (nil = disabled)
+	mcp            MCPManager           // nil = MCP proxy disabled
 	log            *slog.Logger
 }
 

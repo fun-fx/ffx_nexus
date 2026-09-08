@@ -59,12 +59,18 @@ type uiObservabilityTraces struct {
 	Clickhouse bool `json:"clickhouse"`
 }
 
+type uiObservabilityMCP struct {
+	Enabled    bool `json:"enabled"`
+	Clickhouse bool `json:"clickhouse"`
+}
+
 type uiObservability struct {
 	Grafana    *uiObservabilityGrafana   `json:"grafana,omitempty"`
 	OTLP       uiObservabilityOTLP       `json:"otlp"`
 	Prometheus uiObservabilityPrometheus `json:"prometheus"`
 	Metabase   uiObservabilityFlag       `json:"metabase"`
 	Traces     uiObservabilityTraces     `json:"traces"`
+	MCP        uiObservabilityMCP        `json:"mcp"`
 	LocalMode  bool                      `json:"local_mode"`
 }
 
@@ -115,8 +121,12 @@ func (s *Server) observabilityUI(w http.ResponseWriter, _ *http.Request, _ core.
 			Listen:  s.metricsAddr,
 			Path:    "/metrics",
 		},
-		Metabase:  uiObservabilityFlag{Configured: s.metabaseConfigured},
-		Traces:    uiObservabilityTraces{Clickhouse: s.reader != nil},
+		Metabase: uiObservabilityFlag{Configured: s.metabaseConfigured},
+		Traces:   uiObservabilityTraces{Clickhouse: s.reader != nil},
+		MCP: uiObservabilityMCP{
+			Enabled:    s.mcpStore != nil,
+			Clickhouse: s.reader != nil,
+		},
 		LocalMode: s.localMode,
 	}
 	if base := s.publicGrafanaURL; base != "" {

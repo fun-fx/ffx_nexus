@@ -60,6 +60,8 @@ type MetricsRecorder struct {
 	// reason is short ("missing_column", "timeout", "constraint", "other").
 	// org_id / actor_id are deliberately NOT labels — c0.5 enforces that.
 	auditWriteFailures map[labelsKey]uint64
+	mcpCallCount       map[labelsKey]uint64
+	mcpLatencyHist     map[labelsKey]*latencyBuckets
 
 	logger *slog.Logger
 	srv    *http.Server
@@ -95,6 +97,8 @@ func NewMetricsRecorder(addr string, logger *slog.Logger) *MetricsRecorder {
 		qualityScoreCount:  map[string]uint64{},
 		otlpExportFailures: map[string]uint64{},
 		auditWriteFailures: map[labelsKey]uint64{},
+		mcpCallCount:       map[labelsKey]uint64{},
+		mcpLatencyHist:     map[labelsKey]*latencyBuckets{},
 		logger:             logger,
 		addr:               addr,
 	}
@@ -240,6 +244,43 @@ func (r *MetricsRecorder) RecordOTLPExportSuccess(bytes int) {
 	}
 	r.mu.Unlock()
 }
+
+// RecordMCPLog increments MCP tool call counters and latency histograms.
+func (r *MetricsRecorder) RecordMCPLog(l MCPLog) {
+	if r == nil {
+		return
+	}
+	key := labelsKey{L1: l.ServerLabel, L2: l.ToolName, L3: l.Status}
+	r.mu.Lock()
+	r.mcpCallCount[key]++
+	b, ok := r.mcpLatencyHist[key]
+	if !ok {
+		b = &latencyBuckets{buckets: map[string]uint64{}}
+		r.mcpLatencyHist[key] = b
+	}
+	if l.LatencyMs > 0 {
+		latencyMs := float64(l.LatencyMs)
+		b.count++
+		b.sumMs += latencyMs
+		for _, le := range latencyBucketBounds {
+			if latencyMs <= le {
+				bucketsKey := fmt.Sprintf("%g", le)
+				b.buckets[bucketsKey]++
+			}
+		}
+	}
+	r.mu.Unlock()
+}
+
+// MetricsMCPAdapter adapts MetricsRecorder to MCPLogRecorder.
+type MetricsMCPAdapter struct{ M *MetricsRecorder }
+
+func (a MetricsMCPAdapter) Record(l MCPLog) {
+	if a.M != nil {
+		a.M.RecordMCPLog(l)
+	}
+}
+func (MetricsMCPAdapter) Close(context.Context) error { return nil }
 
 // AuditWriteFailed is called by the audit store when an INSERT into audit_log
 // failed. action is the raw action constant from the audit row;
@@ -437,6 +478,36 @@ func (r *MetricsRecorder) handleMetrics(w http.ResponseWriter, _ *http.Request) 
 	for _, k := range akeys {
 		fmt.Fprintf(&b, "nexus_audit_write_failed_total{category=%q,reason=%q} %d\n",
 			k.L1, k.L2, r.auditWriteFailures[k])
+	}
+
+	fmt.Fprintf(&b, "# HELP nexus_mcp_tool_calls_total MCP tool invocations by server, tool, and status.\n")
+	fmt.Fprintf(&b, "# TYPE nexus_mcp_tool_calls_total counter\n")
+	mkeys := make([]labelsKey, 0, len(r.mcpCallCount))
+	for k := range r.mcpCallCount {
+		mkeys = append(mkeys, k)
+	}
+	sort.Slice(mkeys, func(i, j int) bool { return labelKeyCmp(mkeys[i], mkeys[j]) < 0 })
+	for _, k := range mkeys {
+		fmt.Fprintf(&b, "nexus_mcp_tool_calls_total{server=%q,tool=%q,status=%q} %d\n",
+			k.L1, k.L2, k.L3, r.mcpCallCount[k])
+	}
+	fmt.Fprintf(&b, "# HELP nexus_mcp_tool_latency_ms MCP tool call latency histogram.\n")
+	fmt.Fprintf(&b, "# TYPE nexus_mcp_tool_latency_ms histogram\n")
+	for _, k := range mkeys {
+		hb := r.mcpLatencyHist[k]
+		if hb == nil {
+			continue
+		}
+		for _, lbl := range latencyBucketLabels {
+			fmt.Fprintf(&b, "nexus_mcp_tool_latency_ms_bucket{server=%q,tool=%q,status=%q,le=%q} %d\n",
+				k.L1, k.L2, k.L3, lbl, hb.buckets[lbl])
+		}
+		fmt.Fprintf(&b, "nexus_mcp_tool_latency_ms_bucket{server=%q,tool=%q,status=%q,le=\"+Inf\"} %d\n",
+			k.L1, k.L2, k.L3, hb.count)
+		fmt.Fprintf(&b, "nexus_mcp_tool_latency_ms_sum{server=%q,tool=%q,status=%q} %f\n",
+			k.L1, k.L2, k.L3, hb.sumMs)
+		fmt.Fprintf(&b, "nexus_mcp_tool_latency_ms_count{server=%q,tool=%q,status=%q} %d\n",
+			k.L1, k.L2, k.L3, hb.count)
 	}
 
 	_, _ = w.Write([]byte(b.String()))
