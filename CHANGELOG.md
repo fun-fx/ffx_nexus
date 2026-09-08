@@ -108,7 +108,7 @@ the real packages are `internal/ippolicy` and `internal/netpolicy`, so the
 gate was silent on the code it exists to guard — and the CNI enforcement
 gate now runs nightly in addition to manual dispatch, closing D-2b.
 
-## [v0.8.0] — MCP gateway + tool logs (PR #TBD)
+## [v0.8.0] — MCP gateway + tool logs (PR #309)
 
 MCP server registry (stdio / HTTP), gateway proxy (`/v1/mcp/*`), dedicated
 ClickHouse `mcp_tool_logs`, console `/mcp` and `/mcp/logs`, live WebSocket
