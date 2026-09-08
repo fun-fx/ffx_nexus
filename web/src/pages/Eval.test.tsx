@@ -3,7 +3,8 @@ import { MemoryRouter } from "react-router-dom";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "../theme/ThemeProvider";
-import { Eval } from "../pages/Eval";
+import { Eval, EvalOverview, EvalRoutingIntegration } from "../pages/Eval";
+import { EvalProfilesPage } from "../pages/EvalProfilesPage";
 import { ZERO_EVAL, type EvalConfigSnapshot } from "../api";
 
 const adminMe = {
@@ -59,9 +60,10 @@ type Patch = {
   routing: { weights: { quality: number; cost: number; latency: number } };
 };
 
-function renderEval(
+function renderEvalPage(
   o: Overrides = {},
   onPatch: (body: Patch) => void = () => {},
+  Page: typeof EvalOverview | typeof EvalRoutingIntegration | typeof Eval = EvalOverview,
 ) {
   vi.stubGlobal(
     "fetch",
@@ -100,7 +102,7 @@ function renderEval(
     <ThemeProvider>
       <QueryClientProvider client={qc}>
         <MemoryRouter>
-          <Eval />
+          <Page />
         </MemoryRouter>
       </QueryClientProvider>
     </ThemeProvider>,
@@ -110,9 +112,9 @@ function renderEval(
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("<Eval /> weights sliders", () => {
+describe("<EvalRoutingIntegration /> weights sliders", () => {
   it("clamps a server-supplied negative weight to 0 on render", async () => {
-    renderEval({ quality: -0.2 });
+    renderEvalPage({ quality: -0.2 }, () => {}, EvalRoutingIntegration);
 
     const allMatches = await screen.findAllByText("Quality");
     const sliderLabel = allMatches.find(
@@ -130,7 +132,7 @@ describe("<Eval /> weights sliders", () => {
   });
 
   it("drag is isolated — moving one axis does NOT move the others", async () => {
-    renderEval();
+    renderEvalPage({}, () => {}, EvalRoutingIntegration);
     await waitFor(() => screen.getByText("Routing weights"));
 
     const sliders = document.querySelectorAll<HTMLInputElement>(
@@ -164,9 +166,9 @@ describe("<Eval /> weights sliders", () => {
 
   it("save normalises a non-1 sum to the simplex", async () => {
     let captured: Patch | null = null;
-    renderEval({}, (body) => {
+    renderEvalPage({}, (body) => {
       captured = body;
-    });
+    }, EvalRoutingIntegration);
     await waitFor(() => screen.getByText("Routing weights"));
 
     const sliders = document.querySelectorAll<HTMLInputElement>(
@@ -192,9 +194,9 @@ describe("<Eval /> weights sliders", () => {
 
   it("zero-axis state is honoured: when one slider is 0, the other two absorb 1.0 at save", async () => {
     let captured: Patch | null = null;
-    renderEval({}, (body) => {
+    renderEvalPage({}, (body) => {
       captured = body;
-    });
+    }, EvalRoutingIntegration);
     await waitFor(() => screen.getByText("Routing weights"));
 
     const sliders = document.querySelectorAll<HTMLInputElement>(
@@ -234,9 +236,9 @@ describe("<Eval /> weights sliders", () => {
 
   it("all-zero drag falls back to the historical 60/20/20 default", async () => {
     let captured: Patch | null = null;
-    renderEval({}, (body) => {
+    renderEvalPage({}, (body) => {
       captured = body;
-    });
+    }, EvalRoutingIntegration);
     await waitFor(() => screen.getByText("Routing weights"));
 
     const sliders = document.querySelectorAll<HTMLInputElement>(
@@ -264,18 +266,15 @@ describe("<Eval /> weights sliders", () => {
   });
 });
 
-describe("<Eval /> heuristic table layout", () => {
+describe("<EvalOverview /> heuristic table layout", () => {
   it("renders all metrics in one panel — every toggle is interactive, env-seeded profiles included", async () => {
-    renderEval();
+    renderEvalPage({}, () => {}, EvalOverview);
     await waitFor(() => screen.getByText("Evaluators"));
 
-    // v0.6.9 unified all four metric rows under a single switch with
-    // no aria-disabled. There are 4 switches from the heuristics
-    // table plus 4 more from the Eval Profiles card (default-pii /
-    // default-completeness / default-judge / default-remote all seeded
-    // by renderEval's fixture).
+    // v0.6.9 unified all four metric rows under a single switch on the
+    // overview tab. Profiles live on /eval/profiles.
     const switches = screen.queryAllByRole("switch");
-    expect(switches.length).toBe(8);
+    expect(switches.length).toBe(4);
     // None of the role=switch elements are aria-disabled any more —
     // even the env-seeded SLM judge / Remote eval rows now expose a
     // real Enable/Disable switch.
@@ -288,14 +287,16 @@ describe("<Eval /> heuristic table layout", () => {
     // Heuristic rows render the metric name as their title; legacy rows
     // append "(legacy)" to the same title. Multiple matches are fine
     // because the same names also appear as chips in the profiles card.
-    expect(screen.getAllByText("SLM judge").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Remote eval/).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getAllByText(/SLM judge/i).length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText(/Remote eval/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^PII$/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^Completeness$/i).length).toBeGreaterThan(0);
   });
 
   it("renders 4 interactive toggles on the heuristic table — admin can flip every kind", async () => {
-    renderEval();
+    renderEvalPage({}, () => {}, EvalOverview);
     await waitFor(() => screen.getByText("Evaluators"));
 
     // v0.6.9 unified all 4 rows under the same switch. The label's
@@ -303,24 +304,23 @@ describe("<Eval /> heuristic table layout", () => {
     // match by metric-specific label rather than the prior fixed
     // "Disable evaluation" button text.
     const switches = screen.queryAllByRole("switch");
-    // 4 metric rows + 4 profile rows below (default-{pii,completeness,judge,remote})
-    expect(switches.length).toBe(8);
+    expect(switches.length).toBe(4);
     // Every switch is interactive, not aria-disabled any more.
     const disabledLabelsOnTable = switches.filter(
       (s) => s.getAttribute("aria-disabled") === "true",
     );
     expect(disabledLabelsOnTable.length).toBe(0);
 
-    // The four kinds are still present in both the heuristic table and
-    // the profile card below; multiple matches are fine.
-    expect(screen.getAllByText("SLM judge").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Remote eval/).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getAllByText(/SLM judge/i).length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText(/Remote eval/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^PII$/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/^Completeness$/i).length).toBeGreaterThan(0);
   });
 
   it("admin sees Change configuration buttons on SLM judge and Remote eval rows", async () => {
-    renderEval();
+    renderEvalPage({}, () => {}, EvalOverview);
     await waitFor(() => screen.getByText("Evaluators"));
 
     // v0.6.9: every heuristic-table row surfaces Change configuration
@@ -371,7 +371,7 @@ describe("<Eval /> admin toggle profile flow", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Eval />
+            <EvalOverview />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
@@ -431,7 +431,7 @@ describe("<Eval /> admin toggle profile flow", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Eval />
+            <EvalOverview />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
@@ -490,7 +490,7 @@ describe("<Eval /> admin toggle profile flow", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Eval />
+            <EvalOverview />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
@@ -570,7 +570,7 @@ describe("<Eval /> admin toggle profile flow", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Eval />
+            <EvalOverview />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
@@ -633,7 +633,7 @@ describe("<Eval /> admin toggle profile flow", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Eval />
+            <EvalOverview />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
@@ -695,7 +695,7 @@ describe("<Eval /> plugin-only banner", () => {
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <Eval />
+            <EvalOverview />
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>,
@@ -732,15 +732,44 @@ describe("<Eval /> plugin-only banner", () => {
     });
   });
 
+  function renderProfilesPage(bundle: EvalConfigSnapshot) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/api/me")) {
+          return new Response(JSON.stringify(adminMe), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/config")) {
+          return new Response(JSON.stringify(bundle), { status: 200 });
+        }
+        if (url.endsWith("/api/eval/profiles")) {
+          return new Response(JSON.stringify({ profiles: [] }), { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ThemeProvider>
+          <MemoryRouter initialEntries={["/eval/profiles"]}>
+            <EvalProfilesPage />
+          </MemoryRouter>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+  }
+
   it("hides eval profiles card when plugin_only=true", async () => {
-    renderWithBundle(build(true));
+    renderProfilesPage(build(true));
     await waitFor(() => {
       expect(screen.queryByTestId("eval-profiles")).toBeNull();
     });
   });
 
   it("shows eval profiles card when plugin_only=false", async () => {
-    renderWithBundle(build(false));
+    renderProfilesPage(build(false));
     expect(await screen.findByTestId("eval-profiles")).toBeTruthy();
   });
 
@@ -827,7 +856,7 @@ describe("<Eval /> plugin-only banner", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Eval />
+            <EvalOverview />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,
@@ -902,7 +931,7 @@ describe("<Eval /> plugin-only banner", () => {
       <ThemeProvider>
         <QueryClientProvider client={qc}>
           <MemoryRouter>
-            <Eval />
+            <EvalOverview />
           </MemoryRouter>
         </QueryClientProvider>
       </ThemeProvider>,

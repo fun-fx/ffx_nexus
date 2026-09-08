@@ -629,7 +629,7 @@ function DocsArticle({
           <h1 className="docs-hero-title">No such page</h1>
           <p className="docs-hero-tag">
             We could not find a doc at <code>{slugPath}</code>. The sidebar might have a stale link; check{" "}
-            <Link to="/docs">the index</Link>.
+            <Link to="/develop/docs">the index</Link>.
           </p>
         </section>
       </div>
@@ -639,7 +639,7 @@ function DocsArticle({
     <article className="docs-page docs-article">
       <div className="docs-article-head">
         <div className="docs-article-crumb">
-          <Link to="/docs">Docs</Link>
+          <Link to="/develop/docs">Docs</Link>
           <span aria-hidden> / </span>
           <span>{page.category}</span>
         </div>

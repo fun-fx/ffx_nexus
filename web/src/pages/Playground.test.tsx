@@ -195,9 +195,11 @@ describe("<Playground /> model picker", () => {
     renderPlayground();
     expect(await screen.findByTestId("playground-empty-setup")).toBeInTheDocument();
     expect(screen.getByTestId("first-request-snippets")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /virtual key/i }).getAttribute("href")).toBe("/keys");
+    expect(screen.getByRole("link", { name: /virtual key/i }).getAttribute("href")).toBe(
+      "/gateway/keys",
+    );
     expect(
       screen.getByRole("link", { name: /provider credential/i }).getAttribute("href"),
-    ).toBe("/credentials");
+    ).toBe("/gateway/providers");
   });
 });

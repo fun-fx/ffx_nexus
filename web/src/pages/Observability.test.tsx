@@ -42,7 +42,7 @@ function renderPage() {
   return render(
     <ThemeProvider>
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/observability"]}>
+        <MemoryRouter initialEntries={["/observability/connectors"]}>
           <Observability />
         </MemoryRouter>
       </QueryClientProvider>
@@ -74,6 +74,6 @@ describe("<Observability />", () => {
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: /langfuse/i }));
     const link = await screen.findByRole("link", { name: /open eval plugins/i });
-    expect(link.getAttribute("href")).toBe("/eval?focus=plugins");
+    expect(link.getAttribute("href")).toBe("/eval/plugins");
   });
 });

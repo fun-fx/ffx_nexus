@@ -13,7 +13,7 @@ function WithProviders({ children }: { children: React.ReactNode }) {
   return (
     <ThemeProvider>
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/routing"]}>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={["/gateway/routing"]}>{children}</MemoryRouter>
       </QueryClientProvider>
     </ThemeProvider>
   );

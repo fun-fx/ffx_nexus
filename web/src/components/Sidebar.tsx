@@ -1,58 +1,32 @@
-import { NavLink } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { Icon } from "./icons";
 import { fetchMe, fetchUIObservability, type User } from "../api";
-
-type NavItem = {
-  to: string;
-  label: string;
-  icon: keyof typeof Icon;
-  group: "Workspace" | "Admin";
-};
-
-const NAV: NavItem[] = [
-  { to: "/", label: "Overview", icon: "grid", group: "Workspace" },
-  { to: "/spend", label: "Spend", icon: "wallet", group: "Workspace" },
-  { to: "/playground", label: "Playground", icon: "play", group: "Workspace" },
-  { to: "/traces", label: "Traces", icon: "chart", group: "Workspace" },
-  { to: "/observability", label: "Observability", icon: "activity", group: "Workspace" },
-  { to: "/mcp", label: "MCP", icon: "zap", group: "Workspace" },
-  { to: "/mcp/logs", label: "MCP Logs", icon: "list", group: "Workspace" },
-  { to: "/routing", label: "Routing", icon: "zap", group: "Workspace" },
-  { to: "/keys", label: "Keys", icon: "keys", group: "Workspace" },
-  { to: "/credentials", label: "Credentials", icon: "shield", group: "Workspace" },
-  { to: "/docs", label: "Docs", icon: "doc", group: "Workspace" },
-  { to: "/eval", label: "Eval", icon: "sparkles", group: "Admin" },
-  { to: "/eval/benchmarks", label: "Benchmarks", icon: "chart", group: "Admin" },
-  { to: "/audit", label: "Audit", icon: "list", group: "Admin" },
-  { to: "/users", label: "Users", icon: "users", group: "Admin" },
-];
-
-// A row whose path is a prefix of another row's must match exactly, or
-// both light up while the nested page is open.
-function matchExactly(to: string): boolean {
-  return to === "/" || NAV.some((n) => n.to !== to && n.to.startsWith(to + "/"));
-}
+import { NAV_GROUPS } from "../nav/config";
+import { SidebarNavGroup } from "./SidebarNavGroup";
 
 export function Sidebar() {
   const [user, setUser] = useState<User | null>(null);
   const [grafana, setGrafana] = useState<string | null>(null);
+
   useEffect(() => {
     fetchMe()
       .then(setUser)
       .catch(() => setUser(null));
-    // The Grafana URL is non-sensitive and anonymous, so we don't gate it
-    // on user state. If the endpoint is empty (operator didn't set
-    // NEXUS_PUBLIC_GRAFANA_URL) we just skip rendering the link entirely.
     fetchUIObservability()
       .then((o) => setGrafana(o.grafana?.base ?? null))
       .catch(() => setGrafana(null));
   }, []);
 
-  const groups: Array<NavItem["group"]> = ["Workspace", "Admin"];
-  const visibleItems = NAV.filter((n) => {
-    if (n.group === "Admin") return user?.role === "admin";
-    return true;
+  const isAdmin = user?.role === "admin";
+
+  const visibleGroups = NAV_GROUPS.filter((g) => {
+    if (!g.adminOnly) return true;
+    return isAdmin;
+  }).map((g) => {
+    if (!g.items) return g;
+    return {
+      ...g,
+      items: g.items.filter((it) => !it.adminOnly || isAdmin),
+    };
   });
 
   return (
@@ -67,34 +41,9 @@ export function Sidebar() {
         </span>
       </div>
       <nav className="sidebar-nav">
-        {groups.map((g) => {
-          const items = visibleItems.filter((i) => i.group === g);
-          if (items.length === 0) return null;
-          return (
-            <div className="sidebar-group" key={g}>
-              <div className="sidebar-group-label">{g}</div>
-              {items.map((it) => {
-                const IconC = Icon[it.icon];
-                return (
-                  <NavLink
-                    key={it.to}
-                    to={it.to}
-                    end={matchExactly(it.to)}
-                    className={({ isActive }) =>
-                      "sidebar-item" + (isActive ? " is-active" : "")
-                    }
-                  >
-                    <span className="sidebar-item-icon" aria-hidden="true">
-                      <IconC size={16} />
-                    </span>
-                    <span className="sidebar-item-label">{it.label}</span>
-                    <span className="sidebar-item-bar" aria-hidden="true" />
-                  </NavLink>
-                );
-              })}
-            </div>
-          );
-        })}
+        {visibleGroups.map((group) => (
+          <SidebarNavGroup key={group.id} group={group} />
+        ))}
         {grafana ? (
           <div className="sidebar-group sidebar-external">
             <div className="sidebar-group-label">External</div>

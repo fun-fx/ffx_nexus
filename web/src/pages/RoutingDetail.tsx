@@ -39,7 +39,7 @@ export function RoutingDetail() {
       <header className="page-head">
         <div>
           <div className="eyebrow">
-            <Link to="/routing" className="eyebrow-link">
+            <Link to="/gateway/routing" className="eyebrow-link">
               ← All aliases
             </Link>
           </div>
