@@ -15,6 +15,7 @@ const NAV: NavItem[] = [
   { to: "/spend", label: "Spend", icon: "wallet", group: "Workspace" },
   { to: "/playground", label: "Playground", icon: "play", group: "Workspace" },
   { to: "/traces", label: "Traces", icon: "chart", group: "Workspace" },
+  { to: "/observability", label: "Observability", icon: "activity", group: "Workspace" },
   { to: "/routing", label: "Routing", icon: "zap", group: "Workspace" },
   { to: "/keys", label: "Keys", icon: "keys", group: "Workspace" },
   { to: "/credentials", label: "Credentials", icon: "shield", group: "Workspace" },

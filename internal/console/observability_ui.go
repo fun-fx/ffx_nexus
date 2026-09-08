@@ -40,8 +40,43 @@ type uiObservabilityGrafana struct {
 	Eval     string `json:"eval"`
 }
 
+type uiObservabilityOTLP struct {
+	Enabled  bool   `json:"enabled"`
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
+type uiObservabilityPrometheus struct {
+	Enabled bool   `json:"enabled"`
+	Listen  string `json:"listen,omitempty"`
+	Path    string `json:"path"`
+}
+
+type uiObservabilityFlag struct {
+	Configured bool `json:"configured"`
+}
+
+type uiObservabilityTraces struct {
+	Clickhouse bool `json:"clickhouse"`
+}
+
 type uiObservability struct {
-	Grafana *uiObservabilityGrafana `json:"grafana,omitempty"`
+	Grafana    *uiObservabilityGrafana   `json:"grafana,omitempty"`
+	OTLP       uiObservabilityOTLP       `json:"otlp"`
+	Prometheus uiObservabilityPrometheus `json:"prometheus"`
+	Metabase   uiObservabilityFlag       `json:"metabase"`
+	Traces     uiObservabilityTraces     `json:"traces"`
+	LocalMode  bool                      `json:"local_mode"`
+}
+
+// SetObservabilitySinks records boot-time gateway sinks so the console
+// Observability page can show whether OTLP, Prometheus, and Metabase are
+// actually wired — without implying the UI can flip them. Those knobs still
+// live in env / Helm; a Save that did not survive a restart would be a lie.
+func (s *Server) SetObservabilitySinks(otlpEnabled bool, otlpEndpoint, metricsAddr, metabaseURL string) {
+	s.otlpEnabled = otlpEnabled
+	s.otlpEndpoint = strings.TrimSpace(otlpEndpoint)
+	s.metricsAddr = strings.TrimSpace(metricsAddr)
+	s.metabaseConfigured = strings.TrimSpace(metabaseURL) != ""
 }
 
 // SetPublicGrafanaURL records the operator's Grafana base URL. Trailing
@@ -70,7 +105,20 @@ func (s *Server) SetPublicGrafanaURL(raw string) {
 // already degrades to "no link" on any non-200, and the only caller renders
 // inside an authenticated shell, so requiring a session costs nothing.
 func (s *Server) observabilityUI(w http.ResponseWriter, _ *http.Request, _ core.User) {
-	out := uiObservability{}
+	out := uiObservability{
+		OTLP: uiObservabilityOTLP{
+			Enabled:  s.otlpEnabled && s.otlpEndpoint != "",
+			Endpoint: s.otlpEndpoint,
+		},
+		Prometheus: uiObservabilityPrometheus{
+			Enabled: s.metricsAddr != "",
+			Listen:  s.metricsAddr,
+			Path:    "/metrics",
+		},
+		Metabase:  uiObservabilityFlag{Configured: s.metabaseConfigured},
+		Traces:    uiObservabilityTraces{Clickhouse: s.reader != nil},
+		LocalMode: s.localMode,
+	}
 	if base := s.publicGrafanaURL; base != "" {
 		out.Grafana = &uiObservabilityGrafana{
 			Base:     base,
@@ -79,6 +127,5 @@ func (s *Server) observabilityUI(w http.ResponseWriter, _ *http.Request, _ core.
 			Eval:     base + "/d/" + grafanaUIDEval + "/" + grafanaUIDEval,
 		}
 	}
-	// An empty object is a valid, meaningful answer: "no Grafana configured".
 	writeJSON(w, http.StatusOK, out)
 }

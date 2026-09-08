@@ -432,6 +432,7 @@ func main() {
 	// server-side request — so Grafana being down or misconfigured can
 	// never reach the gateway's request path.
 	consoleSrvHandler.SetPublicGrafanaURL(cfg.PublicGrafanaURL)
+	consoleSrvHandler.SetObservabilitySinks(cfg.OTLPEnabled, cfg.OTLPEndpoint, cfg.MetricsAddr, cfg.MetabaseURL)
 	// PublicBaseURL is what the admin-facing invite URL is rooted
 	// on (it lives next to the console). EmailPublicBaseURL is the
 	// host embedded inside the outgoing email body — operators

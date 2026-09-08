@@ -107,9 +107,13 @@ type Server struct {
 	enterpriseCtaURL     string                                            // optional "Talk to us" target on the login page; empty hides it
 	publicBaseURL        string                                            // optional public console base; used to compose invite URLs
 	publicGrafanaURL     string                                            // optional operator Grafana base; link-only, see observability_ui.go
-	ready                ReadinessReporter                                 // optional /readyz source; nil degrades to a plain "ok"
-	resend               *ResendClient                                     // deprecated; kept for backwards-compatible wiring during rollout; unused after SetMailer
-	mailer               Mailer                                            // active outgoing email transport for invites: Resend, SMTP, or noop
+	otlpEnabled          bool
+	otlpEndpoint         string            // NEXUS_OTLP_ENDPOINT; empty means the exporter is off
+	metricsAddr          string            // NEXUS_METRICS_ADDR; empty means no /metrics scrape
+	metabaseConfigured   bool              // NEXUS_METABASE_URL was set; never the password
+	ready                ReadinessReporter // optional /readyz source; nil degrades to a plain "ok"
+	resend               *ResendClient     // deprecated; kept for backwards-compatible wiring during rollout; unused after SetMailer
+	mailer               Mailer            // active outgoing email transport for invites: Resend, SMTP, or noop
 	log                  *slog.Logger
 	up                   websocket.Upgrader
 }

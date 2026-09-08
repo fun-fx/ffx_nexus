@@ -33,9 +33,18 @@ func TestObservabilityUI_UnsetReportsNoGrafana(t *testing.T) {
 	if got.Grafana != nil {
 		t.Fatalf("Grafana = %+v, want nil when NEXUS_PUBLIC_GRAFANA_URL is unset", got.Grafana)
 	}
+	if got.OTLP.Enabled {
+		t.Fatalf("OTLP.enabled = true, want false on a zero Server")
+	}
+	if got.Prometheus.Enabled {
+		t.Fatalf("Prometheus.enabled = true, want false on a zero Server")
+	}
+	if got.Prometheus.Path != "/metrics" {
+		t.Fatalf("Prometheus.path = %q, want /metrics", got.Prometheus.Path)
+	}
 	// `omitempty` must actually drop the key so the client's optional-chaining
 	// on `o.grafana?.base` sees undefined rather than a zero-valued object.
-	if strings.Contains(rec.Body.String(), "grafana") {
+	if strings.Contains(rec.Body.String(), `"grafana"`) {
 		t.Fatalf("body %q should omit the grafana key entirely", rec.Body.String())
 	}
 }
@@ -110,5 +119,34 @@ func TestObservabilityUI_RouteRequiresSession(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "grafana.customer.example") {
 		t.Fatalf("anonymous response leaked the Grafana host: %q", rec.Body.String())
+	}
+}
+
+func TestObservabilityUI_SinksFromBootConfig(t *testing.T) {
+	s := NewServer(nil, nil, nil, slog.Default())
+	s.SetLocalMode(true)
+	s.SetObservabilitySinks(true, "http://otel-collector:4318/v1/traces", ":9100", "http://metabase:3001")
+
+	rec := httptest.NewRecorder()
+	s.observabilityUI(rec, httptest.NewRequest(http.MethodGet, "/api/ui/observability", nil), core.User{})
+
+	var got uiObservability
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !got.LocalMode {
+		t.Fatal("local_mode = false, want true")
+	}
+	if !got.OTLP.Enabled || got.OTLP.Endpoint != "http://otel-collector:4318/v1/traces" {
+		t.Fatalf("otlp = %+v", got.OTLP)
+	}
+	if !got.Prometheus.Enabled || got.Prometheus.Listen != ":9100" {
+		t.Fatalf("prometheus = %+v", got.Prometheus)
+	}
+	if !got.Metabase.Configured {
+		t.Fatal("metabase.configured = false, want true")
+	}
+	if got.Traces.Clickhouse {
+		t.Fatal("traces.clickhouse = true with a nil reader, want false")
 	}
 }
