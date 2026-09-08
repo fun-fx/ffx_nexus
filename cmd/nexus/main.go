@@ -33,6 +33,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/health"
 	"github.com/ffxnexus/nexus/internal/limiter"
 	"github.com/ffxnexus/nexus/internal/localdb"
+	"github.com/ffxnexus/nexus/internal/mcp"
 	"github.com/ffxnexus/nexus/internal/observability"
 	"github.com/ffxnexus/nexus/internal/router"
 	"github.com/ffxnexus/nexus/internal/semcache"
@@ -219,6 +220,7 @@ func main() {
 
 	// Observability: ClickHouse persistence (optional) + live dashboard hub.
 	hub := console.NewHub()
+	mcpHub := console.NewMCPHub()
 	var chRec *observability.CHRecorder
 
 	if cfg.ClickHouseURL != "" {
@@ -240,15 +242,32 @@ func main() {
 		log.Info("clickhouse not configured; traces are live-only (set NEXUS_CLICKHOUSE_URL to persist)")
 	}
 
-	stack := buildStack(cfg, hub, chRec, store, log)
+	stack := buildStack(cfg, hub, mcpHub, chRec, store, log)
 	recorder := stack.Recorder
 	reader := stack.Reader
 	evalWorker := stack.EvalWorker
 	modelRouter := stack.ModelRouter
 
+	// MCP gateway runtime (optional — requires Postgres registry).
+	var mcpMgr *mcp.Manager
+	if store != nil {
+		mcpStore := mcp.NewPostgresStore(store.Pool())
+		if mcpStore != nil {
+			mcpMgr = mcp.NewManager(mcpStore, mcp.LogBridge{Rec: stack.MCPLogRecorder}, log)
+			if err := mcpMgr.Reload(ctx); err != nil {
+				log.Warn("mcp reload failed", "err", err)
+			} else {
+				log.Info("mcp gateway enabled")
+			}
+		}
+	}
+
 	// Gateway server.
 	gwHandler := gateway.NewHandler(reg, recorder, lim, log)
 	gwHandler.SetReplicaID(cfg.ReplicaID)
+	if mcpMgr != nil {
+		gwHandler.SetMCPManager(mcpMgr)
+	}
 
 	// --- V4 failover alert sinks ----------------------------------------
 	// Wire a multi-sink notifier only when at least one URL is set so
@@ -433,6 +452,9 @@ func main() {
 	// never reach the gateway's request path.
 	consoleSrvHandler.SetPublicGrafanaURL(cfg.PublicGrafanaURL)
 	consoleSrvHandler.SetObservabilitySinks(cfg.OTLPEnabled, cfg.OTLPEndpoint, cfg.MetricsAddr, cfg.MetabaseURL)
+	if store != nil && mcpMgr != nil {
+		consoleSrvHandler.SetMCPServers(mcp.NewPostgresStore(store.Pool()), mcpMgr, mcpHub)
+	}
 	// PublicBaseURL is what the admin-facing invite URL is rooted
 	// on (it lives next to the console). EmailPublicBaseURL is the
 	// host embedded inside the outgoing email body — operators

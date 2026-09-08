@@ -31,6 +31,8 @@ type NexusStack struct {
 	ScoreStore        evals.StoreKind
 	TraceStore        string
 	RoutingStatsStore string
+	MCPLogRecorder    observability.MCPLogRecorder
+	MetricsRecorder   *observability.MetricsRecorder
 	// scoreSink is exposed so the plugin collector can write
 	// externally-produced scores without going through the worker.
 	// Lazy-built from the same backend selection as EvalWorker.
@@ -52,7 +54,7 @@ func (s NexusStack) SinkForPlugins() evals.Sink {
 	return evals.NoopSink{}
 }
 
-func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHRecorder, store *core.Store, log *slog.Logger) NexusStack {
+func buildStack(cfg config.Config, hub *console.Hub, mcpHub *console.MCPHub, chRec *observability.CHRecorder, store *core.Store, log *slog.Logger) NexusStack {
 	var stack NexusStack
 	stack.TraceStore = traceStoreLiveOnly
 
@@ -68,6 +70,8 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	// stays nil when the env var is empty, leaving the zero-dep fast path
 	// unchanged.
 	metricsRec := observability.NewMetricsRecorder(cfg.MetricsAddr, log)
+	stack.MetricsRecorder = metricsRec
+	stack.MCPLogRecorder = buildMCPLogFanout(cfg, chRec, mcpHub, metricsRec, log)
 	// OTLP exporter (observability adapter spec): opt-in. When
 	// NEXUS_OTLP_ENABLED=true AND NEXUS_OTLP_ENDPOINT is set, the same
 	// Trace stream is fanned out to a long-lived batch sender that POSTs
@@ -160,6 +164,29 @@ func buildStack(cfg config.Config, hub *console.Hub, chRec *observability.CHReco
 	}
 
 	return stack
+}
+
+func buildMCPLogFanout(cfg config.Config, chRec *observability.CHRecorder, hub *console.MCPHub, metricsRec *observability.MetricsRecorder, log *slog.Logger) observability.MCPLogRecorder {
+	var recs []observability.MCPLogRecorder
+	if hub != nil {
+		recs = append(recs, hub)
+	}
+	if chRec != nil {
+		inner := observability.NewCHMCPLogRecorder(chRec.Conn(), observability.CHMCPOptions{}, log)
+		recs = append(recs, observability.NewMCPLogCaptureGate(inner, cfg.CaptureMCPContent))
+	}
+	if metricsRec != nil {
+		recs = append(recs, observability.MetricsMCPAdapter{M: metricsRec})
+	}
+	if cfg.OTLPEnabled && cfg.OTLPEndpoint != "" {
+		if otlp := observability.NewMCPOtlPLogRecorder(cfg.OTLPEndpoint, cfg.UpstreamTimeout, log); otlp != nil {
+			recs = append(recs, otlp)
+		}
+	}
+	if len(recs) == 0 {
+		return observability.MCPLogNoop{}
+	}
+	return observability.NewMultiMCPLogRecorder(recs...)
 }
 
 // traceFanout assembles the recorder list every Trace is delivered to, in

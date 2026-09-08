@@ -18,6 +18,8 @@ import { Playground } from "./pages/Playground";
 import { Spend } from "./pages/Spend";
 import { Docs } from "./pages/Docs";
 import { Observability } from "./pages/Observability";
+import { MCPRegistry } from "./pages/MCPRegistry";
+import { MCPLogs } from "./pages/MCPLogs";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -47,6 +49,8 @@ export function App() {
                 <Route path="spend" element={<Spend />} />
                 <Route path="traces" element={<Traces />} />
                 <Route path="observability" element={<Observability />} />
+                <Route path="mcp" element={<MCPRegistry />} />
+                <Route path="mcp/logs" element={<MCPLogs />} />
                 <Route path="routing" element={<Routing />} />
                 <Route path="routing/:alias" element={<RoutingDetail />} />
 <Route path="eval" element={<Eval />} />

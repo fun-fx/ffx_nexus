@@ -227,6 +227,31 @@ export function Observability() {
           )}
         </section>
       </div>
+
+      <section className="panel obs-mcp-section" style={{ marginTop: "1.5rem" }}>
+        <header className="obs-detail-head">
+          <div>
+            <h2>MCP tool logs</h2>
+            <p className="muted">
+              MCP servers are registered in the console; executions are persisted to ClickHouse when configured.
+            </p>
+          </div>
+          <StatusToggle on={Boolean(cfg.mcp?.enabled)} label="MCP gateway" />
+        </header>
+        <p className="muted small">
+          ClickHouse persistence: {cfg.mcp?.clickhouse ? "enabled" : "live-only (set NEXUS_CLICKHOUSE_URL)"}
+        </p>
+        <div className="row-actions">
+          <Link to="/mcp" className="btn ghost">
+            MCP registry
+          </Link>
+          <Link to="/mcp/logs" className="btn ghost">
+            MCP logs
+          </Link>
+        </div>
+        <pre className="obs-snippet">{`# Optional: persist MCP tool arguments/results in ClickHouse
+NEXUS_CAPTURE_MCP_CONTENT=true`}</pre>
+      </section>
     </div>
   );
 }

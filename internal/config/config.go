@@ -281,6 +281,9 @@ type Config struct {
 	// know had those columns. Operators who want the inspector opt in
 	// and, in doing so, make retention a decision someone recorded.
 	CaptureTraceContent bool
+	// CaptureMCPContent controls whether MCP tool arguments and results
+	// are persisted to ClickHouse. Default-off mirrors trace content capture.
+	CaptureMCPContent bool
 
 	// Failover alert sinks (V4). Both are independently opt-in; an
 	// empty URL disables the corresponding sink entirely (no
@@ -681,6 +684,7 @@ func load() Config {
 		OTLPEndpoint:              env("NEXUS_OTLP_ENDPOINT", ""),
 		MetricsAddr:               env("NEXUS_METRICS_ADDR", ""),
 		CaptureTraceContent:       envBool("NEXUS_CAPTURE_TRACE_CONTENT", false),
+		CaptureMCPContent:         envBool("NEXUS_CAPTURE_MCP_CONTENT", false),
 		FailoverWebhookURL:        env("NEXUS_FAILOVER_WEBHOOK", ""),
 		FailoverSlackURL:          env("NEXUS_FAILOVER_SLACK_WEBHOOK", ""),
 		FailoverAlertCooldown:     envDuration("NEXUS_FAILOVER_ALERT_COOLDOWN", 0),

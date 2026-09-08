@@ -536,6 +536,193 @@ export async function deleteEvalPlugin(id: string): Promise<void> {
   }
 }
 
+// ---- MCP servers + logs ----------------------------------------------
+
+export interface MCPServerRecord {
+  id: string;
+  org_id?: string;
+  name: string;
+  spec_yaml: string;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MCPTool {
+  name: string;
+  description?: string;
+}
+
+export interface MCPServerStatus {
+  id: string;
+  name: string;
+  enabled: boolean;
+  spec_yaml: string;
+  connection_type: string;
+  state: string;
+  tool_count: number;
+  tools?: MCPTool[];
+  last_error?: string;
+}
+
+export interface MCPServerListResponse {
+  servers: MCPServerRecord[];
+  statuses: MCPServerStatus[];
+}
+
+export interface MCPLogSummary {
+  id: string;
+  timestamp: string;
+  server_label: string;
+  tool_name: string;
+  status: string;
+  latency_ms: number;
+  cost_usd?: number;
+  virtual_key_id?: string;
+  llm_trace_id?: string;
+  session_id?: string;
+  turn_id?: string;
+  request_id?: string;
+  error_message?: string;
+}
+
+export interface MCPLogDetail extends MCPLogSummary {
+  server_id?: string;
+  user_id?: string;
+  arguments?: string;
+  result?: string;
+  metadata?: string;
+}
+
+export interface MCPLogPage {
+  items: MCPLogSummary[];
+  next_cursor: { before: string; since: string };
+}
+
+export interface MCPLogStats {
+  total: number;
+  success: number;
+  errors: number;
+  success_rate: number;
+  avg_latency_ms: number;
+  p50_latency_ms: number;
+  p95_latency_ms: number;
+}
+
+export interface MCPLogFilterData {
+  tool_names: string[];
+  server_labels: string[];
+  statuses: string[];
+}
+
+export async function fetchMCPServers(): Promise<MCPServerListResponse> {
+  const res = await fetch("/api/mcp/servers");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+  return jsonOrError<MCPServerListResponse>(res);
+}
+
+export async function createMCPServer(body: {
+  name: string;
+  spec_yaml: string;
+  enabled: boolean;
+}): Promise<MCPServerRecord> {
+  const res = await fetch("/api/mcp/servers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrError<MCPServerRecord>(res);
+}
+
+export async function patchMCPServer(
+  id: string,
+  patch: { name?: string; spec_yaml?: string; enabled?: boolean },
+): Promise<MCPServerRecord> {
+  const res = await fetch(`/api/mcp/servers/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrError<MCPServerRecord>(res);
+}
+
+export async function deleteMCPServer(id: string): Promise<void> {
+  const res = await fetch(`/api/mcp/servers/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+}
+
+export async function reconnectMCPServer(id: string): Promise<void> {
+  const res = await fetch(`/api/mcp/servers/${id}/reconnect`, { method: "POST" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+}
+
+export async function testMCPServer(id: string): Promise<PluginTestResult> {
+  const res = await fetch(`/api/mcp/servers/${id}/test`, { method: "POST" });
+  return jsonOrError<PluginTestResult>(res);
+}
+
+export type MCPLogQuery = {
+  limit?: number;
+  before?: string;
+  since?: string;
+  tool_name?: string;
+  server_label?: string;
+  status?: string;
+  virtual_key_id?: string;
+  llm_trace_id?: string;
+  q?: string;
+};
+
+export async function fetchMCPLogs(query: MCPLogQuery = {}): Promise<MCPLogPage> {
+  const params = new URLSearchParams();
+  if (query.limit) params.set("limit", String(query.limit));
+  if (query.before) params.set("before", query.before);
+  if (query.since) params.set("since", query.since);
+  if (query.tool_name) params.set("tool_name", query.tool_name);
+  if (query.server_label) params.set("server_label", query.server_label);
+  if (query.status) params.set("status", query.status);
+  if (query.virtual_key_id) params.set("virtual_key_id", query.virtual_key_id);
+  if (query.llm_trace_id) params.set("llm_trace_id", query.llm_trace_id);
+  if (query.q) params.set("q", query.q);
+  const qs = params.toString();
+  const res = await fetch(`/api/mcp-logs${qs ? `?${qs}` : ""}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+  return jsonOrError<MCPLogPage>(res);
+}
+
+export async function fetchMCPLog(id: string): Promise<MCPLogDetail> {
+  const res = await fetch(`/api/mcp-logs/${id}`);
+  return jsonOrError<MCPLogDetail>(res);
+}
+
+export async function fetchMCPLogStats(query: MCPLogQuery = {}): Promise<MCPLogStats> {
+  const params = new URLSearchParams();
+  if (query.since) params.set("since", query.since);
+  if (query.before) params.set("before", query.before);
+  const qs = params.toString();
+  const res = await fetch(`/api/mcp-logs/stats${qs ? `?${qs}` : ""}`);
+  if (!res.ok) return { total: 0, success: 0, errors: 0, success_rate: 0, avg_latency_ms: 0, p50_latency_ms: 0, p95_latency_ms: 0 };
+  return jsonOrError<MCPLogStats>(res);
+}
+
+export async function fetchMCPLogFilterData(): Promise<MCPLogFilterData> {
+  const res = await fetch("/api/mcp-logs/filterdata");
+  if (!res.ok) return { tool_names: [], server_labels: [], statuses: ["success", "error"] };
+  return jsonOrError<MCPLogFilterData>(res);
+}
+
 export interface PluginTestResult {
   ok: boolean;
   message: string;
@@ -1944,6 +2131,7 @@ export type UIObservability = {
   prometheus?: { enabled: boolean; listen?: string; path?: string };
   metabase?: { configured: boolean };
   traces?: { clickhouse: boolean };
+  mcp?: { enabled: boolean; clickhouse: boolean };
   local_mode?: boolean;
 };
 

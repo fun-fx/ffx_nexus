@@ -70,6 +70,9 @@ func NewMux(h *Handler, auth VKeyAuthenticator, lim Limiter, concCap CapIface, r
 		r.Post("/v1/moderations", h.Moderations)
 		r.Post("/v1/images/generations", h.Images)
 		r.Get("/v1/models", h.Models)
+		r.Get("/v1/mcp/servers", h.MCPServers)
+		r.Post("/v1/mcp/servers/{id}/tools/list", h.MCPListTools)
+		r.Post("/v1/mcp/servers/{id}/tools/call", h.MCPCallTool)
 	})
 
 	return r
