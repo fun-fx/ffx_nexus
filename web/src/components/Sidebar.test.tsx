@@ -7,7 +7,7 @@ import { ThemeProvider } from "../theme/ThemeProvider";
 import { Sidebar } from "./Sidebar";
 import { AppShell } from "./AppShell";
 
-function WithProviders({ children, route = "/" }: { children: React.ReactNode; route?: string }) {
+function WithProviders({ children, route = "/observability/traces" }: { children: React.ReactNode; route?: string }) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -40,7 +40,7 @@ describe("Sidebar", () => {
     );
     await waitFor(() => {
       expect(screen.queryByRole("link", { name: /users/i })).toBeNull();
-      expect(screen.queryByRole("link", { name: /^eval$/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^eval$/i })).toBeNull();
     });
   });
 
@@ -61,7 +61,7 @@ describe("Sidebar", () => {
 describe("AppShell", () => {
   it("renders sidebar + topbar + outlet area", async () => {
     render(
-      <WithProviders>
+      <WithProviders route="/observability/traces">
         <AppShell />
       </WithProviders>,
     );

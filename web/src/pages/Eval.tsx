@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchEvalConfig,
@@ -20,7 +20,6 @@ import { Icon } from "../components/icons";
 import { LabelToggle } from "../components/LabelToggle";
 import { PluginKeysModal } from "../components/PluginKeysModal";
 import { fetchMe, type EvalProfile } from "../api";
-import { EvalProfilesCard } from "./EvalProfiles";
 import {
   PluginEditorDrawer,
   type PluginFormState,
@@ -52,7 +51,9 @@ async function fetchBundle() {
   return { me, cfg };
 }
 
-export function Eval() {
+export function EvalOverview() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const qc = useQueryClient();
   const evalConfigQ = useQuery({
     queryKey: ["eval-config"],
@@ -108,10 +109,11 @@ export function Eval() {
     return out;
   }, [profilesQ.data]);
 
-  // Profile id we ask EvalProfilesCard to open in the editor next
-  // time it renders. Lifted up here because the top table owns the
-  // "Change configuration" buttons.
-  const [pendingOpenProfileId, setPendingOpenProfileId] = useState<string | null>(null);
+  useEffect(() => {
+    if (searchParams.get("focus") === "plugins") {
+      navigate("/eval/plugins", { replace: true });
+    }
+  }, [searchParams, navigate]);
 
   // Profile toggle mutation — backend-facing patch on the same
   // /api/eval/profiles/{id} endpoint, opted-in for admin only via
@@ -142,49 +144,6 @@ export function Eval() {
   // integrated EvaluatorsCard row exposes the same API key entry
   // affordance as the standalone plugins page. `null` means closed.
   const [pluginKeysFor, setPluginKeysFor] = useState<string | null>(null);
-
-  // Lifted weight state so the upper stats bar and the slider card stay in
-  // sync after `Save weights` re-normalises the row. Hooks must run on
-  // every render *before* any early return — otherwise the previous
-  // render's hook count disagrees with the current one and React throws.
-  // The initial seed is 0 because we run before the config is necessarily
-  // present; we hydrate from `cfg.routing.weights` in the effect below.
-  const [quality, setQuality] = useState(0);
-  const [cost, setCost] = useState(0);
-  const [latency, setLatency] = useState(0);
-
-  // Re-sync weights whenever a fresh config fetch lands. This is the only
-  // path that writes the initial values into local state — the lazy
-  // `useState` initialiser fires once at mount and would otherwise be
-  // permanently clamped to 0 if the first render observed `cfg = null`.
-  // We also heal "all-zero" rows (server may have written negatives before
-  // #128) by falling back to the historical 60/20/20 default.
-  const cfgWeights = cfg?.routing.weights;
-  useEffect(() => {
-    if (!cfgWeights) return;
-    const safe = (v: number | undefined) =>
-      typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
-    const q = safe(cfgWeights.quality);
-    const c = safe(cfgWeights.cost);
-    const l = safe(cfgWeights.latency);
-    if (q > 0 || c > 0 || l > 0) {
-      setQuality(q);
-      setCost(c);
-      setLatency(l);
-    } else {
-      // Server read a malformed all-zero row. Fall back to the historical
-      // default rather than rendering three 0% sliders.
-      setQuality(0.6);
-      setCost(0.2);
-      setLatency(0.2);
-    }
-  }, [
-    cfgWeights?.quality,
-    cfgWeights?.cost,
-    cfgWeights?.latency,
-    cfgWeights,
-  ]);
-  void quality; void cost; void latency;
 
   if (!isAdmin) return <Forbidden />;
   if (!cfg) {
@@ -277,40 +236,20 @@ export function Eval() {
             <Link to="/eval/benchmarks">Benchmarks</Link>.
           </p>
         </div>
-        <div className="page-stats">
-          <div className="page-stat" data-stat="quality">
-            <div className="page-stat-label">quality</div>
-            <div className="page-stat-value">
-              {(quality * 100).toFixed(0)}%
-            </div>
-          </div>
-          <div className="page-stat" data-stat="cost">
-            <div className="page-stat-label">cost</div>
-            <div className="page-stat-value">
-              {(cost * 100).toFixed(0)}%
-            </div>
-          </div>
-          <div className="page-stat" data-stat="latency">
-            <div className="page-stat-label">latency</div>
-            <div className="page-stat-value">
-              {(latency * 100).toFixed(0)}%
-            </div>
-          </div>
-          {cfg.plugin_only ? null : (
-            <>
-              <div className="page-stat">
-                <div className="page-stat-label">sample rate</div>
-                <div className="page-stat-value">
-                  {(cfg.eval.sample_rate * 100).toFixed(0)}%
-                </div>
+        {cfg.plugin_only ? null : (
+          <div className="page-stats">
+            <div className="page-stat">
+              <div className="page-stat-label">sample rate</div>
+              <div className="page-stat-value">
+                {(cfg.eval.sample_rate * 100).toFixed(0)}%
               </div>
-              <div className="page-stat">
-                <div className="page-stat-label">workers</div>
-                <div className="page-stat-value">{cfg.eval.workers}</div>
-              </div>
-            </>
-          )}
-        </div>
+            </div>
+            <div className="page-stat">
+              <div className="page-stat-label">workers</div>
+              <div className="page-stat-value">{cfg.eval.workers}</div>
+            </div>
+          </div>
+        )}
       </header>
 
       <LegacyDeprecationBanner profiles={profilesQ.data ?? []} />
@@ -321,7 +260,9 @@ export function Eval() {
         isAdmin={isAdmin}
         profileIdByKind={profileIdByKind}
         plugins={pluginsQ.data ?? []}
-        onRequestOpenProfile={setPendingOpenProfileId}
+        onRequestOpenProfile={(id) =>
+          navigate(`/eval/profiles?open=${encodeURIComponent(id)}`)
+        }
         onToggleProfile={(id, enabled) =>
           profileToggleMut.mutate({ id, enabled })
         }
@@ -344,12 +285,104 @@ export function Eval() {
         onKeysPlugin={(name) => setPluginKeysFor(name)}
         pluginOnly={cfg.plugin_only}
       />
-      <EvalProfilesCard
-        isAdmin={isAdmin}
-        pendingOpenProfileId={pendingOpenProfileId}
-        onPendingOpenConsumed={() => setPendingOpenProfileId(null)}
-        hidden={cfg.plugin_only}
+      <PluginEditorDrawer
+        open={pluginDrawer.open}
+        initial={pluginDrawer.initial}
+        editingId={pluginDrawer.editingId}
+        onClose={() =>
+          setPluginDrawer({ open: false, initial: undefined, editingId: undefined })
+        }
+        onSaved={() => {
+          setPluginDrawer({ open: false, initial: undefined, editingId: undefined });
+        }}
       />
+      <PluginKeysModal
+        pluginName={pluginKeysFor ?? ""}
+        open={pluginKeysFor !== null}
+        onClose={() => setPluginKeysFor(null)}
+      />
+    </div>
+  );
+}
+
+export function EvalRoutingIntegration() {
+  const evalConfigQ = useQuery({
+    queryKey: ["eval-config"],
+    queryFn: fetchBundle,
+    refetchInterval: 30_000,
+  });
+  const me = evalConfigQ.data?.me ?? null;
+  const cfg = evalConfigQ.data?.cfg ?? null;
+  const isAdmin = me?.role === "admin";
+
+  const [quality, setQuality] = useState(0);
+  const [cost, setCost] = useState(0);
+  const [latency, setLatency] = useState(0);
+
+  const cfgWeights = cfg?.routing.weights;
+  useEffect(() => {
+    if (!cfgWeights) return;
+    const safe = (v: number | undefined) =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+    const q = safe(cfgWeights.quality);
+    const c = safe(cfgWeights.cost);
+    const l = safe(cfgWeights.latency);
+    if (q > 0 || c > 0 || l > 0) {
+      setQuality(q);
+      setCost(c);
+      setLatency(l);
+    } else {
+      setQuality(0.6);
+      setCost(0.2);
+      setLatency(0.2);
+    }
+  }, [
+    cfgWeights?.quality,
+    cfgWeights?.cost,
+    cfgWeights?.latency,
+    cfgWeights,
+  ]);
+
+  if (!isAdmin) return <Forbidden />;
+  if (!cfg) {
+    return (
+      <div className="page-head">
+        <p className="page-sub">Loading configuration…</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="eval-page">
+      <header className="page-head">
+        <div>
+          <div className="eyebrow">
+            <span className="dot" aria-hidden="true" /> Admin · routing integration
+          </div>
+          <h1 className="page-title">
+            <GradientText as="span">Eval</GradientText> → routing
+          </h1>
+          <p className="page-sub">
+            Blend quality, cost, and latency weights. Route groups map eval scores
+            into provider selection.
+          </p>
+        </div>
+        <div className="page-stats">
+          <div className="page-stat" data-stat="quality">
+            <div className="page-stat-label">quality</div>
+            <div className="page-stat-value">{(quality * 100).toFixed(0)}%</div>
+          </div>
+          <div className="page-stat" data-stat="cost">
+            <div className="page-stat-label">cost</div>
+            <div className="page-stat-value">{(cost * 100).toFixed(0)}%</div>
+          </div>
+          <div className="page-stat" data-stat="latency">
+            <div className="page-stat-label">latency</div>
+            <div className="page-stat-value">{(latency * 100).toFixed(0)}%</div>
+          </div>
+        </div>
+      </header>
+
       <WeightsCard
         cfg={cfg}
         quality={quality}
@@ -372,24 +405,17 @@ export function Eval() {
           <code>{cfg.routing_stats_store}</code>
         </span>
       </div>
-
-      <PluginEditorDrawer
-        open={pluginDrawer.open}
-        initial={pluginDrawer.initial}
-        editingId={pluginDrawer.editingId}
-        onClose={() =>
-          setPluginDrawer({ open: false, initial: undefined, editingId: undefined })
-        }
-        onSaved={() => {
-          setPluginDrawer({ open: false, initial: undefined, editingId: undefined });
-        }}
-      />
-      <PluginKeysModal
-        pluginName={pluginKeysFor ?? ""}
-        open={pluginKeysFor !== null}
-        onClose={() => setPluginKeysFor(null)}
-      />
     </div>
+  );
+}
+
+/** Composite export for tests that exercise overview + routing together. */
+export function Eval() {
+  return (
+    <>
+      <EvalOverview />
+      <EvalRoutingIntegration />
+    </>
   );
 }
 

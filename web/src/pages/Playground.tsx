@@ -170,8 +170,8 @@ export function Playground() {
       {keys.length === 0 && (
         <div className="pg-empty-setup" data-testid="playground-empty-setup">
           <p>
-            Mint a <Link to="/keys">virtual key</Link> and add a{" "}
-            <Link to="/credentials">provider credential</Link> before you can
+            Mint a <Link to="/gateway/keys">virtual key</Link> and add a{" "}
+            <Link to="/gateway/providers">provider credential</Link> before you can
             run prompts here.
           </p>
           <FirstRequestSnippets

@@ -46,17 +46,17 @@ afterEach(() => {
 });
 
 describe("<Overview /> hero CTAs", () => {
-  it("'View Traces' is a Link that navigates to /traces", async () => {
+  it("'View Traces' is a Link that navigates to /observability/traces", async () => {
     renderOverview();
     const link = await screen.findByRole("link", { name: /view traces/i });
     expect(link).toBeInTheDocument();
-    expect(link.getAttribute("href")).toBe("/traces");
+    expect(link.getAttribute("href")).toBe("/observability/traces");
   });
 
-  it("'Open Playground' is a Link that navigates to /playground", async () => {
+  it("'Open Playground' is a Link that navigates to /develop/playground", async () => {
     renderOverview();
     const link = await screen.findByRole("link", { name: /open playground/i });
-    expect(link.getAttribute("href")).toBe("/playground");
+    expect(link.getAttribute("href")).toBe("/develop/playground");
   });
 });
 

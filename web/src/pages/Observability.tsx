@@ -242,10 +242,10 @@ export function Observability() {
           ClickHouse persistence: {cfg.mcp?.clickhouse ? "enabled" : "live-only (set NEXUS_CLICKHOUSE_URL)"}
         </p>
         <div className="row-actions">
-          <Link to="/mcp" className="btn ghost">
+          <Link to="/mcp/registry" className="btn ghost">
             MCP registry
           </Link>
-          <Link to="/mcp/logs" className="btn ghost">
+          <Link to="/observability/mcp-logs" className="btn ghost">
             MCP logs
           </Link>
         </div>
@@ -423,7 +423,7 @@ function EvalPanel({
       )}
       {isAdmin ? (
         <p>
-          <Link to="/eval?focus=plugins" className="btn-neon">
+          <Link to="/eval/plugins" className="btn-neon">
             <Icon.sparkles size={14} /> Open Eval plugins
           </Link>
           <span className="muted small">

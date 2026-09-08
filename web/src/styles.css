@@ -553,6 +553,120 @@ a:hover {
   color: var(--text);
 }
 
+.sidebar-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-group-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.sidebar-group-toggle.is-active-group {
+  color: var(--text);
+}
+
+.sidebar-chevron {
+  margin-left: auto;
+  font-size: 14px;
+  color: var(--muted-2);
+  transition: transform 140ms ease;
+  line-height: 1;
+}
+
+.sidebar-nav-group.is-expanded .sidebar-chevron {
+  transform: rotate(90deg);
+}
+
+.sidebar-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 8px;
+  margin-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+.sidebar-subnav[hidden] {
+  display: none;
+}
+
+.sidebar-item-nested {
+  font-size: var(--fs-13);
+  padding: 6px 10px;
+}
+
+.sidebar-badge {
+  margin-left: auto;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--muted-2);
+}
+
+.section-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-height: 100%;
+}
+
+.section-layout-head {
+  padding: 0 0 8px;
+}
+
+.section-layout-head .page-title {
+  font-size: var(--fs-20);
+  margin: 0;
+}
+
+.section-layout-head .page-sub {
+  margin: 4px 0 0;
+  font-size: var(--fs-13);
+}
+
+.section-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+
+.section-tab {
+  padding: 6px 12px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-13);
+  color: var(--muted);
+  text-decoration: none;
+  transition: all 140ms ease;
+}
+
+.section-tab:hover {
+  color: var(--text);
+  background: color-mix(in oklab, var(--accent-3) 8%, transparent);
+  text-decoration: none;
+}
+
+.section-tab.is-active {
+  color: var(--text);
+  background: color-mix(in oklab, var(--accent-3) 14%, transparent);
+}
+
+.section-layout-body {
+  flex: 1;
+}
+
 /* -- Topbar ---------------------------------------------------------- */
 .topbar {
   display: flex;

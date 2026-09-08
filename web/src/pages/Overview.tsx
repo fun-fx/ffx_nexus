@@ -115,11 +115,11 @@ export function Overview() {
           </p>
         </div>
         <div className="hero-cta">
-          <Link to="/playground" className="btn-neon">
+          <Link to="/develop/playground" className="btn-neon">
             <Icon.play size={14} />
             Open Playground
           </Link>
-          <Link to="/traces" className="btn-ghost">
+          <Link to="/observability/traces" className="btn-ghost">
             <Icon.chart size={14} />
             View Traces
           </Link>
@@ -184,7 +184,7 @@ export function Overview() {
             glow="pink"
             accent="#ec4899"
             ctaLabel="See routing"
-            onClick={() => window.location.assign("/routing")}
+            onClick={() => window.location.assign("/gateway/routing")}
           />
           <TierCard
             eyebrow="Govern"
@@ -424,7 +424,7 @@ function RecentTurnsList({
     <section className="panel" aria-label="Recent turns">
       <header className="panel-head">
         <h2>Recent turns</h2>
-        <a className="panel-link" href="/traces">
+        <a className="panel-link" href="/observability/traces">
           See all <Icon.arrowRight size={14} />
         </a>
       </header>
