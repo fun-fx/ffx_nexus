@@ -21,6 +21,7 @@ import (
 	"github.com/ffxnexus/nexus/internal/benchmark"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/core/crypto"
+	"github.com/ffxnexus/nexus/internal/mcp"
 	"github.com/ffxnexus/nexus/internal/migrate"
 	"github.com/ffxnexus/nexus/internal/router"
 )
@@ -165,6 +166,14 @@ func newSmokeEnv(t *testing.T) *smokeEnv {
 	// run read still goes to the real database, which is the path under test.
 	srv.SetBenchmarks(benchmark.NewRunner(store, nil, noProviderToken{}, "", slog.New(slog.DiscardHandler)))
 	srv.SetQualityRouter(emptyQualityRouter{})
+
+	mcpPool, err := pgxpool.New(ctx, scopedURL)
+	if err != nil {
+		t.Fatalf("mcp pool: %v", err)
+	}
+	t.Cleanup(mcpPool.Close)
+	srv.SetMCPServers(mcp.NewPostgresStore(mcpPool), nil, nil)
+
 	return &smokeEnv{
 		srv:     srv,
 		mux:     srv.Mux(),
@@ -265,6 +274,11 @@ var unconfiguredSubsystems = map[string]string{
 		"in this harness and the route reads no table",
 	"/api/eval/benchmarks/credential": "reads the benchmark provider credential from " +
 		"the encrypted credential store, which a fresh install does not have",
+	"/api/mcp-logs/": "MCP tool logs live in ClickHouse; the reader is nil in this harness",
+	"/api/mcp-logs/filterdata": "MCP log filters read ClickHouse; the reader is nil in this harness",
+	"/api/mcp-logs/stats": "MCP log stats read ClickHouse; the reader is nil in this harness",
+	"/api/mcp-logs/{id}": "MCP log detail reads ClickHouse; the reader is nil in this harness",
+	"/api/live/mcp": "the live MCP websocket feed requires a ClickHouse hub wired in main",
 }
 
 // unconfiguredSeen tracks which entries actually fired, so a stale entry — a route
@@ -384,6 +398,7 @@ func TestIntegrationTheDayOneScreensAnswerOnAnEmptyInstall(t *testing.T) {
 		{"spend and costs", "/api/me/spend/summary"},
 		{"daily cost breakdown", "/api/me/spend/daily"},
 		{"audit log", "/api/audit"},
+		{"MCP registry", "/api/mcp/servers"},
 	}
 
 	for _, s := range screens {
@@ -417,6 +432,7 @@ func TestIntegrationClickHouseBackedScreensDegradeWithoutClickHouse(t *testing.T
 	for _, path := range []string{
 		"/api/traces",
 		"/api/observability/summary",
+		"/api/mcp-logs",
 	} {
 		rec := env.get(t, path)
 		if rec.Code == http.StatusNotFound {
