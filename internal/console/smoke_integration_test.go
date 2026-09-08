@@ -274,10 +274,6 @@ var unconfiguredSubsystems = map[string]string{
 		"in this harness and the route reads no table",
 	"/api/eval/benchmarks/credential": "reads the benchmark provider credential from " +
 		"the encrypted credential store, which a fresh install does not have",
-	"/api/mcp-logs/": "MCP tool logs live in ClickHouse; the reader is nil in this harness",
-	"/api/mcp-logs/filterdata": "MCP log filters read ClickHouse; the reader is nil in this harness",
-	"/api/mcp-logs/stats": "MCP log stats read ClickHouse; the reader is nil in this harness",
-	"/api/mcp-logs/{id}": "MCP log detail reads ClickHouse; the reader is nil in this harness",
 	"/api/live/mcp": "the live MCP websocket feed requires a ClickHouse hub wired in main",
 }
 
@@ -432,7 +428,6 @@ func TestIntegrationClickHouseBackedScreensDegradeWithoutClickHouse(t *testing.T
 	for _, path := range []string{
 		"/api/traces",
 		"/api/observability/summary",
-		"/api/mcp-logs",
 	} {
 		rec := env.get(t, path)
 		if rec.Code == http.StatusNotFound {

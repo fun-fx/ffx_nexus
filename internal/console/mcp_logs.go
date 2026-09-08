@@ -16,7 +16,7 @@ import (
 
 func (s *Server) listMCPLogs(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp logs require clickhouse"})
+		writeJSON(w, http.StatusOK, observability.MCPLogPage{Items: []observability.MCPLogSummary{}})
 		return
 	}
 	q := parseMCPLogQuery(r)
@@ -34,7 +34,7 @@ func (s *Server) listMCPLogs(w http.ResponseWriter, r *http.Request, u core.User
 
 func (s *Server) getMCPLog(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp logs require clickhouse"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	detail, err := s.reader.MCPLogByID(r.Context(), orgID(r), chi.URLParam(r, "id"))
@@ -55,7 +55,7 @@ func (s *Server) getMCPLog(w http.ResponseWriter, r *http.Request, u core.User) 
 
 func (s *Server) mcpLogFilterData(w http.ResponseWriter, r *http.Request, _ core.User) {
 	if s.reader == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp logs require clickhouse"})
+		writeJSON(w, http.StatusOK, observability.MCPLogFilterData{})
 		return
 	}
 	data, err := s.reader.MCPLogFilterData(r.Context(), orgID(r))
@@ -68,7 +68,7 @@ func (s *Server) mcpLogFilterData(w http.ResponseWriter, r *http.Request, _ core
 
 func (s *Server) mcpLogStats(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp logs require clickhouse"})
+		writeJSON(w, http.StatusOK, observability.MCPLogStats{})
 		return
 	}
 	q := parseMCPLogQuery(r)
