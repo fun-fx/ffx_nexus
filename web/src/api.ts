@@ -1940,6 +1940,11 @@ export type UIObservabilityGrafana = {
 
 export type UIObservability = {
   grafana?: UIObservabilityGrafana;
+  otlp?: { enabled: boolean; endpoint?: string };
+  prometheus?: { enabled: boolean; listen?: string; path?: string };
+  metabase?: { configured: boolean };
+  traces?: { clickhouse: boolean };
+  local_mode?: boolean;
 };
 
 export async function fetchUIObservability(): Promise<UIObservability> {

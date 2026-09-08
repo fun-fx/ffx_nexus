@@ -17,6 +17,7 @@ import { Audit } from "./pages/Audit";
 import { Playground } from "./pages/Playground";
 import { Spend } from "./pages/Spend";
 import { Docs } from "./pages/Docs";
+import { Observability } from "./pages/Observability";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,6 +46,7 @@ export function App() {
                 <Route index element={<Overview />} />
                 <Route path="spend" element={<Spend />} />
                 <Route path="traces" element={<Traces />} />
+                <Route path="observability" element={<Observability />} />
                 <Route path="routing" element={<Routing />} />
                 <Route path="routing/:alias" element={<RoutingDetail />} />
 <Route path="eval" element={<Eval />} />
