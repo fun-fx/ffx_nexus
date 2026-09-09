@@ -13,22 +13,22 @@ import (
 // GatewayConfigSnapshot exposes hot-path gateway policy knobs to the console.
 type GatewayConfigSnapshot struct {
 	Guardrails struct {
-		Enabled            bool     `json:"enabled"`
-		BlockPIIInput        bool     `json:"block_pii_input"`
-		RedactPIIOutput      bool     `json:"redact_pii_output"`
-		MaxInputChars        int      `json:"max_input_chars"`
-		DenyPatterns         []string `json:"deny_patterns"`
-		ValidateJSONOutput   bool     `json:"validate_json_output"`
-		SelfCorrectionEnabled bool    `json:"self_correction_enabled"`
-		SelfCorrectionMaxRetries int  `json:"self_correction_max_retries"`
+		Enabled                  bool     `json:"enabled"`
+		BlockPIIInput            bool     `json:"block_pii_input"`
+		RedactPIIOutput          bool     `json:"redact_pii_output"`
+		MaxInputChars            int      `json:"max_input_chars"`
+		DenyPatterns             []string `json:"deny_patterns"`
+		ValidateJSONOutput       bool     `json:"validate_json_output"`
+		SelfCorrectionEnabled    bool     `json:"self_correction_enabled"`
+		SelfCorrectionMaxRetries int      `json:"self_correction_max_retries"`
 	} `json:"guardrails"`
 	SemanticCache struct {
-		Enabled        bool    `json:"enabled"`
-		TTL            string  `json:"ttl"`
-		Threshold      float64 `json:"threshold"`
-		MaxEntries     int     `json:"max_entries"`
-		RedisConfigured bool   `json:"redis_configured"`
-		EmbeddingsConfigured bool `json:"embeddings_configured"`
+		Enabled              bool    `json:"enabled"`
+		TTL                  string  `json:"ttl"`
+		Threshold            float64 `json:"threshold"`
+		MaxEntries           int     `json:"max_entries"`
+		RedisConfigured      bool    `json:"redis_configured"`
+		EmbeddingsConfigured bool    `json:"embeddings_configured"`
 	} `json:"semantic_cache"`
 	Alerting struct {
 		FailoverWebhookSet bool   `json:"failover_webhook_set"`
@@ -40,14 +40,14 @@ type GatewayConfigSnapshot struct {
 
 type GatewayConfigPatch struct {
 	Guardrails *struct {
-		Enabled              *bool    `json:"enabled"`
-		BlockPIIInput        *bool    `json:"block_pii_input"`
-		RedactPIIOutput      *bool    `json:"redact_pii_output"`
-		MaxInputChars        *int     `json:"max_input_chars"`
-		DenyPatterns         *[]string `json:"deny_patterns"`
-		ValidateJSONOutput   *bool    `json:"validate_json_output"`
-		SelfCorrectionEnabled *bool   `json:"self_correction_enabled"`
-		SelfCorrectionMaxRetries *int `json:"self_correction_max_retries"`
+		Enabled                  *bool     `json:"enabled"`
+		BlockPIIInput            *bool     `json:"block_pii_input"`
+		RedactPIIOutput          *bool     `json:"redact_pii_output"`
+		MaxInputChars            *int      `json:"max_input_chars"`
+		DenyPatterns             *[]string `json:"deny_patterns"`
+		ValidateJSONOutput       *bool     `json:"validate_json_output"`
+		SelfCorrectionEnabled    *bool     `json:"self_correction_enabled"`
+		SelfCorrectionMaxRetries *int      `json:"self_correction_max_retries"`
 	} `json:"guardrails"`
 	SemanticCache *struct {
 		Enabled    *bool    `json:"enabled"`

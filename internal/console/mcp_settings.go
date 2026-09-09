@@ -13,12 +13,12 @@ import (
 // MCPSettingsSnapshot is the console-facing org MCP preferences plus
 // read-only gateway reference data.
 type MCPSettingsSnapshot struct {
-	OrgID             string `json:"org_id"`
-	DefaultTimeoutMs  int    `json:"default_timeout_ms"`
-	DefaultStickyHTTP bool   `json:"default_sticky_http"`
-	GatewayBaseURL    string `json:"gateway_base_url"`
-	OAuthSessionsEnabled bool `json:"oauth_sessions_enabled"`
-	MCPRoutes         struct {
+	OrgID                string `json:"org_id"`
+	DefaultTimeoutMs     int    `json:"default_timeout_ms"`
+	DefaultStickyHTTP    bool   `json:"default_sticky_http"`
+	GatewayBaseURL       string `json:"gateway_base_url"`
+	OAuthSessionsEnabled bool   `json:"oauth_sessions_enabled"`
+	MCPRoutes            struct {
 		ListServers string `json:"list_servers"`
 		ListTools   string `json:"list_tools"`
 		CallTool    string `json:"call_tool"`

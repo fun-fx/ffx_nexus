@@ -18,11 +18,11 @@ import (
 type gatewayRuntimeController struct {
 	mu sync.Mutex
 
-	cfg              config.Config
-	gwHandler        *gateway.Handler
-	semCacheService  *semcache.Service
-	semCacheBooted   bool
-	log              *slog.Logger
+	cfg             config.Config
+	gwHandler       *gateway.Handler
+	semCacheService *semcache.Service
+	semCacheBooted  bool
+	log             *slog.Logger
 }
 
 func newGatewayRuntimeController(
