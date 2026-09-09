@@ -34,6 +34,7 @@ import { McpLayout } from "./layouts/McpLayout";
 import { EvalLayout } from "./layouts/EvalLayout";
 import { GovernanceLayout } from "./layouts/GovernanceLayout";
 import { DevelopLayout } from "./layouts/DevelopLayout";
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
