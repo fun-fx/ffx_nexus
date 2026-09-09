@@ -157,13 +157,51 @@ func (r *Reader) RecentTraces(ctx context.Context, limit int, orgID, userID stri
 // guardrail_action — same set as the legacy client-side filter, just
 // pushed into ClickHouse so pages stay consistent under time-windowing.
 type TraceFilter struct {
-	Status   string // "ok" | "err" | "" (any)
-	Provider string // exact match against provider_name, empty = any
-	Q        string // fuzzy match, empty = any
+	Status   string   // legacy single: "ok" | "err" | "" (any)
+	Statuses []string // dashboard multi-select: "ok", "err"; empty = any
+	Provider string   // exact match against provider_name, empty = any
+	Q        string   // fuzzy match, empty = any
 	// Turn scopes the page to the calls of a single agent turn. This is
 	// what the overview's expand-a-row drill-down sends; it is an exact
 	// match on turn_id, never a fuzzy one, because the value is a hash.
 	Turn string
+}
+
+// effectiveStatusSlice resolves legacy Status and multi Statuses into the
+// set of status buckets the caller wants. Both empty means all traffic.
+func effectiveStatusSlice(filter TraceFilter) (ok, err bool) {
+	if filter.Status != "" {
+		return filter.Status == "ok", filter.Status == "err"
+	}
+	if len(filter.Statuses) == 0 {
+		return true, true
+	}
+	for _, s := range filter.Statuses {
+		switch s {
+		case "ok":
+			ok = true
+		case "err":
+			err = true
+		}
+	}
+	return ok, err
+}
+
+// appendStatusConds adds a status_code predicate when the filter narrows
+// to one class. When both ok and err are wanted, no predicate is added.
+// When neither is selected, the query matches nothing.
+func appendStatusConds(conds []string, filter TraceFilter) []string {
+	wantOK, wantErr := effectiveStatusSlice(filter)
+	switch {
+	case wantOK && wantErr:
+		return conds
+	case wantOK:
+		return append(conds, "status_code < 400")
+	case wantErr:
+		return append(conds, "status_code >= 400")
+	default:
+		return append(conds, "1 = 0")
+	}
 }
 
 // TraceCursor is an opaque cursor the console holds between pages of trace
@@ -313,12 +351,7 @@ func buildTracePageQuery(orgID, userID string, before, since time.Time, limit in
 	if filter.Turn != "" {
 		conds = append(conds, "turn_id = ?")
 	}
-	switch filter.Status {
-	case "ok":
-		conds = append(conds, "status_code < 400")
-	case "err":
-		conds = append(conds, "status_code >= 400")
-	}
+	conds = appendStatusConds(conds, filter)
 	if filter.Q != "" {
 		conds = append(conds,
 			"(request_model LIKE ? OR provider_name LIKE ? OR user_email LIKE ? OR guardrail_action LIKE ?)")
@@ -1048,5 +1081,148 @@ func buildDailySpendBreakdownArgs(orgID string, start, end time.Time, userID str
 	if userID != "" {
 		args = append(args, userID)
 	}
+	return args
+}
+
+// VolumeBucket is one time bin of request volume split by HTTP outcome.
+type VolumeBucket struct {
+	Timestamp time.Time `json:"timestamp"`
+	Ok        int64     `json:"ok"`
+	Err       int64     `json:"err"`
+}
+
+// VolumeSeries is the wire shape for GET /api/traces/series.
+type VolumeSeries struct {
+	Buckets         []VolumeBucket `json:"buckets"`
+	IntervalSeconds int64          `json:"interval_seconds"`
+	Since           time.Time      `json:"since"`
+	Before          time.Time      `json:"before"`
+	// Available is false when the console has no ClickHouse reader, so
+	// the dashboard can distinguish "no warehouse" from "zero traffic".
+	Available bool `json:"available"`
+}
+
+// BucketIntervalForWindow picks a histogram bin width from the query window
+// so the dashboard stays readable without hundreds of bars.
+func BucketIntervalForWindow(window time.Duration) time.Duration {
+	switch {
+	case window <= time.Hour:
+		return time.Minute
+	case window <= 24*time.Hour:
+		return 5 * time.Minute
+	case window <= 7*24*time.Hour:
+		return time.Hour
+	case window <= 30*24*time.Hour:
+		return 6 * time.Hour
+	default:
+		return 24 * time.Hour
+	}
+}
+
+// RequestVolumeSeries returns success/error request counts bucketed over
+// [since, before). The org scope is mandatory; userID narrows to one caller.
+func (r *Reader) RequestVolumeSeries(ctx context.Context, before, since time.Time, orgID, userID string, filter TraceFilter) (VolumeSeries, error) {
+	if before.IsZero() {
+		before = time.Now().UTC()
+	}
+	if since.IsZero() {
+		since = before.Add(-time.Hour)
+	}
+	window := before.Sub(since)
+	if window <= 0 {
+		return VolumeSeries{}, nil
+	}
+	interval := BucketIntervalForWindow(window)
+	intervalSec := int64(interval.Seconds())
+
+	rows, err := r.conn.Query(ctx,
+		buildRequestVolumeSeriesQuery(orgID, userID, filter),
+		buildRequestVolumeSeriesArgs(orgID, userID, before, since, intervalSec, filter)...)
+	if err != nil {
+		return VolumeSeries{}, err
+	}
+	defer rows.Close()
+
+	out := make([]VolumeBucket, 0)
+	for rows.Next() {
+		var b VolumeBucket
+		if err := rows.Scan(&b.Timestamp, &b.Ok, &b.Err); err != nil {
+			return VolumeSeries{}, err
+		}
+		out = append(out, b)
+	}
+	if err := rows.Err(); err != nil {
+		return VolumeSeries{}, err
+	}
+	dense := fillDenseVolumeBuckets(out, since.UTC(), before.UTC(), interval)
+	return VolumeSeries{
+		Buckets:         dense,
+		IntervalSeconds: intervalSec,
+		Since:           since.UTC(),
+		Before:          before.UTC(),
+		Available:       true,
+	}, nil
+}
+
+// fillDenseVolumeBuckets expands sparse GROUP BY rows onto a regular
+// [since, before) grid so a line chart has a continuous X axis. ClickHouse
+// only emits bins that contain at least one row; empty slots stay at 0.
+func fillDenseVolumeBuckets(sparse []VolumeBucket, since, before time.Time, interval time.Duration) []VolumeBucket {
+	if interval <= 0 || !before.After(since) {
+		if sparse == nil {
+			return []VolumeBucket{}
+		}
+		return sparse
+	}
+	start := since.Truncate(interval)
+	if start.Before(since) {
+		start = start.Add(interval)
+	}
+	byUnix := make(map[int64]VolumeBucket, len(sparse))
+	for _, b := range sparse {
+		ts := b.Timestamp.UTC().Truncate(interval)
+		byUnix[ts.Unix()] = VolumeBucket{Timestamp: ts, Ok: b.Ok, Err: b.Err}
+	}
+	out := make([]VolumeBucket, 0, int(before.Sub(start)/interval)+1)
+	for t := start; t.Before(before); t = t.Add(interval) {
+		if hit, ok := byUnix[t.Unix()]; ok {
+			out = append(out, hit)
+			continue
+		}
+		out = append(out, VolumeBucket{Timestamp: t})
+	}
+	return out
+}
+
+func buildRequestVolumeSeriesQuery(orgID, userID string, filter TraceFilter) string {
+	q := `
+		SELECT
+			toStartOfInterval(timestamp, toIntervalSecond(?)) AS bucket,
+			toInt64(countIf(status_code < 400)) AS ok,
+			toInt64(countIf(status_code >= 400)) AS err
+		FROM gateway_traces`
+	orgCond, _ := orgScopeClause(orgID)
+	conds := []string{orgCond}
+	if userID != "" {
+		conds = append(conds, "user_id = ?")
+	}
+	conds = append(conds, "timestamp >= ?", "timestamp < ?")
+	conds = appendStatusConds(conds, filter)
+	q += " WHERE " + strings.Join(conds, " AND ")
+	q += `
+		GROUP BY bucket
+		ORDER BY bucket ASC
+		SETTINGS max_memory_usage = 400000000`
+	return q
+}
+
+func buildRequestVolumeSeriesArgs(orgID, userID string, before, since time.Time, intervalSec int64, filter TraceFilter) []any {
+	args := []any{intervalSec}
+	_, orgArgs := orgScopeClause(orgID)
+	args = append(args, orgArgs...)
+	if userID != "" {
+		args = append(args, userID)
+	}
+	args = append(args, since.UTC(), before.UTC())
 	return args
 }

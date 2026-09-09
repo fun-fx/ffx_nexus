@@ -21,6 +21,16 @@ function WithProviders({ children, route = "/observability/traces" }: { children
 }
 
 describe("Sidebar", () => {
+  it("brand links to Overview", async () => {
+    render(
+      <WithProviders route="/gateway/routing">
+        <Sidebar />
+      </WithProviders>,
+    );
+    const home = await screen.findByRole("link", { name: /nexus home — overview/i });
+    expect(home).toHaveAttribute("href", "/");
+  });
+
   it("lists workspace links", async () => {
     render(
       <WithProviders>

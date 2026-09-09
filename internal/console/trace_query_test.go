@@ -1,10 +1,12 @@
 package console
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/observability"
 )
 
@@ -56,7 +58,9 @@ func TestParseTraceQuery_AcceptsValidForms(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if filter != tc.want {
+			if filter.Status != tc.want.Status || filter.Provider != tc.want.Provider ||
+				filter.Q != tc.want.Q || filter.Turn != tc.want.Turn ||
+				len(filter.Statuses) != len(tc.want.Statuses) {
 				t.Errorf("filter mismatch: want %+v got %+v", tc.want, filter)
 			}
 			if !tc.wantBefore.IsZero() && !before.Equal(tc.wantBefore) {
@@ -66,6 +70,83 @@ func TestParseTraceQuery_AcceptsValidForms(t *testing.T) {
 				t.Errorf("since want=%v got=%v", tc.wantSince, since)
 			}
 		})
+	}
+}
+
+func TestParseTraceSeriesQuery_PeriodAndStatus(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/traces/series?period=24h&status=ok,err", nil)
+	before, since, filter, err := parseTraceSeriesQuery(r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if before.IsZero() || since.IsZero() {
+		t.Fatal("period should resolve since/before")
+	}
+	if before.Sub(since) < 23*time.Hour {
+		t.Errorf("expected ~24h window, got %v", before.Sub(since))
+	}
+	if len(filter.Statuses) != 2 || filter.Statuses[0] != "ok" || filter.Statuses[1] != "err" {
+		t.Errorf("statuses: %+v", filter.Statuses)
+	}
+}
+
+func TestParseTraceSeriesQuery_ExplicitWindow(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/traces/series?before=2026-07-27T09:00:00Z&since=2026-07-20T00:00:00Z", nil)
+	before, since, _, err := parseTraceSeriesQuery(r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantBefore := time.Date(2026, 7, 27, 9, 0, 0, 0, time.UTC)
+	wantSince := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	if !before.Equal(wantBefore) || !since.Equal(wantSince) {
+		t.Errorf("window mismatch: before=%v since=%v", before, since)
+	}
+}
+
+func TestParseTraceSeriesQuery_RejectsInvalidInputs(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"bad period", "/api/traces/series?period=week", "period"},
+		{"bad status", "/api/traces/series?status=warning", "status"},
+		{"window inverted", "/api/traces/series?before=2026-07-20T00:00:00Z&since=2026-07-27T00:00:00Z", "before"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", tc.url, nil)
+			_, _, _, err := parseTraceSeriesQuery(r)
+			if err == nil {
+				t.Fatalf("want error containing %q", tc.want)
+			}
+			if !contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestTraceVolumeSeries_NilReaderMarksUnavailable(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/api/traces/series?period=1h", nil)
+	rec := httptest.NewRecorder()
+	srv.traceVolumeSeries(rec, req, core.User{ID: "u1", Role: core.RoleMember, OrgID: "org-a"})
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var got observability.VolumeSeries
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Available {
+		t.Error("available must be false when ClickHouse is not wired")
+	}
+	if got.Buckets == nil {
+		t.Error("buckets must be a slice, not null")
+	}
+	if got.IntervalSeconds != 60 {
+		t.Errorf("1h window interval want 60, got %d", got.IntervalSeconds)
 	}
 }
 

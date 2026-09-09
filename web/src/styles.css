@@ -19,6 +19,18 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 a {
   color: var(--accent-2);
   text-decoration: none;
@@ -400,6 +412,7 @@ a:hover {
   padding: 22px 14px 16px;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .sidebar-brand {
@@ -407,6 +420,18 @@ a:hover {
   align-items: center;
   gap: 10px;
   padding: 4px 8px 18px;
+  flex-shrink: 0;
+}
+
+a.sidebar-brand {
+  text-decoration: none;
+  color: inherit;
+  border-radius: var(--r-md);
+  transition: background 140ms ease;
+}
+
+a.sidebar-brand:hover {
+  background: color-mix(in oklab, var(--accent-3) 8%, transparent);
 }
 
 .sidebar-brand .logo-mark {
@@ -438,6 +463,12 @@ a:hover {
   flex-direction: column;
   gap: 14px;
   margin-top: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 2px;
 }
 
 .sidebar-group-label {
@@ -500,6 +531,7 @@ a:hover {
 }
 
 .sidebar-foot {
+  flex-shrink: 0;
   margin-top: auto;
   padding-top: 14px;
 }
@@ -2381,6 +2413,17 @@ a:hover {
   color: var(--muted-2);
   text-align: center;
   background: var(--panel);
+}
+
+.panel-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: var(--fs-14);
 }
 
 .eyebrow-link {
@@ -4731,11 +4774,7 @@ body.rg-resizing {
   margin: 0 0 28px;
 }
 
-// Sign-in gate rendered when /api/docs/index returned 401/403 or 5xx.
-// Reuses the .docs-hero shell so the layout reads as part of the
-// docs page rather than a generic error card, but lays out the
-// supporting copy and a single primary CTA so an unauthenticated
-// visitor has a clear next step instead of staring at a black hero.
+/* Sign-in gate copy when /api/docs returns 401/403 or 5xx. */
 .docs-hero-sub {
   color: var(--muted);
   font-size: var(--fs-15);
@@ -5129,5 +5168,208 @@ body.rg-resizing {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted-2);
+}
+
+/* Traces observability dashboard */
+.trace-dashboard__stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.trace-dashboard__stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.trace-dashboard__stat-label {
+  font-size: var(--fs-12);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.trace-dashboard__stat-value {
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.trace-dashboard__stat-value--ok {
+  color: var(--ok);
+}
+
+.trace-dashboard__stat-value--err {
+  color: var(--err);
+}
+
+.trace-dashboard__refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.trace-dashboard__body {
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .trace-dashboard__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.trace-dashboard__sidebar {
+  padding-bottom: 12px;
+}
+
+.trace-dashboard__filter-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 16px 8px;
+}
+
+.trace-dashboard__filter-title {
+  margin: 0;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.trace-dashboard__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.trace-dashboard__chart-panel {
+  min-height: 280px;
+}
+
+.trace-dashboard__legend {
+  display: flex;
+  gap: 16px;
+  padding: 0 16px 12px;
+}
+
+.trace-dashboard__legend-item {
+  font-size: var(--fs-12);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trace-dashboard__legend-item::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.trace-dashboard__legend-item--ok::before {
+  background: color-mix(in oklab, var(--ok) 85%, transparent);
+}
+
+.trace-dashboard__legend-item--err::before {
+  background: color-mix(in oklab, var(--err) 85%, transparent);
+}
+
+.trace-dashboard__chart-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.trace-dashboard__chart-toggle {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.trace-dashboard__chart-toggle .btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-12);
+}
+
+.trace-dashboard__chart-toggle .btn-ghost.is-active {
+  color: var(--text);
+  border-color: var(--border);
+  background: color-mix(in oklab, var(--accent-3) 10%, transparent);
+}
+
+.time-series-chart {
+  height: 280px;
+  min-height: 280px;
+  padding: 4px 8px 0;
+}
+
+.time-series-chart .u-over {
+  cursor: crosshair;
+}
+
+.trace-dashboard__setup {
+  margin: 0 0 16px;
+}
+
+.trace-dashboard__setup strong {
+  display: block;
+  font-size: var(--fs-16);
+  margin-bottom: 4px;
+}
+
+.trace-dashboard__setup p {
+  margin: 8px 0 0;
+  color: var(--text);
+  font-size: var(--fs-14);
+  line-height: 1.5;
+}
+
+.trace-dashboard__setup-cmd {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: var(--fs-12);
+  font-family: var(--font-mono);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text);
+}
+
+.trace-dashboard__setup-card {
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  margin: 8px 12px 16px;
+}
+
+.trace-dashboard__setup-card h3 {
+  margin: 0 0 8px;
+  font-size: var(--fs-16);
+  color: var(--text);
+}
+
+.trace-dashboard__setup-card p {
+  margin: 0;
+  font-size: var(--fs-14);
+  line-height: 1.5;
+}
+
+.time-series-chart .u-legend {
+  display: none;
 }
 

@@ -247,3 +247,33 @@ func (s *Service) ConfigString() string {
 	}
 	return fmt.Sprintf("threshold=%.2f ttl=%s max=%d", s.cfg.Threshold, s.cfg.TTL, s.cfg.MaxEntriesPerModel)
 }
+
+// UpdateConfig replaces runtime tuning knobs without rebuilding Redis clients.
+func (s *Service) UpdateConfig(cfg Config) {
+	if s == nil {
+		return
+	}
+	s.cfg = effectiveConfig(cfg)
+	if rc, ok := s.cache.(*Redis); ok {
+		rc.UpdateConfig(cfg)
+	}
+	if mem, ok := s.cache.(*Memory); ok {
+		mem.UpdateConfig(cfg)
+	}
+}
+
+// UpdateConfig applies new TTL/threshold/max entry limits at runtime.
+func (c *Redis) UpdateConfig(cfg Config) {
+	if c == nil {
+		return
+	}
+	c.cfg = effectiveConfig(cfg)
+}
+
+// UpdateConfig applies new TTL/threshold/max entry limits at runtime.
+func (c *Memory) UpdateConfig(cfg Config) {
+	if c == nil {
+		return
+	}
+	c.cfg = effectiveConfig(cfg)
+}

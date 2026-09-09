@@ -56,6 +56,15 @@ export const Icon = {
       </>,
       p,
     ),
+  bars: (p: IconProps) =>
+    base(
+      <>
+        <path d="M4 20V10" />
+        <path d="M12 20V4" />
+        <path d="M20 20v-7" />
+      </>,
+      p,
+    ),
   keys: (p: IconProps) =>
     base(
       <>

@@ -58,6 +58,7 @@ var mustHaveMigrations = []struct {
 		"postgres/020_audit_roles.sql",
 		"postgres/021_audit_view_indexes.sql",
 		"postgres/022_mcp_servers.sql",
+		"postgres/023_mcp_org_settings.sql",
 	}},
 	{migrate.EngineClickHouse, []string{
 		"clickhouse/001_init.sql",

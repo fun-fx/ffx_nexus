@@ -19,6 +19,9 @@ import (
 	"github.com/gorilla/websocket"
 
 	"errors"
+	"os"
+	"path/filepath"
+
 	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/config"
 	"github.com/ffxnexus/nexus/internal/core"
@@ -52,29 +55,31 @@ type CatalogSource interface {
 // WebSocket feed, routing stats, and (when a store is configured)
 // key/credential management.
 type Server struct {
-	hub               *Hub
-	reader            *observability.Reader // may be nil when ClickHouse is not configured
-	store             *core.Store           // may be nil when Postgres is not configured
-	routes            RouteStatsSource      // may be nil when routing is disabled
-	catalog           CatalogSource         // may be nil when the gateway is not co-located
-	reload            func(context.Context) // may be nil when no hot-reload hook is wired
-	allowSignup       bool                  // public POST /api/auth/register
-	localMode         bool                  // single-machine install; first signup becomes admin
-	keyMode           string                // gateway key mode (strict_byok / byok / shared); advertised on /api/auth/config
-	publicDocs        bool                  // serve /api/docs without a session (opt-in)
-	devMode           bool                  // accept loopback HTTP origins; non-Secure cookies
-	secureCookies     bool                  // Secure attribute on session/state cookies
-	origins           *originPolicy         // credentialed-origin allowlist (CORS + CSRF + WS)
-	sso               *ssoClient            // OIDC client; nil when SSO is not configured
-	evalConfigSrc     EvalConfigSource      // nil when eval worker is disabled
-	evalConfigApply   EvalConfigApplier     // nil when eval worker is disabled
-	evalProfiles      EvalProfileSource     // PR #135: profile CRUD store
-	evalPlugins       EvalPluginSource      // eval-plugin store (Phase B)
-	pluginCollector   PluginWebhookReceiver // eval-plugin webhook sink (Phase C)
-	pluginTester      EvalPluginTester      // eval-plugin test-send (Phase D)
-	pluginManualFirer PluginManualFirer     // admin-driven drain for manual-trigger plugins
-	pluginKeys        EvalPluginKeys        // in-process plugin key resolver (console keys)
-	benchmarks        BenchmarkRunner       // model-level benchmark runs; nil without Postgres
+	hub                *Hub
+	reader             *observability.Reader // may be nil when ClickHouse is not configured
+	store              *core.Store           // may be nil when Postgres is not configured
+	routes             RouteStatsSource      // may be nil when routing is disabled
+	catalog            CatalogSource         // may be nil when the gateway is not co-located
+	reload             func(context.Context) // may be nil when no hot-reload hook is wired
+	allowSignup        bool                  // public POST /api/auth/register
+	localMode          bool                  // single-machine install; first signup becomes admin
+	keyMode            string                // gateway key mode (strict_byok / byok / shared); advertised on /api/auth/config
+	publicDocs         bool                  // serve /api/docs without a session (opt-in)
+	devMode            bool                  // accept loopback HTTP origins; non-Secure cookies
+	secureCookies      bool                  // Secure attribute on session/state cookies
+	origins            *originPolicy         // credentialed-origin allowlist (CORS + CSRF + WS)
+	sso                *ssoClient            // OIDC client; nil when SSO is not configured
+	evalConfigSrc      EvalConfigSource      // nil when eval worker is disabled
+	evalConfigApply    EvalConfigApplier     // nil when eval worker is disabled
+	gatewayConfigSrc   GatewayConfigSource   // nil when gateway is not co-located
+	gatewayConfigApply GatewayConfigApplier  // nil when gateway is not co-located
+	evalProfiles       EvalProfileSource     // PR #135: profile CRUD store
+	evalPlugins        EvalPluginSource      // eval-plugin store (Phase B)
+	pluginCollector    PluginWebhookReceiver // eval-plugin webhook sink (Phase C)
+	pluginTester       EvalPluginTester      // eval-plugin test-send (Phase D)
+	pluginManualFirer  PluginManualFirer     // admin-driven drain for manual-trigger plugins
+	pluginKeys         EvalPluginKeys        // in-process plugin key resolver (console keys)
+	benchmarks         BenchmarkRunner       // model-level benchmark runs; nil without Postgres
 	// cspOrigins is the operator-supplied allow-list for cross-origin
 	// connections the console may make (marketing → console login handoff,
 	// live-trace WSS endpoint on a separate hostname, third-party login
@@ -108,15 +113,16 @@ type Server struct {
 	publicBaseURL        string                                            // optional public console base; used to compose invite URLs
 	publicGrafanaURL     string                                            // optional operator Grafana base; link-only, see observability_ui.go
 	otlpEnabled          bool
-	otlpEndpoint         string            // NEXUS_OTLP_ENDPOINT; empty means the exporter is off
-	metricsAddr          string            // NEXUS_METRICS_ADDR; empty means no /metrics scrape
-	metabaseConfigured   bool              // NEXUS_METABASE_URL was set; never the password
-	mcpStore             MCPServerSource   // postgres-backed MCP registry
-	mcpRuntime           MCPRuntime        // live MCP manager
-	mcpHub               *MCPHub           // live MCP log websocket feed
-	ready                ReadinessReporter // optional /readyz source; nil degrades to a plain "ok"
-	resend               *ResendClient     // deprecated; kept for backwards-compatible wiring during rollout; unused after SetMailer
-	mailer               Mailer            // active outgoing email transport for invites: Resend, SMTP, or noop
+	otlpEndpoint         string               // NEXUS_OTLP_ENDPOINT; empty means the exporter is off
+	metricsAddr          string               // NEXUS_METRICS_ADDR; empty means no /metrics scrape
+	metabaseConfigured   bool                 // NEXUS_METABASE_URL was set; never the password
+	mcpStore             MCPServerSource      // postgres-backed MCP registry
+	mcpRuntime           MCPRuntime           // live MCP manager
+	mcpHub               *MCPHub              // live MCP log websocket feed
+	mcpOrgSettings       MCPOrgSettingsSource // per-org MCP install defaults
+	ready                ReadinessReporter    // optional /readyz source; nil degrades to a plain "ok"
+	resend               *ResendClient        // deprecated; kept for backwards-compatible wiring during rollout; unused after SetMailer
+	mailer               Mailer               // active outgoing email transport for invites: Resend, SMTP, or noop
 	log                  *slog.Logger
 	up                   websocket.Upgrader
 }
@@ -232,6 +238,12 @@ func (s *Server) SetCatalog(src CatalogSource) { s.catalog = src }
 // restart. Optional; when unset, credential changes apply on next restart.
 func (s *Server) SetCredentialReloader(fn func(context.Context)) { s.reload = fn }
 
+// SetGatewayConfig wires hot-path gateway policy for GET/PATCH /api/gateway/config.
+func (s *Server) SetGatewayConfig(src GatewayConfigSource, apply GatewayConfigApplier) {
+	s.gatewayConfigSrc = src
+	s.gatewayConfigApply = apply
+}
+
 // SetEvalConfig wires eval/routing runtime config for GET/PATCH /api/eval/config.
 func (s *Server) SetEvalConfig(src EvalConfigSource, apply EvalConfigApplier) {
 	s.evalConfigSrc = src
@@ -331,6 +343,11 @@ func (s *Server) SetMCPServers(store MCPServerSource, runtime MCPRuntime, hub *M
 	s.mcpStore = store
 	s.mcpRuntime = runtime
 	s.mcpHub = hub
+}
+
+// SetMCPOrgSettings wires per-org MCP default preferences.
+func (s *Server) SetMCPOrgSettings(src MCPOrgSettingsSource) {
+	s.mcpOrgSettings = src
 }
 
 // NewServer builds the console server. reader and store may be nil.
@@ -434,6 +451,7 @@ func (s *Server) Mux() http.Handler {
 	}
 
 	r.Route("/api", func(r chi.Router) {
+		r.Get("/traces/series", s.requireUser(s.traceVolumeSeries))
 		r.Get("/traces", s.requireUser(s.recentTraces))
 		r.Get("/turns", s.requireUser(s.recentTurns))
 		r.Get("/stats", s.requireUser(s.stats))
@@ -446,6 +464,8 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/evals", s.requireUser(s.evalsForUser))
 		r.Get("/eval/config", s.requireAdmin(s.getEvalConfig))
 		r.Patch("/eval/config", s.requireAdmin(s.patchEvalConfig))
+		r.Get("/gateway/config", s.requireAdmin(s.getGatewayConfig))
+		r.Patch("/gateway/config", s.requireAdmin(s.patchGatewayConfig))
 		r.Get("/live", s.requireUser(s.live))
 		r.Get("/live/mcp", s.requireUser(s.liveMCP))
 
@@ -465,6 +485,8 @@ func (s *Server) Mux() http.Handler {
 			r.Post("/{id}/reconnect", s.requireAdmin(s.reconnectMCPServer))
 			r.Post("/{id}/test", s.requireAdmin(s.testMCPServer))
 		})
+		r.Get("/mcp/settings", s.requireAdmin(s.getMCPSettings))
+		r.Patch("/mcp/settings", s.requireAdmin(s.patchMCPSettings))
 
 		// Session auth + self-service (requires Postgres).
 		r.Get("/auth/config", s.authConfig)
@@ -707,28 +729,43 @@ func (s *Server) Mux() http.Handler {
 
 	// Serve the embedded dashboard SPA for everything else, with a fallback to
 	// index.html so client-side routes resolve.
-	r.Handle("/*", spaHandler(s.log))
+	r.Handle("/*", s.dashboardHandler())
 
 	return r
 }
 
-// spaHandler serves the embedded dashboard build. Requests for missing paths
-// fall back to index.html (single-page-app routing).
-func spaHandler(log *slog.Logger) http.Handler {
+// dashboardHandler serves the console SPA. In local mode it prefers web/dist on
+// disk so `npm run build` is picked up without recompiling the Go binary.
+func (s *Server) dashboardHandler() http.Handler {
+	if s.localMode {
+		for _, dir := range []string{"web/dist", "../web/dist"} {
+			if _, err := os.Stat(filepath.Join(dir, "index.html")); err == nil {
+				abs, _ := filepath.Abs(dir)
+				s.log.Info("serving dashboard from disk (local mode)", "dir", abs)
+				return spaFileServer(os.DirFS(dir))
+			}
+		}
+		s.log.Warn("local mode: web/dist not found; using embedded SPA — run `cd web && npm run build` or restart after building")
+	}
 	sub, err := nexusweb.Dist()
 	if err != nil {
-		log.Error("dashboard assets unavailable", "err", err)
+		s.log.Error("dashboard assets unavailable", "err", err)
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "dashboard not built", http.StatusNotImplemented)
 		})
 	}
-	fileServer := http.FileServer(http.FS(sub))
+	return spaFileServer(sub)
+}
+
+// spaFileServer serves a built SPA tree. Missing paths fall back to index.html.
+func spaFileServer(fsys fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(fsys))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p == "" {
 			p = "index.html"
 		}
-		if _, statErr := fs.Stat(sub, p); statErr != nil {
+		if _, statErr := fs.Stat(fsys, p); statErr != nil {
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = "/"
 			fileServer.ServeHTTP(w, r2)
@@ -736,6 +773,35 @@ func spaHandler(log *slog.Logger) http.Handler {
 		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) traceVolumeSeries(w http.ResponseWriter, r *http.Request, u core.User) {
+	before, since, filter, err := parseTraceSeriesQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, observability.VolumeSeries{
+			Buckets:         []observability.VolumeBucket{},
+			IntervalSeconds: int64(observability.BucketIntervalForWindow(before.Sub(since)).Seconds()),
+			Since:           since.UTC(),
+			Before:          before.UTC(),
+			Available:       false,
+		})
+		return
+	}
+	uid := ""
+	if u.Role != core.RoleAdmin {
+		uid = u.ID
+	}
+	series, err := s.reader.RequestVolumeSeries(r.Context(), before, since, orgID(r), uid, filter)
+	if err != nil {
+		s.log.Error("trace volume series query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, series)
 }
 
 func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request, u core.User) {
@@ -878,6 +944,88 @@ func parseTraceQuery(r *http.Request) (before, since time.Time, filter observabi
 	filter.Q = q.Get("q")
 	filter.Turn = q.Get("turn")
 	return before, since, filter, nil
+}
+
+// parseTraceSeriesQuery resolves the dashboard histogram window and status
+// filters for GET /api/traces/series. Explicit since/before take precedence
+// over period; when neither is set the window defaults to the trailing hour.
+func parseTraceSeriesQuery(r *http.Request) (before, since time.Time, filter observability.TraceFilter, err error) {
+	q := r.URL.Query()
+
+	if v := q.Get("before"); v != "" {
+		t, perr := parseRFC3339(v)
+		if perr != nil {
+			return time.Time{}, time.Time{}, filter, fmt.Errorf("invalid `before` timestamp: %w", perr)
+		}
+		before = t
+	}
+	if v := q.Get("since"); v != "" {
+		t, perr := parseRFC3339(v)
+		if perr != nil {
+			return time.Time{}, time.Time{}, filter, fmt.Errorf("invalid `since` timestamp: %w", perr)
+		}
+		since = t
+	}
+	if !before.IsZero() && !since.IsZero() && !before.After(since) {
+		return time.Time{}, time.Time{}, filter, fmt.Errorf("`before` must be after `since`")
+	}
+
+	if before.IsZero() && since.IsZero() {
+		window, perr := parseTraceSeriesPeriod(q.Get("period"))
+		if perr != nil {
+			return time.Time{}, time.Time{}, filter, perr
+		}
+		before = time.Now().UTC()
+		since = before.Add(-window)
+	} else {
+		if before.IsZero() {
+			before = time.Now().UTC()
+		}
+		if since.IsZero() {
+			since = before.Add(-time.Hour)
+		}
+	}
+
+	if v := q.Get("status"); v != "" {
+		filter.Statuses, err = parseTraceStatusList(v)
+		if err != nil {
+			return time.Time{}, time.Time{}, filter, err
+		}
+	}
+	return before, since, filter, nil
+}
+
+func parseTraceSeriesPeriod(v string) (time.Duration, error) {
+	switch v {
+	case "", "1h":
+		return time.Hour, nil
+	case "24h":
+		return 24 * time.Hour, nil
+	case "7d":
+		return 7 * 24 * time.Hour, nil
+	case "30d":
+		return 30 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("invalid `period`: want 1h|24h|7d|30d, got %q", v)
+	}
+}
+
+func parseTraceStatusList(v string) ([]string, error) {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		switch p {
+		case "ok", "err":
+			out = append(out, p)
+		default:
+			return nil, fmt.Errorf("invalid `status` token: want ok|err, got %q", p)
+		}
+	}
+	return out, nil
 }
 
 // parseRFC3339 accepts both RFC3339 ("...Z") and RFC3339Nano ("...123456789Z")

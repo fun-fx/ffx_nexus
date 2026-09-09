@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { fetchMe, fetchUIObservability, type User } from "../api";
 import { NAV_GROUPS } from "../nav/config";
 import { SidebarNavGroup } from "./SidebarNavGroup";
@@ -31,7 +32,7 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar" aria-label="Primary navigation">
-      <div className="sidebar-brand">
+      <Link to="/" className="sidebar-brand" aria-label="Nexus home — Overview">
         <span className="logo-mark" aria-hidden="true">
           ◆
         </span>
@@ -39,7 +40,7 @@ export function Sidebar() {
           Nexus
           <span className="brand-sub">LLM Gateway</span>
         </span>
-      </div>
+      </Link>
       <nav className="sidebar-nav">
         {visibleGroups.map((group) => (
           <SidebarNavGroup key={group.id} group={group} />

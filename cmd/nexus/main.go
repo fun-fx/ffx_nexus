@@ -331,6 +331,7 @@ func main() {
 
 	// Semantic cache: Redis-backed, embedding-similarity response cache.
 	var semCacheRedis *semcache.Redis
+	var semCacheSvc *semcache.Service
 	if cfg.SemanticCacheEnabled {
 		if cfg.RedisURL == "" {
 			log.Warn("semantic cache requires NEXUS_REDIS_URL")
@@ -352,6 +353,7 @@ func main() {
 			} else {
 				semCacheRedis = scr
 				if svc := semcache.NewService(scr, embedder, scfg); svc != nil {
+					semCacheSvc = svc
 					gwHandler.SetSemanticCache(svc)
 					log.Info("semantic cache enabled", "config", svc.ConfigString(), "embeddings", cfg.EmbeddingsModel)
 				}
@@ -454,6 +456,7 @@ func main() {
 	consoleSrvHandler.SetObservabilitySinks(cfg.OTLPEnabled, cfg.OTLPEndpoint, cfg.MetricsAddr, cfg.MetabaseURL)
 	if store != nil && mcpMgr != nil {
 		consoleSrvHandler.SetMCPServers(mcp.NewPostgresStore(store.Pool()), mcpMgr, mcpHub)
+		consoleSrvHandler.SetMCPOrgSettings(mcp.NewPostgresOrgSettingsStore(store.Pool()))
 	}
 	// PublicBaseURL is what the admin-facing invite URL is rooted
 	// on (it lives next to the console). EmailPublicBaseURL is the
@@ -477,6 +480,31 @@ func main() {
 		consoleSrvHandler.SetQualityRouter(NewRouterQualityQuerier(modelRouter))
 	}
 	consoleSrvHandler.SetCatalog(gwHandler.Catalog())
+	gatewayCtrl := newGatewayRuntimeController(cfg, gwHandler, semCacheSvc, log)
+	consoleSrvHandler.SetGatewayConfig(gatewayCtrl, gatewayCtrl)
+
+	// Bind the docs root before the console mux is built so /api/docs serves
+	// the walked index rather than a zero-value snapshot captured at route
+	// registration. cfg.DocsDir empty falls back to ./docs (go run layout).
+	docsBound := false
+	if cfg.DocsDir != "" {
+		if err := docsserver.SetSourceDir(cfg.DocsDir); err != nil {
+			slog.Error("docs: NEXUS_DOCS_DIR is set but not walkable",
+				"configured", cfg.DocsDir, "error", err)
+		} else {
+			slog.Info("docs: serving from override", "dir", cfg.DocsDir)
+			docsBound = true
+		}
+	}
+	if !docsBound {
+		if err := docsserver.SetSourceDir(docsserver.DefaultRoot); err != nil {
+			slog.Error("docs: no usable docs directory; /api/docs will return an empty index",
+				"default_root", docsserver.DefaultRoot, "error", err)
+		} else {
+			slog.Info("docs: serving from default location", "dir", docsserver.DefaultRoot)
+		}
+	}
+
 	if evalWorker != nil {
 		// PR #136: profile store + secret resolver. We always wire a
 		// profile store (in-memory when no Postgres / ClickHouse) so
@@ -510,31 +538,6 @@ func main() {
 			evalWorker.SetSecretResolver(resolver.Resolve)
 		}
 		consoleSrvHandler.SetEvalProfiles(erc)
-
-		// Bind the docs root once the rest of the console is wired.
-		// cfg.DocsDir is empty by default; the docs package falls back
-		// to ./docs relative to the binary (which matches `go run`).
-		// Any failure surfaces here loudest: missing directory on a
-		// cluster deploy shows up in pod logs at boot rather than as
-		// a blank page that looks identical to a healthy /docs view.
-		docsBound := false
-		if cfg.DocsDir != "" {
-			if err := docsserver.SetSourceDir(cfg.DocsDir); err != nil {
-				slog.Error("docs: NEXUS_DOCS_DIR is set but not walkable",
-					"configured", cfg.DocsDir, "error", err)
-			} else {
-				slog.Info("docs: serving from override", "dir", cfg.DocsDir)
-				docsBound = true
-			}
-		}
-		if !docsBound {
-			if err := docsserver.Err(); err != nil {
-				slog.Error("docs: no usable docs directory; /api/docs will return an empty index",
-					"default_root", docsserver.DefaultRoot, "error", err)
-			} else {
-				slog.Info("docs: serving from default location", "dir", docsserver.DefaultRoot)
-			}
-		}
 
 		// Eval-plugin store + dispatcher + collector (Phases B/C).
 		// The registry absorbs Helm-mounted ConfigMap plugins at
@@ -834,7 +837,7 @@ func main() {
 // splitDenyPatterns parses a semicolon-separated list of regex patterns,
 // trimming whitespace and dropping empty entries.
 func splitDenyPatterns(spec string) []string {
-	var out []string
+	out := make([]string, 0)
 	for _, p := range strings.Split(spec, ";") {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
