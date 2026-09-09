@@ -173,6 +173,9 @@ func newSmokeEnv(t *testing.T) *smokeEnv {
 	}
 	t.Cleanup(mcpPool.Close)
 	srv.SetMCPServers(mcp.NewPostgresStore(mcpPool), nil, nil)
+	srv.SetMCPOrgSettings(mcp.NewPostgresOrgSettingsStore(mcpPool))
+	gwCfg := smokeGatewayConfig{}
+	srv.SetGatewayConfig(gwCfg, gwCfg)
 
 	return &smokeEnv{
 		srv:     srv,
@@ -199,6 +202,17 @@ func (emptyQualityRouter) BlendConfig() (router.CombinedWeights, time.Duration, 
 	return router.CombinedWeights{}, 0, nil
 }
 func (emptyQualityRouter) KnownModels(context.Context) []string { return nil }
+
+// smokeGatewayConfig is the runtime snapshot with nothing configured — the
+// state of every installation on day one. GET /api/gateway/config reads no
+// table; wiring a source here keeps the walk from treating an unwired
+// controller as a schema defect.
+type smokeGatewayConfig struct{}
+
+func (smokeGatewayConfig) Snapshot() GatewayConfigSnapshot { return GatewayConfigSnapshot{} }
+func (smokeGatewayConfig) Apply(GatewayConfigPatch) (GatewayConfigSnapshot, error) {
+	return GatewayConfigSnapshot{}, nil
+}
 
 func (e *smokeEnv) get(t *testing.T, path string) *httptest.ResponseRecorder {
 	t.Helper()

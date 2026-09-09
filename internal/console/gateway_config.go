@@ -70,11 +70,10 @@ type GatewayConfigApplier interface {
 	Apply(patch GatewayConfigPatch) (GatewayConfigSnapshot, error)
 }
 
-func (s *Server) getGatewayConfig(w http.ResponseWriter, _ *http.Request, _ core.User) {
+func (s *Server) getGatewayConfig(w http.ResponseWriter, r *http.Request, _ core.User) {
 	if s.gatewayConfigSrc == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "gateway config unavailable",
-		})
+		s.failWithMessage(w, r, http.StatusServiceUnavailable, apierr.CodeDependencyUnavailable,
+			"gateway config unavailable", nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.gatewayConfigSrc.Snapshot())
@@ -82,26 +81,27 @@ func (s *Server) getGatewayConfig(w http.ResponseWriter, _ *http.Request, _ core
 
 func (s *Server) patchGatewayConfig(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.gatewayConfigApply == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"error": "gateway config unavailable",
-		})
+		s.failWithMessage(w, r, http.StatusServiceUnavailable, apierr.CodeDependencyUnavailable,
+			"gateway config unavailable", nil)
 		return
 	}
 	var patch GatewayConfigPatch
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		s.failWithMessage(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, "invalid JSON", err)
 		return
 	}
 	if patch.SemanticCache != nil && patch.SemanticCache.Threshold != nil {
 		t := *patch.SemanticCache.Threshold
 		if t < 0 || t > 1 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "threshold must be between 0 and 1"})
+			s.failWithMessage(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest,
+				"threshold must be between 0 and 1", nil)
 			return
 		}
 	}
 	if patch.SemanticCache != nil && patch.SemanticCache.TTL != nil {
 		if _, err := time.ParseDuration(strings.TrimSpace(*patch.SemanticCache.TTL)); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ttl must be a duration like 24h"})
+			s.failWithMessage(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest,
+				"ttl must be a duration like 24h", err)
 			return
 		}
 	}

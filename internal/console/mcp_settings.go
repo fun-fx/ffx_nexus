@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ffxnexus/nexus/internal/apierr"
 	"github.com/ffxnexus/nexus/internal/core"
 	"github.com/ffxnexus/nexus/internal/mcp"
 )
@@ -50,13 +51,14 @@ func (s *Server) mcpSettingsSnapshot(orgID string) MCPSettingsSnapshot {
 
 func (s *Server) getMCPSettings(w http.ResponseWriter, r *http.Request, _ core.User) {
 	if s.mcpOrgSettings == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp settings unavailable"})
+		s.failWithMessage(w, r, http.StatusServiceUnavailable, apierr.CodeDependencyUnavailable,
+			"mcp settings unavailable", nil)
 		return
 	}
 	org := orgID(r)
 	stored, err := s.mcpOrgSettings.Get(r.Context(), org)
 	if err != nil {
-		s.fail(w, r, http.StatusInternalServerError, "internal_error", err)
+		s.fail(w, r, http.StatusInternalServerError, apierr.CodeInternalError, err)
 		return
 	}
 	snap := s.mcpSettingsSnapshot(org)
@@ -67,18 +69,19 @@ func (s *Server) getMCPSettings(w http.ResponseWriter, r *http.Request, _ core.U
 
 func (s *Server) patchMCPSettings(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.mcpOrgSettings == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp settings unavailable"})
+		s.failWithMessage(w, r, http.StatusServiceUnavailable, apierr.CodeDependencyUnavailable,
+			"mcp settings unavailable", nil)
 		return
 	}
 	var patch mcpSettingsPatch
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		s.failWithMessage(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, "invalid JSON", err)
 		return
 	}
 	org := orgID(r)
 	stored, err := s.mcpOrgSettings.Upsert(r.Context(), org, patch.DefaultTimeoutMs, patch.DefaultStickyHTTP)
 	if err != nil {
-		s.fail(w, r, http.StatusBadRequest, "invalid_request", err)
+		s.fail(w, r, http.StatusBadRequest, apierr.CodeInvalidRequest, err)
 		return
 	}
 	s.audit(r.Context(), u.ID, org, core.AuditAction("mcp.settings.update"), "", "")
