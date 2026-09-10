@@ -108,6 +108,22 @@ the real packages are `internal/ippolicy` and `internal/netpolicy`, so the
 gate was silent on the code it exists to guard — and the CNI enforcement
 gate now runs nightly in addition to manual dispatch, closing D-2b.
 
+## [v0.8.1] — Console observability dashboard + gateway/MCP admin (PR #310, #311)
+
+Bifrost-aligned console IA: nested sidebar sections (Observability, Gateway,
+MCP, Eval, Governance, Develop) with section sub-tabs and legacy path
+redirects.
+
+Observability Dashboard at `/observability/dashboard` with request-volume
+time series (`GET /api/traces/series`), uPlot charts, status filters, and a
+ClickHouse setup banner when the warehouse is not configured.
+
+Gateway admin pages for guardrails, semantic cache, and alerting via
+`GET/PATCH /api/gateway/config`. MCP Library and Settings with org-scoped
+presets; Postgres migration `023_mcp_org_settings.sql`.
+
+Helm chart `version` / `appVersion` bump to `0.8.1`.
+
 ## [v0.8.0] — MCP gateway + tool logs (PR #309)
 
 MCP server registry (stdio / HTTP), gateway proxy (`/v1/mcp/*`), dedicated
