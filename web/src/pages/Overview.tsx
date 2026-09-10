@@ -168,7 +168,12 @@ export function Overview() {
         <Stat label="Cost" value={`$${stats.total_cost_usd.toFixed(4)}`} />
       </section>
 
-      <SetupChecklist cfg={auth} credentials={credentials} keys={keys} />
+      <SetupChecklist
+        cfg={auth}
+        credentials={credentials}
+        keys={keys}
+        userId={user?.id}
+      />
 
       <section className="why-row" aria-label="Why FFX Nexus">
         <header className="panel-head section-heading">
