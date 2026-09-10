@@ -108,6 +108,16 @@ the real packages are `internal/ippolicy` and `internal/netpolicy`, so the
 gate was silent on the code it exists to guard — and the CNI enforcement
 gate now runs nightly in addition to manual dispatch, closing D-2b.
 
+## [v0.8.2] — Overview setup checklist on completed tenants (PR #313)
+
+The Overview setup checklist now stays visible until the operator clicks
+**Remind me later**, even when provider credentials and virtual keys are
+already configured (typical on long-running production tenants). Completed
+setups show an **All steps complete** message. Dismiss state is scoped per
+user in `localStorage`.
+
+Helm chart `version` / `appVersion` bump to `0.8.2`.
+
 ## [v0.8.1] — Console observability dashboard + gateway/MCP admin (PR #310, #311)
 
 Bifrost-aligned console IA: nested sidebar sections (Observability, Gateway,
