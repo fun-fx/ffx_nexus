@@ -43,6 +43,7 @@ function renderOverview() {
 afterEach(() => {
   vi.unstubAllGlobals();
   window.localStorage.removeItem("nexus:setup-checklist:dismissed");
+  window.localStorage.removeItem("nexus:setup-checklist:dismissed:u1");
 });
 
 describe("<Overview /> hero CTAs", () => {
@@ -68,4 +69,5 @@ describe("<Overview /> first-run empty states", () => {
     expect(await screen.findByTestId("first-request-snippets")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /no traffic yet/i })).toBeInTheDocument();
   });
+
 });
