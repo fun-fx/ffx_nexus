@@ -108,6 +108,16 @@ the real packages are `internal/ippolicy` and `internal/netpolicy`, so the
 gate was silent on the code it exists to guard — and the CNI enforcement
 gate now runs nightly in addition to manual dispatch, closing D-2b.
 
+## [v0.8.3] — Overview dashboard KPI and five shared-filter charts (PR #315)
+
+The Observability Overview tab now loads a single `GET /api/traces/dashboard`
+payload with KPI stats, volume/tokens/cost/latency/cache time series, and
+provider/model facets. Filters (period, status, provider, model) are shared
+across the KPI row and five-chart grid; ClickHouse queries run in parallel
+with dense bucket fill.
+
+Helm chart `version` / `appVersion` bump to `0.8.3`.
+
 ## [v0.8.2] — Overview setup checklist on completed tenants (PR #313)
 
 The Overview setup checklist now stays visible until the operator clicks
