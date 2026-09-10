@@ -451,6 +451,7 @@ func (s *Server) Mux() http.Handler {
 	}
 
 	r.Route("/api", func(r chi.Router) {
+		r.Get("/traces/dashboard", s.requireUser(s.traceDashboard))
 		r.Get("/traces/series", s.requireUser(s.traceVolumeSeries))
 		r.Get("/traces", s.requireUser(s.recentTraces))
 		r.Get("/turns", s.requireUser(s.recentTurns))
@@ -804,6 +805,29 @@ func (s *Server) traceVolumeSeries(w http.ResponseWriter, r *http.Request, u cor
 	writeJSON(w, http.StatusOK, series)
 }
 
+func (s *Server) traceDashboard(w http.ResponseWriter, r *http.Request, u core.User) {
+	before, since, filter, err := parseTraceSeriesQuery(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.reader == nil {
+		writeJSON(w, http.StatusOK, observability.EmptyDashboard(since, before, false))
+		return
+	}
+	uid := ""
+	if u.Role != core.RoleAdmin {
+		uid = u.ID
+	}
+	dash, err := s.reader.Dashboard(r.Context(), before, since, orgID(r), uid, filter)
+	if err != nil {
+		s.log.Error("trace dashboard query failed", "err", err)
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, dash)
+}
+
 func (s *Server) recentTraces(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
 		writeJSON(w, http.StatusOK, observability.TracePage{Items: []observability.TraceSummary{}})
@@ -992,7 +1016,26 @@ func parseTraceSeriesQuery(r *http.Request) (before, since time.Time, filter obs
 			return time.Time{}, time.Time{}, filter, err
 		}
 	}
+	if v := q.Get("provider"); v != "" {
+		filter.Providers = parseCSVList(v)
+	}
+	if v := q.Get("model"); v != "" {
+		filter.Models = parseCSVList(v)
+	}
 	return before, since, filter, nil
+}
+
+func parseCSVList(v string) []string {
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func parseTraceSeriesPeriod(v string) (time.Duration, error) {

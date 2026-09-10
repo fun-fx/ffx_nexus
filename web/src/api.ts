@@ -270,6 +270,65 @@ export interface VolumeSeriesQuery {
   before?: string;
   period?: TraceVolumePeriod;
   status?: ("ok" | "err")[];
+  providers?: string[];
+  models?: string[];
+}
+
+export interface TokenBucket {
+  timestamp: string;
+  input: number;
+  output: number;
+}
+
+export interface CostBucket {
+  timestamp: string;
+  usd: number;
+}
+
+export interface LatencyBucket {
+  timestamp: string;
+  avg_ms: number;
+  p95_ms: number;
+}
+
+export interface CacheBucket {
+  timestamp: string;
+  hits: number;
+  requests: number;
+}
+
+export interface DashboardFacets {
+  providers: string[];
+  models: string[];
+}
+
+export interface TraceDashboardResponse {
+  available: boolean;
+  since: string;
+  before: string;
+  interval_seconds: number;
+  stats: Stats;
+  volume: VolumeBucket[];
+  tokens: TokenBucket[];
+  cost: CostBucket[];
+  latency: LatencyBucket[];
+  cache: CacheBucket[];
+  facets: DashboardFacets;
+}
+
+function appendSeriesParams(params: URLSearchParams, query: VolumeSeriesQuery) {
+  if (query.before) params.set("before", query.before);
+  if (query.since) params.set("since", query.since);
+  if (query.period) params.set("period", query.period);
+  if (query.status && query.status.length > 0) {
+    params.set("status", query.status.join(","));
+  }
+  if (query.providers && query.providers.length > 0) {
+    params.set("provider", query.providers.join(","));
+  }
+  if (query.models && query.models.length > 0) {
+    params.set("model", query.models.join(","));
+  }
 }
 
 export interface VolumeBucket {
@@ -290,12 +349,7 @@ export async function fetchTraceVolumeSeries(
   query: VolumeSeriesQuery = {},
 ): Promise<VolumeSeriesResponse> {
   const params = new URLSearchParams();
-  if (query.before) params.set("before", query.before);
-  if (query.since) params.set("since", query.since);
-  if (query.period) params.set("period", query.period);
-  if (query.status && query.status.length > 0) {
-    params.set("status", query.status.join(","));
-  }
+  appendSeriesParams(params, query);
   const qs = params.toString();
   const url = qs ? `/api/traces/series?${qs}` : `/api/traces/series`;
   const res = await fetch(url);
@@ -309,6 +363,61 @@ export async function fetchTraceVolumeSeries(
     since: data.since ?? "",
     before: data.before ?? "",
     available: data.available !== false,
+  };
+}
+
+function emptyDashboard(): TraceDashboardResponse {
+  return {
+    available: false,
+    since: "",
+    before: "",
+    interval_seconds: 0,
+    stats: { ...ZERO_STATS },
+    volume: [],
+    tokens: [],
+    cost: [],
+    latency: [],
+    cache: [],
+    facets: { providers: [], models: [] },
+  };
+}
+
+export async function fetchTraceDashboard(
+  query: VolumeSeriesQuery = {},
+): Promise<TraceDashboardResponse> {
+  const params = new URLSearchParams();
+  appendSeriesParams(params, query);
+  const qs = params.toString();
+  const url = qs ? `/api/traces/dashboard?${qs}` : `/api/traces/dashboard`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`trace dashboard failed (${res.status})`);
+  }
+  const data = (await res.json()) as TraceDashboardResponse;
+  const empty = emptyDashboard();
+  return {
+    available: data.available !== false,
+    since: data.since ?? "",
+    before: data.before ?? "",
+    interval_seconds: data.interval_seconds ?? 0,
+    stats: {
+      ...empty.stats,
+      ...(data.stats ?? {}),
+      total_input_tokens: data.stats?.total_input_tokens ?? 0,
+      total_output_tokens: data.stats?.total_output_tokens ?? 0,
+      total_tokens:
+        data.stats?.total_tokens ??
+        (data.stats?.total_input_tokens ?? 0) + (data.stats?.total_output_tokens ?? 0),
+    },
+    volume: Array.isArray(data.volume) ? data.volume : [],
+    tokens: Array.isArray(data.tokens) ? data.tokens : [],
+    cost: Array.isArray(data.cost) ? data.cost : [],
+    latency: Array.isArray(data.latency) ? data.latency : [],
+    cache: Array.isArray(data.cache) ? data.cache : [],
+    facets: {
+      providers: Array.isArray(data.facets?.providers) ? data.facets.providers : [],
+      models: Array.isArray(data.facets?.models) ? data.facets.models : [],
+    },
   };
 }
 

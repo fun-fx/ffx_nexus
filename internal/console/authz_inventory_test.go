@@ -64,6 +64,7 @@ var consoleRoutePolicies = []routePolicy{
 
 	// --- member --------------------------------------------------------------
 	{"GET", "/api/traces", "member", ""},
+	{"GET", "/api/traces/dashboard", "member", ""},
 	{"GET", "/api/traces/series", "member", ""},
 	{"GET", "/api/turns", "member", ""},
 	{"GET", "/api/stats", "member", ""},

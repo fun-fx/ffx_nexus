@@ -1,13 +1,16 @@
 import { useEffect, useRef } from "react";
 import uPlot from "uplot";
-import type { VolumeBucket } from "../../api";
-import { toUPlotData, type VolumeChartKind } from "../../lib/volumeChart";
+import {
+  toAlignedUPlotData,
+  type ChartSeries,
+  type VolumeChartKind,
+} from "../../lib/volumeChart";
 
 type Props = {
-  buckets: VolumeBucket[];
-  statusOk: boolean;
-  statusErr: boolean;
+  timestamps: string[];
+  series: ChartSeries[];
   kind: VolumeChartKind;
+  testId?: string;
 };
 
 function token(el: HTMLElement, name: string, fallback: string): string {
@@ -22,7 +25,22 @@ function withAlpha(color: string, alpha: string): string {
   return color;
 }
 
-export function TimeSeriesChart({ buckets, statusOk, statusErr, kind }: Props) {
+const FALLBACKS: Record<string, string> = {
+  "--ok": "#4ade80",
+  "--err": "#fb7185",
+  "--accent": "#ec4899",
+  "--accent-2": "#22d3ee",
+  "--accent-3": "#a855f7",
+  "--warn": "#facc15",
+  "--info": "#60a5fa",
+};
+
+export function TimeSeriesChart({
+  timestamps,
+  series,
+  kind,
+  testId = "time-series-chart",
+}: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
 
@@ -31,27 +49,16 @@ export function TimeSeriesChart({ buckets, statusOk, statusErr, kind }: Props) {
     if (!root) return;
     if (import.meta.env.MODE === "test") return;
 
-    const okColor = token(root, "--ok", "#4ade80");
-    const errColor = token(root, "--err", "#fb7185");
     const muted = token(root, "--muted", "#888");
     const border = token(root, "--border", "#333");
 
     const seriesDefs: uPlot.Series[] = [{}];
-    if (statusOk) {
+    for (const s of series) {
+      const color = token(root, s.colorVar, FALLBACKS[s.colorVar] ?? "#888");
       seriesDefs.push({
-        label: "Success",
-        stroke: okColor,
-        fill: withAlpha(okColor, "59"),
-        width: 1.5,
-        points: { show: false },
-        paths: kind === "bar" ? uPlot.paths.bars!({ size: [0.7, 64] }) : undefined,
-      });
-    }
-    if (statusErr) {
-      seriesDefs.push({
-        label: "Error",
-        stroke: errColor,
-        fill: withAlpha(errColor, "59"),
+        label: s.label,
+        stroke: color,
+        fill: withAlpha(color, "59"),
         width: 1.5,
         points: { show: false },
         paths: kind === "bar" ? uPlot.paths.bars!({ size: [0.7, 64] }) : undefined,
@@ -83,7 +90,7 @@ export function TimeSeriesChart({ buckets, statusOk, statusErr, kind }: Props) {
           },
         ],
       },
-      toUPlotData(buckets, statusOk, statusErr),
+      toAlignedUPlotData(timestamps, series),
       root,
     );
     plotRef.current = plot;
@@ -100,7 +107,7 @@ export function TimeSeriesChart({ buckets, statusOk, statusErr, kind }: Props) {
       plot.destroy();
       plotRef.current = null;
     };
-  }, [buckets, statusOk, statusErr, kind]);
+  }, [timestamps, series, kind]);
 
-  return <div ref={rootRef} className="time-series-chart" data-testid="volume-chart" />;
+  return <div ref={rootRef} className="time-series-chart" data-testid={testId} />;
 }

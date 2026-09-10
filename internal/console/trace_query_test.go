@@ -150,6 +150,46 @@ func TestTraceVolumeSeries_NilReaderMarksUnavailable(t *testing.T) {
 	}
 }
 
+func TestParseTraceSeriesQuery_ProviderAndModel(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/traces/dashboard?period=1h&provider=openai,gemini&model=gpt-4o-mini", nil)
+	_, _, filter, err := parseTraceSeriesQuery(r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(filter.Providers) != 2 || filter.Providers[0] != "openai" || filter.Providers[1] != "gemini" {
+		t.Errorf("providers: %+v", filter.Providers)
+	}
+	if len(filter.Models) != 1 || filter.Models[0] != "gpt-4o-mini" {
+		t.Errorf("models: %+v", filter.Models)
+	}
+}
+
+func TestTraceDashboard_NilReaderMarksUnavailable(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/api/traces/dashboard?period=1h", nil)
+	rec := httptest.NewRecorder()
+	srv.traceDashboard(rec, req, core.User{ID: "u1", Role: core.RoleMember, OrgID: "org-a"})
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var got observability.Dashboard
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Available {
+		t.Error("available must be false when ClickHouse is not wired")
+	}
+	if got.Volume == nil || got.Tokens == nil || got.Cost == nil || got.Latency == nil || got.Cache == nil {
+		t.Error("series slices must be empty arrays, not null")
+	}
+	if got.Facets.Providers == nil || got.Facets.Models == nil {
+		t.Error("facets must be empty arrays, not null")
+	}
+	if got.IntervalSeconds != 60 {
+		t.Errorf("1h window interval want 60, got %d", got.IntervalSeconds)
+	}
+}
+
 func TestParseTraceQuery_RejectsInvalidInputs(t *testing.T) {
 	cases := []struct {
 		name string

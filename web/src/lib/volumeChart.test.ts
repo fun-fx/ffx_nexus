@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { parseVolumeChartKind, seriesHasVolume, toUPlotData } from "./volumeChart";
+import {
+  parseCSVParam,
+  parseVolumeChartKind,
+  seriesHasVolume,
+  toAlignedUPlotData,
+  toUPlotData,
+  toggleCSVValue,
+} from "./volumeChart";
 
 describe("toUPlotData", () => {
   const buckets = [
@@ -48,5 +55,29 @@ describe("parseVolumeChartKind", () => {
     expect(parseVolumeChartKind(null)).toBe("line");
     expect(parseVolumeChartKind("line")).toBe("line");
     expect(parseVolumeChartKind("bar")).toBe("bar");
+  });
+});
+
+describe("toAlignedUPlotData", () => {
+  it("places unix seconds first then each series", () => {
+    const data = toAlignedUPlotData(
+      ["2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z"],
+      [{ values: [1, 2] }, { values: [3, 4] }],
+    );
+    expect(data).toHaveLength(3);
+    expect(data[1]).toEqual([1, 2]);
+    expect(data[2]).toEqual([3, 4]);
+  });
+});
+
+describe("parseCSVParam / toggleCSVValue", () => {
+  it("splits and trims", () => {
+    expect(parseCSVParam("openai, gemini")).toEqual(["openai", "gemini"]);
+    expect(parseCSVParam(null)).toEqual([]);
+  });
+
+  it("toggles membership", () => {
+    expect(toggleCSVValue(["openai"], "gemini")).toEqual(["openai", "gemini"]);
+    expect(toggleCSVValue(["openai", "gemini"], "openai")).toEqual(["gemini"]);
   });
 });
