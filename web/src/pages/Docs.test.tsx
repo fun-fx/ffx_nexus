@@ -307,7 +307,7 @@ describe("Docs", () => {
     const loginLink = allLinks.find(
       (a) =>
         a.getAttribute("href")?.startsWith("/login") &&
-        a.getAttribute("href")?.includes("%2Fdocs"),
+        a.getAttribute("href")?.includes("%2Fdevelop%2Fdocs"),
     );
     expect(loginLink).toBeTruthy();
   });

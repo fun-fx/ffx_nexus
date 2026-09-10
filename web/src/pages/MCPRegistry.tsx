@@ -4,12 +4,15 @@ import {
   createMCPServer,
   deleteMCPServer,
   fetchMCPServers,
+  fetchMCPSettings,
   patchMCPServer,
   reconnectMCPServer,
   testMCPServer,
   type MCPServerRecord,
   type MCPServerStatus,
 } from "../api";
+import { Link } from "react-router-dom";
+import { applyMcpOrgDefaults } from "../lib/mcpPresets";
 import { Chip } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
@@ -43,6 +46,7 @@ export function MCPRegistry() {
     queryKey: ["mcp-servers"],
     queryFn: fetchMCPServers,
   });
+  const settingsQ = useQuery({ queryKey: ["mcp-settings"], queryFn: fetchMCPSettings });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<MCPServerRecord | null>(null);
   const [name, setName] = useState("");
@@ -55,7 +59,15 @@ export function MCPRegistry() {
       if (editing?.id) {
         return patchMCPServer(editing.id, { name, spec_yaml: spec, enabled });
       }
-      return createMCPServer({ name, spec_yaml: spec, enabled });
+      const defaults = settingsQ.data ?? {
+        default_timeout_ms: 60000,
+        default_sticky_http: true,
+      };
+      const specYaml = applyMcpOrgDefaults(spec, {
+        default_timeout_ms: defaults.default_timeout_ms,
+        default_sticky_http: defaults.default_sticky_http,
+      });
+      return createMCPServer({ name, spec_yaml: specYaml, enabled });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["mcp-servers"] });
@@ -187,6 +199,11 @@ export function MCPRegistry() {
         <div className="empty-state card">
           <h2>No MCP servers yet</h2>
           <p className="muted">Add a server, then call tools through the gateway API.</p>
+          <p>
+            <Link to="/mcp/library" className="btn primary">
+              Browse Library
+            </Link>
+          </p>
           <pre className="code-block">{gatewaySnippet("<server-id>", sampleTool)}</pre>
         </div>
       ) : (

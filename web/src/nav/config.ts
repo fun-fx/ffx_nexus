@@ -34,6 +34,7 @@ export const NAV_GROUPS: NavGroupDef[] = [
     label: "Observability",
     icon: "activity",
     items: [
+      { to: "/observability/dashboard", label: "Dashboard", icon: "grid" },
       { to: "/observability/traces", label: "LLM Traces", icon: "chart" },
       { to: "/observability/spend", label: "Spend", icon: "wallet" },
       { to: "/observability/connectors", label: "Connectors", icon: "activity" },
@@ -48,9 +49,9 @@ export const NAV_GROUPS: NavGroupDef[] = [
       { to: "/gateway/routing", label: "Routing", icon: "zap", end: false },
       { to: "/gateway/providers", label: "Providers", icon: "shield" },
       { to: "/gateway/keys", label: "Virtual Keys", icon: "keys" },
-      { to: "/gateway/guardrails", label: "Guardrails", icon: "shield", badge: "soon", adminOnly: true },
-      { to: "/gateway/cache", label: "Semantic Cache", icon: "zap", badge: "soon", adminOnly: true },
-      { to: "/gateway/alerting", label: "Alerting", icon: "activity", badge: "soon", adminOnly: true },
+      { to: "/gateway/guardrails", label: "Guardrails", icon: "shield", adminOnly: true },
+      { to: "/gateway/cache", label: "Semantic Cache", icon: "zap", adminOnly: true },
+      { to: "/gateway/alerting", label: "Alerting", icon: "activity", adminOnly: true },
     ],
   },
   {
@@ -59,8 +60,8 @@ export const NAV_GROUPS: NavGroupDef[] = [
     icon: "zap",
     items: [
       { to: "/mcp/registry", label: "Registry", icon: "zap" },
-      { to: "/mcp/library", label: "Library", icon: "doc", badge: "soon" },
-      { to: "/mcp/settings", label: "Settings", icon: "shield", badge: "soon", adminOnly: true },
+      { to: "/mcp/library", label: "Library", icon: "doc" },
+      { to: "/mcp/settings", label: "Settings", icon: "shield", adminOnly: true },
     ],
   },
   {
@@ -104,6 +105,7 @@ export type SectionTab = {
 };
 
 export const OBSERVABILITY_TABS: SectionTab[] = [
+  { to: "/observability/dashboard", label: "Dashboard" },
   { to: "/observability/traces", label: "LLM Traces" },
   { to: "/observability/spend", label: "Spend" },
   { to: "/observability/connectors", label: "Connectors" },

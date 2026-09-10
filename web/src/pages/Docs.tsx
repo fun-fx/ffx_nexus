@@ -4,6 +4,11 @@ import { Link, NavLink, useParams } from "react-router-dom";
 import { fetchDocsIndex, fetchDocPage, type DocEntry, type DocsIndex, type DocPage } from "../api";
 import { Icon } from "../components/icons";
 
+const DOCS_BASE = "/develop/docs";
+function docsPath(slug: string): string {
+  return slug ? `${DOCS_BASE}/${slug}` : DOCS_BASE;
+}
+
 // === Docs page ============================================================
 //
 // Mirrors the layout thegrid.ai/docs uses: a left-hand sidebar of
@@ -119,7 +124,7 @@ function DocsSignInGate({ error }: { error: unknown }) {
             </div>
             <div className="docs-hero-cta">
               {needsLogin ? (
-                <a className="docs-cta-primary" href="/login?next=%2Fdocs">
+                <a className="docs-cta-primary" href="/login?next=%2Fdevelop%2Fdocs">
                   Sign in →
                 </a>
               ) : (
@@ -152,7 +157,7 @@ function DocsSidebar({ index, active }: { index: DocsIndex | undefined; active: 
     // re-expand still feels familiar.
     setOpen((prev) => {
       const next = { ...prev };
-      for (const c of index.categories) {
+      for (const c of index.categories ?? []) {
         if (c.entries.some((e) => e.path === active || active.startsWith(e.path + "/"))) {
           next[c.slug] = true;
         }
@@ -178,7 +183,7 @@ function DocsSidebar({ index, active }: { index: DocsIndex | undefined; active: 
           <div className="docs-sidebar-sub">Operator reference</div>
         </span>
       </div>
-      {index.categories.map((cat) => {
+      {(index.categories ?? []).map((cat) => {
         const isOpen = open[cat.slug] ?? false;
 const ChevronIcon = isOpen ? Icon["chevron-down"] : Icon["chevron-right"];
             return (
@@ -197,7 +202,7 @@ const ChevronIcon = isOpen ? Icon["chevron-down"] : Icon["chevron-right"];
                     {cat.entries.map((e) => (
                       <li key={e.path}>
                         <NavLink
-                          to={`/docs/${e.path}`}
+                          to={docsPath(e.path)}
                           end={false}
                           className={({ isActive: navActive }) =>
                             "docs-sidebar-link" + (navActive || e.path === active ? " is-active" : "")
@@ -237,16 +242,34 @@ function DocsIndexPage({
     );
   }
 
+  const categories = index.categories ?? [];
+  const quickLinks = index.quick_links ?? [];
+  if (categories.length === 0 && quickLinks.length === 0) {
+    return (
+      <div className="docs-page">
+        <section className="docs-hero">
+          <div className="docs-hero-eyebrow">Documentation</div>
+          <h1 className="docs-hero-title">No docs indexed yet</h1>
+          <p className="docs-hero-sub">
+            The docs tree was not found at boot. Check pod logs for{" "}
+            <code>docs: no usable docs directory</code> or set{" "}
+            <code>NEXUS_DOCS_DIR</code> to your markdown root.
+          </p>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="docs-page">
       <section className="docs-hero">
         <div className="docs-hero-eyebrow">{index.title}</div>
         <h1 className="docs-hero-title">{index.tagline || index.title}</h1>
         {index.tagline ? <p className="docs-hero-tag">{index.tagline}</p> : null}
-        {index.quick_links && index.quick_links.length > 0 ? (
+        {(index.quick_links ?? []).length > 0 ? (
           <div className="docs-quicklinks">
-            {index.quick_links.map((e) => (
-              <Link className="docs-quicklink" to={`/docs/${e.path}`} key={e.path}>
+            {(index.quick_links ?? []).map((e) => (
+              <Link className="docs-quicklink" to={docsPath(e.path)} key={e.path}>
                 <div className="docs-quicklink-title">{e.title}</div>
                 {e.summary ? <div className="docs-quicklink-summary">{e.summary}</div> : null}
                 <div className="docs-quicklink-more">
@@ -258,13 +281,15 @@ function DocsIndexPage({
         ) : null}
       </section>
 
-      {index.categories.map((c) =>
-        c.entries && c.entries.length === 0 ? null : (
+      {(index.categories ?? []).map((c) => {
+        const entries = c.entries ?? [];
+        if (entries.length === 0) return null;
+        return (
           <section className="docs-section" key={c.slug}>
             <h2 className="docs-section-title">{c.title}</h2>
             <div className="docs-grid">
-              {c.entries.map((e) => (
-                <Link className="docs-grid-card" key={e.path} to={`/docs/${e.path}`}>
+              {entries.map((e) => (
+                <Link className="docs-grid-card" key={e.path} to={docsPath(e.path)}>
                   <div className="docs-grid-card-title">
                     {e.title}
                     {e.status && e.status !== "stable" ? (
@@ -276,8 +301,8 @@ function DocsIndexPage({
               ))}
             </div>
           </section>
-        ),
-      )}
+        );
+      })}
     </div>
   );
 }

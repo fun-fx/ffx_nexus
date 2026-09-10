@@ -6,6 +6,7 @@ import { RequireAuth } from "./components/RequireAuth";
 import { Overview } from "./pages/Overview";
 import { Login } from "./pages/Login";
 import { Traces } from "./pages/Traces";
+import { TracesDashboard } from "./pages/TracesDashboard";
 import { Routing } from "./pages/Routing";
 import { RoutingDetail } from "./pages/RoutingDetail";
 import { Keys } from "./pages/Keys";
@@ -21,6 +22,11 @@ import { Spend } from "./pages/Spend";
 import { Docs } from "./pages/Docs";
 import { Observability } from "./pages/Observability";
 import { MCPRegistry } from "./pages/MCPRegistry";
+import { McpLibrary } from "./pages/McpLibrary";
+import { McpSettings } from "./pages/McpSettings";
+import { Guardrails } from "./pages/Guardrails";
+import { SemanticCache } from "./pages/SemanticCache";
+import { Alerting } from "./pages/Alerting";
 import { MCPLogs } from "./pages/MCPLogs";
 import { ObservabilityLayout } from "./layouts/ObservabilityLayout";
 import { GatewayLayout } from "./layouts/GatewayLayout";
@@ -28,13 +34,6 @@ import { McpLayout } from "./layouts/McpLayout";
 import { EvalLayout } from "./layouts/EvalLayout";
 import { GovernanceLayout } from "./layouts/GovernanceLayout";
 import { DevelopLayout } from "./layouts/DevelopLayout";
-import {
-  AlertingPlaceholder,
-  GuardrailsPlaceholder,
-  McpLibraryPlaceholder,
-  McpSettingsPlaceholder,
-  SemanticCachePlaceholder,
-} from "./pages/placeholders";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -53,6 +52,12 @@ function LegacyRoutingDetailRedirect() {
   return <Navigate to={`/gateway/routing/${alias ?? ""}`} replace />;
 }
 
+function LegacyDocsRedirect() {
+  const params = useParams();
+  const slug = (params["*"] as string | undefined) ?? "";
+  return <Navigate to={slug ? `/develop/docs/${slug}` : "/develop/docs"} replace />;
+}
+
 export function App() {
   return (
     <ThemeProvider>
@@ -65,7 +70,8 @@ export function App() {
                 <Route index element={<Overview />} />
 
                 <Route path="observability" element={<ObservabilityLayout />}>
-                  <Route index element={<Navigate to="connectors" replace />} />
+                  <Route index element={<Navigate to="dashboard" replace />} />
+                  <Route path="dashboard" element={<TracesDashboard />} />
                   <Route path="traces" element={<Traces />} />
                   <Route path="spend" element={<Spend />} />
                   <Route path="connectors" element={<Observability />} />
@@ -78,16 +84,16 @@ export function App() {
                   <Route path="routing/:alias" element={<RoutingDetail />} />
                   <Route path="providers" element={<Credentials />} />
                   <Route path="keys" element={<Keys />} />
-                  <Route path="guardrails" element={<GuardrailsPlaceholder />} />
-                  <Route path="cache" element={<SemanticCachePlaceholder />} />
-                  <Route path="alerting" element={<AlertingPlaceholder />} />
+                  <Route path="guardrails" element={<Guardrails />} />
+                  <Route path="cache" element={<SemanticCache />} />
+                  <Route path="alerting" element={<Alerting />} />
                 </Route>
 
                 <Route path="mcp" element={<McpLayout />}>
                   <Route index element={<Navigate to="registry" replace />} />
                   <Route path="registry" element={<MCPRegistry />} />
-                  <Route path="library" element={<McpLibraryPlaceholder />} />
-                  <Route path="settings" element={<McpSettingsPlaceholder />} />
+                  <Route path="library" element={<McpLibrary />} />
+                  <Route path="settings" element={<McpSettings />} />
                 </Route>
 
                 <Route path="eval" element={<EvalLayout />}>
@@ -124,7 +130,7 @@ export function App() {
                 <Route path="audit" element={<Navigate to="/governance/audit" replace />} />
                 <Route path="playground" element={<Navigate to="/develop/playground" replace />} />
                 <Route path="docs" element={<Navigate to="/develop/docs" replace />} />
-                <Route path="docs/*" element={<Navigate to="/develop/docs" replace />} />
+                <Route path="docs/*" element={<LegacyDocsRedirect />} />
 
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>

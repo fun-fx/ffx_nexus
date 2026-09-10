@@ -539,7 +539,16 @@ func Build() (Index, error) {
 // List is the response of GET /api/docs. Reads through `built`
 // rather than a separate cache so SetSourceDir's in-place update
 // is visible to callers without needing a second reindex call.
-func List() Index { return built }
+func List() Index {
+	idx := built
+	if idx.Categories == nil {
+		idx.Categories = []Category{}
+	}
+	if idx.QuickLinks == nil {
+		idx.QuickLinks = []Entry{}
+	}
+	return idx
+}
 
 // Err returns the most recent walk failure or nil when the index is
 // healthy. main.go calls this before the console starts listening
@@ -587,7 +596,9 @@ func Get(slug string) (Page, error) {
 // short, so we leave auth on the surrounding Server middleware.
 func Routes() http.Handler {
 	r := chi.NewRouter()
-	r.Get("/", writeJSONHandler(built))
+	r.Get("/", func(w http.ResponseWriter, req *http.Request) {
+		writeJSONHandler(List())(w, req)
+	})
 	r.Get("/llms.txt", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		var buf bytes.Buffer

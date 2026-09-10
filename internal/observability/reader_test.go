@@ -674,3 +674,136 @@ func TestDailySpendBreakdownRow_JSONContract(t *testing.T) {
 		t.Errorf("model missing from JSON: %s", out)
 	}
 }
+
+func TestBucketIntervalForWindow(t *testing.T) {
+	cases := []struct {
+		window time.Duration
+		want   time.Duration
+	}{
+		{30 * time.Minute, time.Minute},
+		{time.Hour, time.Minute},
+		{2 * time.Hour, 5 * time.Minute},
+		{24 * time.Hour, 5 * time.Minute},
+		{3 * 24 * time.Hour, time.Hour},
+		{30 * 24 * time.Hour, 6 * time.Hour},
+		{60 * 24 * time.Hour, 24 * time.Hour},
+	}
+	for _, tc := range cases {
+		got := BucketIntervalForWindow(tc.window)
+		if got != tc.want {
+			t.Errorf("window=%v want=%v got=%v", tc.window, tc.want, got)
+		}
+	}
+}
+
+func TestAppendStatusConds(t *testing.T) {
+	cases := []struct {
+		name      string
+		filter    TraceFilter
+		wantSub   string
+		wantEmpty bool
+	}{
+		{"legacy ok", TraceFilter{Status: "ok"}, "status_code < 400", false},
+		{"legacy err", TraceFilter{Status: "err"}, "status_code >= 400", false},
+		{"multi ok only", TraceFilter{Statuses: []string{"ok"}}, "status_code < 400", false},
+		{"multi err only", TraceFilter{Statuses: []string{"err"}}, "status_code >= 400", false},
+		{"multi both", TraceFilter{Statuses: []string{"ok", "err"}}, "", true},
+		{"invalid only", TraceFilter{Statuses: []string{"bogus"}}, "1 = 0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conds := appendStatusConds(nil, tc.filter)
+			joined := strings.Join(conds, " ")
+			if tc.wantEmpty {
+				if len(conds) != 0 {
+					t.Errorf("want no status predicate, got %q", joined)
+				}
+				return
+			}
+			if !strings.Contains(joined, tc.wantSub) {
+				t.Errorf("want %q in %q", tc.wantSub, joined)
+			}
+		})
+	}
+}
+
+func TestBuildRequestVolumeSeriesQuery(t *testing.T) {
+	cases := []struct {
+		name   string
+		userID string
+		filter TraceFilter
+		want   []string
+		args   int
+	}{
+		{
+			name: "org scoped",
+			want: []string{
+				"toStartOfInterval",
+				"toIntervalSecond(?)",
+				"countIf(status_code < 400)",
+				"countIf(status_code >= 400)",
+				"timestamp >= ?",
+				"timestamp < ?",
+				"GROUP BY bucket",
+			},
+			args: 4,
+		},
+		{
+			name:   "user scoped err only",
+			userID: "u-1",
+			filter: TraceFilter{Statuses: []string{"err"}},
+			want:   []string{"user_id = ?", "status_code >= 400"},
+			args:   5,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := buildRequestVolumeSeriesQuery("org-a", tc.userID, tc.filter)
+			for _, piece := range tc.want {
+				if !strings.Contains(q, piece) {
+					t.Errorf("query missing %q:\n%s", piece, q)
+				}
+			}
+			since := time.Now().UTC().Add(-time.Hour)
+			before := time.Now().UTC()
+			got := buildRequestVolumeSeriesArgs("org-a", tc.userID, before, since, 60, tc.filter)
+			if len(got) != tc.args {
+				t.Errorf("args len want=%d got=%d (%v)", tc.args, len(got), got)
+			}
+		})
+	}
+}
+
+func TestFillDenseVolumeBuckets(t *testing.T) {
+	since := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	before := since.Add(5 * time.Minute)
+	sparse := []VolumeBucket{
+		{Timestamp: since.Add(2 * time.Minute), Ok: 4, Err: 1},
+	}
+	got := fillDenseVolumeBuckets(sparse, since, before, time.Minute)
+	if len(got) != 5 {
+		t.Fatalf("want 5 bins, got %d", len(got))
+	}
+	if !got[0].Timestamp.Equal(since) || got[0].Ok != 0 {
+		t.Errorf("first bin want zero at %v, got %+v", since, got[0])
+	}
+	if got[2].Ok != 4 || got[2].Err != 1 {
+		t.Errorf("preserved sparse bin: %+v", got[2])
+	}
+	if got[4].Timestamp.Equal(before) {
+		t.Errorf("half-open window must not include before=%v", before)
+	}
+}
+
+func TestFillDenseVolumeBuckets_EmptyWindow(t *testing.T) {
+	since := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	got := fillDenseVolumeBuckets(nil, since, since.Add(3*time.Minute), time.Minute)
+	if len(got) != 3 {
+		t.Fatalf("want 3 zero bins, got %d", len(got))
+	}
+	for i, b := range got {
+		if b.Ok != 0 || b.Err != 0 {
+			t.Errorf("bin %d not zero: %+v", i, b)
+		}
+	}
+}

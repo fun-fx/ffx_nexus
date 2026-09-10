@@ -64,6 +64,7 @@ var consoleRoutePolicies = []routePolicy{
 
 	// --- member --------------------------------------------------------------
 	{"GET", "/api/traces", "member", ""},
+	{"GET", "/api/traces/series", "member", ""},
 	{"GET", "/api/turns", "member", ""},
 	{"GET", "/api/stats", "member", ""},
 	{"GET", "/api/stats/providers", "member", ""},
@@ -110,6 +111,8 @@ var consoleRoutePolicies = []routePolicy{
 	{"DELETE", "/api/credentials/{id}", "admin", ""},
 	{"GET", "/api/eval/config", "admin", ""},
 	{"PATCH", "/api/eval/config", "admin", ""},
+	{"GET", "/api/gateway/config", "admin", ""},
+	{"PATCH", "/api/gateway/config", "admin", ""},
 	{"POST", "/api/eval/profiles/", "admin", ""},
 	{"GET", "/api/eval/plugins/", "admin", ""},
 	{"POST", "/api/eval/plugins/", "admin", ""},
@@ -128,6 +131,8 @@ var consoleRoutePolicies = []routePolicy{
 	{"DELETE", "/api/mcp/servers/{id}", "admin", ""},
 	{"POST", "/api/mcp/servers/{id}/reconnect", "admin", ""},
 	{"POST", "/api/mcp/servers/{id}/test", "admin", ""},
+	{"GET", "/api/mcp/settings", "admin", ""},
+	{"PATCH", "/api/mcp/settings", "admin", ""},
 	{"GET", "/api/eval/benchmarks/", "admin", ""},
 	{"POST", "/api/eval/benchmarks/", "admin", ""},
 	{"GET", "/api/eval/benchmarks/schedules/", "admin", ""},

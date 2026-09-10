@@ -263,6 +263,55 @@ const ZERO_STATS: Stats = {
   guardrail_events: 0,
 };
 
+export type TraceVolumePeriod = "1h" | "24h" | "7d" | "30d";
+
+export interface VolumeSeriesQuery {
+  since?: string;
+  before?: string;
+  period?: TraceVolumePeriod;
+  status?: ("ok" | "err")[];
+}
+
+export interface VolumeBucket {
+  timestamp: string;
+  ok: number;
+  err: number;
+}
+
+export interface VolumeSeriesResponse {
+  buckets: VolumeBucket[];
+  interval_seconds: number;
+  since: string;
+  before: string;
+  available: boolean;
+}
+
+export async function fetchTraceVolumeSeries(
+  query: VolumeSeriesQuery = {},
+): Promise<VolumeSeriesResponse> {
+  const params = new URLSearchParams();
+  if (query.before) params.set("before", query.before);
+  if (query.since) params.set("since", query.since);
+  if (query.period) params.set("period", query.period);
+  if (query.status && query.status.length > 0) {
+    params.set("status", query.status.join(","));
+  }
+  const qs = params.toString();
+  const url = qs ? `/api/traces/series?${qs}` : `/api/traces/series`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`trace volume series failed (${res.status})`);
+  }
+  const data = (await res.json()) as VolumeSeriesResponse;
+  return {
+    buckets: Array.isArray(data.buckets) ? data.buckets : [],
+    interval_seconds: data.interval_seconds ?? 0,
+    since: data.since ?? "",
+    before: data.before ?? "",
+    available: data.available !== false,
+  };
+}
+
 export async function fetchTraces(query: TraceQuery = {}): Promise<TracePage> {
   // Build the URL manually so we can attach the cursor fields and the
   // filter fields without a third-party query-string dependency and so
@@ -613,6 +662,93 @@ export interface MCPLogFilterData {
   tool_names: string[];
   server_labels: string[];
   statuses: string[];
+}
+
+export interface MCPSettingsSnapshot {
+  org_id: string;
+  default_timeout_ms: number;
+  default_sticky_http: boolean;
+  gateway_base_url: string;
+  oauth_sessions_enabled: boolean;
+  mcp_routes: {
+    list_servers: string;
+    list_tools: string;
+    call_tool: string;
+  };
+}
+
+export async function fetchMCPSettings(): Promise<MCPSettingsSnapshot> {
+  const res = await fetch("/api/mcp/settings");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+  return jsonOrError<MCPSettingsSnapshot>(res);
+}
+
+export async function patchMCPSettings(body: {
+  default_timeout_ms?: number;
+  default_sticky_http?: boolean;
+}): Promise<MCPSettingsSnapshot> {
+  const res = await fetch("/api/mcp/settings", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrError<MCPSettingsSnapshot>(res);
+}
+
+export interface GatewayConfigSnapshot {
+  guardrails: {
+    enabled: boolean;
+    block_pii_input: boolean;
+    redact_pii_output: boolean;
+    max_input_chars: number;
+    deny_patterns: string[];
+    validate_json_output: boolean;
+    self_correction_enabled: boolean;
+    self_correction_max_retries: number;
+  };
+  semantic_cache: {
+    enabled: boolean;
+    ttl: string;
+    threshold: number;
+    max_entries: number;
+    redis_configured: boolean;
+    embeddings_configured: boolean;
+  };
+  alerting: {
+    failover_webhook_set: boolean;
+    failover_slack_set: boolean;
+    cooldown: string;
+  };
+  restart_required: string[];
+}
+
+export async function fetchGatewayConfig(): Promise<GatewayConfigSnapshot> {
+  const res = await fetch("/api/gateway/config");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+  }
+  return jsonOrError<GatewayConfigSnapshot>(res);
+}
+
+export async function patchGatewayConfig(body: {
+  guardrails?: Partial<GatewayConfigSnapshot["guardrails"]>;
+  semantic_cache?: Partial<GatewayConfigSnapshot["semantic_cache"]>;
+  alerting?: {
+    failover_webhook?: string;
+    failover_slack?: string;
+    cooldown?: string;
+  };
+}): Promise<GatewayConfigSnapshot> {
+  const res = await fetch("/api/gateway/config", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrError<GatewayConfigSnapshot>(res);
 }
 
 export async function fetchMCPServers(): Promise<MCPServerListResponse> {
