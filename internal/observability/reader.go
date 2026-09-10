@@ -160,11 +160,89 @@ type TraceFilter struct {
 	Status   string   // legacy single: "ok" | "err" | "" (any)
 	Statuses []string // dashboard multi-select: "ok", "err"; empty = any
 	Provider string   // exact match against provider_name, empty = any
-	Q        string   // fuzzy match, empty = any
+	// Providers is the dashboard multi-select for provider_name. When
+	// non-empty it takes precedence over the single Provider field used
+	// by the traces list. Empty means any provider.
+	Providers []string
+	// Models is the dashboard multi-select for request_model. Empty means any.
+	Models []string
+	Q      string // fuzzy match, empty = any
 	// Turn scopes the page to the calls of a single agent turn. This is
 	// what the overview's expand-a-row drill-down sends; it is an exact
 	// match on turn_id, never a fuzzy one, because the value is a hash.
 	Turn string
+}
+
+const dashboardFilterCap = 50
+
+// sanitizeCSV trims, drops empties, dedupes, and caps a multi-select list
+// so a long query string cannot inflate an IN clause.
+func sanitizeCSV(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+		if len(out) >= dashboardFilterCap {
+			break
+		}
+	}
+	return out
+}
+
+func inClause(column string, n int) string {
+	if n <= 0 {
+		return "1 = 0"
+	}
+	ph := make([]string, n)
+	for i := range ph {
+		ph[i] = "?"
+	}
+	return column + " IN (" + strings.Join(ph, ", ") + ")"
+}
+
+type dimensionSkip struct {
+	providers bool
+	models    bool
+}
+
+// appendDimensionConds adds provider_name / request_model IN predicates.
+// skip.providers / skipModels omit that dimension so facet queries can
+// populate a dropdown without the current selection emptying it.
+func appendDimensionConds(conds []string, filter TraceFilter, skip dimensionSkip) ([]string, []any) {
+	var args []any
+	if !skip.providers {
+		providers := sanitizeCSV(filter.Providers)
+		if len(providers) == 0 && filter.Provider != "" {
+			providers = []string{filter.Provider}
+		}
+		if len(providers) > 0 {
+			conds = append(conds, inClause("provider_name", len(providers)))
+			for _, p := range providers {
+				args = append(args, p)
+			}
+		}
+	}
+	if !skip.models {
+		models := sanitizeCSV(filter.Models)
+		if len(models) > 0 {
+			conds = append(conds, inClause("request_model", len(models)))
+			for _, m := range models {
+				args = append(args, m)
+			}
+		}
+	}
+	return conds, args
 }
 
 // effectiveStatusSlice resolves legacy Status and multi Statuses into the
@@ -560,7 +638,35 @@ type Stats struct {
 // orgID. When userID is non-empty, aggregates are narrowed further to that
 // caller's traffic.
 func (r *Reader) WindowStats(ctx context.Context, window time.Duration, orgID, userID string) (Stats, error) {
+	before := time.Now().UTC()
+	since := before.Add(-window)
+	return r.WindowStatsRange(ctx, before, since, orgID, userID, TraceFilter{})
+}
+
+// WindowStatsRange is WindowStats over an explicit [since, before) plus the
+// same status/provider/model filter the dashboard charts use, so KPI cards
+// and histograms describe the same traffic.
+func (r *Reader) WindowStatsRange(ctx context.Context, before, since time.Time, orgID, userID string, filter TraceFilter) (Stats, error) {
 	var s Stats
+	if before.IsZero() {
+		before = time.Now().UTC()
+	}
+	if since.IsZero() {
+		since = before.Add(-time.Hour)
+	}
+	orgCond, orgArgs := orgScopeClause(orgID)
+	conds := []string{orgCond}
+	args := append([]any{}, orgArgs...)
+	if userID != "" {
+		conds = append(conds, "user_id = ?")
+		args = append(args, userID)
+	}
+	conds = append(conds, "timestamp >= ?", "timestamp < ?")
+	args = append(args, since.UTC(), before.UTC())
+	conds = appendStatusConds(conds, filter)
+	dimConds, dimArgs := appendDimensionConds(nil, filter, dimensionSkip{})
+	conds = append(conds, dimConds...)
+	args = append(args, dimArgs...)
 	query := `
 		SELECT
 			toInt64(count()) AS total,
@@ -574,16 +680,8 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, orgID, u
 			if(count() = 0, 0, countIf(cache_hit = 1) / count()) AS cache_hit_rate,
 			toInt64(countIf(guardrail_action != '')) AS guardrail_events
 		FROM gateway_traces
-		WHERE timestamp >= now() - INTERVAL ? SECOND`
-	args := []any{int64(window.Seconds())}
-	orgCond, orgArgs := orgScopeClause(orgID)
-	query += ` AND ` + orgCond
-	args = append(args, orgArgs...)
-	if userID != "" {
-		query += ` AND user_id = ?`
-		args = append(args, userID)
-	}
-	query += ` SETTINGS max_memory_usage = 400000000`
+		WHERE ` + strings.Join(conds, " AND ") + `
+		SETTINGS max_memory_usage = 400000000`
 	row := r.conn.QueryRow(ctx, query, args...)
 	if err := row.Scan(
 		&s.TotalRequests, &s.ErrorRate, &s.AvgLatencyMs, &s.P95LatencyMs,
@@ -592,9 +690,6 @@ func (r *Reader) WindowStats(ctx context.Context, window time.Duration, orgID, u
 	); err != nil {
 		return s, err
 	}
-	// TotalTokens is the prompt + completion aggregate for clients that
-	// don't want to sum the two halves. It is derived in Go rather than
-	// in SQL so the SELECT doesn't have to scan the same columns twice.
 	s.TotalTokens = s.TotalInputTokens + s.TotalOutputTokens
 	return s, nil
 }
@@ -1195,11 +1290,21 @@ func fillDenseVolumeBuckets(sparse []VolumeBucket, since, before time.Time, inte
 }
 
 func buildRequestVolumeSeriesQuery(orgID, userID string, filter TraceFilter) string {
+	return buildBucketedSeriesQuery(
+		`toInt64(countIf(status_code < 400)) AS ok,
+			toInt64(countIf(status_code >= 400)) AS err`,
+		orgID, userID, filter, dimensionSkip{},
+	)
+}
+
+// buildBucketedSeriesQuery is the shared histogram SELECT used by volume
+// and the other dashboard series. selectCols is the comma-separated
+// aggregate list after the bucket column.
+func buildBucketedSeriesQuery(selectCols, orgID, userID string, filter TraceFilter, skip dimensionSkip) string {
 	q := `
 		SELECT
 			toStartOfInterval(timestamp, toIntervalSecond(?)) AS bucket,
-			toInt64(countIf(status_code < 400)) AS ok,
-			toInt64(countIf(status_code >= 400)) AS err
+			` + selectCols + `
 		FROM gateway_traces`
 	orgCond, _ := orgScopeClause(orgID)
 	conds := []string{orgCond}
@@ -1208,6 +1313,8 @@ func buildRequestVolumeSeriesQuery(orgID, userID string, filter TraceFilter) str
 	}
 	conds = append(conds, "timestamp >= ?", "timestamp < ?")
 	conds = appendStatusConds(conds, filter)
+	dimConds, _ := appendDimensionConds(nil, filter, skip)
+	conds = append(conds, dimConds...)
 	q += " WHERE " + strings.Join(conds, " AND ")
 	q += `
 		GROUP BY bucket
@@ -1216,7 +1323,7 @@ func buildRequestVolumeSeriesQuery(orgID, userID string, filter TraceFilter) str
 	return q
 }
 
-func buildRequestVolumeSeriesArgs(orgID, userID string, before, since time.Time, intervalSec int64, filter TraceFilter) []any {
+func buildBucketedSeriesArgs(orgID, userID string, before, since time.Time, intervalSec int64, filter TraceFilter, skip dimensionSkip) []any {
 	args := []any{intervalSec}
 	_, orgArgs := orgScopeClause(orgID)
 	args = append(args, orgArgs...)
@@ -1224,5 +1331,11 @@ func buildRequestVolumeSeriesArgs(orgID, userID string, before, since time.Time,
 		args = append(args, userID)
 	}
 	args = append(args, since.UTC(), before.UTC())
+	_, dimArgs := appendDimensionConds(nil, filter, skip)
+	args = append(args, dimArgs...)
 	return args
+}
+
+func buildRequestVolumeSeriesArgs(orgID, userID string, before, since time.Time, intervalSec int64, filter TraceFilter) []any {
+	return buildBucketedSeriesArgs(orgID, userID, before, since, intervalSec, filter, dimensionSkip{})
 }

@@ -5229,6 +5229,24 @@ body.rg-resizing {
   padding-bottom: 12px;
 }
 
+.trace-dashboard__charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .trace-dashboard__charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.trace-dashboard__facet-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .trace-dashboard__filter-section {
   display: flex;
   flex-direction: column;
@@ -5255,6 +5273,7 @@ body.rg-resizing {
 
 .trace-dashboard__chart-panel {
   min-height: 280px;
+  min-width: 0;
 }
 
 .trace-dashboard__legend {
@@ -5284,6 +5303,26 @@ body.rg-resizing {
 
 .trace-dashboard__legend-item--err::before {
   background: color-mix(in oklab, var(--err) 85%, transparent);
+}
+
+.trace-dashboard__legend-item--accent::before {
+  background: color-mix(in oklab, var(--accent) 85%, transparent);
+}
+
+.trace-dashboard__legend-item--cyan::before {
+  background: color-mix(in oklab, var(--accent-2) 85%, transparent);
+}
+
+.trace-dashboard__legend-item--violet::before {
+  background: color-mix(in oklab, var(--accent-3) 85%, transparent);
+}
+
+.trace-dashboard__legend-item--info::before {
+  background: color-mix(in oklab, var(--info) 85%, transparent);
+}
+
+.trace-dashboard__legend-item--warn::before {
+  background: color-mix(in oklab, var(--warn) 85%, transparent);
 }
 
 .trace-dashboard__chart-actions {

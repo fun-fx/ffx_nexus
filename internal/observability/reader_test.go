@@ -755,6 +755,12 @@ func TestBuildRequestVolumeSeriesQuery(t *testing.T) {
 			want:   []string{"user_id = ?", "status_code >= 400"},
 			args:   5,
 		},
+		{
+			name:   "provider and model IN",
+			filter: TraceFilter{Providers: []string{"openai", "gemini"}, Models: []string{"gpt-4o-mini"}},
+			want:   []string{"provider_name IN (?, ?)", "request_model IN (?)"},
+			args:   7,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -805,5 +811,77 @@ func TestFillDenseVolumeBuckets_EmptyWindow(t *testing.T) {
 		if b.Ok != 0 || b.Err != 0 {
 			t.Errorf("bin %d not zero: %+v", i, b)
 		}
+	}
+}
+
+func TestSanitizeCSVAndInClause(t *testing.T) {
+	got := sanitizeCSV([]string{" openai ", "", "openai", "gemini"})
+	if len(got) != 2 || got[0] != "openai" || got[1] != "gemini" {
+		t.Fatalf("sanitizeCSV: %+v", got)
+	}
+	if inClause("provider_name", 2) != "provider_name IN (?, ?)" {
+		t.Errorf("inClause: %s", inClause("provider_name", 2))
+	}
+}
+
+func TestAppendDimensionConds_SkipOwnDimension(t *testing.T) {
+	filter := TraceFilter{Providers: []string{"openai"}, Models: []string{"gpt-4o"}}
+	conds, args := appendDimensionConds(nil, filter, dimensionSkip{providers: true})
+	joined := strings.Join(conds, " ")
+	if strings.Contains(joined, "provider_name") {
+		t.Errorf("skip providers still applied: %q", joined)
+	}
+	if !strings.Contains(joined, "request_model IN (?)") {
+		t.Errorf("want model IN, got %q", joined)
+	}
+	if len(args) != 1 || args[0] != "gpt-4o" {
+		t.Errorf("args: %v", args)
+	}
+}
+
+func TestBuildBucketedSeriesQuery_Tokens(t *testing.T) {
+	q := buildBucketedSeriesQuery(
+		`toInt64(sum(input_tokens)) AS input,
+			toInt64(sum(output_tokens)) AS output`,
+		"org-a", "", TraceFilter{Providers: []string{"openai"}}, dimensionSkip{},
+	)
+	for _, piece := range []string{
+		"sum(input_tokens)",
+		"provider_name IN (?)",
+		"GROUP BY bucket",
+	} {
+		if !strings.Contains(q, piece) {
+			t.Errorf("missing %q in\n%s", piece, q)
+		}
+	}
+}
+
+func TestFillDenseTokenAndCostBuckets(t *testing.T) {
+	since := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	before := since.Add(3 * time.Minute)
+	tokens := fillDenseTokenBuckets(
+		[]TokenBucket{{Timestamp: since.Add(time.Minute), Input: 10, Output: 4}},
+		since, before, time.Minute,
+	)
+	if len(tokens) != 3 {
+		t.Fatalf("tokens bins %d", len(tokens))
+	}
+	if tokens[1].Input != 10 || tokens[0].Input != 0 {
+		t.Errorf("token fill: %+v", tokens)
+	}
+	cost := fillDenseCostBuckets(
+		[]CostBucket{{Timestamp: since.Add(2 * time.Minute), USD: 1.5}},
+		since, before, time.Minute,
+	)
+	if len(cost) != 3 || cost[2].USD != 1.5 || cost[0].USD != 0 {
+		t.Errorf("cost fill: %+v", cost)
+	}
+	lat := fillDenseLatencyBuckets(nil, since, before, time.Minute)
+	if len(lat) != 3 || lat[0].AvgMs != 0 {
+		t.Errorf("latency fill: %+v", lat)
+	}
+	cache := fillDenseCacheBuckets(nil, since, before, time.Minute)
+	if len(cache) != 3 || cache[0].Hits != 0 {
+		t.Errorf("cache fill: %+v", cache)
 	}
 }
