@@ -15,6 +15,7 @@ export function SemanticCache() {
   const [ttl, setTtl] = useState<string | null>(null);
   const [threshold, setThreshold] = useState<number | null>(null);
   const [maxEntries, setMaxEntries] = useState<number | null>(null);
+  const [exactMatch, setExactMatch] = useState<boolean | null>(null);
 
   const saveMut = useMutation({
     mutationFn: () =>
@@ -24,6 +25,7 @@ export function SemanticCache() {
           ttl: ttl ?? sc?.ttl,
           threshold: threshold ?? sc?.threshold,
           max_entries: maxEntries ?? sc?.max_entries,
+          exact_match: exactMatch ?? sc?.exact_match,
         },
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["gateway-config"] }),
@@ -40,8 +42,8 @@ export function SemanticCache() {
             <GradientText as="span">Semantic</GradientText> Cache
           </h1>
           <p className="page-sub">
-            Embedding-similarity cache for deterministic requests. Requires Redis and an
-            embeddings endpoint at boot.
+            Embedding-similarity cache for deterministic requests. Exact-match mode
+            keys on a prompt hash and does not need an embeddings endpoint.
           </p>
         </div>
       </header>
@@ -52,11 +54,11 @@ export function SemanticCache() {
         <Chip tone="err">{(cfgQ.error as Error).message}</Chip>
       ) : sc ? (
         <section className="panel panel-form">
-          {!sc.redis_configured || !sc.embeddings_configured ? (
+          {!sc.redis_configured || (!sc.embeddings_configured && !sc.exact_match) ? (
             <div className="banner warn" role="status">
               Redis: {sc.redis_configured ? "ok" : "missing"} · Embeddings:{" "}
-              {sc.embeddings_configured ? "ok" : "missing"}. Enable via Helm env and
-              restart to turn the cache on.
+              {sc.embeddings_configured ? "ok" : "missing"}. Exact-match mode can boot
+              without embeddings. Enable via Helm env and restart to turn the cache on.
             </div>
           ) : null}
           <SettingRow
@@ -74,9 +76,24 @@ export function SemanticCache() {
             <span className="field-hint">Duration string, e.g. 24h.</span>
             <input value={ttl ?? sc.ttl} onChange={(e) => setTtl(e.target.value)} />
           </label>
+          <SettingRow
+            label="Exact-match mode"
+            hint="Hit only when the prompt hashes equal. Cannot false-hit; cosine remains available when embeddings are configured."
+          >
+            <LabelToggle
+              checked={exactMatch ?? Boolean(sc.exact_match)}
+              label="exact match cache"
+              onChange={setExactMatch}
+            />
+          </SettingRow>
           <label className="field-row">
             <span className="field-label">Similarity threshold</span>
-            <span className="field-hint">Minimum embedding similarity (0–1) for a cache hit.</span>
+            <span className="field-hint">
+              Minimum embedding similarity (0–1) for a cosine hit. Lower values raise hit
+              rate and the chance of a semantically-wrong cached answer (false hit).
+              Threshold {((threshold ?? sc.threshold) * 100).toFixed(0)}% — keep this high
+              unless you have measured quality impact.
+            </span>
             <input
               type="number"
               min={0}

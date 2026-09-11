@@ -55,6 +55,41 @@ function stubFetch(
       const method = init?.method?.toUpperCase() ?? "GET";
       const body = init?.body ? JSON.parse(String(init.body)) : null;
       callLog.push({ url, method, body });
+      const detail = url.match(/\/api\/traces\/([^/?]+)(?:\/export)?$/);
+      if (detail && !url.includes("dashboard") && !url.includes("series")) {
+        return new Response(
+          JSON.stringify({
+            trace_id: detail[1],
+            attempts: [
+              {
+                index: 0,
+                provider: "openai",
+                model: "gpt-fail",
+                status_code: 502,
+                latency_ms: 12,
+                error_type: "upstream_error_failover",
+                fallback_allowed: true,
+              },
+              {
+                index: 1,
+                provider: "anthropic",
+                model: "claude-ok",
+                status_code: 200,
+                latency_ms: 40,
+                fallback_allowed: false,
+              },
+            ],
+            policy_reasons: [
+              { code: "fallback", detail: "gpt-fail→claude-ok" },
+              { code: "allowed" },
+            ],
+            eval_scores: [{ evaluator: "heuristic_pii", metric: "pii", score: 1, passed: true }],
+            guardrail_rule: "",
+            egress_mode: "proxy",
+          }),
+          { status: 200 },
+        );
+      }
       return handler(url, method, body);
     }),
   );
@@ -396,5 +431,33 @@ describe("<Traces /> empty first-run", () => {
     renderTraces();
     expect(await screen.findByTestId("first-request-snippets")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /no traces yet/i })).toBeInTheDocument();
+  });
+});
+
+describe("<Traces /> request evidence", () => {
+  it("loads attempt trail and eval scores in the detail drawer", async () => {
+    stubFetch((url, method) => {
+      if (method !== "GET") return new Response("{}", { status: 200 });
+      if (url.endsWith("/api/me")) {
+        return new Response(JSON.stringify({ ...adminMe, role: "admin" }), { status: 200 });
+      }
+      if (url.includes("/api/traces")) {
+        return new Response(
+          JSON.stringify({
+            items: [traceRow("req-1", 200, "anthropic", 3)],
+            next_cursor: { before: "", since: "" },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    renderTraces();
+    const row = await screen.findByText("gpt-4o");
+    fireEvent.click(row);
+    expect(await screen.findByText(/attempts/i)).toBeInTheDocument();
+    expect(await screen.findByText(/openai\/gpt-fail/)).toBeInTheDocument();
+    expect(screen.getByText("heuristic_pii")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /export json/i })).toBeInTheDocument();
   });
 });

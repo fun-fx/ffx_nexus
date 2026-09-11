@@ -28,6 +28,7 @@ type ServerStatus struct {
 type Tool struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	Risk        string `json:"risk,omitempty"`
 }
 
 // CallContext carries tenancy and correlation fields for a tool invocation.

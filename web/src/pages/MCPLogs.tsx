@@ -10,6 +10,8 @@ import {
   type MCPLogQuery,
   type MCPLogSummary,
 } from "../api";
+import { classifyToolRisk, riskTone } from "../lib/mcpRisk";
+import { Chip } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
 import { Icon } from "../components/icons";
@@ -78,6 +80,14 @@ export function MCPLogs() {
     { id: "time", header: "Time", cell: (r) => formatTime(r.timestamp) },
     { id: "server", header: "Server", cell: (r) => r.server_label },
     { id: "tool", header: "Tool", cell: (r) => r.tool_name },
+    {
+      id: "risk",
+      header: "Risk",
+      cell: (r) => {
+        const risk = classifyToolRisk(r.tool_name);
+        return <Chip tone={riskTone(risk)}>{risk}</Chip>;
+      },
+    },
     {
       id: "status",
       header: "Status",
@@ -198,6 +208,9 @@ export function MCPLogs() {
               <strong>{selected.tool_name}</strong> on {selected.server_label}
             </div>
             <StatusPill tone={selected.status === "success" ? "ok" : "err"} label={selected.status} />
+            <Chip tone={riskTone(classifyToolRisk(selected.tool_name))}>
+              {classifyToolRisk(selected.tool_name)}
+            </Chip>
             <div className="muted">
               {formatTime(selected.timestamp)} · {selected.latency_ms} ms
             </div>

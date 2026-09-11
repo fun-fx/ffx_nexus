@@ -85,6 +85,80 @@ export interface TracePage {
 // TraceQuery describes one request to the trace listing endpoint. All
 // fields are optional; omitted means "no filter" / "newest first" /
 // "page size 100".
+export interface TraceEvidence extends TraceSummary {
+  attempts: ProviderAttempt[];
+  policy_reasons: PolicyReason[];
+  guardrail_rule?: string;
+  egress_mode?: string;
+  eval_scores: EvalScoreRow[];
+}
+
+export interface ProviderAttempt {
+  index: number;
+  provider: string;
+  model: string;
+  credential_source?: string;
+  status_code: number;
+  latency_ms: number;
+  error_type?: string;
+  error_message?: string;
+  cache_hit?: boolean;
+  fallback_allowed: boolean;
+}
+
+export interface PolicyReason {
+  code: string;
+  rule_id?: string;
+  detail?: string;
+}
+
+export interface EvalScoreRow {
+  evaluator: string;
+  metric: string;
+  score: number;
+  passed: boolean;
+  rationale?: string;
+  judge_model?: string;
+}
+
+export interface ProviderCapability {
+  name: string;
+  scope?: string;
+  chat: boolean;
+  stream: boolean;
+  embeddings: boolean;
+  images: boolean;
+  moderations: boolean;
+  chat_models?: string[];
+  embedding_models?: string[];
+  image_models?: string[];
+  moderation_models?: string[];
+  health: string;
+}
+
+export interface GatewayCapabilities {
+  providers: ProviderCapability[];
+  last_diff?: string[];
+  config?: GatewayConfigSnapshot | null;
+}
+
+export interface InstallReadiness {
+  generated_at: string;
+  build_tag: string;
+  egress_mode: string;
+  capture_trace_content: boolean;
+  eval_plugin_only: boolean;
+  purge_legacy_profiles_on_boot: boolean;
+  fail_closed: boolean;
+  notes: string[];
+  d2b: {
+    packaged: boolean;
+    provider_egress_mode: string;
+    chart_network_policy: string;
+    note: string;
+  };
+}
+
 export interface TraceQuery {
   before?: string;
   since?: string;
@@ -452,6 +526,48 @@ export async function fetchTraces(query: TraceQuery = {}): Promise<TracePage> {
   return { items: [], next_cursor: { before: "", since: "" } };
 }
 
+export async function fetchTraceEvidence(id: string): Promise<TraceEvidence | null> {
+  const res = await fetch(`/api/traces/${encodeURIComponent(id)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return jsonOrError<TraceEvidence>(res);
+}
+
+export async function downloadTraceExport(id: string): Promise<void> {
+  const res = await fetch(`/api/traces/${encodeURIComponent(id)}/export`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `nexus-trace-${id}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function fetchGatewayCapabilities(): Promise<GatewayCapabilities> {
+  const res = await fetch("/api/gateway/capabilities");
+  if (!res.ok) return { providers: [] };
+  return jsonOrError<GatewayCapabilities>(res);
+}
+
+export async function fetchInstallReadiness(format?: "html"): Promise<InstallReadiness | void> {
+  const qs = format === "html" ? "?format=html" : "";
+  const res = await fetch(`/api/ops/readiness${qs}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (format === "html") {
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "nexus-readiness.html";
+    a.click();
+    URL.revokeObjectURL(url);
+    return;
+  }
+  return jsonOrError<InstallReadiness>(res);
+}
+
 // fetchTurns returns the grouped overview rows. Unlike /api/traces this is
 // window-bounded rather than cursor-paged: a GROUP BY has no stable cursor,
 // and the overview only ever shows the most recent handful.
@@ -709,6 +825,7 @@ export interface MCPServerRecord {
 export interface MCPTool {
   name: string;
   description?: string;
+  risk?: string;
 }
 
 export interface MCPServerStatus {
@@ -823,6 +940,7 @@ export interface GatewayConfigSnapshot {
     ttl: string;
     threshold: number;
     max_entries: number;
+    exact_match?: boolean;
     redis_configured: boolean;
     embeddings_configured: boolean;
   };
@@ -832,6 +950,7 @@ export interface GatewayConfigSnapshot {
     cooldown: string;
   };
   restart_required: string[];
+  last_diff?: string[];
 }
 
 export async function fetchGatewayConfig(): Promise<GatewayConfigSnapshot> {

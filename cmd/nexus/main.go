@@ -265,6 +265,7 @@ func main() {
 	// Gateway server.
 	gwHandler := gateway.NewHandler(reg, recorder, lim, log)
 	gwHandler.SetReplicaID(cfg.ReplicaID)
+	gwHandler.SetEgressMode(cfg.EgressMode)
 	if mcpMgr != nil {
 		gwHandler.SetMCPManager(mcpMgr)
 	}
@@ -329,24 +330,29 @@ func main() {
 		}
 	}
 
-	// Semantic cache: Redis-backed, embedding-similarity response cache.
+	// Semantic cache: Redis-backed. Cosine similarity needs embeddings;
+	// exact-hash mode can boot without an embeddings endpoint.
 	var semCacheRedis *semcache.Redis
 	var semCacheSvc *semcache.Service
 	if cfg.SemanticCacheEnabled {
 		if cfg.RedisURL == "" {
 			log.Warn("semantic cache requires NEXUS_REDIS_URL")
-		} else if cfg.EmbeddingsURL == "" {
-			log.Warn("semantic cache requires NEXUS_EMBEDDINGS_URL")
+		} else if cfg.EmbeddingsURL == "" && !cfg.SemanticCacheExact {
+			log.Warn("semantic cache requires NEXUS_EMBEDDINGS_URL (or NEXUS_SEMANTIC_CACHE_EXACT=true)")
 		} else {
 			scfg := semcache.Config{
 				Enabled:            true,
 				TTL:                cfg.SemanticCacheTTL,
 				Threshold:          cfg.SemanticCacheThreshold,
 				MaxEntriesPerModel: cfg.SemanticCacheMaxEntries,
+				ExactMatch:         cfg.SemanticCacheExact,
 			}
-			embedder := semcache.NewOpenAIEmbedder(
-				cfg.EmbeddingsURL, cfg.EmbeddingsModel, cfg.EmbeddingsAPIKey, cfg.EmbeddingsTimeout,
-			)
+			var embedder semcache.Embedder
+			if cfg.EmbeddingsURL != "" {
+				embedder = semcache.NewOpenAIEmbedder(
+					cfg.EmbeddingsURL, cfg.EmbeddingsModel, cfg.EmbeddingsAPIKey, cfg.EmbeddingsTimeout,
+				)
+			}
 			scr, err := semcache.NewRedis(ctx, cfg.RedisURL, embedder, scfg)
 			if err != nil {
 				log.Error("semantic cache init failed", "err", err)
@@ -480,6 +486,16 @@ func main() {
 		consoleSrvHandler.SetQualityRouter(NewRouterQualityQuerier(modelRouter))
 	}
 	consoleSrvHandler.SetCatalog(gwHandler.Catalog())
+	consoleSrvHandler.SetCapabilitySource(gwHandler)
+	consoleSrvHandler.SetInstallReadiness(console.ReadinessFunc(func() console.InstallReadiness {
+		return console.NewInstallReadiness(
+			nexusBuildTag,
+			cfg.EgressMode,
+			cfg.CaptureTraceContent,
+			cfg.EvalPluginOnly,
+			cfg.PurgeLegacyProfilesOnBoot,
+		)
+	}))
 	gatewayCtrl := newGatewayRuntimeController(cfg, gwHandler, semCacheSvc, log)
 	consoleSrvHandler.SetGatewayConfig(gatewayCtrl, gatewayCtrl)
 

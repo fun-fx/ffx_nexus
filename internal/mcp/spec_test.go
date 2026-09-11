@@ -51,3 +51,17 @@ func TestAllowsVirtualKey(t *testing.T) {
 		t.Fatal("expected deny")
 	}
 }
+
+func TestAllowsTool(t *testing.T) {
+	spec := &ServerSpec{AllowedTools: []string{"read_file"}}
+	if !spec.AllowsTool("read_file") {
+		t.Fatal("expected allow")
+	}
+	if spec.AllowsTool("delete_file") {
+		t.Fatal("expected deny")
+	}
+	open := &ServerSpec{}
+	if !open.AllowsTool("anything") {
+		t.Fatal("empty allowlist permits all")
+	}
+}

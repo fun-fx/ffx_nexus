@@ -115,4 +115,28 @@ func TestNewServiceDisabled(t *testing.T) {
 	if NewService(NewMemory(Config{}), nil, Config{Enabled: true}) != nil {
 		t.Fatal("nil embedder should return nil")
 	}
+	if NewService(NewMemory(Config{}), nil, Config{Enabled: true, ExactMatch: true}) == nil {
+		t.Fatal("exact-match mode may boot without an embedder")
+	}
+}
+
+func TestExactMatchHitMiss(t *testing.T) {
+	mem := NewMemory(Config{ExactMatch: true, MaxEntriesPerModel: 10})
+	svc := NewService(mem, nil, Config{Enabled: true, ExactMatch: true})
+	ctx := context.Background()
+	resp := []byte(`{"ok":true}`)
+	if err := svc.Store(ctx, "org1", "m", "hello world", nil, resp); err != nil {
+		t.Fatal(err)
+	}
+	hit, _, err := svc.Lookup(ctx, "org1", "m", "hello world")
+	if err != nil || hit == nil {
+		t.Fatalf("exact hit: hit=%v err=%v", hit, err)
+	}
+	miss, _, err := svc.Lookup(ctx, "org1", "m", "hello world!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if miss != nil {
+		t.Fatal("punctuation change must miss in exact mode")
+	}
 }

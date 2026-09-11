@@ -27,6 +27,7 @@ type Config struct {
 	EmbeddingsModel    string
 	EmbeddingsAPIKey   string
 	Timeout            time.Duration
+	ExactMatch         bool // hash equality before (or instead of) cosine
 }
 
 // Embedder returns a vector for a text prompt.

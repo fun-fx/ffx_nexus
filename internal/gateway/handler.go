@@ -48,6 +48,7 @@ type Handler struct {
 	failoverNotify router.Notifier      // optional webhook/Slack sink for router failover events (V4)
 	concurrency    ConcurrencyCapIface  // V5 per-vkey in-flight cap (nil = disabled)
 	mcp            MCPManager           // nil = MCP proxy disabled
+	egressMode     string               // provider egress contract stamped on traces
 	log            *slog.Logger
 }
 
@@ -516,14 +517,17 @@ func (h *Handler) resolveChain(w http.ResponseWriter, r *http.Request, req ChatC
 		if candidates, isAlias := h.routeCandidates(req.Model); isAlias {
 			allowed := filterAllowed(r.Context(), candidates)
 			if len(allowed) == 0 {
-				writeError(w, r, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use any model in group "+req.Model)
+				detail := "this virtual key is not permitted to use any model in group " + req.Model
+				h.recordPolicyDenied(r, req, http.StatusForbidden, observability.ReasonModelNotAllowed, detail)
+				writeError(w, r, http.StatusForbidden, "model_not_allowed", detail)
 				return nil, false
 			}
 			minQuality, _ := r.Context().Value(ctxKeyMinQuality).(float64)
 			ranked := h.router.Rank(allowed, minQuality)
 			if len(ranked) == 0 {
-				writeError(w, r, http.StatusServiceUnavailable, "no_model_meets_quality",
-					"no allowed model currently meets the minimum quality score for this key")
+				detail := "no allowed model currently meets the minimum quality score for this key"
+				h.recordPolicyDenied(r, req, http.StatusServiceUnavailable, observability.ReasonMinQuality, detail)
+				writeError(w, r, http.StatusServiceUnavailable, "no_model_meets_quality", detail)
 				return nil, false
 			}
 			if h.lb != nil {
@@ -535,10 +539,13 @@ func (h *Handler) resolveChain(w http.ResponseWriter, r *http.Request, req ChatC
 	}
 
 	if !modelAllowed(r.Context(), req.Model) {
-		writeError(w, r, http.StatusForbidden, "model_not_allowed", "this virtual key is not permitted to use model "+req.Model)
+		detail := "this virtual key is not permitted to use model " + req.Model
+		h.recordPolicyDenied(r, req, http.StatusForbidden, observability.ReasonModelNotAllowed, detail)
+		writeError(w, r, http.StatusForbidden, "model_not_allowed", detail)
 		return nil, false
 	}
 	if _, _, err := h.registry.Resolve(req.Model); err != nil {
+		h.recordPolicyDenied(r, req, http.StatusNotFound, observability.ReasonDenied, err.Error())
 		writeError(w, r, http.StatusNotFound, "model_not_found", err.Error())
 		return nil, false
 	}
@@ -632,6 +639,11 @@ func (h *Handler) injectCredential(ctx context.Context, providerName string) (co
 
 func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []string, req ChatCompletionRequest, start time.Time) {
 	var lastErr error
+	reqTrace := h.newTrace(r, req, "")
+	var attempts []observability.ProviderAttempt
+	var reasons []observability.PolicyReason
+	var lastTrace observability.Trace
+	chainLen := len(chain)
 	for i, model := range chain {
 		provider, fwdModel, err := h.registry.Resolve(model)
 		if err != nil {
@@ -642,6 +654,7 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		attempt.Model = fwdModel
 
 		trace := h.newTrace(r, req, provider.Name())
+		stampSharedTraceID(&trace, reqTrace)
 		trace.RequestModel = model
 		attemptStart := time.Now()
 
@@ -654,7 +667,9 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 			trace.ErrorType = "missing_byok_key"
 			trace.ErrorMsg = credErr.Error()
 			trace.CredentialSource = "none"
-			h.recorder.Record(trace)
+			attempts = append(attempts, attemptFromTrace(trace, i, chainLen))
+			reasons = append(reasons, observability.PolicyReason{Code: observability.ReasonMissingBYOK, Detail: credErr.Error()})
+			lastTrace = trace
 			lastErr = credErr
 			continue
 		}
@@ -697,7 +712,9 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					trace.CostUSD = CostUSD(trace.RequestModel, trace.ResponseModel, trace.InputTokens, trace.OutputTokens)
 					cached.Usage.CostUSD = trace.CostUSD
 					setCostHeader(w, trace.CostUSD)
-					h.recorder.Record(trace)
+					attempts = append(attempts, attemptFromTrace(trace, i, chainLen))
+					reasons = append(reasons, observability.PolicyReason{Code: observability.ReasonCacheHit, Detail: "semantic cache"})
+					h.recordEvidence(trace, attempts, reasons)
 					writeJSON(w, http.StatusOK, cached)
 					return
 				}
@@ -718,12 +735,17 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 				failover = true
 			}
 			trace.ErrorMsg = err.Error()
-			h.recorder.Record(trace)
+			attempts = append(attempts, attemptFromTrace(trace, i, chainLen))
+			lastTrace = trace
 			// V4 alert: a primary → secondary hop happened, fan out to
 			// the configured webhook / Slack sinks. We notify only when
 			// we actually have a fallback (the last candidate's failure
 			// is a different story — total failure, not a failover).
 			if failover {
+				reasons = append(reasons, observability.PolicyReason{
+					Code:   observability.ReasonFallback,
+					Detail: chain[i] + "→" + chain[i+1],
+				})
 				h.notifyFailover(router.FailoverEvent{
 					OrgID:        trace.OrgID,
 					VirtualKeyID: trace.VirtualKeyID,
@@ -736,6 +758,8 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					FailedAtUnix: failedAt.UnixMilli(),
 					ReplicaID:    h.replicaID,
 				})
+			} else {
+				reasons = append(reasons, observability.PolicyReason{Code: observability.ReasonUpstreamError, Detail: err.Error()})
 			}
 			lastErr = err
 			continue // fall back to the next candidate
@@ -792,7 +816,13 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 					trace.FinishReason = resp.Choices[0].FinishReason
 					trace.OutputMessages = resp.Choices[0].Message.Content
 					trace.CostUSD = ResolveCostUSD(resp.Usage.EstimatedCost, trace.RequestModel, trace.ResponseModel, &resp.Usage)
-					h.recorder.Record(trace)
+					attempts = append(attempts, attemptFromTrace(trace, i, chainLen))
+					reasons = append(reasons, observability.PolicyReason{
+						Code:   observability.ReasonSchemaBlocked,
+						RuleID: f.Rule,
+						Detail: f.Reason,
+					})
+					h.recordEvidence(trace, attempts, reasons)
 					h.recordSpend(r.Context(), trace.CostUSD)
 					writeError(w, r, http.StatusUnprocessableEntity, "schema_validation_failed", f.Reason)
 					return
@@ -815,7 +845,12 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 		// definite value.
 		resp.Usage.CostUSD = trace.CostUSD
 		setCostHeader(w, trace.CostUSD)
-		h.recorder.Record(trace)
+		if trace.GuardrailAction == "output_redacted" {
+			reasons = append(reasons, observability.PolicyReason{Code: observability.ReasonRedacted, Detail: "output_redacted"})
+		}
+		reasons = append(reasons, observability.PolicyReason{Code: observability.ReasonAllowed})
+		attempts = append(attempts, attemptFromTrace(trace, i, chainLen))
+		h.recordEvidence(trace, attempts, reasons)
 		h.recordSpend(r.Context(), trace.CostUSD)
 
 		writeJSON(w, http.StatusOK, resp)
@@ -826,6 +861,14 @@ func (h *Handler) handleUnary(w http.ResponseWriter, r *http.Request, chain []st
 	if lastErr != nil {
 		msg = lastErr.Error()
 	}
+	if lastTrace.TraceID == "" {
+		lastTrace = reqTrace
+		lastTrace.StatusCode = http.StatusBadGateway
+		lastTrace.ErrorType = "upstream_error"
+		lastTrace.ErrorMsg = msg
+		lastTrace.LatencyMs = time.Since(start).Milliseconds()
+	}
+	h.recordEvidence(lastTrace, attempts, reasons)
 	writeError(w, r, http.StatusBadGateway, string(apierr.CodeUpstreamError), msg)
 }
 
@@ -838,11 +881,16 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 
 	// Fallback is only possible before the first byte is written. We try to open
 	// a stream for each candidate; the first that connects wins and is streamed.
+	reqTrace := h.newTrace(r, req, "")
 	var (
-		events  <-chan StreamEvent
-		trace   observability.Trace
-		lastErr error
+		events   <-chan StreamEvent
+		trace    observability.Trace
+		lastErr  error
+		attempts []observability.ProviderAttempt
+		reasons  []observability.PolicyReason
+		lastFail observability.Trace
 	)
+	chainLen := len(chain)
 	for i, model := range chain {
 		p, fwdModel, err := h.registry.Resolve(model)
 		if err != nil {
@@ -853,17 +901,21 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 		attempt.Model = fwdModel
 
 		t := h.newTrace(r, req, p.Name())
+		stampSharedTraceID(&t, reqTrace)
 		t.RequestModel = model
 		t.Streamed = true
+		attemptStart := time.Now()
 
 		callCtx, credSource, credErr := h.injectCredential(r.Context(), p.Name())
 		if credErr != nil {
-			t.LatencyMs = time.Since(start).Milliseconds()
+			t.LatencyMs = time.Since(attemptStart).Milliseconds()
 			t.StatusCode = http.StatusForbidden
 			t.ErrorType = "missing_byok_key"
 			t.ErrorMsg = credErr.Error()
 			t.CredentialSource = "none"
-			h.recorder.Record(t)
+			attempts = append(attempts, attemptFromTrace(t, i, chainLen))
+			reasons = append(reasons, observability.PolicyReason{Code: observability.ReasonMissingBYOK, Detail: credErr.Error()})
+			lastFail = t
 			lastErr = credErr
 			continue
 		}
@@ -871,17 +923,25 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 
 		ev, err := p.ChatCompletionStream(callCtx, attempt)
 		if err != nil {
-			t.LatencyMs = time.Since(start).Milliseconds()
+			t.LatencyMs = time.Since(attemptStart).Milliseconds()
 			t.StatusCode = http.StatusBadGateway
 			t.ErrorType = "upstream_error"
-			if i < len(chain)-1 {
+			if i < chainLen-1 {
 				t.ErrorType = "upstream_error_failover"
+				reasons = append(reasons, observability.PolicyReason{
+					Code:   observability.ReasonFallback,
+					Detail: chain[i] + "→" + chain[i+1],
+				})
+			} else {
+				reasons = append(reasons, observability.PolicyReason{Code: observability.ReasonUpstreamError, Detail: err.Error()})
 			}
 			t.ErrorMsg = err.Error()
-			h.recorder.Record(t)
+			attempts = append(attempts, attemptFromTrace(t, i, chainLen))
+			lastFail = t
 			lastErr = err
 			continue
 		}
+		attempts = append(attempts, attemptFromTrace(t, i, chainLen))
 		events, trace = ev, t
 		break
 	}
@@ -890,6 +950,15 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 		if lastErr != nil {
 			msg = lastErr.Error()
 		}
+		if lastFail.TraceID == "" {
+			lastFail = reqTrace
+			lastFail.Streamed = true
+			lastFail.StatusCode = http.StatusBadGateway
+			lastFail.ErrorType = "upstream_error"
+			lastFail.ErrorMsg = msg
+			lastFail.LatencyMs = time.Since(start).Milliseconds()
+		}
+		h.recordEvidence(lastFail, attempts, reasons)
 		writeError(w, r, http.StatusBadGateway, "upstream_error", msg)
 		return
 	}
@@ -1038,10 +1107,28 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, chain []s
 		costUsage = lastUsage
 	}
 	trace.CostUSD = ResolveCostUSD(upstreamCost, trace.RequestModel, trace.ResponseModel, costUsage)
+	if trace.StatusCode == 0 {
+		trace.StatusCode = http.StatusOK
+	}
 	// Announced as a trailer before WriteHeader above, so this reaches the
 	// client even though the response head left long ago.
 	setCostTrailer(w, trace.CostUSD)
-	h.recorder.Record(trace)
+	if trace.GuardrailAction != "" && strings.Contains(trace.GuardrailAction, "schema") {
+		reasons = append(reasons, observability.PolicyReason{
+			Code:   observability.ReasonSchemaBlocked,
+			RuleID: observability.GuardrailRuleFromAction(trace.GuardrailAction),
+		})
+	} else {
+		reasons = append(reasons, observability.PolicyReason{Code: observability.ReasonAllowed})
+	}
+	// Refresh the winning hop with final latency/status so the trail matches the row.
+	if len(attempts) > 0 {
+		attempts[len(attempts)-1].StatusCode = trace.StatusCode
+		attempts[len(attempts)-1].LatencyMs = trace.LatencyMs
+		attempts[len(attempts)-1].ErrorType = trace.ErrorType
+		attempts[len(attempts)-1].ErrorMsg = trace.ErrorMsg
+	}
+	h.recordEvidence(trace, attempts, reasons)
 	h.recordSpend(r.Context(), trace.CostUSD)
 }
 
@@ -1215,7 +1302,12 @@ func (h *Handler) recordGuardrailBlock(r *http.Request, req ChatCompletionReques
 	trace.ErrorType = "guardrail_blocked"
 	trace.ErrorMsg = f.Reason
 	trace.GuardrailAction = "input_blocked:" + f.Rule
-	h.recorder.Record(trace)
+	trace.GuardrailRule = f.Rule
+	h.recordEvidence(trace, nil, []observability.PolicyReason{{
+		Code:   observability.ReasonGuardrailBlocked,
+		RuleID: f.Rule,
+		Detail: f.Reason,
+	}})
 }
 
 // modelAllowed reports whether the authenticated key may use the model. An

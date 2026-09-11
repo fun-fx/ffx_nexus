@@ -246,6 +246,7 @@ type Config struct {
 	SemanticCacheTTL        time.Duration
 	SemanticCacheThreshold  float64
 	SemanticCacheMaxEntries int
+	SemanticCacheExact      bool
 	EmbeddingsURL           string
 	EmbeddingsModel         string
 	EmbeddingsAPIKey        string
@@ -753,6 +754,7 @@ func load() Config {
 		SemanticCacheTTL:        envDuration("NEXUS_SEMANTIC_CACHE_TTL", 24*time.Hour),
 		SemanticCacheThreshold:  envFloat("NEXUS_SEMANTIC_CACHE_THRESHOLD", 0.92),
 		SemanticCacheMaxEntries: envInt("NEXUS_SEMANTIC_CACHE_MAX_ENTRIES", 500),
+		SemanticCacheExact:      envBool("NEXUS_SEMANTIC_CACHE_EXACT", false),
 		EmbeddingsURL:           env("NEXUS_EMBEDDINGS_URL", ""),
 		EmbeddingsModel:         env("NEXUS_EMBEDDINGS_MODEL", "text-embedding-3-small"),
 		EmbeddingsAPIKey:        env("NEXUS_EMBEDDINGS_API_KEY", ""),

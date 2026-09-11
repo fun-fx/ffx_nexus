@@ -14,6 +14,8 @@ import {
   fetchAuthConfig,
   fetchMe,
   fetchTraces,
+  fetchTraceEvidence,
+  downloadTraceExport,
   type AuthConfig,
   type TraceQuery,
   type TraceCursor,
@@ -826,6 +828,15 @@ function InlineExpansion({ turnID, query }: { turnID: string; query: TraceQuery 
 }
 
 function TraceDetail({ t }: { t: TraceSummary }) {
+  const evQ = useQuery({
+    queryKey: ["trace-evidence", t.trace_id],
+    queryFn: () => fetchTraceEvidence(t.trace_id),
+  });
+  const ev = evQ.data;
+  const attempts = ev?.attempts ?? [];
+  const reasons = ev?.policy_reasons ?? [];
+  const scores = ev?.eval_scores ?? [];
+
   return (
     <div className="trace-detail">
       <div className="kv-grid">
@@ -848,15 +859,68 @@ function TraceDetail({ t }: { t: TraceSummary }) {
         <KV label="Credential source" value={t.credential_source || "env"} />
         <KV label="User" value={t.user_email || "-"} />
         <KV label="Turn ID" value={t.turn_id ? <span className="mono">{t.turn_id}</span> : "—"} />
+        <KV label="Egress" value={ev?.egress_mode || "—"} />
       </div>
       {t.guardrail_action && (
         <>
           <h3 className="kv-section">Guardrail</h3>
           <div className="kv-grid">
             <KV label="Action" value={<Chip tone="warn">{t.guardrail_action}</Chip>} />
+            <KV label="Rule" value={ev?.guardrail_rule || t.guardrail_action.split(":")[1] || "—"} />
           </div>
         </>
       )}
+      {reasons.length > 0 && (
+        <>
+          <h3 className="kv-section">Policy</h3>
+          <div className="chip-row">
+            {reasons.map((p, i) => (
+              <Chip key={`${p.code}-${i}`} tone={p.code === "allowed" || p.code === "cache_hit" ? "ok" : "warn"}>
+                {p.code}{p.rule_id ? `:${p.rule_id}` : ""}
+              </Chip>
+            ))}
+          </div>
+        </>
+      )}
+      <h3 className="kv-section">Attempts</h3>
+      {evQ.isLoading ? (
+        <p className="muted">Loading request graph…</p>
+      ) : attempts.length === 0 ? (
+        <p className="muted">No provider hops recorded on this row.</p>
+      ) : (
+        <ol className="attempt-trail">
+          {attempts.map((a) => (
+            <li key={a.index} className="attempt-trail__hop">
+              <StatusPill label={String(a.status_code || "—")} tone={a.status_code >= 400 ? "err" : "ok"} />
+              <span className="mono">{a.provider}/{a.model}</span>
+              <span className="muted">{a.latency_ms} ms</span>
+              {a.cache_hit ? <Chip tone="ok">cache</Chip> : null}
+              {a.fallback_allowed ? <Chip tone="neutral">fallback ok</Chip> : null}
+              {a.error_type ? <span className="muted">{a.error_type}</span> : null}
+            </li>
+          ))}
+        </ol>
+      )}
+      <h3 className="kv-section">Eval scores</h3>
+      {scores.length === 0 ? (
+        <p className="muted">No eval_scores joined to this trace yet.</p>
+      ) : (
+        <ul className="eval-score-list">
+          {scores.map((s, i) => (
+            <li key={`${s.evaluator}-${s.metric}-${i}`}>
+              <Chip tone={s.passed ? "ok" : "err"}>{s.metric}</Chip>
+              <span className="mono">{s.score.toFixed(3)}</span>
+              <span className="muted">{s.evaluator}</span>
+              {s.rationale ? <span className="muted">{s.rationale}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="panel-form__actions">
+        <button type="button" className="btn-ghost" onClick={() => downloadTraceExport(t.trace_id)}>
+          Export JSON
+        </button>
+      </div>
     </div>
   );
 }
