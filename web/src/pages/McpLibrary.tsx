@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { Chip } from "../components/Chip";
 import { Drawer } from "../components/Drawer";
+import { Icon } from "../components/icons";
 import { GradientText } from "../components/GradientText";
 import {
   applyMcpOrgDefaults,
@@ -103,27 +104,28 @@ export function McpLibrary() {
       {message ? (
         <div className="banner info" role="status">
           {message}{" "}
-          <Link to="/mcp/registry" className="btn ghost">
+          <Link to="/mcp/registry" className="btn-ghost">
             Open Registry
           </Link>
         </div>
       ) : null}
 
-      <div className="quickstart-gallery" data-testid="mcp-library">
-        <header className="quickstart-head">
-          <div className="section-tabs" style={{ border: "none", marginBottom: 0, paddingBottom: 0 }}>
-            {MCP_PRESET_CATEGORIES.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                className={"section-tab" + (category === c.id ? " is-active" : "")}
-                onClick={() => setCategory(c.id)}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-        </header>
+      <div className="filter-bar" role="group" aria-label="Preset category">
+        <div className="filter-chips">
+          {MCP_PRESET_CATEGORIES.map((c) => (
+            <Chip
+              key={c.id}
+              tone={category === c.id ? "accent" : "neutral"}
+              active={category === c.id}
+              onClick={() => setCategory(c.id)}
+            >
+              {c.label}
+            </Chip>
+          ))}
+        </div>
+      </div>
+
+      <div className="quickstart-gallery mcp-library-gallery" data-testid="mcp-library">
         <div className="quickstart-grid">
           {tiles.map((t) => (
             <button
@@ -134,12 +136,18 @@ export function McpLibrary() {
               onClick={() => openInstall(t)}
             >
               <div className="quickstart-tile-title">{t.label}</div>
-              <div className="quickstart-tile-meta muted small">{t.description}</div>
+              <p className="quickstart-tile-meta">{t.description}</p>
               {t.requiresEnv?.length ? (
-                <div className="quickstart-tile-meta muted small">
-                  env: {t.requiresEnv.join(", ")}
+                <div className="quickstart-tile-tags">
+                  {t.requiresEnv.map((env) => (
+                    <Chip key={env} tone="warn">
+                      {env}
+                    </Chip>
+                  ))}
                 </div>
-              ) : null}
+              ) : (
+                <div className="quickstart-tile-tags" aria-hidden="true" />
+              )}
             </button>
           ))}
         </div>
@@ -149,11 +157,30 @@ export function McpLibrary() {
         open={selected !== null}
         onClose={() => setSelected(null)}
         title={selected ? `Install ${selected.label}` : "Install"}
+        footer={
+          selected ? (
+            <div className="drawer-footer">
+              <button type="button" className="btn-ghost" onClick={() => setSelected(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-neon"
+                disabled={!name.trim() || nameConflict || installMut.isPending}
+                onClick={() => installMut.mutate()}
+              >
+                <Icon.sparkles size={14} />
+                {installMut.isPending ? "Installing…" : "Install"}
+              </button>
+            </div>
+          ) : null
+        }
       >
         {selected ? (
-          <>
-            <label className="field">
-              <span>Server name</span>
+          <div className="form-stack">
+            <label className="field-row">
+              <span className="field-label">Server name</span>
+              <span className="field-hint">Must be unique across your MCP registry.</span>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -167,13 +194,13 @@ export function McpLibrary() {
               </p>
             ) : null}
             {selected.requiresEnv?.length ? (
-              <p className="muted small">
-                Edit the spec below and paste secrets into{" "}
-                <code>env</code> before saving.
+              <p className="field-hint">
+                Edit the spec below and paste secrets into <code>env</code> before saving.
               </p>
             ) : null}
-            <label className="field">
-              <span>Spec (YAML)</span>
+            <label className="field-row">
+              <span className="field-label">Spec (YAML)</span>
+              <span className="field-hint">Connection, command, args, and timeout for this preset.</span>
               <textarea
                 rows={14}
                 value={spec}
@@ -182,20 +209,7 @@ export function McpLibrary() {
               />
             </label>
             {error ? <Chip tone="err">{error}</Chip> : null}
-            <div className="drawer-actions">
-              <button type="button" className="btn ghost" onClick={() => setSelected(null)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn-neon"
-                disabled={!name.trim() || nameConflict || installMut.isPending}
-                onClick={() => installMut.mutate()}
-              >
-                {installMut.isPending ? "Installing…" : "Install"}
-              </button>
-            </div>
-          </>
+          </div>
         ) : null}
       </Drawer>
     </div>

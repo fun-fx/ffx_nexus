@@ -2,8 +2,10 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { Chip } from "../components/Chip";
+import { DateTimeField } from "../components/DateTimeField";
 import { TimeSeriesChart } from "../components/observability/TimeSeriesChart";
 import { Icon } from "../components/icons";
+import { dateInputToIso, isoToDateInput } from "../lib/dateInput";
 import { formatTokens } from "../lib/format";
 import {
   fetchTraceDashboard,
@@ -25,21 +27,6 @@ const PERIODS: { id: TraceVolumePeriod; label: string }[] = [
   { id: "7d", label: "7d" },
   { id: "30d", label: "30d" },
 ];
-
-function dateInputToIso(value: string): string | null {
-  if (!value) return null;
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
-function isoToDateInput(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 function parseStatusParam(raw: string | null): { ok: boolean; err: boolean } {
   if (!raw) return { ok: true, err: true };
@@ -310,39 +297,33 @@ export function TracesDashboard() {
       </div>
 
       <div className="filter-bar filter-bar-window" role="group" aria-label="Custom time window">
-        <label className="dt-input">
-          <span>Since</span>
-          <input
-            type="datetime-local"
-            value={sinceInput}
-            onChange={(e) => {
-              const iso = dateInputToIso(e.target.value);
-              patchParams({
-                since: iso,
-                period: null,
-                ...(iso ? {} : { before: searchParams.get("before") }),
-              });
-            }}
-            aria-label="Window start"
-            data-testid="dashboard-window-since"
-          />
-        </label>
-        <label className="dt-input">
-          <span>Before</span>
-          <input
-            type="datetime-local"
-            value={beforeInput}
-            onChange={(e) => {
-              const iso = dateInputToIso(e.target.value);
-              patchParams({
-                before: iso,
-                period: null,
-              });
-            }}
-            aria-label="Window end"
-            data-testid="dashboard-window-before"
-          />
-        </label>
+        <DateTimeField
+          label="Since"
+          value={sinceInput}
+          onChange={(next) => {
+            const iso = dateInputToIso(next);
+            patchParams({
+              since: iso,
+              period: null,
+              ...(iso ? {} : { before: searchParams.get("before") }),
+            });
+          }}
+          aria-label="Window start"
+          data-testid="dashboard-window-since"
+        />
+        <DateTimeField
+          label="Before"
+          value={beforeInput}
+          onChange={(next) => {
+            const iso = dateInputToIso(next);
+            patchParams({
+              before: iso,
+              period: null,
+            });
+          }}
+          aria-label="Window end"
+          data-testid="dashboard-window-before"
+        />
         <button
           type="button"
           className="btn-ghost"

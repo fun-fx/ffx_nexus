@@ -203,4 +203,22 @@ export const Icon = {
       </>,
       p,
     ),
+  calendar: (p: IconProps) =>
+    base(
+      <>
+        <rect x="3" y="5" width="18" height="16" rx="2" />
+        <path d="M8 3v4" />
+        <path d="M16 3v4" />
+        <path d="M3 10h18" />
+      </>,
+      p,
+    ),
+  search: (p: IconProps) =>
+    base(
+      <>
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="M16 16l4.5 4.5" />
+      </>,
+      p,
+    ),
 };

@@ -4,6 +4,7 @@ import { fetchGatewayConfig, patchGatewayConfig } from "../api";
 import { Chip } from "../components/Chip";
 import { GradientText } from "../components/GradientText";
 import { LabelToggle } from "../components/LabelToggle";
+import { SettingRow } from "../components/SettingRow";
 
 export function SemanticCache() {
   const qc = useQueryClient();
@@ -50,7 +51,7 @@ export function SemanticCache() {
       ) : cfgQ.error ? (
         <Chip tone="err">{(cfgQ.error as Error).message}</Chip>
       ) : sc ? (
-        <section className="panel" style={{ padding: "1.25rem" }}>
+        <section className="panel panel-form">
           {!sc.redis_configured || !sc.embeddings_configured ? (
             <div className="banner warn" role="status">
               Redis: {sc.redis_configured ? "ok" : "missing"} · Embeddings:{" "}
@@ -58,17 +59,24 @@ export function SemanticCache() {
               restart to turn the cache on.
             </div>
           ) : null}
-          <LabelToggle
-            checked={enabled ?? sc.enabled}
-            label="semantic cache enabled"
-            onChange={setEnabled}
-          />
-          <label className="field">
-            <span>TTL (duration, e.g. 24h)</span>
+          <SettingRow
+            label="Semantic cache enabled"
+            hint="Return cached completions when a new prompt is similar to a prior one."
+          >
+            <LabelToggle
+              checked={enabled ?? sc.enabled}
+              label="semantic cache enabled"
+              onChange={setEnabled}
+            />
+          </SettingRow>
+          <label className="field-row">
+            <span className="field-label">TTL</span>
+            <span className="field-hint">Duration string, e.g. 24h.</span>
             <input value={ttl ?? sc.ttl} onChange={(e) => setTtl(e.target.value)} />
           </label>
-          <label className="field">
-            <span>Similarity threshold (0–1)</span>
+          <label className="field-row">
+            <span className="field-label">Similarity threshold</span>
+            <span className="field-hint">Minimum embedding similarity (0–1) for a cache hit.</span>
             <input
               type="number"
               min={0}
@@ -78,8 +86,9 @@ export function SemanticCache() {
               onChange={(e) => setThreshold(Number(e.target.value))}
             />
           </label>
-          <label className="field">
-            <span>Max entries per model</span>
+          <label className="field-row">
+            <span className="field-label">Max entries per model</span>
+            <span className="field-hint">Upper bound on cached prompts per model.</span>
             <input
               type="number"
               min={1}
@@ -87,15 +96,17 @@ export function SemanticCache() {
               onChange={(e) => setMaxEntries(Number(e.target.value))}
             />
           </label>
-          <button
-            type="button"
-            className="btn-neon"
-            disabled={saveMut.isPending}
-            onClick={() => saveMut.mutate()}
-          >
-            {saveMut.isPending ? "Saving…" : "Save cache settings"}
-          </button>
-          {saveMut.error ? <Chip tone="err">{(saveMut.error as Error).message}</Chip> : null}
+          <div className="panel-form__actions">
+            <button
+              type="button"
+              className="btn-neon"
+              disabled={saveMut.isPending}
+              onClick={() => saveMut.mutate()}
+            >
+              {saveMut.isPending ? "Saving…" : "Save cache settings"}
+            </button>
+            {saveMut.error ? <Chip tone="err">{(saveMut.error as Error).message}</Chip> : null}
+          </div>
         </section>
       ) : null}
     </div>

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Chip } from "../components/Chip";
+import { DateTimeField } from "../components/DateTimeField";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
 import { FirstRequestSnippets } from "../components/FirstRequestSnippets";
 import { Icon } from "../components/icons";
 import { ResizableGrid, type ColumnSpec, type RowSpec } from "../components/ResizableGrid";
 import { StatusPill } from "../components/StatusPill";
+import { dateInputToIso } from "../lib/dateInput";
 import { formatExact, formatTokens } from "../lib/format";
 import {
   fetchAuthConfig,
@@ -568,26 +570,20 @@ export function Traces() {
       </div>
 
       <div className="filter-bar filter-bar-window" role="group" aria-label="Time window">
-        <label className="dt-input">
-          <span>Since</span>
-          <input
-            type="datetime-local"
-            value={sinceInput}
-            onChange={(e) => setSinceInput(e.target.value)}
-            aria-label="Window start (browser local time)"
-            data-testid="traces-window-since"
-          />
-        </label>
-        <label className="dt-input">
-          <span>Before</span>
-          <input
-            type="datetime-local"
-            value={beforeInput}
-            onChange={(e) => setBeforeInput(e.target.value)}
-            aria-label="Window end (browser local time)"
-            data-testid="traces-window-before"
-          />
-        </label>
+        <DateTimeField
+          label="Since"
+          value={sinceInput}
+          onChange={setSinceInput}
+          aria-label="Window start (browser local time)"
+          data-testid="traces-window-since"
+        />
+        <DateTimeField
+          label="Before"
+          value={beforeInput}
+          onChange={setBeforeInput}
+          aria-label="Window end (browser local time)"
+          data-testid="traces-window-before"
+        />
         <button
           type="button"
           className="btn-ghost"
@@ -827,21 +823,6 @@ function InlineExpansion({ turnID, query }: { turnID: string; query: TraceQuery 
       />
     </div>
   );
-}
-
-// dateInputToIso converts an <input type="datetime-local"> string
-// ("YYYY-MM-DDTHH:mm") to a UTC RFC3339 with Z suffix. Empty input
-// returns "" so the query builder can omit it from the URL entirely.
-function dateInputToIso(value: string): string | null {
-  if (!value) return null;
-  // The browser interprets the local-time input as browser-local time;
-  // we anchor it on the user's timezone via Date() to honour daylight
-  // savings correctly. The "Z" suffix is then added because the date
-  // constructor normalises to local TZ; without the offset the server
-  // would store different wall times across user sessions.
-  const d = new Date(value);
-  if (isNaN(d.getTime())) return null;
-  return d.toISOString();
 }
 
 function TraceDetail({ t }: { t: TraceSummary }) {

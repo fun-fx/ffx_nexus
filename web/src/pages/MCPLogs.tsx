@@ -12,6 +12,7 @@ import {
 } from "../api";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
+import { Icon } from "../components/icons";
 import { StatusPill } from "../components/StatusPill";
 
 function formatTime(iso: string): string {
@@ -106,7 +107,8 @@ export function MCPLogs() {
           <h1>MCP Logs</h1>
           <p className="muted">Tool executions proxied through the Nexus MCP gateway.</p>
         </div>
-        <button type="button" className="btn ghost" onClick={() => reload()}>
+        <button type="button" className="btn-ghost" onClick={() => reload()}>
+          <Icon.refresh size={14} />
           Refresh
         </button>
       </header>
@@ -131,28 +133,54 @@ export function MCPLogs() {
       </div>
 
       <div className="filter-bar">
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}>
-          <option value="all">All statuses</option>
-          <option value="success">Success</option>
-          <option value="error">Error</option>
-        </select>
-        <select value={serverFilter} onChange={(e) => setServerFilter(e.target.value)}>
-          <option value="">All servers</option>
-          {(filters?.server_labels ?? []).map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-        <select value={toolFilter} onChange={(e) => setToolFilter(e.target.value)}>
-          <option value="">All tools</option>
-          {(filters?.tool_names ?? []).map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-        <input placeholder="Search arguments / results…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <label className="filter-select">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+            aria-label="Status filter"
+          >
+            <option value="all">All statuses</option>
+            <option value="success">Success</option>
+            <option value="error">Error</option>
+          </select>
+        </label>
+        <label className="filter-select">
+          <select
+            value={serverFilter}
+            onChange={(e) => setServerFilter(e.target.value)}
+            aria-label="Server filter"
+          >
+            <option value="">All servers</option>
+            {(filters?.server_labels ?? []).map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="filter-select">
+          <select
+            value={toolFilter}
+            onChange={(e) => setToolFilter(e.target.value)}
+            aria-label="Tool filter"
+          >
+            <option value="">All tools</option>
+            {(filters?.tool_names ?? []).map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="filter-search filter-search-grow">
+          <Icon.search size={14} />
+          <input
+            placeholder="Search arguments / results…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search arguments or results"
+          />
+        </label>
       </div>
 
       <DataTable

@@ -4,6 +4,7 @@ import { fetchGatewayConfig, patchGatewayConfig } from "../api";
 import { Chip } from "../components/Chip";
 import { GradientText } from "../components/GradientText";
 import { LabelToggle } from "../components/LabelToggle";
+import { SettingRow } from "../components/SettingRow";
 
 export function Guardrails() {
   const qc = useQueryClient();
@@ -73,69 +74,118 @@ export function Guardrails() {
       ) : cfgQ.error ? (
         <Chip tone="err">{(cfgQ.error as Error).message}</Chip>
       ) : g ? (
-        <section className="panel" style={{ padding: "1.25rem" }}>
-          <LabelToggle
-            checked={enabled ?? g.enabled}
-            label="guardrails master switch"
-            onChange={setEnabled}
-          />
-          <LabelToggle
-            checked={blockPii ?? g.block_pii_input}
-            label="block PII in input"
-            onChange={setBlockPii}
-          />
-          <LabelToggle
-            checked={redactPii ?? g.redact_pii_output}
-            label="redact PII in output"
-            onChange={setRedactPii}
-          />
-          <label className="field">
-            <span>Max input characters (0 = off)</span>
-            <input
-              type="number"
-              min={0}
-              value={maxChars ?? g.max_input_chars}
-              onChange={(e) => setMaxChars(Number(e.target.value))}
-            />
-          </label>
-          <label className="field">
-            <span>Deny patterns (one regex per line)</span>
-            <textarea
-              rows={4}
-              value={denyRaw ?? (g.deny_patterns ?? []).join("\n")}
-              onChange={(e) => setDenyRaw(e.target.value)}
-              spellCheck={false}
-            />
-          </label>
-          <LabelToggle
-            checked={validateJson ?? g.validate_json_output}
-            label="validate JSON output"
-            onChange={setValidateJson}
-          />
-          <LabelToggle
-            checked={selfCorr ?? g.self_correction_enabled}
-            label="structured-output self-correction"
-            onChange={setSelfCorr}
-          />
-          <label className="field">
-            <span>Self-correction max retries</span>
-            <input
-              type="number"
-              min={0}
-              max={5}
-              value={selfRetries ?? g.self_correction_max_retries}
-              onChange={(e) => setSelfRetries(Number(e.target.value))}
-            />
-          </label>
-          <button
-            type="button"
-            className="btn-neon"
-            disabled={saveMut.isPending}
-            onClick={() => saveMut.mutate()}
-          >
-            {saveMut.isPending ? "Saving…" : "Save guardrails"}
-          </button>
-          {saveMut.error ? <Chip tone="err">{(saveMut.error as Error).message}</Chip> : null}
+        <section className="panel panel-form">
+          <p className="panel-form__intro">
+            Guardrails are lightweight, in-process policy checks on the gateway hot path.
+            They run before the upstream LLM call (input blocking) and after the response
+            returns (output redaction and JSON validation). Unlike async evaluators, they
+            can reject a request immediately — no external service or queue involved.
+          </p>
+
+          <div className="panel-form__section">
+            <h2 className="panel-form__section-title">General</h2>
+            <SettingRow
+              label="Master switch"
+              hint="Turn all guardrail checks on or off for this cluster."
+            >
+              <LabelToggle
+                checked={enabled ?? g.enabled}
+                label="guardrails master switch"
+                onChange={setEnabled}
+              />
+            </SettingRow>
+          </div>
+
+          <div className="panel-form__section">
+            <h2 className="panel-form__section-title">Input checks</h2>
+            <SettingRow
+              label="Block PII in input"
+              hint="Reject prompts that match email, phone, SSN, or card-number patterns before any upstream call."
+            >
+              <LabelToggle
+                checked={blockPii ?? g.block_pii_input}
+                label="block PII in input"
+                onChange={setBlockPii}
+              />
+            </SettingRow>
+            <label className="field-row">
+              <span className="field-label">Max input characters</span>
+              <span className="field-hint">Reject prompts longer than this limit. Use 0 to disable.</span>
+              <input
+                type="number"
+                min={0}
+                value={maxChars ?? g.max_input_chars}
+                onChange={(e) => setMaxChars(Number(e.target.value))}
+              />
+            </label>
+            <label className="field-row">
+              <span className="field-label">Deny patterns</span>
+              <span className="field-hint">One regular expression per line. Matching prompts are rejected.</span>
+              <textarea
+                rows={4}
+                value={denyRaw ?? (g.deny_patterns ?? []).join("\n")}
+                onChange={(e) => setDenyRaw(e.target.value)}
+                spellCheck={false}
+              />
+            </label>
+          </div>
+
+          <div className="panel-form__section">
+            <h2 className="panel-form__section-title">Output checks</h2>
+            <SettingRow
+              label="Redact PII in output"
+              hint="Replace detected PII in non-streaming responses with [REDACTED] instead of blocking the call."
+            >
+              <LabelToggle
+                checked={redactPii ?? g.redact_pii_output}
+                label="redact PII in output"
+                onChange={setRedactPii}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Validate JSON output"
+              hint="When the client requests JSON response_format, reject or flag responses that are not valid JSON."
+            >
+              <LabelToggle
+                checked={validateJson ?? g.validate_json_output}
+                label="validate JSON output"
+                onChange={setValidateJson}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Structured-output self-correction"
+              hint="If JSON validation fails, ask the model to repair the response before returning an error."
+            >
+              <LabelToggle
+                checked={selfCorr ?? g.self_correction_enabled}
+                label="structured-output self-correction"
+                onChange={setSelfCorr}
+              />
+            </SettingRow>
+            <label className="field-row">
+              <span className="field-label">Self-correction max retries</span>
+              <span className="field-hint">How many repair attempts before the gateway returns a guardrail error.</span>
+              <input
+                type="number"
+                min={0}
+                max={5}
+                value={selfRetries ?? g.self_correction_max_retries}
+                onChange={(e) => setSelfRetries(Number(e.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="panel-form__actions">
+            <button
+              type="button"
+              className="btn-neon"
+              disabled={saveMut.isPending}
+              onClick={() => saveMut.mutate()}
+            >
+              {saveMut.isPending ? "Saving…" : "Save guardrails"}
+            </button>
+            {saveMut.error ? <Chip tone="err">{(saveMut.error as Error).message}</Chip> : null}
+          </div>
         </section>
       ) : null}
     </div>
