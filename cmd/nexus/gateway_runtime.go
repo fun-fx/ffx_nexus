@@ -22,6 +22,7 @@ type gatewayRuntimeController struct {
 	gwHandler       *gateway.Handler
 	semCacheService *semcache.Service
 	semCacheBooted  bool
+	lastDiff        []string
 	log             *slog.Logger
 }
 
@@ -43,57 +44,46 @@ func newGatewayRuntimeController(
 func (c *gatewayRuntimeController) Snapshot() console.GatewayConfigSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var snap console.GatewayConfigSnapshot
-	snap.Guardrails.Enabled = c.cfg.GuardrailsEnabled
-	snap.Guardrails.BlockPIIInput = c.cfg.GuardrailBlockPIIIn
-	snap.Guardrails.RedactPIIOutput = c.cfg.GuardrailRedactPIIOut
-	snap.Guardrails.MaxInputChars = c.cfg.GuardrailMaxInputChrs
-	snap.Guardrails.DenyPatterns = splitDenyPatterns(c.cfg.GuardrailDenyPatterns)
-	snap.Guardrails.ValidateJSONOutput = c.cfg.GuardrailValidateJSON
-	snap.Guardrails.SelfCorrectionEnabled = c.cfg.SelfCorrectionEnabled
-	snap.Guardrails.SelfCorrectionMaxRetries = c.cfg.SelfCorrectionMaxRetries
-
-	snap.SemanticCache.Enabled = c.cfg.SemanticCacheEnabled
-	snap.SemanticCache.TTL = formatDuration(c.cfg.SemanticCacheTTL)
-	snap.SemanticCache.Threshold = c.cfg.SemanticCacheThreshold
-	snap.SemanticCache.MaxEntries = c.cfg.SemanticCacheMaxEntries
-	snap.SemanticCache.RedisConfigured = c.cfg.RedisURL != ""
-	snap.SemanticCache.EmbeddingsConfigured = c.cfg.EmbeddingsURL != ""
-
-	snap.Alerting.FailoverWebhookSet = strings.TrimSpace(c.cfg.FailoverWebhookURL) != ""
-	snap.Alerting.FailoverSlackSet = strings.TrimSpace(c.cfg.FailoverSlackURL) != ""
-	snap.Alerting.Cooldown = formatDuration(c.cfg.FailoverAlertCooldown)
-	return snap
+	return c.snapshotLocked()
 }
 
 func (c *gatewayRuntimeController) Apply(patch console.GatewayConfigPatch) (console.GatewayConfigSnapshot, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	var diff []string
 	if g := patch.Guardrails; g != nil {
 		if g.Enabled != nil {
 			c.cfg.GuardrailsEnabled = *g.Enabled
+			diff = append(diff, "guardrails.enabled")
 		}
 		if g.BlockPIIInput != nil {
 			c.cfg.GuardrailBlockPIIIn = *g.BlockPIIInput
+			diff = append(diff, "guardrails.block_pii_input")
 		}
 		if g.RedactPIIOutput != nil {
 			c.cfg.GuardrailRedactPIIOut = *g.RedactPIIOutput
+			diff = append(diff, "guardrails.redact_pii_output")
 		}
 		if g.MaxInputChars != nil {
 			c.cfg.GuardrailMaxInputChrs = *g.MaxInputChars
+			diff = append(diff, "guardrails.max_input_chars")
 		}
 		if g.DenyPatterns != nil {
 			c.cfg.GuardrailDenyPatterns = strings.Join(*g.DenyPatterns, ";")
+			diff = append(diff, "guardrails.deny_patterns")
 		}
 		if g.ValidateJSONOutput != nil {
 			c.cfg.GuardrailValidateJSON = *g.ValidateJSONOutput
+			diff = append(diff, "guardrails.validate_json_output")
 		}
 		if g.SelfCorrectionEnabled != nil {
 			c.cfg.SelfCorrectionEnabled = *g.SelfCorrectionEnabled
+			diff = append(diff, "guardrails.self_correction_enabled")
 		}
 		if g.SelfCorrectionMaxRetries != nil {
 			c.cfg.SelfCorrectionMaxRetries = *g.SelfCorrectionMaxRetries
+			diff = append(diff, "guardrails.self_correction_max_retries")
 		}
 		c.applyGuardrailsLocked()
 	}
@@ -101,9 +91,10 @@ func (c *gatewayRuntimeController) Apply(patch console.GatewayConfigPatch) (cons
 	if sc := patch.SemanticCache; sc != nil {
 		if sc.Enabled != nil {
 			if *sc.Enabled && !c.semCacheBooted {
-				return console.GatewayConfigSnapshot{}, fmt.Errorf("semantic cache requires Redis and embeddings at boot; set NEXUS_SEMANTIC_CACHE_ENABLED and restart")
+				return console.GatewayConfigSnapshot{}, fmt.Errorf("semantic cache requires Redis at boot (and embeddings unless exact-match mode); set NEXUS_SEMANTIC_CACHE_ENABLED and restart")
 			}
 			c.cfg.SemanticCacheEnabled = *sc.Enabled
+			diff = append(diff, "semantic_cache.enabled")
 			if c.gwHandler != nil {
 				if *sc.Enabled && c.semCacheService != nil {
 					c.gwHandler.SetSemanticCache(c.semCacheService)
@@ -118,12 +109,19 @@ func (c *gatewayRuntimeController) Apply(patch console.GatewayConfigPatch) (cons
 				return console.GatewayConfigSnapshot{}, err
 			}
 			c.cfg.SemanticCacheTTL = d
+			diff = append(diff, "semantic_cache.ttl")
 		}
 		if sc.Threshold != nil {
 			c.cfg.SemanticCacheThreshold = *sc.Threshold
+			diff = append(diff, "semantic_cache.threshold")
 		}
 		if sc.MaxEntries != nil {
 			c.cfg.SemanticCacheMaxEntries = *sc.MaxEntries
+			diff = append(diff, "semantic_cache.max_entries")
+		}
+		if sc.ExactMatch != nil {
+			c.cfg.SemanticCacheExact = *sc.ExactMatch
+			diff = append(diff, "semantic_cache.exact_match")
 		}
 		if c.semCacheService != nil && c.cfg.SemanticCacheEnabled {
 			c.semCacheService.UpdateConfig(semcache.Config{
@@ -131,6 +129,7 @@ func (c *gatewayRuntimeController) Apply(patch console.GatewayConfigPatch) (cons
 				TTL:                c.cfg.SemanticCacheTTL,
 				Threshold:          c.cfg.SemanticCacheThreshold,
 				MaxEntriesPerModel: c.cfg.SemanticCacheMaxEntries,
+				ExactMatch:         c.cfg.SemanticCacheExact,
 			})
 		}
 	}
@@ -138,9 +137,11 @@ func (c *gatewayRuntimeController) Apply(patch console.GatewayConfigPatch) (cons
 	if a := patch.Alerting; a != nil {
 		if a.FailoverWebhook != nil {
 			c.cfg.FailoverWebhookURL = strings.TrimSpace(*a.FailoverWebhook)
+			diff = append(diff, "alerting.failover_webhook")
 		}
 		if a.FailoverSlack != nil {
 			c.cfg.FailoverSlackURL = strings.TrimSpace(*a.FailoverSlack)
+			diff = append(diff, "alerting.failover_slack")
 		}
 		if a.Cooldown != nil {
 			d, err := time.ParseDuration(strings.TrimSpace(*a.Cooldown))
@@ -148,10 +149,12 @@ func (c *gatewayRuntimeController) Apply(patch console.GatewayConfigPatch) (cons
 				return console.GatewayConfigSnapshot{}, err
 			}
 			c.cfg.FailoverAlertCooldown = d
+			diff = append(diff, "alerting.cooldown")
 		}
 		c.applyFailoverLocked()
 	}
 
+	c.lastDiff = diff
 	return c.snapshotLocked(), nil
 }
 
@@ -211,10 +214,12 @@ func (c *gatewayRuntimeController) snapshotLocked() console.GatewayConfigSnapsho
 	snap.SemanticCache.TTL = formatDuration(c.cfg.SemanticCacheTTL)
 	snap.SemanticCache.Threshold = c.cfg.SemanticCacheThreshold
 	snap.SemanticCache.MaxEntries = c.cfg.SemanticCacheMaxEntries
+	snap.SemanticCache.ExactMatch = c.cfg.SemanticCacheExact
 	snap.SemanticCache.RedisConfigured = c.cfg.RedisURL != ""
 	snap.SemanticCache.EmbeddingsConfigured = c.cfg.EmbeddingsURL != ""
 	snap.Alerting.FailoverWebhookSet = strings.TrimSpace(c.cfg.FailoverWebhookURL) != ""
 	snap.Alerting.FailoverSlackSet = strings.TrimSpace(c.cfg.FailoverSlackURL) != ""
 	snap.Alerting.Cooldown = formatDuration(c.cfg.FailoverAlertCooldown)
+	snap.LastDiff = append([]string(nil), c.lastDiff...)
 	return snap
 }

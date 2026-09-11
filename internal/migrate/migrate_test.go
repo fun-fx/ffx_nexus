@@ -67,6 +67,7 @@ var mustHaveMigrations = []struct {
 		"clickhouse/009_benchmark_runs.sql",
 		"clickhouse/010_eval_scores_org.sql",
 		"clickhouse/011_mcp_tool_logs.sql",
+		"clickhouse/012_request_evidence.sql",
 	}},
 }
 

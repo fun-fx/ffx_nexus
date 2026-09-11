@@ -213,6 +213,63 @@ func TestFailoverNotifierReceivesReplicaIDAndEventFields(t *testing.T) {
 	}
 }
 
+func TestUnaryFailoverRecordsAttemptTrail(t *testing.T) {
+	bad := &stubProvider{name: "openai", models: []string{"gpt-fail"}, fail: true}
+	good := &stubProvider{name: "anthropic", models: []string{"claude-ok"}, fail: false}
+	rec := &capturingRecorder{}
+	reg := NewRegistry()
+	reg.Register(bad)
+	reg.Register(good)
+	h := NewHandler(reg, rec, nil, slog.Default())
+	h.SetRouter(stubRouter{chain: []string{"gpt-fail", "claude-ok"}}, map[string][]string{
+		"grp": {"gpt-fail", "claude-ok"},
+	})
+	h.SetEgressMode("proxy")
+
+	got := doChat(h, `{"model":"grp","messages":[{"role":"user","content":"hi"}]}`)
+	if got.Code != http.StatusOK {
+		t.Fatalf("want 200 after failover, got %d: %s", got.Code, got.Body.String())
+	}
+	if len(rec.traces) != 1 {
+		t.Fatalf("want one request-level trace, got %d", len(rec.traces))
+	}
+	tr := rec.traces[0]
+	if len(tr.Attempts) != 2 {
+		t.Fatalf("attempts = %+v", tr.Attempts)
+	}
+	if tr.Attempts[0].Provider != "openai" || tr.Attempts[0].StatusCode != http.StatusBadGateway {
+		t.Fatalf("first hop: %+v", tr.Attempts[0])
+	}
+	if tr.Attempts[1].Provider != "anthropic" || tr.Attempts[1].StatusCode != http.StatusOK {
+		t.Fatalf("second hop: %+v", tr.Attempts[1])
+	}
+	if tr.EgressMode != "proxy" {
+		t.Fatalf("egress_mode = %q", tr.EgressMode)
+	}
+	var sawFallback, sawAllowed bool
+	for _, p := range tr.PolicyReasons {
+		if p.Code == observability.ReasonFallback {
+			sawFallback = true
+		}
+		if p.Code == observability.ReasonAllowed {
+			sawAllowed = true
+		}
+	}
+	if !sawFallback || !sawAllowed {
+		t.Fatalf("policy reasons = %+v", tr.PolicyReasons)
+	}
+}
+
+type capturingRecorder struct {
+	traces []observability.Trace
+}
+
+func (c *capturingRecorder) Record(t observability.Trace) {
+	c.traces = append(c.traces, t)
+}
+
+func (c *capturingRecorder) Close(context.Context) error { return nil }
+
 // testNotifier is a capture-only Notifier for handler tests.
 type testNotifier struct {
 	onNotify func(router.FailoverEvent)

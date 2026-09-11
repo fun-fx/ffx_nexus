@@ -157,6 +157,7 @@ data:
   {{- with .Values.config.semanticCache.maxEntries }}
   NEXUS_SEMANTIC_CACHE_MAX_ENTRIES: {{ . | quote }}
   {{- end }}
+  NEXUS_SEMANTIC_CACHE_EXACT: {{ .Values.config.semanticCache.exactMatch | default false | quote }}
   {{- with .Values.config.embeddings.url }}
   NEXUS_EMBEDDINGS_URL: {{ . | quote }}
   {{- end }}

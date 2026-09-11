@@ -1015,6 +1015,10 @@
             "maxEntries": {
               "type": "integer",
               "minimum": 0
+            },
+            "exactMatch": {
+              "type": "boolean",
+              "description": "Hash-equality cache hits. Can boot without embeddings."
             }
           }
         },

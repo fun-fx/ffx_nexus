@@ -2,6 +2,8 @@ package semcache
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -26,9 +28,30 @@ type Cache interface {
 }
 
 type storedEntry struct {
-	Embedding []float32 `json:"e"`
-	Response  []byte    `json:"r"`
-	ExpiresAt int64     `json:"x,omitempty"`
+	Embedding  []float32 `json:"e"`
+	Response   []byte    `json:"r"`
+	ExpiresAt  int64     `json:"x,omitempty"`
+	PromptHash string    `json:"h,omitempty"`
+}
+
+func promptHash(prompt string) string {
+	sum := sha256.Sum256([]byte(prompt))
+	return hex.EncodeToString(sum[:])
+}
+
+func findExact(hash string, entries []storedEntry, now int64) *Hit {
+	if hash == "" {
+		return nil
+	}
+	for _, e := range entries {
+		if e.ExpiresAt > 0 && e.ExpiresAt < now {
+			continue
+		}
+		if e.PromptHash != "" && e.PromptHash == hash {
+			return &Hit{ResponseJSON: e.Response, Similarity: 1}
+		}
+	}
+	return nil
 }
 
 // redisKey namespaces an entry by tenant and model.
@@ -104,22 +127,32 @@ func NewMemory(cfg Config) *Memory {
 	return &Memory{cfg: effectiveConfig(cfg), data: make(map[string][]storedEntry)}
 }
 
-func (m *Memory) Lookup(_ context.Context, scope, model, _ string, vec []float32) (*Hit, error) {
+func (m *Memory) Lookup(_ context.Context, scope, model, prompt string, vec []float32) (*Hit, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	now := time.Now().Unix()
-	hit, _ := findBest(vec, m.data[redisKey(scope, model)], m.cfg.Threshold, now)
+	entries := m.data[redisKey(scope, model)]
+	if m.cfg.ExactMatch {
+		if hit := findExact(promptHash(prompt), entries, now); hit != nil {
+			return hit, nil
+		}
+		if len(vec) == 0 {
+			return nil, nil
+		}
+	}
+	hit, _ := findBest(vec, entries, m.cfg.Threshold, now)
 	return hit, nil
 }
 
-func (m *Memory) Store(_ context.Context, scope, model, _ string, vec []float32, responseJSON []byte) error {
+func (m *Memory) Store(_ context.Context, scope, model, prompt string, vec []float32, responseJSON []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := redisKey(scope, model)
 	e := storedEntry{
-		Embedding: vec,
-		Response:  append([]byte(nil), responseJSON...),
-		ExpiresAt: time.Now().Add(m.cfg.TTL).Unix(),
+		Embedding:  vec,
+		Response:   append([]byte(nil), responseJSON...),
+		ExpiresAt:  time.Now().Add(m.cfg.TTL).Unix(),
+		PromptHash: promptHash(prompt),
 	}
 	m.data[key] = append([]storedEntry{e}, m.data[key]...)
 	if len(m.data[key]) > m.cfg.MaxEntriesPerModel {
@@ -155,7 +188,7 @@ func (c *Redis) Close() error { return c.rdb.Close() }
 // Embedder returns the configured embedder (may be nil).
 func (c *Redis) Embedder() Embedder { return c.embedder }
 
-func (c *Redis) Lookup(ctx context.Context, scope, model, _ string, vec []float32) (*Hit, error) {
+func (c *Redis) Lookup(ctx context.Context, scope, model, prompt string, vec []float32) (*Hit, error) {
 	raws, err := c.rdb.LRange(ctx, redisKey(scope, model), 0, int64(c.cfg.MaxEntriesPerModel-1)).Result()
 	if err != nil {
 		return nil, err
@@ -168,15 +201,24 @@ func (c *Redis) Lookup(ctx context.Context, scope, model, _ string, vec []float3
 			entries = append(entries, e)
 		}
 	}
+	if c.cfg.ExactMatch {
+		if hit := findExact(promptHash(prompt), entries, now); hit != nil {
+			return hit, nil
+		}
+		if len(vec) == 0 {
+			return nil, nil
+		}
+	}
 	hit, _ := findBest(vec, entries, c.cfg.Threshold, now)
 	return hit, nil
 }
 
-func (c *Redis) Store(ctx context.Context, scope, model, _ string, vec []float32, responseJSON []byte) error {
+func (c *Redis) Store(ctx context.Context, scope, model, prompt string, vec []float32, responseJSON []byte) error {
 	e := storedEntry{
-		Embedding: vec,
-		Response:  responseJSON,
-		ExpiresAt: time.Now().Add(c.cfg.TTL).Unix(),
+		Embedding:  vec,
+		Response:   responseJSON,
+		ExpiresAt:  time.Now().Add(c.cfg.TTL).Unix(),
+		PromptHash: promptHash(prompt),
 	}
 	raw, err := json.Marshal(e)
 	if err != nil {
@@ -197,10 +239,13 @@ type Service struct {
 	cfg      Config
 }
 
-// NewService builds a semantic cache service. Returns nil when disabled or when
-// embedder is nil.
+// NewService builds a cache service. Returns nil when disabled or when
+// cache is nil. An embedder is required unless ExactMatch is on (hash-only).
 func NewService(cache Cache, embedder Embedder, cfg Config) *Service {
-	if !cfg.Enabled || embedder == nil || cache == nil {
+	if !cfg.Enabled || cache == nil {
+		return nil
+	}
+	if embedder == nil && !cfg.ExactMatch {
 		return nil
 	}
 	return &Service{cache: cache, embedder: embedder, cfg: effectiveConfig(cfg)}
@@ -215,6 +260,18 @@ func (s *Service) Enabled() bool { return s != nil }
 // never stall the request hot path beyond that budget — the caller degrades to a
 // normal upstream call on error.
 func (s *Service) Lookup(ctx context.Context, scope, model, prompt string) (*Hit, []float32, error) {
+	if s.cfg.ExactMatch {
+		hit, err := s.cache.Lookup(ctx, scope, model, prompt, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		if hit != nil {
+			return hit, nil, nil
+		}
+		if s.embedder == nil {
+			return nil, nil, nil
+		}
+	}
 	ectx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 	vec, err := s.embedder.Embed(ectx, prompt)
@@ -227,6 +284,9 @@ func (s *Service) Lookup(ctx context.Context, scope, model, prompt string) (*Hit
 
 // Store saves a response using a pre-computed embedding vector.
 func (s *Service) Store(ctx context.Context, scope, model, prompt string, vec []float32, responseJSON []byte) error {
+	if s.embedder == nil && len(vec) == 0 {
+		return s.cache.Store(ctx, scope, model, prompt, nil, responseJSON)
+	}
 	if len(vec) == 0 {
 		var err error
 		vec, err = s.embedder.Embed(ctx, prompt)
@@ -245,7 +305,14 @@ func (s *Service) ConfigString() string {
 	if s == nil {
 		return ""
 	}
-	return fmt.Sprintf("threshold=%.2f ttl=%s max=%d", s.cfg.Threshold, s.cfg.TTL, s.cfg.MaxEntriesPerModel)
+	mode := "cosine"
+	if s.cfg.ExactMatch {
+		mode = "exact+cosine"
+		if s.embedder == nil {
+			mode = "exact"
+		}
+	}
+	return fmt.Sprintf("mode=%s threshold=%.2f ttl=%s max=%d", mode, s.cfg.Threshold, s.cfg.TTL, s.cfg.MaxEntriesPerModel)
 }
 
 // UpdateConfig replaces runtime tuning knobs without rebuilding Redis clients.

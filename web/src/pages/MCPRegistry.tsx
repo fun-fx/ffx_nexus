@@ -13,6 +13,7 @@ import {
 } from "../api";
 import { Link } from "react-router-dom";
 import { applyMcpOrgDefaults } from "../lib/mcpPresets";
+import { classifyToolRisk, riskTone } from "../lib/mcpRisk";
 import { Chip } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
@@ -28,6 +29,8 @@ const DEFAULT_SPEC = `connection:
     - "@modelcontextprotocol/server-filesystem"
     - /tmp
 timeout_ms: 60000
+# allowed_virtual_key_ids: []   # empty = all keys in the org
+# allowed_tools: []             # empty = all discovered tools; explicit execute only
 `;
 
 function statusFor(id: string, statuses: MCPServerStatus[]): MCPServerStatus | undefined {
@@ -148,8 +151,24 @@ export function MCPRegistry() {
     },
     {
       id: "tools",
-      header: "Tools",
-      cell: (r) => String(r.status?.tool_count ?? 0),
+      header: "Tools / risk",
+      cell: (r) => {
+        const tools = r.status?.tools ?? [];
+        if (tools.length === 0) return String(r.status?.tool_count ?? 0);
+        return (
+          <div className="chip-row">
+            {tools.slice(0, 6).map((t) => {
+              const risk = t.risk || classifyToolRisk(t.name);
+              return (
+                <Chip key={t.name} tone={riskTone(risk)}>
+                  {t.name} · {risk}
+                </Chip>
+              );
+            })}
+            {tools.length > 6 ? <span className="muted">+{tools.length - 6}</span> : null}
+          </div>
+        );
+      },
     },
     {
       id: "error",
@@ -276,7 +295,10 @@ export function MCPRegistry() {
           </label>
           <label className="field-row">
             <span className="field-label">Spec (YAML)</span>
-            <span className="field-hint">Connection type, command, args, and timeout for this server.</span>
+            <span className="field-hint">
+              Connection, timeout, allowed_virtual_key_ids, and allowed_tools. Tool calls stay on the
+              explicit POST /v1/mcp/servers/{"{id}"}/tools/call path — the gateway never auto-runs them.
+            </span>
             <textarea rows={14} value={spec} onChange={(e) => setSpec(e.target.value)} spellCheck={false} />
           </label>
           <label className="trace-dashboard__check">

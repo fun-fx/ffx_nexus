@@ -85,6 +85,19 @@ type Trace struct {
 	// CacheHit marks a response served from the semantic cache (no upstream call).
 	CacheHit bool `json:"cache_hit,omitempty"`
 
+	// Attempts is the ordered provider/model trail for this HTTP request
+	// (failed fallbacks plus the winner). Metadata only — no prompt bodies.
+	Attempts []ProviderAttempt `json:"attempts,omitempty"`
+	// PolicyReasons are typed decision codes evaluated on this request
+	// (allow, deny, fallback, redacted, min_quality, cache_hit, …).
+	PolicyReasons []PolicyReason `json:"policy_reasons,omitempty"`
+	// GuardrailRule is the identifier of the inline rule that fired
+	// (e.g. "pii_input"), distinct from the human GuardrailAction string.
+	GuardrailRule string `json:"guardrail_rule,omitempty"`
+	// EgressMode is the runtime provider-egress contract in force
+	// ("", "proxy", or "in_cluster_only").
+	EgressMode string `json:"egress_mode,omitempty"`
+
 	// SessionID is the stable per-conversation marker the gateway
 	// extracts from incoming request metadata when the client sets one
 	// (Cursor agent: metadata.session_id or sessionId, OpenAI Responses:

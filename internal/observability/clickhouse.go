@@ -167,7 +167,8 @@ func (r *CHRecorder) insert(traces []Trace) error {
 		retrieval_contexts, eval_reference,
 		cache_hit, guardrail_action,
 		user_id, credential_source,
-		replica_id, session_id, turn_id)`)
+		replica_id, session_id, turn_id,
+		attempts, policy_reasons, guardrail_rule, egress_mode)`)
 	if err != nil {
 		return err
 	}
@@ -185,6 +186,8 @@ func (r *CHRecorder) insert(traces []Trace) error {
 			boolToUint8(t.CacheHit), t.GuardrailAction,
 			t.UserID, t.CredentialSource,
 			t.ReplicaID, t.SessionID, t.TurnID,
+			MarshalJSONField(t.Attempts), MarshalJSONField(t.PolicyReasons),
+			t.GuardrailRule, t.EgressMode,
 		); err != nil {
 			return err
 		}

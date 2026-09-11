@@ -14,8 +14,11 @@ type ServerSpec struct {
 	// AllowedVirtualKeyIDs restricts which virtual keys may call this server.
 	// Empty means all keys in the org may use it.
 	AllowedVirtualKeyIDs []string `yaml:"allowed_virtual_key_ids,omitempty"`
-	TimeoutMs            int      `yaml:"timeout_ms,omitempty"`
-	Enabled              *bool    `yaml:"enabled,omitempty"`
+	// AllowedTools restricts tools/call to these names. Empty means all
+	// discovered tools may be executed on the explicit execute path.
+	AllowedTools []string `yaml:"allowed_tools,omitempty"`
+	TimeoutMs    int      `yaml:"timeout_ms,omitempty"`
+	Enabled      *bool    `yaml:"enabled,omitempty"`
 	// StickyHTTP keeps a persistent HTTP connection (default true).
 	StickyHTTP *bool `yaml:"sticky_http,omitempty"`
 }
@@ -31,7 +34,8 @@ type ConnectionSpec struct {
 }
 
 var (
-	ErrInvalidSpec = errors.New("mcp: invalid server spec")
+	ErrInvalidSpec    = errors.New("mcp: invalid server spec")
+	ErrToolNotAllowed = errors.New("mcp: tool is not on this server's allowlist")
 )
 
 // DecodeSpec parses and validates spec YAML.
@@ -98,6 +102,20 @@ func (s *ServerSpec) AllowsVirtualKey(vkeyID string) bool {
 	}
 	for _, id := range s.AllowedVirtualKeyIDs {
 		if id == vkeyID {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsTool reports whether tools/call may execute name. An empty allowlist
+// permits every discovered tool (the same posture as AllowedVirtualKeyIDs).
+func (s *ServerSpec) AllowsTool(name string) bool {
+	if s == nil || len(s.AllowedTools) == 0 {
+		return true
+	}
+	for _, t := range s.AllowedTools {
+		if t == name {
 			return true
 		}
 	}

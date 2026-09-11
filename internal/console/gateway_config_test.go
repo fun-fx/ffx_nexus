@@ -70,6 +70,7 @@ func TestPatchGatewayConfigInvalidThreshold(t *testing.T) {
 			TTL        *string  `json:"ttl"`
 			Threshold  *float64 `json:"threshold"`
 			MaxEntries *int     `json:"max_entries"`
+			ExactMatch *bool    `json:"exact_match"`
 		}{Threshold: &bad},
 	})
 	req := httptest.NewRequest(http.MethodPatch, "/api/gateway/config", bytes.NewReader(body))

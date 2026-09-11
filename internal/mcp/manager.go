@@ -314,12 +314,27 @@ func (m *Manager) statusFrom(st *clientState) ServerStatus {
 	if st.spec != nil {
 		connType = st.spec.ConnectionType()
 	}
+	tools := append([]Tool(nil), st.tools...)
+	if st.spec != nil {
+		filtered := tools[:0]
+		for _, t := range tools {
+			if st.spec.AllowsTool(t.Name) {
+				t.Risk = ClassifyToolRisk(t.Name)
+				filtered = append(filtered, t)
+			}
+		}
+		tools = filtered
+	} else {
+		for i := range tools {
+			tools[i].Risk = ClassifyToolRisk(tools[i].Name)
+		}
+	}
 	return ServerStatus{
 		ServerRecord:   st.record,
 		ConnectionType: connType,
 		State:          st.state,
-		ToolCount:      len(st.tools),
-		Tools:          append([]Tool(nil), st.tools...),
+		ToolCount:      len(tools),
+		Tools:          tools,
 		LastError:      st.lastError,
 	}
 }
@@ -333,7 +348,16 @@ func (m *Manager) ListTools(ctx context.Context, orgID, serverID, virtualKeyID s
 	if st.state != "healthy" || st.cli == nil {
 		return nil, fmt.Errorf("mcp server %q is %s", st.record.Name, st.state)
 	}
-	return append([]Tool(nil), st.tools...), nil
+	tools := append([]Tool(nil), st.tools...)
+	out := make([]Tool, 0, len(tools))
+	for _, t := range tools {
+		if st.spec != nil && !st.spec.AllowsTool(t.Name) {
+			continue
+		}
+		t.Risk = ClassifyToolRisk(t.Name)
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 // CallTool executes tools/call and records a log entry.
@@ -347,6 +371,9 @@ func (m *Manager) CallTool(ctx context.Context, orgID, serverID string, cc CallC
 	}
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, errors.New("tool name is required")
+	}
+	if st.spec != nil && !st.spec.AllowsTool(req.Name) {
+		return nil, ErrToolNotAllowed
 	}
 
 	argsJSON, _ := json.Marshal(req.Arguments)

@@ -176,6 +176,12 @@ func newSmokeEnv(t *testing.T) *smokeEnv {
 	srv.SetMCPOrgSettings(mcp.NewPostgresOrgSettingsStore(mcpPool))
 	gwCfg := smokeGatewayConfig{}
 	srv.SetGatewayConfig(gwCfg, gwCfg)
+	// GET /api/ops/readiness packages boot config; it reads no table. Wiring a
+	// source here matches production (main always sets it) so the walk does not
+	// treat an unwired controller as a schema defect.
+	srv.SetInstallReadiness(ReadinessFunc(func() InstallReadiness {
+		return NewInstallReadiness("smoke", "", false, false, false)
+	}))
 
 	return &smokeEnv{
 		srv:     srv,

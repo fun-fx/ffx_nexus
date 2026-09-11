@@ -4,9 +4,13 @@ import {
   createMyCredential,
   deleteMyCredential,
   fetchMyCredentials,
+  fetchGatewayCapabilities,
+  fetchInstallReadiness,
+  fetchMe,
   preflightCredential,
   type Credential,
   type PreflightResult,
+  type GatewayCapabilities,
 } from "../api";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
@@ -38,8 +42,15 @@ export function Credentials() {
     queryKey: ["credentials"],
     queryFn: () => fetchMyCredentials().catch(() => []),
   });
+  const capsQ = useQuery({
+    queryKey: ["gateway-capabilities"],
+    queryFn: () => fetchGatewayCapabilities().catch((): GatewayCapabilities => ({ providers: [] })),
+  });
+  const meQ = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   const [open, setOpen] = useState(false);
   const list = qc.data ?? [];
+  const providers = capsQ.data?.providers ?? [];
+  const lastDiff = capsQ.data?.last_diff ?? [];
 
   const createMut = useMutation({
     mutationFn: createMyCredential,
@@ -138,6 +149,42 @@ export function Credentials() {
           </button>
         </div>
       </header>
+
+      {providers.length > 0 && (
+        <section className="panel">
+          <h2 className="section-title">Provider control plane</h2>
+          <p className="muted">
+            Capability matrix from the live registry. No extra adapters — chat, stream,
+            embeddings, images, and moderation as registered at boot.
+          </p>
+          <div className="cap-matrix">
+            {providers.map((p) => (
+              <div key={p.name} className="cap-matrix__row">
+                <strong>{p.name}</strong>
+                <StatusPill label={p.health} tone={p.health === "registered" ? "ok" : "warn"} />
+                {p.chat ? <Chip tone="ok">chat</Chip> : null}
+                {p.stream ? <Chip tone="ok">stream</Chip> : null}
+                {p.embeddings ? <Chip tone="accent">embed</Chip> : null}
+                {p.images ? <Chip tone="accent">image</Chip> : null}
+                {p.moderations ? <Chip tone="accent">moderation</Chip> : null}
+                {p.scope ? <span className="muted">{p.scope}</span> : null}
+              </div>
+            ))}
+          </div>
+          {lastDiff.length > 0 && (
+            <p className="muted">Last config change: {lastDiff.join(", ")}</p>
+          )}
+          {meQ.data?.role === "admin" && (
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => fetchInstallReadiness("html").catch(() => undefined)}
+            >
+              Download installation readiness
+            </button>
+          )}
+        </section>
+      )}
 
       <div className="panel">
         <DataTable

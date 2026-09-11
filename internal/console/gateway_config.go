@@ -27,6 +27,7 @@ type GatewayConfigSnapshot struct {
 		TTL                  string  `json:"ttl"`
 		Threshold            float64 `json:"threshold"`
 		MaxEntries           int     `json:"max_entries"`
+		ExactMatch           bool    `json:"exact_match"`
 		RedisConfigured      bool    `json:"redis_configured"`
 		EmbeddingsConfigured bool    `json:"embeddings_configured"`
 	} `json:"semantic_cache"`
@@ -36,6 +37,7 @@ type GatewayConfigSnapshot struct {
 		Cooldown           string `json:"cooldown"`
 	} `json:"alerting"`
 	RestartRequired []string `json:"restart_required"`
+	LastDiff        []string `json:"last_diff,omitempty"`
 }
 
 type GatewayConfigPatch struct {
@@ -54,6 +56,7 @@ type GatewayConfigPatch struct {
 		TTL        *string  `json:"ttl"`
 		Threshold  *float64 `json:"threshold"`
 		MaxEntries *int     `json:"max_entries"`
+		ExactMatch *bool    `json:"exact_match"`
 	} `json:"semantic_cache"`
 	Alerting *struct {
 		FailoverWebhook *string `json:"failover_webhook"`

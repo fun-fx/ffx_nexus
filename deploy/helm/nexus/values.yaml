@@ -207,12 +207,13 @@ config:
   # acceptable for their deployment.
   captureTraceContent: false
 
-  # Semantic cache (requires Redis + an embeddings endpoint).
+  # Semantic cache (requires Redis; embeddings optional when exactMatch is true).
   semanticCache:
     enabled: false
     ttl: "24h"
     threshold: "0.92"
     maxEntries: 500
+    exactMatch: false
   embeddings:
     url: ""
     model: ""

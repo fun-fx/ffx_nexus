@@ -190,6 +190,77 @@ func (r *Registry) ProviderFor(name string) (Provider, bool) {
 	return p, ok
 }
 
+// ProviderCapability is the control-plane contract for one registered adapter.
+type ProviderCapability struct {
+	Name             string   `json:"name"`
+	Scope            string   `json:"scope,omitempty"`
+	Chat             bool     `json:"chat"`
+	Stream           bool     `json:"stream"`
+	Embeddings       bool     `json:"embeddings"`
+	Images           bool     `json:"images"`
+	Moderations      bool     `json:"moderations"`
+	ChatModels       []string `json:"chat_models,omitempty"`
+	EmbeddingModels  []string `json:"embedding_models,omitempty"`
+	ImageModels      []string `json:"image_models,omitempty"`
+	ModerationModels []string `json:"moderation_models,omitempty"`
+	Health           string   `json:"health"`
+}
+
+// ProviderCapabilities lists every registered adapter's surface without
+// adding new vendor adapters. Stream follows Chat: the Provider contract
+// requires ChatCompletionStream.
+func (r *Registry) ProviderCapabilities() []ProviderCapability {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.providers))
+	for n := range r.providers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]ProviderCapability, 0, len(names))
+	for _, name := range names {
+		p := r.providers[name]
+		cap := ProviderCapability{
+			Name:       name,
+			Chat:       true,
+			Stream:     true,
+			ChatModels: append([]string(nil), p.Models()...),
+			Health:     "registered",
+		}
+		if hint, ok := r.providerHint[name]; ok {
+			cap.Scope = string(hint.Scope)
+		}
+		if len(cap.ChatModels) == 0 {
+			cap.Health = "empty"
+		}
+		if ep, ok := p.(EmbeddingsProvider); ok {
+			cap.Embeddings = true
+			cap.EmbeddingModels = append([]string(nil), ep.EmbeddingModels()...)
+		}
+		if ip, ok := p.(ImageGenerationProvider); ok {
+			cap.Images = true
+			cap.ImageModels = append([]string(nil), ip.ImageModels()...)
+		}
+		if mp, ok := p.(ModerationsProvider); ok {
+			cap.Moderations = true
+			cap.ModerationModels = append([]string(nil), mp.ModerationModels()...)
+		}
+		out = append(out, cap)
+	}
+	return out
+}
+
+// ProviderCapabilities is the console control-plane view of the registry.
+func (h *Handler) ProviderCapabilities() []ProviderCapability {
+	if h == nil || h.registry == nil {
+		return []ProviderCapability{}
+	}
+	return h.registry.ProviderCapabilities()
+}
+
 // AllModels returns every registered model id, sorted.
 func (r *Registry) AllModels() []string {
 	r.mu.RLock()

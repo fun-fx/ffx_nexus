@@ -95,6 +95,8 @@ func (h *Handler) writeMCPError(w http.ResponseWriter, r *http.Request, err erro
 	switch {
 	case err == mcp.ErrServerNotFound:
 		writeError(w, r, http.StatusNotFound, "mcp_not_found", err.Error())
+	case err == mcp.ErrToolNotAllowed:
+		writeError(w, r, http.StatusForbidden, string(apierr.CodeForbidden), err.Error())
 	case strings.Contains(err.Error(), "virtual key not allowed"):
 		writeError(w, r, http.StatusForbidden, string(apierr.CodeForbidden), err.Error())
 	default:

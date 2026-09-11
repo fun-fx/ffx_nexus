@@ -60,6 +60,8 @@ type Server struct {
 	store              *core.Store           // may be nil when Postgres is not configured
 	routes             RouteStatsSource      // may be nil when routing is disabled
 	catalog            CatalogSource         // may be nil when the gateway is not co-located
+	capabilities       CapabilitySource      // may be nil when the gateway is not co-located
+	installReady       InstallReadinessSource
 	reload             func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup        bool                  // public POST /api/auth/register
 	localMode          bool                  // single-machine install; first signup becomes admin
@@ -232,6 +234,12 @@ func (s *Server) SetRouteStats(src RouteStatsSource) { s.routes = src }
 // endpoint. The Playground page consumes this so it can list stock + user
 // providers without needing a virtual-key Authorization header.
 func (s *Server) SetCatalog(src CatalogSource) { s.catalog = src }
+
+// SetCapabilitySource wires GET /api/gateway/capabilities.
+func (s *Server) SetCapabilitySource(src CapabilitySource) { s.capabilities = src }
+
+// SetInstallReadiness wires GET /api/ops/readiness.
+func (s *Server) SetInstallReadiness(src InstallReadinessSource) { s.installReady = src }
 
 // SetCredentialReloader registers a callback invoked after credential changes
 // (rotate/delete) so the gateway can refresh its in-memory providers without a
@@ -453,7 +461,11 @@ func (s *Server) Mux() http.Handler {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/traces/dashboard", s.requireUser(s.traceDashboard))
 		r.Get("/traces/series", s.requireUser(s.traceVolumeSeries))
+		r.Get("/traces/{id}/export", s.requireUser(s.exportTraceEvidence))
+		r.Get("/traces/{id}", s.requireUser(s.getTraceEvidence))
 		r.Get("/traces", s.requireUser(s.recentTraces))
+		r.Get("/gateway/capabilities", s.requireUser(s.gatewayCapabilities))
+		r.Get("/ops/readiness", s.requireAdmin(s.installReadiness))
 		r.Get("/turns", s.requireUser(s.recentTurns))
 		r.Get("/stats", s.requireUser(s.stats))
 		r.Get("/stats/providers", s.requireUser(s.providerStats))

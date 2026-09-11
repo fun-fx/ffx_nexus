@@ -2,6 +2,8 @@ package observability
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -1338,4 +1340,88 @@ func buildBucketedSeriesArgs(orgID, userID string, before, since time.Time, inte
 
 func buildRequestVolumeSeriesArgs(orgID, userID string, before, since time.Time, intervalSec int64, filter TraceFilter) []any {
 	return buildBucketedSeriesArgs(orgID, userID, before, since, intervalSec, filter, dimensionSkip{})
+}
+
+// TraceEvidence loads one request's graph: the gateway_traces row plus
+// eval_scores joined by trace_id. Scoped to orgID the same way as the list.
+func (r *Reader) TraceEvidence(ctx context.Context, orgID, userID, traceID string) (*TraceEvidence, error) {
+	if r == nil || r.conn == nil || strings.TrimSpace(traceID) == "" {
+		return nil, nil
+	}
+	orgCond, args := orgScopeClause(orgID)
+	userCond := ""
+	if userID != "" {
+		userCond = " AND user_id = ?"
+		args = append(args, userID)
+	}
+	args = append(args, traceID)
+	row := r.conn.QueryRow(ctx, `
+		SELECT trace_id, timestamp, provider_name, request_model,
+		       response_model, input_tokens, output_tokens,
+		       toInt64(input_tokens + output_tokens) AS total_tokens,
+		       latency_ms, ttft_ms, cost_usd,
+		       status_code, streamed, finish_reason, cache_hit, guardrail_action,
+		       session_id, turn_id, user_id, credential_source,
+		       attempts, policy_reasons, guardrail_rule, egress_mode
+		FROM gateway_traces
+		WHERE `+orgCond+userCond+` AND trace_id = ?
+		ORDER BY timestamp DESC
+		LIMIT 1`, args...)
+	var ev TraceEvidence
+	var attemptsRaw, reasonsRaw string
+	var streamed, cacheHit uint8
+	if err := row.Scan(
+		&ev.TraceID, &ev.Timestamp, &ev.ProviderName, &ev.RequestModel,
+		&ev.ResponseModel, &ev.InputTokens, &ev.OutputTokens, &ev.TotalTokens,
+		&ev.LatencyMs, &ev.TTFTMs, &ev.CostUSD,
+		&ev.StatusCode, &streamed, &ev.FinishReason, &cacheHit, &ev.GuardrailAction,
+		&ev.SessionID, &ev.TurnID, &ev.UserID, &ev.CredentialSource,
+		&attemptsRaw, &reasonsRaw, &ev.GuardrailRule, &ev.EgressMode,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || strings.Contains(strings.ToLower(err.Error()), "no rows") {
+			return nil, nil
+		}
+		return nil, err
+	}
+	ev.Streamed = streamed
+	ev.CacheHit = cacheHit
+	UnmarshalJSONField(attemptsRaw, &ev.Attempts)
+	UnmarshalJSONField(reasonsRaw, &ev.PolicyReasons)
+	if ev.Attempts == nil {
+		ev.Attempts = []ProviderAttempt{}
+	}
+	if ev.PolicyReasons == nil {
+		ev.PolicyReasons = []PolicyReason{}
+	}
+	scores, err := r.evalScoresForTrace(ctx, orgID, traceID)
+	if err != nil {
+		scores = []EvalScoreRow{}
+	}
+	ev.EvalScores = scores
+	return &ev, nil
+}
+
+func (r *Reader) evalScoresForTrace(ctx context.Context, orgID, traceID string) ([]EvalScoreRow, error) {
+	orgCond, args := orgScopeClause(orgID)
+	args = append(args, traceID)
+	rows, err := r.conn.Query(ctx, `
+		SELECT evaluator, metric, score, passed, rationale, judge_model
+		FROM eval_scores
+		WHERE `+orgCond+` AND trace_id = ?
+		ORDER BY timestamp ASC`, args...)
+	if err != nil {
+		return []EvalScoreRow{}, nil // table may not exist on older installs; empty is fine
+	}
+	defer rows.Close()
+	out := []EvalScoreRow{}
+	for rows.Next() {
+		var s EvalScoreRow
+		var passed uint8
+		if err := rows.Scan(&s.Evaluator, &s.Metric, &s.Score, &passed, &s.Rationale, &s.JudgeModel); err != nil {
+			return nil, err
+		}
+		s.Passed = passed != 0
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
