@@ -108,6 +108,15 @@ the real packages are `internal/ippolicy` and `internal/netpolicy`, so the
 gate was silent on the code it exists to guard — and the CNI enforcement
 gate now runs nightly in addition to manual dispatch, closing D-2b.
 
+## [v0.8.4] — Console UI polish for observability, gateway, and MCP (PR #317)
+
+Shared `DateTimeField` and `SettingRow` components plus themed filter bars and
+form panels across Dashboard/Traces time windows, MCP Logs filters, Guardrails,
+Alerting, Semantic Cache, and MCP Registry/Library/Settings. Fixes broken
+`btn primary` / `btn ghost` classes on MCP pages.
+
+Helm chart `version` / `appVersion` bump to `0.8.4`.
+
 ## [v0.8.3] — Overview dashboard KPI and five shared-filter charts (PR #315)
 
 The Observability Overview tab now loads a single `GET /api/traces/dashboard`
