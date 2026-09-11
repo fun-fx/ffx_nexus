@@ -16,6 +16,8 @@ import { applyMcpOrgDefaults } from "../lib/mcpPresets";
 import { Chip } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
 import { Drawer } from "../components/Drawer";
+import { GradientText } from "../components/GradientText";
+import { Icon } from "../components/icons";
 import { StatusPill } from "../components/StatusPill";
 
 const DEFAULT_SPEC = `connection:
@@ -33,7 +35,10 @@ function statusFor(id: string, statuses: MCPServerStatus[]): MCPServerStatus | u
 }
 
 function gatewaySnippet(serverId: string, tool: string): string {
-  const base = typeof window !== "undefined" ? window.location.origin.replace(":8081", ":8080") : "http://127.0.0.1:8080";
+  const base =
+    typeof window !== "undefined"
+      ? window.location.origin.replace(":8081", ":8080")
+      : "http://127.0.0.1:8080";
   return `curl -s ${base}/v1/mcp/servers/${serverId}/tools/call \\
   -H "Authorization: Bearer $NEXUS_VIRTUAL_KEY" \\
   -H "Content-Type: application/json" \\
@@ -76,6 +81,19 @@ export function MCPRegistry() {
     },
   });
 
+  const reconnectMut = useMutation({
+    mutationFn: reconnectMCPServer,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["mcp-servers"] }),
+  });
+  const testMut = useMutation({
+    mutationFn: testMCPServer,
+    onSuccess: (res) => setTestMsg(res.ok ? res.message : `Failed: ${res.message}`),
+  });
+  const deleteMut = useMutation({
+    mutationFn: deleteMCPServer,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["mcp-servers"] }),
+  });
+
   const rows = useMemo(() => {
     const servers = data?.servers ?? [];
     const statuses = data?.statuses ?? [];
@@ -84,6 +102,22 @@ export function MCPRegistry() {
       status: statusFor(s.id, statuses),
     }));
   }, [data]);
+
+  function openCreate() {
+    setEditing(null);
+    setName("");
+    setSpec(DEFAULT_SPEC);
+    setEnabled(true);
+    setDrawerOpen(true);
+  }
+
+  function openEdit(rec: MCPServerRecord) {
+    setEditing(rec);
+    setName(rec.name);
+    setSpec(rec.spec_yaml);
+    setEnabled(rec.enabled);
+    setDrawerOpen(true);
+  }
 
   const columns: Column<(typeof rows)[number]>[] = [
     {
@@ -131,16 +165,24 @@ export function MCPRegistry() {
       header: "",
       cell: (r) => (
         <div className="row-actions">
-          <button type="button" className="btn ghost small" onClick={() => openEdit(r.record)}>
+          <button type="button" className="btn-ghost btn-small" onClick={() => openEdit(r.record)}>
             Edit
           </button>
-          <button type="button" className="btn ghost small" onClick={() => reconnectMut.mutate(r.record.id)}>
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            onClick={() => reconnectMut.mutate(r.record.id)}
+          >
             Reconnect
           </button>
-          <button type="button" className="btn ghost small" onClick={() => testMut.mutate(r.record.id)}>
+          <button type="button" className="btn-ghost btn-small" onClick={() => testMut.mutate(r.record.id)}>
             Test
           </button>
-          <button type="button" className="btn ghost small danger" onClick={() => deleteMut.mutate(r.record.id)}>
+          <button
+            type="button"
+            className="btn-ghost btn-small row-action-danger"
+            onClick={() => deleteMut.mutate(r.record.id)}
+          >
             Delete
           </button>
         </div>
@@ -148,90 +190,101 @@ export function MCPRegistry() {
     },
   ];
 
-  const reconnectMut = useMutation({
-    mutationFn: reconnectMCPServer,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["mcp-servers"] }),
-  });
-  const testMut = useMutation({
-    mutationFn: testMCPServer,
-    onSuccess: (res) => setTestMsg(res.ok ? res.message : `Failed: ${res.message}`),
-  });
-  const deleteMut = useMutation({
-    mutationFn: deleteMCPServer,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["mcp-servers"] }),
-  });
-
-  function openCreate() {
-    setEditing(null);
-    setName("");
-    setSpec(DEFAULT_SPEC);
-    setEnabled(true);
-    setDrawerOpen(true);
-  }
-
-  function openEdit(rec: MCPServerRecord) {
-    setEditing(rec);
-    setName(rec.name);
-    setSpec(rec.spec_yaml);
-    setEnabled(rec.enabled);
-    setDrawerOpen(true);
-  }
-
   const sampleServer = rows[0];
   const sampleTool = sampleServer?.status?.tools?.[0]?.name ?? "tool_name";
 
   return (
     <div className="page">
-      <header className="page-header">
+      <header className="page-head">
         <div>
-          <h1>MCP Registry</h1>
-          <p className="muted">Register stdio or HTTP MCP servers for the gateway to proxy.</p>
+          <div className="eyebrow">
+            <span className="dot" aria-hidden="true" /> MCP · server registry
+          </div>
+          <h1 className="page-title">
+            <GradientText as="span">MCP</GradientText> Registry
+          </h1>
+          <p className="page-sub">
+            Register stdio or HTTP MCP servers for the gateway to proxy.
+          </p>
         </div>
-        <button type="button" className="btn primary" onClick={openCreate}>
-          Add server
-        </button>
+        <div className="page-stats">
+          <div className="page-stat">
+            <div className="page-stat-label">servers</div>
+            <div className="page-stat-value">{rows.length}</div>
+          </div>
+          <button type="button" className="btn-neon" onClick={openCreate}>
+            <Icon.sparkles size={14} />
+            Add server
+          </button>
+        </div>
       </header>
 
-      {testMsg && <div className="banner info">{testMsg}</div>}
-      {error && <div className="banner danger">{(error as Error).message}</div>}
+      {testMsg ? <div className="banner info">{testMsg}</div> : null}
+      {error ? <div className="banner danger">{(error as Error).message}</div> : null}
 
       {rows.length === 0 && !isLoading ? (
-        <div className="empty-state card">
-          <h2>No MCP servers yet</h2>
+        <div className="empty-card">
+          <h2 className="section-title">No MCP servers yet</h2>
           <p className="muted">Add a server, then call tools through the gateway API.</p>
-          <p>
-            <Link to="/mcp/library" className="btn primary">
+          <div className="panel-form__actions">
+            <button type="button" className="btn-neon" onClick={openCreate}>
+              <Icon.sparkles size={14} />
+              Add server
+            </button>
+            <Link to="/mcp/library" className="btn-ghost">
               Browse Library
             </Link>
-          </p>
+          </div>
           <pre className="code-block">{gatewaySnippet("<server-id>", sampleTool)}</pre>
         </div>
       ) : (
-        <DataTable columns={columns} rows={rows} rowKey={(r) => r.record.id} emptyMessage={isLoading ? "Loading…" : undefined} />
+        <div className="panel">
+          <DataTable
+            columns={columns}
+            rows={rows}
+            rowKey={(r) => r.record.id}
+            emptyMessage={isLoading ? "Loading…" : undefined}
+          />
+        </div>
       )}
 
-      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title={editing ? "Edit MCP server" : "Add MCP server"}>
-        <label className="field">
-          <span>Name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="filesystem" />
-        </label>
-        <label className="field">
-          <span>Spec (YAML)</span>
-          <textarea rows={14} value={spec} onChange={(e) => setSpec(e.target.value)} spellCheck={false} />
-        </label>
-        <label className="checkbox">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          Enabled
-        </label>
-        <div className="drawer-actions">
-          <button type="button" className="btn ghost" onClick={() => setDrawerOpen(false)}>
-            Cancel
-          </button>
-          <button type="button" className="btn primary" disabled={!name.trim() || saveMut.isPending} onClick={() => saveMut.mutate()}>
-            Save
-          </button>
+      <Drawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        title={editing ? "Edit MCP server" : "Add MCP server"}
+        footer={
+          <div className="drawer-footer">
+            <button type="button" className="btn-ghost" onClick={() => setDrawerOpen(false)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-neon"
+              disabled={!name.trim() || saveMut.isPending}
+              onClick={() => saveMut.mutate()}
+            >
+              {saveMut.isPending ? "Saving…" : "Save"}
+            </button>
+          </div>
+        }
+      >
+        <div className="form-stack">
+          <label className="field-row">
+            <span className="field-label">Name</span>
+            <span className="field-hint">Short identifier used in the gateway API path.</span>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="filesystem" />
+          </label>
+          <label className="field-row">
+            <span className="field-label">Spec (YAML)</span>
+            <span className="field-hint">Connection type, command, args, and timeout for this server.</span>
+            <textarea rows={14} value={spec} onChange={(e) => setSpec(e.target.value)} spellCheck={false} />
+          </label>
+          <label className="trace-dashboard__check">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+            <span>Enabled</span>
+          </label>
+          {saveMut.error ? <Chip tone="err">{(saveMut.error as Error).message}</Chip> : null}
         </div>
-        {saveMut.error && <Chip tone="err">{(saveMut.error as Error).message}</Chip>}
       </Drawer>
     </div>
   );

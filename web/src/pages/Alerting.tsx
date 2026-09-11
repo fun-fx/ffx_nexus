@@ -55,51 +55,83 @@ export function Alerting() {
       ) : cfgQ.error ? (
         <Chip tone="err">{(cfgQ.error as Error).message}</Chip>
       ) : alert ? (
-        <section className="panel" style={{ padding: "1.25rem" }}>
-          <p className="muted small">
-            Generic webhook: {alert.failover_webhook_set ? "configured" : "not set"} · Slack:{" "}
-            {alert.failover_slack_set ? "configured" : "not set"}
+        <section className="panel panel-form">
+          <p className="panel-form__intro">
+            When the gateway exhausts a routing tier and fails over to the next model,
+            Nexus can POST a JSON payload to a generic webhook or Slack incoming webhook.
+            Cooldown suppresses duplicate alerts for the same failover within the window.
           </p>
-          <label className="field">
-            <span>Failover webhook URL</span>
-            <input
-              type="url"
-              placeholder={alert.failover_webhook_set ? "•••••••• (leave blank to keep)" : "https://…"}
-              value={webhook}
-              onChange={(e) => {
-                setWebhook(e.target.value);
-                setEditWebhook(true);
-              }}
-            />
-          </label>
-          <label className="field">
-            <span>Slack webhook URL</span>
-            <input
-              type="url"
-              placeholder={alert.failover_slack_set ? "•••••••• (leave blank to keep)" : "https://hooks.slack.com/…"}
-              value={slack}
-              onChange={(e) => {
-                setSlack(e.target.value);
-                setEditSlack(true);
-              }}
-            />
-          </label>
-          <label className="field">
-            <span>Alert cooldown (duration, 0 = off)</span>
-            <input
-              value={cooldown ?? alert.cooldown}
-              onChange={(e) => setCooldown(e.target.value)}
-            />
-          </label>
-          <button
-            type="button"
-            className="btn-neon"
-            disabled={saveMut.isPending}
-            onClick={() => saveMut.mutate()}
-          >
-            {saveMut.isPending ? "Saving…" : "Save alerting"}
-          </button>
-          {saveMut.error ? <Chip tone="err">{(saveMut.error as Error).message}</Chip> : null}
+
+          <div className="panel-form__section">
+            <h2 className="panel-form__section-title">Channels</h2>
+            <div className="alerting-status">
+              <Chip tone={alert.failover_webhook_set ? "ok" : "neutral"}>
+                Generic webhook: {alert.failover_webhook_set ? "configured" : "not set"}
+              </Chip>
+              <Chip tone={alert.failover_slack_set ? "ok" : "neutral"}>
+                Slack: {alert.failover_slack_set ? "configured" : "not set"}
+              </Chip>
+            </div>
+            <label className="field-row">
+              <span className="field-label">Failover webhook URL</span>
+              <span className="field-hint">
+                HTTPS endpoint that receives failover JSON. Leave blank to keep the current value.
+              </span>
+              <input
+                type="url"
+                placeholder={alert.failover_webhook_set ? "•••••••• (leave blank to keep)" : "https://…"}
+                value={webhook}
+                onChange={(e) => {
+                  setWebhook(e.target.value);
+                  setEditWebhook(true);
+                }}
+              />
+            </label>
+            <label className="field-row">
+              <span className="field-label">Slack webhook URL</span>
+              <span className="field-hint">
+                Slack incoming webhook for failover notifications. Leave blank to keep the current value.
+              </span>
+              <input
+                type="url"
+                placeholder={
+                  alert.failover_slack_set ? "•••••••• (leave blank to keep)" : "https://hooks.slack.com/…"
+                }
+                value={slack}
+                onChange={(e) => {
+                  setSlack(e.target.value);
+                  setEditSlack(true);
+                }}
+              />
+            </label>
+          </div>
+
+          <div className="panel-form__section">
+            <h2 className="panel-form__section-title">Rate limit</h2>
+            <label className="field-row">
+              <span className="field-label">Alert cooldown</span>
+              <span className="field-hint">
+                Minimum time between alerts for the same failover. Use 0 or 0s to disable.
+              </span>
+              <input
+                value={cooldown ?? alert.cooldown}
+                onChange={(e) => setCooldown(e.target.value)}
+                placeholder="0s"
+              />
+            </label>
+          </div>
+
+          <div className="panel-form__actions">
+            <button
+              type="button"
+              className="btn-neon"
+              disabled={saveMut.isPending}
+              onClick={() => saveMut.mutate()}
+            >
+              {saveMut.isPending ? "Saving…" : "Save alerting"}
+            </button>
+            {saveMut.error ? <Chip tone="err">{(saveMut.error as Error).message}</Chip> : null}
+          </div>
         </section>
       ) : null}
     </div>
