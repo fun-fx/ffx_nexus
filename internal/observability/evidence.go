@@ -8,17 +8,17 @@ import (
 // Typed policy decision codes persisted on a Trace and shown in the
 // request evidence graph. Keep these stable: they are the export contract.
 const (
-	ReasonAllowed           = "allowed"
-	ReasonDenied            = "denied"
-	ReasonFallback          = "fallback"
-	ReasonRedacted          = "redacted"
-	ReasonMinQuality        = "min_quality"
-	ReasonCacheHit          = "cache_hit"
-	ReasonMissingBYOK       = "missing_byok_key"
-	ReasonGuardrailBlocked  = "guardrail_blocked"
-	ReasonModelNotAllowed   = "model_not_allowed"
-	ReasonSchemaBlocked     = "schema_blocked"
-	ReasonUpstreamError     = "upstream_error"
+	ReasonAllowed          = "allowed"
+	ReasonDenied           = "denied"
+	ReasonFallback         = "fallback"
+	ReasonRedacted         = "redacted"
+	ReasonMinQuality       = "min_quality"
+	ReasonCacheHit         = "cache_hit"
+	ReasonMissingBYOK      = "missing_byok_key"
+	ReasonGuardrailBlocked = "guardrail_blocked"
+	ReasonModelNotAllowed  = "model_not_allowed"
+	ReasonSchemaBlocked    = "schema_blocked"
+	ReasonUpstreamError    = "upstream_error"
 )
 
 // ProviderAttempt is one hop in a fallback chain.
