@@ -59,8 +59,9 @@ export function MCPLogs() {
     queryKey: ["mcp-logs", baseQuery, cursor.before],
     queryFn: async () => {
       const page = await fetchMCPLogs({ ...baseQuery, ...cursor });
-      if (!cursor.before) setItems(page.items);
-      else setItems((prev) => [...prev, ...page.items]);
+      const next = page.items ?? [];
+      if (!cursor.before) setItems(next);
+      else setItems((prev) => [...prev, ...next]);
       return page;
     },
   });
@@ -112,10 +113,13 @@ export function MCPLogs() {
 
   return (
     <div className="page">
-      <header className="page-header">
+      <header className="page-head">
         <div>
-          <h1>MCP Logs</h1>
-          <p className="muted">Tool executions proxied through the Nexus MCP gateway.</p>
+          <div className="eyebrow">
+            <span className="dot" aria-hidden="true" /> Observability · MCP
+          </div>
+          <h1 className="page-title">MCP Logs</h1>
+          <p className="page-sub">Tool executions proxied through the Nexus MCP gateway.</p>
         </div>
         <button type="button" className="btn-ghost" onClick={() => reload()}>
           <Icon.refresh size={14} />

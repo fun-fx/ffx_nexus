@@ -55,7 +55,11 @@ func (s *Server) getMCPLog(w http.ResponseWriter, r *http.Request, u core.User) 
 
 func (s *Server) mcpLogFilterData(w http.ResponseWriter, r *http.Request, _ core.User) {
 	if s.reader == nil {
-		writeJSON(w, http.StatusOK, observability.MCPLogFilterData{})
+		writeJSON(w, http.StatusOK, observability.MCPLogFilterData{
+			ToolNames:    []string{},
+			ServerLabels: []string{},
+			Statuses:     []string{"success", "error"},
+		})
 		return
 	}
 	data, err := s.reader.MCPLogFilterData(r.Context(), orgID(r))

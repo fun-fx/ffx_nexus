@@ -109,7 +109,7 @@ function saveStoredWidths(storageKey: string, widths: Record<string, number>) {
 }
 
 export function DataTable<T>({
-  rows,
+  rows: rowsProp,
   columns,
   rowKey,
   onRowClick,
@@ -119,6 +119,9 @@ export function DataTable<T>({
   pageSize = 25,
   storageKey = "",
 }: Props<T>) {
+  // Go json.Marshal encodes a nil slice as `null`. An empty log list must
+  // still render, not throw on `.length` and take the whole console down.
+  const rows = Array.isArray(rowsProp) ? rowsProp : [];
   const [sort, setSort] = useState<{ id: string; dir: "asc" | "desc" } | null>(
     initialSort ?? null,
   );

@@ -76,7 +76,7 @@ type MCPLogFilterData struct {
 // MCPLogPage returns cursor-paged MCP logs for an org.
 func (r *Reader) MCPLogPage(ctx context.Context, orgID, userID string, limit int, before, since time.Time, f MCPLogFilter) (MCPLogPage, error) {
 	if r == nil || r.conn == nil {
-		return MCPLogPage{}, nil
+		return MCPLogPage{Items: []MCPLogSummary{}}, nil
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -134,7 +134,7 @@ func (r *Reader) MCPLogPage(ctx context.Context, orgID, userID string, limit int
 	}
 	defer rows.Close()
 
-	var items []MCPLogSummary
+	items := make([]MCPLogSummary, 0)
 	for rows.Next() {
 		var s MCPLogSummary
 		if err := rows.Scan(
@@ -250,14 +250,22 @@ func (r *Reader) MCPLogStatsWindow(ctx context.Context, orgID, userID string, si
 // MCPLogFilterData returns distinct filter values (last 7 days).
 func (r *Reader) MCPLogFilterData(ctx context.Context, orgID string) (MCPLogFilterData, error) {
 	if r == nil || r.conn == nil {
-		return MCPLogFilterData{}, nil
+		return MCPLogFilterData{
+			ToolNames:    []string{},
+			ServerLabels: []string{},
+			Statuses:     []string{"success", "error"},
+		}, nil
 	}
 	since := time.Now().Add(-7 * 24 * time.Hour)
 	orgCond, baseArgs := orgScopeClause(orgID)
 	base := ` FROM mcp_tool_logs WHERE ` + orgCond + ` AND timestamp >= ?`
 	queryArgs := append(append([]any{}, baseArgs...), since)
 
-	out := MCPLogFilterData{Statuses: []string{"success", "error"}}
+	out := MCPLogFilterData{
+		ToolNames:    []string{},
+		ServerLabels: []string{},
+		Statuses:     []string{"success", "error"},
+	}
 	for _, pair := range []struct {
 		col  string
 		dest *[]string

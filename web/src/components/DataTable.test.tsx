@@ -60,6 +60,17 @@ describe("DataTable", () => {
     expect(screen.getByText("Nothing here.")).toBeInTheDocument();
   });
 
+  it("treats a null row list as empty instead of crashing", () => {
+    render(
+      <DataTable
+        rows={null as unknown as Row[]}
+        columns={cols}
+        emptyMessage="Nothing here."
+      />,
+    );
+    expect(screen.getByText("Nothing here.")).toBeInTheDocument();
+  });
+
   it("has no axe violations on a populated grid", async () => {
     const { container } = render(
       <DataTable rows={rows} columns={cols} rowKey={(r) => r.id} />,
