@@ -1059,11 +1059,8 @@ export async function fetchMCPLogs(query: MCPLogQuery = {}): Promise<MCPLogPage>
   if (query.q) params.set("q", query.q);
   const qs = params.toString();
   const res = await fetch(`/api/mcp-logs${qs ? `?${qs}` : ""}`);
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
-  }
-  return jsonOrError<MCPLogPage>(res);
+  const page = await jsonOrError<MCPLogPage>(res);
+  return { ...page, items: Array.isArray(page.items) ? page.items : [] };
 }
 
 export async function fetchMCPLog(id: string): Promise<MCPLogDetail> {
