@@ -657,16 +657,19 @@ func (c *evalRuntimeController) Apply(patch console.EvalConfigPatch) (console.Ev
 
 	if c.modelRouter != nil {
 		w := c.modelRouter.Weights()
-		if patch.RouteWQuality != nil {
-			w.Quality = *patch.RouteWQuality
+		q := patch.RouteQualityWeight()
+		cost := patch.RouteCostWeight()
+		lat := patch.RouteLatencyWeight()
+		if q != nil {
+			w.Quality = *q
 		}
-		if patch.RouteWCost != nil {
-			w.Cost = *patch.RouteWCost
+		if cost != nil {
+			w.Cost = *cost
 		}
-		if patch.RouteWLatency != nil {
-			w.Latency = *patch.RouteWLatency
+		if lat != nil {
+			w.Latency = *lat
 		}
-		if patch.RouteWQuality != nil || patch.RouteWCost != nil || patch.RouteWLatency != nil {
+		if q != nil || cost != nil || lat != nil {
 			c.modelRouter.SetWeights(w)
 		}
 		if patch.RouteWindow != nil {

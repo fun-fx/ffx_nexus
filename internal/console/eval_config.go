@@ -99,7 +99,8 @@ type EvalConfigPatch struct {
 	// admin scripts and older console builds) still POST the flat top-level
 	// fields above. Apply() prefers the nested form when present, then
 	// falls back to the flat fields, so both shapes update the same cells.
-	Eval *EvalConfigPatchEval `json:"eval"`
+	Eval    *EvalConfigPatchEval    `json:"eval"`
+	Routing *EvalConfigPatchRouting `json:"routing"`
 }
 
 // EvalConfigPatchEval mirrors the nested shape the console sends on
@@ -110,6 +111,44 @@ type EvalConfigPatchEval struct {
 	PIIEnabled          *bool    `json:"pii_enabled"`
 	CompletenessEnabled *bool    `json:"completeness_enabled"`
 	SampleRate          *float64 `json:"sample_rate"`
+}
+
+// EvalConfigPatchRouting is the nested routing block the Eval → Routing
+// Integration page PATCHes. The sliders send {routing:{weights:{quality,cost,latency}}};
+// without this struct those writes were decoded as empty and the live
+// router never moved.
+type EvalConfigPatchRouting struct {
+	Weights *EvalConfigPatchWeights `json:"weights"`
+}
+
+// EvalConfigPatchWeights is one quality/cost/latency triple.
+type EvalConfigPatchWeights struct {
+	Quality *float64 `json:"quality"`
+	Cost    *float64 `json:"cost"`
+	Latency *float64 `json:"latency"`
+}
+
+// RouteQualityWeight prefers nested routing.weights.quality, then the
+// legacy flat route_w_quality field.
+func (p EvalConfigPatch) RouteQualityWeight() *float64 {
+	if p.Routing != nil && p.Routing.Weights != nil && p.Routing.Weights.Quality != nil {
+		return p.Routing.Weights.Quality
+	}
+	return p.RouteWQuality
+}
+
+func (p EvalConfigPatch) RouteCostWeight() *float64 {
+	if p.Routing != nil && p.Routing.Weights != nil && p.Routing.Weights.Cost != nil {
+		return p.Routing.Weights.Cost
+	}
+	return p.RouteWCost
+}
+
+func (p EvalConfigPatch) RouteLatencyWeight() *float64 {
+	if p.Routing != nil && p.Routing.Weights != nil && p.Routing.Weights.Latency != nil {
+		return p.Routing.Weights.Latency
+	}
+	return p.RouteWLatency
 }
 
 // EvalConfigSource supplies the current effective eval/routing snapshot.

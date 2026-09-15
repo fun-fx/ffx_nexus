@@ -786,6 +786,9 @@ function WeightsCard({
     mutationFn: (next: { quality: number; cost: number; latency: number }) =>
       patchEvalConfig({
         routing: { weights: next },
+        route_w_quality: next.quality,
+        route_w_cost: next.cost,
+        route_w_latency: next.latency,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["eval-config"] }),
   });
