@@ -69,5 +69,20 @@ describe("<Overview /> first-run empty states", () => {
     expect(await screen.findByTestId("first-request-snippets")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /no traffic yet/i })).toBeInTheDocument();
   });
+});
 
+describe("<Overview /> spend by provider window", () => {
+  it("requests a 30-day provider rollup and keeps live stats on 1h", async () => {
+    renderOverview();
+    await screen.findByRole("heading", { name: /spend by provider/i });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes("/api/stats/providers?window=30d"))).toBe(
+      true,
+    );
+    expect(urls.some((u) => u.includes("/api/stats?window=1h"))).toBe(true);
+    expect(
+      await screen.findByText(/no spend in the last 30 days/i),
+    ).toBeInTheDocument();
+  });
 });

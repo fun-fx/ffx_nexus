@@ -714,11 +714,12 @@ type ProviderStat struct {
 // provider" widget can render the most expensive provider first. When userID
 // is non-empty, only the caller's traffic is counted.
 //
-// Resource profile: one ClickHouse SELECT with a single GROUP BY. The
-// query has the same max_memory_usage budget as WindowStats() so the
-// response time lands in the same single-digit-ms range on the prod
-// gateway_traces table; callers that hit this endpoint more than once
-// per 30 s are expected to wrap it in in-memory cache at a higher layer.
+// Resource profile: one ClickHouse SELECT with a single GROUP BY on
+// numeric columns (no input_messages). A 30-day window is the Overview
+// default and stays in the same tens-of-ms range as the 1h live stats
+// query on the prod gateway_traces table; callers that hit this endpoint
+// more than once per 30 s are expected to wrap it in in-memory cache at
+// a higher layer.
 func (r *Reader) ProviderStats(ctx context.Context, window time.Duration, orgID, userID string, limit int) ([]ProviderStat, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20

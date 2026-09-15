@@ -1154,17 +1154,45 @@ func providerStatsCacheSet(key string, v []observability.ProviderStat) {
 	providerStatsCache[key] = providerStatsCacheEntry{value: v, expiresAt: time.Now().Add(providerStatsTTL)}
 }
 
+// providerStatsDefaultWindow is the Overview "Spend by provider" grain.
+// Live KPI cards and the topbar stay on 1h; this aggregate is a billing
+// rollup, so a trailing month matches GET /api/me/spend/summary?days=30.
+const providerStatsDefaultWindow = 30 * 24 * time.Hour
+
+// providerStatsMaxWindow matches gateway_traces TTL. Wider ?window= values
+// cannot return more history than ClickHouse still has, and clamping keeps
+// a typo like 87600h from scanning the whole table under the 400MB budget.
+const providerStatsMaxWindow = 90 * 24 * time.Hour
+
+// parseProviderStatsWindow accepts the dashboard aliases (1h|24h|7d|30d)
+// plus Go duration strings (720h). time.ParseDuration does not understand
+// "30d", so an unparsed alias used to fall through to 1h and empty the
+// widget even when a month of traces existed.
+func parseProviderStatsWindow(q string) time.Duration {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return providerStatsDefaultWindow
+	}
+	var d time.Duration
+	if parsed, err := parseTraceSeriesPeriod(q); err == nil {
+		d = parsed
+	} else if parsed, err := time.ParseDuration(q); err == nil && parsed > 0 {
+		d = parsed
+	} else {
+		return providerStatsDefaultWindow
+	}
+	if d > providerStatsMaxWindow {
+		return providerStatsMaxWindow
+	}
+	return d
+}
+
 func (s *Server) providerStats(w http.ResponseWriter, r *http.Request, u core.User) {
 	if s.reader == nil {
 		writeJSON(w, http.StatusOK, []observability.ProviderStat{})
 		return
 	}
-	window := time.Hour
-	if q := r.URL.Query().Get("window"); q != "" {
-		if d, err := time.ParseDuration(q); err == nil {
-			window = d
-		}
-	}
+	window := parseProviderStatsWindow(r.URL.Query().Get("window"))
 	org := orgID(r)
 	scope := "admin"
 	if u.Role != core.RoleAdmin {
