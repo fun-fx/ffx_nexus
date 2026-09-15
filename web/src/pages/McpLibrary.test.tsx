@@ -55,6 +55,8 @@ describe("<McpLibrary />", () => {
     expect(await screen.findByTestId("mcp-library")).toBeInTheDocument();
     expect(screen.getByTestId("mcp-preset-filesystem")).toBeInTheDocument();
     expect(screen.getByTestId("mcp-preset-github")).toBeInTheDocument();
+    expect(screen.getByTestId("mcp-runtime-filesystem")).toHaveTextContent(/local/i);
+    expect(screen.getByTestId("mcp-runtime-github")).toHaveTextContent(/hosted/i);
   });
 
   it("installs preset with org defaults merged", async () => {
@@ -95,6 +97,7 @@ describe("<McpLibrary />", () => {
     expect(body.enabled).toBe(true);
     expect(body.spec_yaml).toContain("timeout_ms: 60000");
     expect(body.spec_yaml).toContain("sticky_http: false");
+    expect(await screen.findByTestId("mcp-install-test")).toHaveTextContent(/filesystem: ok/i);
   });
 
   it("blocks install when server name already exists", async () => {
@@ -123,5 +126,62 @@ describe("<McpLibrary />", () => {
     await user.click(screen.getByTestId("mcp-preset-filesystem"));
     expect(await screen.findByText(/already exists/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /install/i })).toBeDisabled();
+  });
+
+  it("warns that Local presets need the command on the gateway PATH", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/api/mcp/servers")) {
+          return new Response(JSON.stringify({ servers: [], statuses: [] }), { status: 200 });
+        }
+        if (url.endsWith("/api/mcp/settings")) {
+          return new Response(JSON.stringify(settingsPayload), { status: 200 });
+        }
+        return new Response("{}", { status: 404 });
+      }),
+    );
+    const user = userEvent.setup();
+    wrap(<McpLibrary />);
+    await user.click(await screen.findByTestId("mcp-preset-filesystem"));
+    expect(await screen.findByTestId("mcp-local-warning")).toBeInTheDocument();
+  });
+
+  it("shows a named Test failure in the install drawer", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith("/api/mcp/servers") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({ id: "srv-1", name: "fetch", spec_yaml: "", enabled: true }),
+            { status: 201 },
+          );
+        }
+        if (url.endsWith("/api/mcp/servers/srv-1/test") && init?.method === "POST") {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              message: 'exec: "npx": executable file not found in $PATH',
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/api/mcp/servers")) {
+          return new Response(JSON.stringify({ servers: [], statuses: [] }), { status: 200 });
+        }
+        if (url.endsWith("/api/mcp/settings")) {
+          return new Response(JSON.stringify(settingsPayload), { status: 200 });
+        }
+        return new Response("{}", { status: 404 });
+      }),
+    );
+    const user = userEvent.setup();
+    wrap(<McpLibrary />);
+    await user.click(await screen.findByTestId("mcp-preset-fetch"));
+    const drawer = await screen.findByRole("dialog");
+    await user.click(within(drawer).getByRole("button", { name: /install/i }));
+    expect(await screen.findByTestId("mcp-install-test")).toHaveTextContent(
+      /fetch: Failed:.*npx/i,
+    );
   });
 });
