@@ -109,3 +109,26 @@ func TestProviderStatsCache_KeysDoNotCollide(t *testing.T) {
 		t.Errorf("bob bucket poisoned: %#v", gotBob)
 	}
 }
+
+func TestParseProviderStatsWindow(t *testing.T) {
+	t.Parallel()
+	month := 30 * 24 * time.Hour
+	cases := []struct {
+		in   string
+		want time.Duration
+	}{
+		{"", month},
+		{"30d", month},
+		{"7d", 7 * 24 * time.Hour},
+		{"24h", 24 * time.Hour},
+		{"1h", time.Hour},
+		{"720h", month},
+		{"not-a-duration", month},
+		{"87600h", 90 * 24 * time.Hour}, // clamp to traces TTL
+	}
+	for _, tc := range cases {
+		if got := parseProviderStatsWindow(tc.in); got != tc.want {
+			t.Errorf("parseProviderStatsWindow(%q)=%v, want %v", tc.in, got, tc.want)
+		}
+	}
+}

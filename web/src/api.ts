@@ -284,7 +284,7 @@ export interface ProviderStat {
 // the spend bars would crash on `cost_usd.toFixed(2)` over undefined. The
 // 30-second in-process cache on the server means repeated dashboard tabs
 // that load on the same poll cadence are not double-charged.
-export async function fetchProviderStats(window = "1h"): Promise<ProviderStat[]> {
+export async function fetchProviderStats(window = "30d"): Promise<ProviderStat[]> {
   const res = await fetch(`/api/stats/providers?window=${window}`);
   if (!res.ok) {
     return [];

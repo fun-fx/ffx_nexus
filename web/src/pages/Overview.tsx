@@ -39,7 +39,7 @@ async function fetchOverview() {
       fetchTurns({ limit: 10 }),
       fetchRouting(),
       fetchEvalConfig(),
-      fetchProviderStats(),
+      fetchProviderStats("30d"),
       fetchAuthConfig(),
       fetchMyCredentials(),
       fetchMyKeys(),
@@ -582,14 +582,15 @@ function SpendByProvider({ providerStats }: { providerStats: ProviderStat[] }) {
       <header className="panel-head">
         <h2>Spend by provider</h2>
         <span className="panel-link muted">
-          {hasData ? `Total ${formatUsd(totalCost)} · last 1h` : "No spend yet"}
+          {hasData ? `Total ${formatUsd(totalCost)} · last 30d` : "No spend in the last 30 days"}
         </span>
       </header>
       <div className="spend-by-provider">
         {!hasData && (
           <div className="spend-by-provider__empty">
-            Connect a provider key and run a request — spend will roll up here
-            as gateway_traces aggregate.
+            Chat completions through the gateway in the last 30 days roll up
+            here. Provider keys alone do not count — spend is aggregated from
+            gateway_traces.
           </div>
         )}
         {providerStats.map((p) => {
