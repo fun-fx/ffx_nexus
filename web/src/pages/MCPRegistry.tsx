@@ -89,8 +89,14 @@ export function MCPRegistry() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["mcp-servers"] }),
   });
   const testMut = useMutation({
-    mutationFn: testMCPServer,
-    onSuccess: (res) => setTestMsg(res.ok ? res.message : `Failed: ${res.message}`),
+    mutationFn: async (row: { id: string; name: string }) => {
+      const res = await testMCPServer(row.id);
+      return { name: row.name, ...res };
+    },
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["mcp-servers"] });
+      setTestMsg(res.ok ? `${res.name}: ${res.message}` : `${res.name}: Failed: ${res.message}`);
+    },
   });
   const deleteMut = useMutation({
     mutationFn: deleteMCPServer,
@@ -194,7 +200,11 @@ export function MCPRegistry() {
           >
             Reconnect
           </button>
-          <button type="button" className="btn-ghost btn-small" onClick={() => testMut.mutate(r.record.id)}>
+          <button
+            type="button"
+            className="btn-ghost btn-small"
+            onClick={() => testMut.mutate({ id: r.record.id, name: r.record.name })}
+          >
             Test
           </button>
           <button
@@ -238,7 +248,15 @@ export function MCPRegistry() {
         </div>
       </header>
 
-      {testMsg ? <div className="banner info">{testMsg}</div> : null}
+      {testMsg ? (
+        <div
+          className={testMsg.includes("Failed:") ? "banner danger" : "banner info"}
+          data-testid="mcp-test-banner"
+          role="status"
+        >
+          {testMsg}
+        </div>
+      ) : null}
       {error ? <div className="banner danger">{(error as Error).message}</div> : null}
 
       {rows.length === 0 && !isLoading ? (
