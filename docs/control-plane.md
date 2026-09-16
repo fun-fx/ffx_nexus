@@ -155,6 +155,25 @@ Anthropic releases without a NexUS redeploy.
   - `NEXUS_DYNAMIC_MODEL_INTERVAL=30m` — refresh cadence (Go duration string).
   - `NEXUS_DYNAMIC_MODEL_MAX_RETRY=3` — retry budget per refresh.
 
+### Published-rate drift check (`NEXUS_PRICING_CHECK`)
+
+OpenAI / Anthropic / Gemini / Groq / Mistral chat responses do not include a
+dollar amount, so Nexus prices those calls from the static table in
+`internal/gateway/pricing.go`. That table is not pulled live. A background
+worker (boot + every 6h) fetches a published catalog — LiteLLM's public
+GitHub JSON by default — and diffs the ~44 non-Grid keys. A mismatch is a
+slog warning, Prometheus gauges, and an admin console banner. **It does not
+change `CostUSD` and does not rewrite `gateway_traces`.** Grid calls already
+use `usage.estimated_cost` and are skipped.
+
+The catalog JSON is a current-price snapshot; it has no "price changed at"
+timestamp, so historical rows cannot be backfilled.
+
+- **Toggles**:
+  - `NEXUS_PRICING_CHECK=true` — on by default; fail-soft if the fetch cannot reach GitHub (`in_cluster_only`).
+  - `NEXUS_PRICING_CHECK_INTERVAL=6h`
+  - `NEXUS_PRICING_CHECK_URL` — empty uses the LiteLLM raw JSON; set a mirror for airgap.
+
 ### Console identity & sessions
 
 - **Email + password login** (passwords are bcrypt-hashed). A login issues an

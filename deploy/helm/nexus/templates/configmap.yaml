@@ -146,6 +146,21 @@ data:
        that text subject to the gateway_traces retention window. */}}
   NEXUS_CAPTURE_TRACE_CONTENT: {{ .Values.config.captureTraceContent | default false | quote }}
 
+  {{- /* Published-rate drift check. Alert-only: does not rewrite CostUSD.
+       Helm `default true` would swallow an explicit `false`, so we branch
+       on kind instead. */}}
+  {{- if kindIs "bool" .Values.config.pricingCheck }}
+  NEXUS_PRICING_CHECK: {{ .Values.config.pricingCheck | quote }}
+  {{- else }}
+  NEXUS_PRICING_CHECK: "true"
+  {{- end }}
+  {{- with .Values.config.pricingCheckInterval }}
+  NEXUS_PRICING_CHECK_INTERVAL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.pricingCheckUrl }}
+  NEXUS_PRICING_CHECK_URL: {{ . | quote }}
+  {{- end }}
+
   {{- /* Semantic cache */}}
   NEXUS_SEMANTIC_CACHE_ENABLED: {{ .Values.config.semanticCache.enabled | quote }}
   {{- with .Values.config.semanticCache.ttl }}

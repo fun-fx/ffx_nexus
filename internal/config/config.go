@@ -474,6 +474,15 @@ type Config struct {
 	DynamicModelSync     bool
 	DynamicModelInterval time.Duration // 0 → 30m default
 	DynamicModelMaxRetry int           // 0 → 3 default
+
+	// PricingCheck periodically diffs the static CostUSD table against a
+	// published catalog (LiteLLM's GitHub JSON by default). It never
+	// mutates billing: a mismatch is a slog/Prometheus/console signal
+	// that pricing.go needs a human review. Grid instruments are skipped
+	// because those calls already use usage.estimated_cost.
+	PricingCheck         bool
+	PricingCheckInterval time.Duration // 0 → 6h default
+	PricingCheckURL      string        // empty → LiteLLM raw JSON
 }
 
 // SSOConfig is the OIDC configuration. The Enabled() predicate returns
@@ -765,6 +774,10 @@ func load() Config {
 		DynamicModelSync:     envBool("NEXUS_DYNAMIC_MODEL_SYNC", false),
 		DynamicModelInterval: envDuration("NEXUS_DYNAMIC_MODEL_INTERVAL", 30*time.Minute),
 		DynamicModelMaxRetry: envInt("NEXUS_DYNAMIC_MODEL_MAX_RETRY", 3),
+
+		PricingCheck:         envBool("NEXUS_PRICING_CHECK", true),
+		PricingCheckInterval: envDuration("NEXUS_PRICING_CHECK_INTERVAL", 6*time.Hour),
+		PricingCheckURL:      env("NEXUS_PRICING_CHECK_URL", ""),
 	}
 }
 

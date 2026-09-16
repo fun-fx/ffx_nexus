@@ -86,3 +86,50 @@ describe("<Overview /> spend by provider window", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("<Overview /> pricing drift banner", () => {
+  it("surfaces published-rate drift without implying billing changed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/api/me")) {
+          return new Response(JSON.stringify(adminMe), { status: 200 });
+        }
+        if (url.endsWith("/api/stats/pricing-drift")) {
+          return new Response(
+            JSON.stringify({
+              enabled: true,
+              billing_unchanged: true,
+              drifts: [
+                {
+                  model: "gpt-4o-mini",
+                  ours_in_per_m: 0.15,
+                  ours_out_per_m: 0.6,
+                  catalog_in_per_m: 1.5,
+                  catalog_out_per_m: 0.6,
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <ThemeProvider>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={["/"]}>
+            <Overview />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </ThemeProvider>,
+    );
+    expect(await screen.findByTestId("pricing-drift-banner")).toBeInTheDocument();
+    expect(screen.getByText(/static table/i)).toBeInTheDocument();
+  });
+});

@@ -207,6 +207,13 @@ config:
   # acceptable for their deployment.
   captureTraceContent: false
 
+  # Diff the static CostUSD table against a published catalog every
+  # interval. Alert-only: CostUSD and gateway_traces are never rewritten.
+  # Empty URL uses LiteLLM's public GitHub JSON.
+  pricingCheck: true
+  pricingCheckInterval: "6h"
+  pricingCheckUrl: ""
+
   # Semantic cache (requires Redis; embeddings optional when exactMatch is true).
   semanticCache:
     enabled: false

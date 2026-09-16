@@ -3,11 +3,13 @@ import { useMemo, useState } from "react";
 import { Chip } from "../components/Chip";
 import { DataTable, type Column } from "../components/DataTable";
 import { Icon } from "../components/icons";
+import { PricingDriftBanner } from "../components/PricingDriftBanner";
 import {
   fetchMe,
   fetchMySpendBreakdown,
   fetchMySpendDaily,
   fetchMySpendSummary,
+  fetchPricingDrift,
   fetchUserSpendBreakdown,
   fetchUserSpendDaily,
   fetchUserSpendSummary,
@@ -101,12 +103,14 @@ export function Spend() {
   const breakdownQuery = useQuery({
     queryKey: ["spend", "breakdown", scope, pickedDay],
     queryFn: () => spendBreakdownFetch(scope, pickedDay!),
-    // Fetch as soon as a day is picked; the panel may be closed
-    // momentarily (`panelOpen === false`) but the cache is warm so
-    // re-opening it is instant. Sending the fetch on close would
-    // either be wasteful or wrong, so we keep the exchange simple:
-    // pick ⇒ fetch + open; close ⇒ keep cache + hide panel.
     enabled: pickedDay !== null,
+  });
+
+  const driftQuery = useQuery({
+    queryKey: ["pricing-drift"],
+    queryFn: fetchPricingDrift,
+    enabled: admin,
+    refetchInterval: 60_000,
   });
 
   const pickDay = (d: string) => {
@@ -120,6 +124,7 @@ export function Spend() {
 
   return (
     <div className="spend-page">
+      <PricingDriftBanner snap={driftQuery.data ?? null} />
       <SpendHero summary={summaryQuery.data ?? null} days={days} aggregates={aggregates} />
 
       <div className="filter-bar" role="group" aria-label="Range and scope">

@@ -118,6 +118,7 @@ var consoleRoutePolicies = []routePolicy{
 	{"GET", "/api/gateway/config", "admin", ""},
 	{"PATCH", "/api/gateway/config", "admin", ""},
 	{"GET", "/api/ops/readiness", "admin", ""},
+	{"GET", "/api/stats/pricing-drift", "admin", ""},
 	{"POST", "/api/eval/profiles/", "admin", ""},
 	{"GET", "/api/eval/plugins/", "admin", ""},
 	{"POST", "/api/eval/plugins/", "admin", ""},
