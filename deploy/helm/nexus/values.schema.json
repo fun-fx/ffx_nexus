@@ -996,6 +996,16 @@
           "type": "boolean",
           "description": "Persist prompts, completions, and retrieval contexts to durable trace storage. Default false; evaluation is unaffected either way because traces carry bodies in memory regardless."
         },
+        "pricingCheck": {
+          "type": "boolean",
+          "description": "Periodically diff the static CostUSD table against a published catalog. Alert-only; never rewrites billing."
+        },
+        "pricingCheckInterval": {
+          "type": "string"
+        },
+        "pricingCheckUrl": {
+          "type": "string"
+        },
         "semanticCache": {
           "type": "object",
           "additionalProperties": false,

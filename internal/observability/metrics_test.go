@@ -38,6 +38,7 @@ func TestMetricsRecorderProducesValidExpositionFormat(t *testing.T) {
 		StatusCode:   200,
 		LatencyMs:    50,
 	})
+	rec.SetPricingCheck(true, 2, 1_700_000_000, 3)
 	rec.RecordFailover("model-a", "model-b", "upstream_error", "pod-A")
 	rec.RecordQualityScore("model-a", 0.85)
 
@@ -64,6 +65,9 @@ func TestMetricsRecorderProducesValidExpositionFormat(t *testing.T) {
 		"nexus_router_failover_total",
 		"nexus_gateway_cost_usd_total",
 		"nexus_eval_quality_score",
+		"nexus_pricing_drift_models",
+		"nexus_pricing_check_last_unix",
+		"nexus_pricing_check_errors_total",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in /metrics output:\n%s", want, out)

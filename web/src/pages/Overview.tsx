@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { FirstRequestSnippets } from "../components/FirstRequestSnippets";
 import { GradientText } from "../components/GradientText";
+import { PricingDriftBanner } from "../components/PricingDriftBanner";
 import { ResizableGrid, type ColumnSpec, type RowSpec } from "../components/ResizableGrid";
 import { SetupChecklist } from "../components/SetupChecklist";
 import { TierCard } from "../components/TierCard";
@@ -15,6 +16,7 @@ import {
   fetchMyCredentials,
   fetchMyKeys,
   fetchProviderStats,
+  fetchPricingDrift,
   fetchRouting,
   fetchStats,
   fetchTraces,
@@ -23,6 +25,7 @@ import {
   type Credential,
   type EvalConfigSnapshot,
   type ProviderStat,
+  type PricingDriftSnapshot,
   type RoutingModel,
   type Stats,
   type TraceSummary,
@@ -32,7 +35,7 @@ import {
 } from "../api";
 
 async function fetchOverview() {
-  const [me, stats, turns, routing, evalCfg, provider, auth, creds, keys] =
+  const [me, stats, turns, routing, evalCfg, provider, auth, creds, keys, drift] =
     await Promise.allSettled([
       fetchMe(),
       fetchStats(),
@@ -43,6 +46,7 @@ async function fetchOverview() {
       fetchAuthConfig(),
       fetchMyCredentials(),
       fetchMyKeys(),
+      fetchPricingDrift(),
     ]);
   return {
     me: me.status === "fulfilled" ? (me.value as User | null) : null,
@@ -62,6 +66,7 @@ async function fetchOverview() {
     credentials:
       creds.status === "fulfilled" ? (creds.value as Credential[]) : [],
     keys: keys.status === "fulfilled" ? (keys.value as VirtualKey[]) : [],
+    drift: drift.status === "fulfilled" ? (drift.value as PricingDriftSnapshot | null) : null,
   };
 }
 
@@ -94,6 +99,7 @@ export function Overview() {
   const auth = data?.auth ?? null;
   const credentials = data?.credentials ?? [];
   const keys = data?.keys ?? [];
+  const drift = data?.drift ?? null;
 
   return (
     <div className="overview">
@@ -261,6 +267,7 @@ export function Overview() {
         />
       </section>
 
+      <PricingDriftBanner snap={drift} />
       <SpendByProvider providerStats={providerStats} />
 
       <RecentTurnsList turns={turns} isLoading={isLoading} auth={auth} />

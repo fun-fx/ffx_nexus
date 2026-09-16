@@ -63,6 +63,11 @@ type MetricsRecorder struct {
 	mcpCallCount       map[labelsKey]uint64
 	mcpLatencyHist     map[labelsKey]*latencyBuckets
 
+	pricingEnabled     bool
+	pricingDriftModels int
+	pricingLastUnix    int64
+	pricingErrors      uint64
+
 	logger *slog.Logger
 	srv    *http.Server
 	addr   string
@@ -303,6 +308,21 @@ func (r *MetricsRecorder) AuditWriteFailed(action string, err error) {
 	r.mu.Unlock()
 }
 
+// SetPricingCheck records the latest catalog-diff snapshot for /metrics.
+// enabled=false suppresses the series so an operator who turned the
+// worker off does not see a stale gauge.
+func (r *MetricsRecorder) SetPricingCheck(enabled bool, driftModels int, lastUnix int64, errors uint64) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.pricingEnabled = enabled
+	r.pricingDriftModels = driftModels
+	r.pricingLastUnix = lastUnix
+	r.pricingErrors = errors
+	r.mu.Unlock()
+}
+
 // Close implements Recorder.
 func (r *MetricsRecorder) Close(ctx context.Context) error {
 	if r == nil || r.srv == nil {
@@ -508,6 +528,18 @@ func (r *MetricsRecorder) handleMetrics(w http.ResponseWriter, _ *http.Request) 
 			k.L1, k.L2, k.L3, hb.sumMs)
 		fmt.Fprintf(&b, "nexus_mcp_tool_latency_ms_count{server=%q,tool=%q,status=%q} %d\n",
 			k.L1, k.L2, k.L3, hb.count)
+	}
+
+	if r.pricingEnabled {
+		fmt.Fprintf(&b, "# HELP nexus_pricing_drift_models Count of static CostUSD table keys that differ from the published catalog. Alert-only; does not rewrite billing.\n")
+		fmt.Fprintf(&b, "# TYPE nexus_pricing_drift_models gauge\n")
+		fmt.Fprintf(&b, "nexus_pricing_drift_models %d\n", r.pricingDriftModels)
+		fmt.Fprintf(&b, "# HELP nexus_pricing_check_last_unix Unix timestamp of the last pricing catalog check.\n")
+		fmt.Fprintf(&b, "# TYPE nexus_pricing_check_last_unix gauge\n")
+		fmt.Fprintf(&b, "nexus_pricing_check_last_unix %d\n", r.pricingLastUnix)
+		fmt.Fprintf(&b, "# HELP nexus_pricing_check_errors_total Failed pricing catalog fetches since process start.\n")
+		fmt.Fprintf(&b, "# TYPE nexus_pricing_check_errors_total counter\n")
+		fmt.Fprintf(&b, "nexus_pricing_check_errors_total %d\n", r.pricingErrors)
 	}
 
 	_, _ = w.Write([]byte(b.String()))

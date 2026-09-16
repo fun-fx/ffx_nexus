@@ -30,6 +30,9 @@ Every setting is an environment variable. The Helm chart maps them to
 | `NEXUS_DYNAMIC_MODEL_SYNC` | `false` | Background refresh of `/v1/models` from each provider's upstream (so new OpenAI / Gemini / Anthropic releases appear without a Nexus redeploy). See [Dynamic model catalog sync](control-plane.md#dynamic-model-catalog-sync-nexus_dynamic_model_sync). |
 | `NEXUS_DYNAMIC_MODEL_INTERVAL` | `30m` | Refresh cadence (Go duration string; e.g. `10m`, `1h`). |
 | `NEXUS_DYNAMIC_MODEL_MAX_RETRY` | `3` | Retry budget per refresh on transient upstream errors (max 60s backoff with jitter). |
+| `NEXUS_PRICING_CHECK` | `true` | Background diff of the static CostUSD table against a published catalog (LiteLLM GitHub JSON). Alert-only — spend is never rewritten. See [Published-rate drift check](control-plane.md#published-rate-drift-check-nexus_pricing_check). |
+| `NEXUS_PRICING_CHECK_INTERVAL` | `6h` | Refresh cadence (Go duration string). |
+| `NEXUS_PRICING_CHECK_URL` | LiteLLM raw JSON | Catalog URL. Empty uses the default GitHub raw file; set a mirror for airgap. |
 | `NEXUS_JUDGE_BASE_URL` / `NEXUS_JUDGE_MODEL` | — / `qwen2.5:7b` | Local SLM judge (Phase 3) |
 | `NEXUS_EVAL_ENABLED` | `true` | Async eval worker (heuristics + optional judges) |
 | `NEXUS_JUDGE_API_KEY` / `NEXUS_EVAL_SAMPLE_RATE` | — / `1.0` | Judge auth + judge sampling fraction |

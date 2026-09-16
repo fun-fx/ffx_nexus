@@ -62,6 +62,7 @@ type Server struct {
 	catalog            CatalogSource         // may be nil when the gateway is not co-located
 	capabilities       CapabilitySource      // may be nil when the gateway is not co-located
 	installReady       InstallReadinessSource
+	pricingDriftSrc    PricingDriftSource
 	reload             func(context.Context) // may be nil when no hot-reload hook is wired
 	allowSignup        bool                  // public POST /api/auth/register
 	localMode          bool                  // single-machine install; first signup becomes admin
@@ -469,6 +470,7 @@ func (s *Server) Mux() http.Handler {
 		r.Get("/turns", s.requireUser(s.recentTurns))
 		r.Get("/stats", s.requireUser(s.stats))
 		r.Get("/stats/providers", s.requireUser(s.providerStats))
+		r.Get("/stats/pricing-drift", s.requireAdmin(s.getPricingDrift))
 		// Both describe how this installation is configured: which providers and
 		// models the router will reach for, and which evaluators score traffic.
 		// That is internal topology, so it needs a session. Neither is

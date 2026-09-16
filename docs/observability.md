@@ -35,6 +35,7 @@ chart:
 | Requests / sec by model | `nexus_gateway_requests_total` |
 | Cache hit rate (1h) | `nexus_gateway_cache_hits_total` |
 | Cost / hour by model (USD) | `nexus_gateway_cost_usd_total` |
+| Published-rate drift (alert-only) | `nexus_pricing_drift_models`, `nexus_pricing_check_last_unix`, `nexus_pricing_check_errors_total` |
 | Failover events / hour | `nexus_router_failover_total` |
 | BYOK adoption (per credential source) | `nexus_gateway_requests_total{credential_source=…}` |
 | Quality judge score (rolling 1h mean) | `nexus_eval_quality_score` |

@@ -304,6 +304,41 @@ export async function fetchProviderStats(window = "30d"): Promise<ProviderStat[]
     }));
 }
 
+export interface PricingDrift {
+  model: string;
+  ours_in_per_m: number;
+  ours_out_per_m: number;
+  catalog_in_per_m: number;
+  catalog_out_per_m: number;
+}
+
+export interface PricingDriftSnapshot {
+  enabled: boolean;
+  checked_at?: string;
+  source?: string;
+  drifts: PricingDrift[];
+  last_error?: string;
+  billing_unchanged: boolean;
+}
+
+export async function fetchPricingDrift(): Promise<PricingDriftSnapshot | null> {
+  const res = await fetch("/api/stats/pricing-drift");
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data || typeof data !== "object") return null;
+  const drifts = Array.isArray(data.drifts)
+    ? data.drifts.filter((d: unknown) => d && typeof d === "object" && typeof (d as PricingDrift).model === "string")
+    : [];
+  return {
+    enabled: Boolean(data.enabled),
+    checked_at: typeof data.checked_at === "string" ? data.checked_at : undefined,
+    source: typeof data.source === "string" ? data.source : undefined,
+    drifts,
+    last_error: typeof data.last_error === "string" ? data.last_error : undefined,
+    billing_unchanged: data.billing_unchanged !== false,
+  };
+}
+
 function sanitizeStats(data: Partial<Stats> | undefined | null): Stats {
   if (!data || typeof data !== "object") return ZERO_STATS;
   const safe = (v: unknown, fallback: number) =>

@@ -248,6 +248,30 @@ func main() {
 	evalWorker := stack.EvalWorker
 	modelRouter := stack.ModelRouter
 
+	var pricingChecker *gateway.PricingChecker
+	if cfg.PricingCheck {
+		catalogURL := cfg.PricingCheckURL
+		if catalogURL == "" {
+			catalogURL = gateway.DefaultPricingCatalogURL
+		}
+		pricingChecker = gateway.StartPricingCheck(ctx, gateway.PricingCheckOptions{
+			URL:      cfg.PricingCheckURL,
+			Interval: cfg.PricingCheckInterval,
+			Logger:   log,
+			OnSnapshot: func(snap gateway.PricingCheckSnapshot) {
+				if stack.MetricsRecorder == nil {
+					return
+				}
+				unix := int64(0)
+				if !snap.CheckedAt.IsZero() {
+					unix = snap.CheckedAt.Unix()
+				}
+				stack.MetricsRecorder.SetPricingCheck(true, len(snap.Drifts), unix, snap.ErrorsTotal)
+			},
+		})
+		log.Info("pricing catalog check enabled", "interval", cfg.PricingCheckInterval, "url", catalogURL)
+	}
+
 	// MCP gateway runtime (optional — requires Postgres registry).
 	var mcpMgr *mcp.Manager
 	if store != nil {
@@ -496,6 +520,7 @@ func main() {
 			cfg.PurgeLegacyProfilesOnBoot,
 		)
 	}))
+	consoleSrvHandler.SetPricingDrift(pricingChecker)
 	gatewayCtrl := newGatewayRuntimeController(cfg, gwHandler, semCacheSvc, log)
 	consoleSrvHandler.SetGatewayConfig(gatewayCtrl, gatewayCtrl)
 
