@@ -1039,11 +1039,15 @@ func buildDailySpendSummaryQuery(orgID, userID string) string {
 }
 
 func buildSummaryArgs(orgID string, curSince, curUntil, prevSince, prevUntil time.Time, userID string) []any {
-	args := []any{orgID, curSince, curUntil, orgID, prevSince, prevUntil}
-	if userID != "" {
-		args = append(args, userID, userID)
+	if userID == "" {
+		return []any{orgID, curSince, curUntil, orgID, prevSince, prevUntil}
 	}
-	return args
+	// user_id filters sit inside each CTE, so bind order must be
+	// cur(org, since, until, user) then prev(org, since, until, user).
+	return []any{
+		orgID, curSince, curUntil, userID,
+		orgID, prevSince, prevUntil, userID,
+	}
 }
 
 // BuildEffectiveProvider is the SQL expression the daily + per-day
