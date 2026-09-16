@@ -497,8 +497,23 @@ func TestBuildDailySpendSummaryQuery(t *testing.T) {
 			if len(arg) != tc.wantArgs {
 				t.Errorf("arg len want=%d got=%d (%v)", tc.wantArgs, len(arg), arg)
 			}
-			if arg[0] != "org-a" || arg[3] != "org-a" {
-				t.Errorf("org_id must be bound twice (once per CTE), got %v", arg)
+			if arg[0] != "org-a" {
+				t.Errorf("first org_id want org-a, got %v", arg)
+			}
+			if tc.userID == "" {
+				if arg[3] != "org-a" {
+					t.Errorf("second org_id want org-a, got %v", arg)
+				}
+			} else {
+				if arg[3] != tc.userID {
+					t.Errorf("cur user_id want %q, got %v", tc.userID, arg[3])
+				}
+				if arg[4] != "org-a" {
+					t.Errorf("prev org_id want org-a, got %v", arg[4])
+				}
+				if arg[7] != tc.userID {
+					t.Errorf("prev user_id want %q, got %v", tc.userID, arg[7])
+				}
 			}
 		})
 	}
