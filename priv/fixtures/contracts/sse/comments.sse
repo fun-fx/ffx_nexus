@@ -1,0 +1,4 @@
+: keepalive
+: routing-id=abc
+data: {"choices":[{"delta":{"content":"x"}}]}
+

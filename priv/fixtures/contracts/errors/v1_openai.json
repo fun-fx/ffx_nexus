@@ -1,0 +1,14 @@
+{
+  "comment": "OpenAI-compatible /v1 error body. request id is a response header, not a JSON field.",
+  "status": 502,
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-Id": "req_golden"
+  },
+  "body": {
+    "error": {
+      "message": "all candidate providers failed",
+      "type": "upstream_error"
+    }
+  }
+}

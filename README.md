@@ -126,6 +126,7 @@ you hold.
 | Guide | What is in it |
 | --- | --- |
 | [Quickstart](docs/quickstart.md) | How the gateway, router, evaluator and benchmark fit together |
+| [Current behavior baseline (ADR 0001)](docs/adr/0001-current-behavior-baseline.md) | Pinned Go/chart/schema/SSE contracts for the Elixir rewrite |
 | [Gateway API](docs/gateway-api.md) | Endpoints, streaming, SDK compatibility |
 | [Configuration](docs/configuration.md) | Every environment variable |
 | [Providers](docs/providers.md) | Adding and opting into provider catalogs |

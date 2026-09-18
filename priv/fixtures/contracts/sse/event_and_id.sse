@@ -1,0 +1,4 @@
+id: evt-1
+event: message
+data: {"choices":[{"delta":{"content":"hi"}}]}
+

@@ -1,0 +1,250 @@
+{
+  "ledger_table": "schema_migrations",
+  "migrations": [
+    {
+      "id": "postgres/001_init.sql",
+      "engine": "postgres",
+      "name": "001_init.sql",
+      "sha256": "7c35f24fdeff2b2886528cdb5037ea65816075a86b18d9205c5d8249a89f0619",
+      "bytes": 3309
+    },
+    {
+      "id": "postgres/002_byok.sql",
+      "engine": "postgres",
+      "name": "002_byok.sql",
+      "sha256": "70a1864c5d5f49c52677194cd6e6ad0dd0a346e4bc6255d953eccff6340a4574",
+      "bytes": 2285
+    },
+    {
+      "id": "postgres/003_sso.sql",
+      "engine": "postgres",
+      "name": "003_sso.sql",
+      "sha256": "84603bf45fd24047dd3f0fbea401f68fb0c6dcee21c6fadc74993b100a8a7ffd",
+      "bytes": 852
+    },
+    {
+      "id": "postgres/004_audit_index.sql",
+      "engine": "postgres",
+      "name": "004_audit_index.sql",
+      "sha256": "7aff6d04b51d5a019064d6f79f8b6c662781e90a2a70bbdbf9588cb0c92e1c96",
+      "bytes": 494
+    },
+    {
+      "id": "postgres/005_credential_models.sql",
+      "engine": "postgres",
+      "name": "005_credential_models.sql",
+      "sha256": "6f76c6e64942462c349735714418dd86f4b2eea8e1859946fbb40b6b9aa404c0",
+      "bytes": 845
+    },
+    {
+      "id": "postgres/006_eval_scores.sql",
+      "engine": "postgres",
+      "name": "006_eval_scores.sql",
+      "sha256": "34e922079c84df1ffc89fb4fc046b999f39549609303ccec97527d69442eadd5",
+      "bytes": 882
+    },
+    {
+      "id": "postgres/007_eval_scores_model.sql",
+      "engine": "postgres",
+      "name": "007_eval_scores_model.sql",
+      "sha256": "fe12f7dc3def52e72c2be1f8f13486aac68bac64c8430955fa5f14890a791cd2",
+      "bytes": 347
+    },
+    {
+      "id": "postgres/008_onboarded_at.sql",
+      "engine": "postgres",
+      "name": "008_onboarded_at.sql",
+      "sha256": "7fed25c92a1746a004b3590677ef82c5afac1bd3d7db70c18c035c51b5106747",
+      "bytes": 487
+    },
+    {
+      "id": "postgres/009_eval_plugins.sql",
+      "engine": "postgres",
+      "name": "009_eval_plugins.sql",
+      "sha256": "db19a29c2bada78ff7cdcfd0a76811223bee049dcdb056a853dbcbebacdce32e",
+      "bytes": 1579
+    },
+    {
+      "id": "postgres/010_eval_scores_kind.sql",
+      "engine": "postgres",
+      "name": "010_eval_scores_kind.sql",
+      "sha256": "cf3849606fc63a2d97a33c06787b2a76e65f3ce51d3a2e0895704e2768c40833",
+      "bytes": 744
+    },
+    {
+      "id": "postgres/011_eval_plugin_keys.sql",
+      "engine": "postgres",
+      "name": "011_eval_plugin_keys.sql",
+      "sha256": "54510aef23d2579c3dc567e65eef868b3bd45b086baf7fdc3992275652440250",
+      "bytes": 877
+    },
+    {
+      "id": "postgres/012_benchmark_runs.sql",
+      "engine": "postgres",
+      "name": "012_benchmark_runs.sql",
+      "sha256": "8f350f2f7537e5c659f85dde077ed961dcdec9e18d6624e58bf83614236bcf46",
+      "bytes": 3384
+    },
+    {
+      "id": "postgres/013_scheduled_benchmarks.sql",
+      "engine": "postgres",
+      "name": "013_scheduled_benchmarks.sql",
+      "sha256": "980b5854a94a1a5be18d630668d990fbaf8a04b3846cd6672a89874ba9f652f2",
+      "bytes": 1546
+    },
+    {
+      "id": "postgres/014_invite_tokens.sql",
+      "engine": "postgres",
+      "name": "014_invite_tokens.sql",
+      "sha256": "30a3abcd0e81daec7b8c2f0063ea3df68af12b5fcf913e3c49da7dd935fc7c21",
+      "bytes": 1603
+    },
+    {
+      "id": "postgres/015_eval_scores_org.sql",
+      "engine": "postgres",
+      "name": "015_eval_scores_org.sql",
+      "sha256": "ec9d629f305d1b0e46c73625d6d0c2ab68895495a64f090ee45e0fea51195021",
+      "bytes": 4663
+    },
+    {
+      "id": "postgres/016_benchmark_schedule_last_run.sql",
+      "engine": "postgres",
+      "name": "016_benchmark_schedule_last_run.sql",
+      "sha256": "19e3801b16cbadcc460bf10610da64aec13444157ab7b7c3912acd4a56846d6e",
+      "bytes": 2186
+    },
+    {
+      "id": "postgres/017_audit_request_id.sql",
+      "engine": "postgres",
+      "name": "017_audit_request_id.sql",
+      "sha256": "110fcffadf5e2ba1bc03a9ff639aa0c5b5e96003ad1c4d58c76a3d3b76a9ac41",
+      "bytes": 1405
+    },
+    {
+      "id": "postgres/018_audit_client_request_id.sql",
+      "engine": "postgres",
+      "name": "018_audit_client_request_id.sql",
+      "sha256": "85f4435a1c59c8058254196980383daaf8f08b4ac54ca75cf7f05e2658f10cc7",
+      "bytes": 1243
+    },
+    {
+      "id": "postgres/019_audit_aggregation.sql",
+      "engine": "postgres",
+      "name": "019_audit_aggregation.sql",
+      "sha256": "3753659d4b21ecae8a2d1a4f9bc6db32101e6c0525de2ffd6f187f94b86552a5",
+      "bytes": 2559
+    },
+    {
+      "id": "postgres/020_audit_roles.sql",
+      "engine": "postgres",
+      "name": "020_audit_roles.sql",
+      "sha256": "f95b6df6ad55e6588e687ffc3a168602a1bbd92134c71aa8526f7830ce14fcfb",
+      "bytes": 4000
+    },
+    {
+      "id": "postgres/021_audit_view_indexes.sql",
+      "engine": "postgres",
+      "name": "021_audit_view_indexes.sql",
+      "sha256": "b64a2d41e0b717644f97cd9eaffd8755140dd5c340198162e7d7fc6c28c8efd0",
+      "bytes": 1408
+    },
+    {
+      "id": "postgres/022_mcp_servers.sql",
+      "engine": "postgres",
+      "name": "022_mcp_servers.sql",
+      "sha256": "dca7fe4d5658f4cef04643675a344b6c2377be29fcea2f85babe608708f2774f",
+      "bytes": 712
+    },
+    {
+      "id": "postgres/023_mcp_org_settings.sql",
+      "engine": "postgres",
+      "name": "023_mcp_org_settings.sql",
+      "sha256": "49abc3c29e0d7b6ba66d18fad2cd3522d0aa07ea7a34bd2099a808d576cd12f5",
+      "bytes": 391
+    },
+    {
+      "id": "clickhouse/001_init.sql",
+      "engine": "clickhouse",
+      "name": "001_init.sql",
+      "sha256": "ded88b3da6198c296f16773c2854dd213ee8c8d6b763f40028f83029f86bd338",
+      "bytes": 2061
+    },
+    {
+      "id": "clickhouse/002_eval_context.sql",
+      "engine": "clickhouse",
+      "name": "002_eval_context.sql",
+      "sha256": "9e1dab59c5599fcccbc6648bac257a33bb8ad6125a466d76c97312f598ecc9f0",
+      "bytes": 250
+    },
+    {
+      "id": "clickhouse/003_dashboard.sql",
+      "engine": "clickhouse",
+      "name": "003_dashboard.sql",
+      "sha256": "4de28291a437088983da9059ca6d98e9a3492c15518a1d027660b71922817cb1",
+      "bytes": 411
+    },
+    {
+      "id": "clickhouse/004_byok.sql",
+      "engine": "clickhouse",
+      "name": "004_byok.sql",
+      "sha256": "b22a9a37b7f7bb35e742533c78170cc8dff5881693b0848d62bfc400a8837b38",
+      "bytes": 418
+    },
+    {
+      "id": "clickhouse/005_eval_user.sql",
+      "engine": "clickhouse",
+      "name": "005_eval_user.sql",
+      "sha256": "e980ef656349f8681b09c87e022ffa4a430dfb6df336372b950cfdda01f31d06",
+      "bytes": 413
+    },
+    {
+      "id": "clickhouse/006_replica_id.sql",
+      "engine": "clickhouse",
+      "name": "006_replica_id.sql",
+      "sha256": "d9cc51bfb1c2ade59487d354294139334a1e03c0fb8b574d1fc8c14eac3b0134",
+      "bytes": 404
+    },
+    {
+      "id": "clickhouse/007_session_id.sql",
+      "engine": "clickhouse",
+      "name": "007_session_id.sql",
+      "sha256": "55b8de3b8cb6b126ed4c9a079450a5ca1e7683189f11cbb19b389f357348338b",
+      "bytes": 1255
+    },
+    {
+      "id": "clickhouse/008_turn_id.sql",
+      "engine": "clickhouse",
+      "name": "008_turn_id.sql",
+      "sha256": "7fb0091ce2c0dc65a00f611cd2a6a1a032f0b824e0cfaa5985763fc89d80c242",
+      "bytes": 1308
+    },
+    {
+      "id": "clickhouse/009_benchmark_runs.sql",
+      "engine": "clickhouse",
+      "name": "009_benchmark_runs.sql",
+      "sha256": "bd3908b78b308e894beacd35483ad2ca5092cb0737e132179d638401d6d543b1",
+      "bytes": 4896
+    },
+    {
+      "id": "clickhouse/010_eval_scores_org.sql",
+      "engine": "clickhouse",
+      "name": "010_eval_scores_org.sql",
+      "sha256": "3b4ef7382a99a27c3dcfc05221a8d3214527ded10bc866e8bf8df832f60052c2",
+      "bytes": 2476
+    },
+    {
+      "id": "clickhouse/011_mcp_tool_logs.sql",
+      "engine": "clickhouse",
+      "name": "011_mcp_tool_logs.sql",
+      "sha256": "97a3eb467cd8b36cc5399f3132e090b51316744dae8e293d4ddba49ef2a4a5cb",
+      "bytes": 929
+    },
+    {
+      "id": "clickhouse/012_request_evidence.sql",
+      "engine": "clickhouse",
+      "name": "012_request_evidence.sql",
+      "sha256": "52fdeacbc4a358cc4639cbc2b97319a714fc0fc73b7989b65577b7897f41cc0f",
+      "bytes": 628
+    }
+  ]
+}
