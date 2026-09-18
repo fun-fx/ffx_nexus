@@ -21,5 +21,6 @@
     "org_header": "X-Org-Id honored only when no session; session OrgID wins"
   },
   "sibling_elixir_repo": "fun-fx/nexus_ex",
-  "fixture_tree": "priv/fixtures/contracts"
+  "fixture_tree": "priv/fixtures/contracts",
+  "fixture_commit": "1b12d3a34dfa61479cb2ea5210676948e00a0811"
 }
