@@ -108,6 +108,9 @@ go test ./internal/contracts/
 ./scripts/dump_schema.sh
 go run ./scripts/contract_harness
 go run ./scripts/load_baseline -streams 32 -duration 10s
+
+# Go vs Elixir P1-3 gate (mock + both binaries; see nexus_ex/GATE.md)
+NEXUS_EX=../nexus_ex STREAMS=256 DURATION=10s ./scripts/run_p1_gate.sh
 ```
 
 ### Optional: full upstream tests in CI

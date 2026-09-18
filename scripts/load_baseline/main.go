@@ -1,13 +1,14 @@
 // Load baseline for the OpenAI chat SSE hot path.
 //
-// Same command is re-run against Elixir (NEXUS_BASE_URL). Mock upstream is
-// the default so numbers are not vendor-latency. Set NEXUS_LOAD_LIVE=1 to
-// hit a real provider through the gateway (split recorded in the JSON
-// report).
+// Same command is re-run against Go and Elixir (NEXUS_BASE_URL). Mock
+// upstream is the default so numbers are not vendor-latency.
 //
-// Linux: if /sys/fs/cgroup is writable, RSS is read from memory.current.
-// Darwin has no cgroup; the report records process RSS via ps and marks
-// cgroup=false so the two OS numbers are not compared as one series.
+//	# persistent mock (gate script)
+//	go run ./scripts/load_baseline -mock-listen 127.0.0.1:19090
+//
+//	# hit a running gateway; RSS is the server PID, not this client
+//	go run ./scripts/load_baseline -base-url http://127.0.0.1:18080 \
+//	  -pid $SERVER_PID -streams 1000 -duration 15s -out /tmp/go-sse.json
 package main
 
 import (
@@ -21,12 +22,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -39,13 +42,20 @@ func main() {
 
 func run(args []string) error {
 	fs := flag.NewFlagSet("load_baseline", flag.ContinueOnError)
-	base := fs.String("base-url", envOr("NEXUS_BASE_URL", ""), "gateway under test; empty = mock-upstream only (no proxy)")
+	base := fs.String("base-url", os.Getenv("NEXUS_BASE_URL"), "gateway under test; empty = mock-upstream only")
 	streams := fs.Int("streams", 32, "concurrent SSE clients")
 	seconds := fs.Duration("duration", 10*time.Second, "how long to keep streams open")
 	out := fs.String("out", "", "write JSON report to this path (default stdout)")
 	live := fs.Bool("live-provider", os.Getenv("NEXUS_LOAD_LIVE") == "1", "hit a real provider; default is mock upstream")
+	pid := fs.Int("pid", 0, "server process to sample RSS from (0 = this process)")
+	model := fs.String("model", envOr("NEXUS_LOAD_MODEL", "gpt-4o-mini"), "chat model id")
+	mockListen := fs.String("mock-listen", "", "if set, only serve the mock SSE upstream on this addr and block")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if addr := strings.TrimSpace(*mockListen); addr != "" {
+		return serveMock(addr)
 	}
 
 	target := strings.TrimSpace(*base)
@@ -58,7 +68,7 @@ func run(args []string) error {
 	}
 
 	var mockAddr string
-	if !*live {
+	if !*live && target == "" {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return err
@@ -66,9 +76,17 @@ func run(args []string) error {
 		defer ln.Close()
 		go http.Serve(ln, http.HandlerFunc(mockSSE))
 		mockAddr = "http://" + ln.Addr().String()
-		if target == "" {
-			target = mockAddr
-		}
+		target = mockAddr
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        *streams + 32,
+			MaxIdleConnsPerHost: *streams + 32,
+			MaxConnsPerHost:     *streams + 32,
+			ForceAttemptHTTP2:   false,
+			DisableCompression:  true,
+		},
 	}
 
 	report := Report{
@@ -81,13 +99,19 @@ func run(args []string) error {
 		Streams:      *streams,
 		Duration:     seconds.String(),
 		Cgroup:       cgroupAvailable(),
-		Notes:        []string{"P1-3 gate: Elixir TTFT p50/p99 and RSS/stream must be non-inferior to this report on the same machine and cgroup."},
+		ServerPID:    *pid,
+		Model:        *model,
+		Notes:        []string{"P1-3 gate: Elixir TTFT p50/p99 ≤ Go×1.10; RSS/stream ≤ Go×1.20; errors=0."},
 		DisconnectOK: true,
 	}
 
+	var peak atomic.Int64
+	stopRSS := make(chan struct{})
+	go sampleRSS(*pid, &peak, stopRSS)
+
 	ttft := make([]time.Duration, 0, *streams)
 	var ttftMu sync.Mutex
-	var leaks atomic.Int64
+	var errs atomic.Int64
 	var wg sync.WaitGroup
 	deadline := time.Now().Add(*seconds)
 
@@ -95,9 +119,9 @@ func run(args []string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			d, err := oneStream(target, deadline)
+			d, err := oneStream(client, target, *model, deadline)
 			if err != nil {
-				leaks.Add(1)
+				errs.Add(1)
 				return
 			}
 			ttftMu.Lock()
@@ -106,11 +130,12 @@ func run(args []string) error {
 		}()
 	}
 	wg.Wait()
+	close(stopRSS)
 
 	report.Completed = len(ttft)
-	report.Errors = int(leaks.Load())
+	report.Errors = int(errs.Load())
 	report.TTFT = summarize(ttft)
-	report.RSSKb = rssKB()
+	report.RSSKb = peak.Load()
 	if report.Completed > 0 {
 		report.RSSPerStreamKb = float64(report.RSSKb) / float64(report.Completed)
 	}
@@ -130,6 +155,26 @@ func run(args []string) error {
 	return enc.Encode(report)
 }
 
+func serveMock(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "load_baseline: mock SSE on http://%s\n", ln.Addr().String())
+	srv := &http.Server{Handler: http.HandlerFunc(mockSSE)}
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+		<-c
+		_ = srv.Close()
+	}()
+	err = srv.Serve(ln)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
 type Report struct {
 	TS             string      `json:"ts"`
 	GOOS           string      `json:"goos"`
@@ -143,6 +188,8 @@ type Report struct {
 	Errors         int         `json:"errors"`
 	DisconnectOK   bool        `json:"disconnect_cleanup_ok"`
 	Cgroup         bool        `json:"cgroup"`
+	ServerPID      int         `json:"server_pid,omitempty"`
+	Model          string      `json:"model"`
 	TTFT           Percentiles `json:"ttft_ns"`
 	RSSKb          int64       `json:"rss_kb"`
 	RSSPerStreamKb float64     `json:"rss_per_stream_kb"`
@@ -174,9 +221,10 @@ func summarize(ds []time.Duration) Percentiles {
 
 func mockSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
-	fmt.Fprint(w, "data: {\"id\":\"chatcmpl-load\",\"object\":\"chat.completion.chunk\",\"created\":1720000000,\"model\":\"text-prime\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"x\"},\"finish_reason\":null}]}\n\n")
+	fmt.Fprint(w, "data: {\"id\":\"chatcmpl-load\",\"object\":\"chat.completion.chunk\",\"created\":1720000000,\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"x\"},\"finish_reason\":null}]}\n\n")
 	if fl != nil {
 		fl.Flush()
 	}
@@ -196,15 +244,11 @@ func mockSSE(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func oneStream(target string, deadline time.Time) (time.Duration, error) {
+func oneStream(client *http.Client, target, model string, deadline time.Time) (time.Duration, error) {
 	url := strings.TrimRight(target, "/") + "/v1/chat/completions"
-	if !strings.Contains(target, "/v1/") && strings.HasPrefix(target, "http://127.0.0.1") {
-		// mock server serves the handler on any path
-		url = strings.TrimRight(target, "/") + "/"
-	}
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	body := `{"model":"text-prime","stream":true,"messages":[{"role":"user","content":"load"}]}`
+	body := fmt.Sprintf(`{"model":%q,"stream":true,"messages":[{"role":"user","content":"load"}]}`, model)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
 		return 0, err
@@ -212,11 +256,15 @@ func oneStream(target string, deadline time.Time) (time.Duration, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+envOr("NEXUS_HARNESS_KEY", "nxs_live_harness"))
 	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return 0, fmt.Errorf("status %d: %s", resp.StatusCode, b)
+	}
 	br := bufio.NewReader(resp.Body)
 	_, err = br.ReadByte()
 	if err != nil {
@@ -227,6 +275,24 @@ func oneStream(target string, deadline time.Time) (time.Duration, error) {
 	return ttft, nil
 }
 
+func sampleRSS(pid int, peak *atomic.Int64, stop <-chan struct{}) {
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if v := rssKB(pid); v > peak.Load() {
+			peak.Store(v)
+		}
+		select {
+		case <-stop:
+			if v := rssKB(pid); v > peak.Load() {
+				peak.Store(v)
+			}
+			return
+		case <-tick.C:
+		}
+	}
+}
+
 func cgroupAvailable() bool {
 	if runtime.GOOS != "linux" {
 		return false
@@ -235,14 +301,24 @@ func cgroupAvailable() bool {
 	return err == nil
 }
 
-func rssKB() int64 {
+func rssKB(pid int) int64 {
+	if pid <= 0 {
+		pid = os.Getpid()
+	}
 	if runtime.GOOS == "linux" {
-		if b, err := os.ReadFile("/sys/fs/cgroup/memory.current"); err == nil {
-			n, _ := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
-			return n / 1024
+		if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+			for _, line := range strings.Split(string(b), "\n") {
+				if strings.HasPrefix(line, "VmRSS:") {
+					f := strings.Fields(line)
+					if len(f) >= 2 {
+						n, _ := strconv.ParseInt(f[1], 10, 64)
+						return n
+					}
+				}
+			}
 		}
 	}
-	cmd := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(os.Getpid()))
+	cmd := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(pid))
 	out, err := cmd.Output()
 	if err != nil {
 		return 0
