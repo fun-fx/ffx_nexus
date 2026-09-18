@@ -1,0 +1,25 @@
+{
+  "comment": "Phase 0 pin. Bump whenever schema SQL or golden fixtures change. Elixir vendors this tree at fixture_tree_sha.",
+  "production_go_commit": "49338afe9dddb6ad3a7211c1a1016f1db8436a90",
+  "production_go_commit_subject": "fix(spend): bind user_id after each summary window CTE",
+  "chart_version": "0.8.4",
+  "chart_app_version": "0.8.4",
+  "default_image_repository": "ghcr.io/fun-fx/ffx_nexus",
+  "migrate_check": "nexus migrate --check  (exit 0 current, 2 outstanding, 1 failure)",
+  "ledger_table": "schema_migrations",
+  "postgres_migration_count": 23,
+  "clickhouse_migration_count": 12,
+  "defaults": {
+    "NEXUS_KEY_MODE": "strict_byok",
+    "NEXUS_ALLOW_SHARED_KEYS": false,
+    "NEXUS_ALLOW_SIGNUP": false,
+    "NEXUS_AUTO_MIGRATE": false,
+    "NEXUS_CAPTURE_TRACE_CONTENT": false,
+    "NEXUS_EVAL_PLUGIN_ONLY": false,
+    "NEXUS_EVAL_PURGE_LEGACY_PROFILES_ON_BOOT": false,
+    "NEXUS_PRICING_CHECK": true,
+    "org_header": "X-Org-Id honored only when no session; session OrgID wins"
+  },
+  "sibling_elixir_repo": "fun-fx/nexus_ex",
+  "fixture_tree": "priv/fixtures/contracts"
+}

@@ -1,0 +1,2 @@
+data: {"id":"chatcmpl-test1","object":"chat.completion.chunk","created":1720000000,"model":"text-prime","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello ","reasoning_content":"Let me greet the user."},"finish_reason":null}]}
+
