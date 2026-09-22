@@ -17,6 +17,9 @@ CON_PORT="${CON_PORT:-18081}"
 MOCK_PORT="${MOCK_PORT:-19090}"
 OUTDIR="${OUTDIR:-/tmp/nexus-p1-gate}"
 MODEL="${MODEL:-gpt-4o-mini}"
+COLD="${COLD:-1}"
+INSTRUMENTATION="${INSTRUMENTATION:-off}"
+export STREAMS DURATION COLD INSTRUMENTATION
 
 mkdir -p "$OUTDIR"
 cd "$FFX"
@@ -82,6 +85,7 @@ RELEASE_DISTRIBUTION=none \
 NEXUS_UPSTREAM_BASE="http://127.0.0.1:$MOCK_PORT" \
 NEXUS_GATEWAY_PORT="$GW_PORT" \
 NEXUS_CONSOLE_PORT="$CON_PORT" \
+NEXUS_STAGE_MARKERS="${NEXUS_STAGE_MARKERS:-false}" \
   "$RELEASE/bin/nexus" start >"$OUTDIR/ex-server.log" 2>&1 &
 EX_PID=$!
 echo ">> elixir pid $EX_PID"
@@ -100,7 +104,7 @@ wait "$EX_PID" 2>/dev/null || true
 EX_PID=""
 
 python3 - "$OUTDIR" <<'PY'
-import json, sys, pathlib
+import json, sys, os, pathlib, socket
 d = pathlib.Path(sys.argv[1])
 go = json.loads((d/"go-sse.json").read_text())
 ex = json.loads((d/"ex-sse.json").read_text())
@@ -119,6 +123,20 @@ oks.append(go["errors"] == 0 and go["disconnect_cleanup_ok"])
 oks.append(ex["errors"] == 0 and ex["disconnect_cleanup_ok"])
 verdict = "PASS" if all(oks) else "FAIL"
 (d/"verdict.txt").write_text(verdict + "\n")
+report = {
+    "schema": "nexus.p1_gate.report.v1",
+    "host": socket.gethostname(),
+    "uname": os.uname().sysname,
+    "streams": int(os.environ.get("STREAMS", "256")),
+    "duration": os.environ.get("DURATION", ""),
+    "cold": os.environ.get("COLD", "1") == "1",
+    "instrumentation": os.environ.get("INSTRUMENTATION", "off"),
+    "go": go,
+    "elixir": ex,
+    "verdict": verdict,
+}
+(d/"comparison-report.json").write_text(json.dumps(report, indent=2) + "\n")
 print("VERDICT", verdict)
+print("wrote", d/"comparison-report.json")
 sys.exit(0 if verdict == "PASS" else 2)
 PY
