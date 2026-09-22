@@ -231,3 +231,4 @@ npx/                    release-binary wrapper
 | Console Eval / Benchmark tabs | [Eval tab](eval-tab.md), [Benchmark tab](benchmark-tab.md) |
 | Cutting a release | [Development](development.md) |
 | Go vs Elixir cutover (Manus briefing) | [Elixir cutover inventory](elixir-cutover-inventory.md) |
+| LLM upstream redirect policy | [Upstream redirect policy](upstream-redirect-policy.md) |

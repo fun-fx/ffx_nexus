@@ -2,9 +2,11 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -49,13 +51,27 @@ func TestGridProviderShape(t *testing.T) {
 // TestStripAuthorizationOnCrossOriginRedirect drives the redirect helper
 // directly: a source server replies 307 to a destination server on a
 // different host, and the destination server records whatever
-// Authorization header it received.
-// Without the policy in place the destination would see "Bearer secret";
-// with it, the header is empty.
+// authorization, cookie, or proxy-auth header it received. Without the
+// policy in place the destination would see "Bearer grid-secret" along
+// with the cookie and proxy-auth; with it, every credential-shaped
+// header must be empty and the Host header must be cleared so the
+// second hop binds to its own hostname.
 func TestStripAuthorizationOnCrossOriginRedirect(t *testing.T) {
-	var gotAtSupplier string
+	var (
+		gotAuth        string
+		gotXAPI        string
+		gotCookie      string
+		gotProxyAuth   string
+		gotHost        string
+		gotRemoteAddr  string
+	)
 	supplier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAtSupplier = r.Header.Get("Authorization")
+		gotAuth = r.Header.Get("Authorization")
+		gotXAPI = r.Header.Get("x-api-key")
+		gotCookie = r.Header.Get("Cookie")
+		gotProxyAuth = r.Header.Get("Proxy-Authorization")
+		gotHost = r.Host
+		gotRemoteAddr = r.RemoteAddr
 		_, _ = io.WriteString(w, "ok")
 	}))
 	defer supplier.Close()
@@ -71,6 +87,9 @@ func TestStripAuthorizationOnCrossOriginRedirect(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer grid-secret")
+	req.Header.Set("x-api-key", "anthropic-secret")
+	req.Header.Set("Cookie", "session=leak")
+	req.Header.Set("Proxy-Authorization", "Basic leak")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -80,8 +99,52 @@ func TestStripAuthorizationOnCrossOriginRedirect(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected status from supplier: %d", resp.StatusCode)
 	}
-	if gotAtSupplier != "" {
-		t.Fatalf("cross-origin redirect leaked Authorization header to supplier: %q", gotAtSupplier)
+
+	if gotAuth != "" {
+		t.Fatalf("cross-origin redirect leaked Authorization header to supplier: %q", gotAuth)
+	}
+	if gotXAPI != "" {
+		t.Fatalf("cross-origin redirect leaked x-api-key header to supplier: %q", gotXAPI)
+	}
+	if gotCookie != "" {
+		t.Fatalf("cross-origin redirect leaked Cookie header to supplier: %q", gotCookie)
+	}
+	if gotProxyAuth != "" {
+		t.Fatalf("cross-origin redirect leaked Proxy-Authorization header to supplier: %q", gotProxyAuth)
+	}
+	if gotHost != strings.TrimPrefix(supplier.URL, "http://") {
+		t.Fatalf("cross-origin redirect left stale Host header on supplier: %q (want %q)", gotHost, supplier.URL)
+	}
+	// Sanity: the request actually reached the supplier, not a wholly
+	// different box. If RemoteAddr is empty (test harness quirk), do not
+	// fail the test, but never let it be the grid host.
+	if gotRemoteAddr != "" && strings.Contains(gotRemoteAddr, strings.TrimPrefix(grid.URL, "http://")) {
+		t.Fatalf("request appears to have stayed on the source host: %q", gotRemoteAddr)
+	}
+}
+
+// TestRedirectHopCapStopsLongChains covers the loop termination rule:
+// if a redirect Location is influenced (or mis-built) to point back at
+// the same source, the policy must bail out after maxUpstreamRedirects
+// hops instead of looping forever or exhausting the connection pool.
+//
+// We exercise the policy directly because httptest redirect loops are
+// notoriously fragile; the cap is enforced inside the policy before any
+// network access happens, so a unit-level call is enough.
+func TestRedirectHopCapStopsLongChains(t *testing.T) {
+	src := mustURL("https://hopper.test/start")
+	chain := make([]*http.Request, 0, maxUpstreamRedirects+1)
+	for i := 0; i < maxUpstreamRedirects; i++ {
+		r, _ := http.NewRequest(http.MethodGet, src.String(), nil)
+		r.URL = src
+		chain = append(chain, r)
+	}
+	candidate, _ := http.NewRequest(http.MethodGet, src.String(), nil)
+	candidate.URL = src
+
+	err := stripAuthorizationOnCrossOriginRedirect(candidate, chain)
+	if !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("expected ErrUseLastResponse past %d hops, got %T %v", maxUpstreamRedirects, err, err)
 	}
 }
 
@@ -137,4 +200,12 @@ func TestGridAdapterInstallsCheckRedirect(t *testing.T) {
 	if g.OpenAI.client.CheckRedirect == nil {
 		t.Fatalf("nil CheckRedirect")
 	}
+}
+
+func mustURL(s string) *url.URL {
+	u, err := url.Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return u
 }

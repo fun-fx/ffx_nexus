@@ -174,19 +174,42 @@ func (c *OpenAICompat) Name() string { return c.name }
 
 // stripAuthorizationOnCrossOriginRedirect is the http.Client.CheckRedirect
 // callback used by every OpenAICompat request. Go's default behaviour is
-// to forward Authorization on every redirect hop, which is fine for
+// to forward every header on every redirect hop, which is fine for
 // same-origin relays but unsafe when the upstream is a redirect-based
 // spot market like The Grid (whose consumption API redirects to supplier
-// endpoints on different domains). On cross-origin hops we strip the
-// Authorization header so the original credential never reaches the
-// second-hop host.
+// endpoints on different domains). The policy has three parts:
 //
-// The function returns nil to continue following the redirect, or
-// http.ErrUseLastResponse to return the 3xx response directly.
+//  1. A hop cap. The constant maxUpstreamRedirects matches the usual
+//     browser/CLI limit and stops an attacker who can influence the
+//     Location header from building a long redirect chain that exhausts
+//     the pool. Anything past the cap is a hard failure: we return the
+//     3xx response to the caller instead of following it.
+//
+//  2. A credential strip on cross-origin hops. Authorization, the Anthropic
+//     x-api-key, Cookie, and Proxy-Authorization are removed; the original
+//     request's Host header is dropped so the second hop cannot bind to
+//     the supplier's expected hostname. This is the lag-free mitigation
+//     for an upstream that 307s to a credential-harvesting endpoint.
+//
+//  3. A no-origin fall-through. A Location without an absolute scheme is
+//     resolved relative to the previous URL using the previous URL's
+//     scheme. RFC 9110 §10.2.2 forbids the same credential leak; we treat
+//     a relative redirect like a same-origin hop but still re-evaluate
+//     scheme on the next iteration.
+//
+// Returning http.ErrUseLastResponse returns the 3xx response directly so a
+// capped chain does not silently drop the error.
+const maxUpstreamRedirects = 10
+
 func stripAuthorizationOnCrossOriginRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) == 0 {
 		return nil
 	}
+
+	if len(via) >= maxUpstreamRedirects {
+		return http.ErrUseLastResponse
+	}
+
 	prev := via[len(via)-1].URL
 	if prev.Scheme == req.URL.Scheme && prev.Host == req.URL.Host {
 		// Same-origin redirect — keep the Authorization header so the
@@ -195,6 +218,9 @@ func stripAuthorizationOnCrossOriginRedirect(req *http.Request, via []*http.Requ
 	}
 	req.Header.Del("Authorization")
 	req.Header.Del("x-api-key")
+	req.Header.Del("Cookie")
+	req.Header.Del("Proxy-Authorization")
+	req.Host = ""
 	return nil
 }
 
