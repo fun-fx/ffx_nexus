@@ -102,7 +102,14 @@ func (r *Reader) Dashboard(ctx context.Context, before, since time.Time, orgID, 
 	out := EmptyDashboard(since, before, true)
 	out.IntervalSeconds = intervalSec
 
+	// One query at a time. The 30d dashboard used to fire eight
+	// aggregates in parallel, each capped at 400 MiB; a 1 GiB
+	// ClickHouse (max_server_memory_usage ~921 MiB) then killed
+	// them all with code 241 and the SPA painted "trace dashboard
+	// failed (500)". Serializing keeps RSS under the server cap
+	// even when Overview/Spend poll at the same time.
 	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(1)
 	g.Go(func() error {
 		st, err := r.WindowStatsRange(ctx, before, since, orgID, userID, filter)
 		if err != nil {
