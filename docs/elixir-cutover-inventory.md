@@ -279,3 +279,18 @@ refuse, Linux 측정 러너, CI). 작업 토폴로지는 Z0 soak.
 열린 제품 질문(프로필 S1/E2, canary 라우트, BYOK fallback, Redis 장애
 코드, Python 3종, MCP/Prime, invite, SSO, installer, CNI, audit 오류,
 trailer, canary error budget)은 코딩으로 닫지 않았다.
+
+## 8. S2-01 — redirect policy (PR #328)
+
+Manus 비목표에 있던 redirect leak을 차단.
+`stripAuthorizationOnCrossOriginRedirect`는 이제 cross-origin hop에서
+
+- `Authorization`, `x-api-key`, **`Cookie`, `Proxy-Authorization`** 삭제
+- `Host = ""` (이전 오리진으로의 SNI/Host 헤더 binding 차단)
+- 10 hop 초과시 `http.ErrUseLastResponse`로 종료 (loop 차단)
+
+[docs/upstream-redirect-policy.md](upstream-redirect-policy.md) 이유.
+뉴트로런은 자격증명/allowed origin inventory를 그대로 두고 redirect
+자체를 강화하는 쪽으로 갔다. outbound SSRF 자체는 다음 라운드
+(egress.Tenant grpc/raw TCP dialer)로 보류.
+
