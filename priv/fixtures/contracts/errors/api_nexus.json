@@ -1,0 +1,15 @@
+{
+  "comment": "Nexus-first /api error body (console, audit, bootstrap). code is the wire contract.",
+  "status": 403,
+  "headers": {
+    "Content-Type": "application/json",
+    "X-Request-Id": "req_golden"
+  },
+  "body": {
+    "error": {
+      "code": "forbidden",
+      "message": "admin role required",
+      "request_id": "req_golden"
+    }
+  }
+}

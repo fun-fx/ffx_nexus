@@ -1,0 +1,41 @@
+{
+  "algorithm": "sha256",
+  "normalization": "fixtures are already normalized; hash file bytes as stored",
+  "files": [
+    {
+      "path": "unknown_fields.sse",
+      "sha256": "6a78c44cb53209dbdebb24120a94313f64fd71759274f3fcd906319759abc2b0",
+      "bytes": 244
+    },
+    {
+      "path": "done.sse",
+      "sha256": "d8d37da081f11203f2af42092a92cb35508f27db75eba643058a0a580454517d",
+      "bytes": 14
+    },
+    {
+      "path": "comments.sse",
+      "sha256": "1dc69235e8fb00152026df5aa1cdc803f5db4c2250b14dffc4970f6853f9f60c",
+      "bytes": 76
+    },
+    {
+      "path": "event_and_id.sse",
+      "sha256": "47b453e72c76a5723ce9ba081f9c82c0f8a6bd1e01d26c4b88b213eb517b5caa",
+      "bytes": 73
+    },
+    {
+      "path": "crlf.sse",
+      "sha256": "c706d358a434c4bd3d5e5df0c66af43fba507e69c617a97cf1d292fec806668b",
+      "bytes": 52
+    },
+    {
+      "path": "truncation.sse",
+      "sha256": "73e99d5a8bce3db7bce5d192e7b4a39fd4ec2278b81d7d3607c9795f8f2fb712",
+      "bytes": 46
+    },
+    {
+      "path": "chat_concat.sse",
+      "sha256": "3324e67707bfaabb79c17903b33712522ff43107aad880ecb3592b1fdd0a7094",
+      "bytes": 394
+    }
+  ]
+}
